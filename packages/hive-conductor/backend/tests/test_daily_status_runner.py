@@ -13,15 +13,28 @@ _BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_BACKEND_DIR))
 
 from services.daily_status_runner import (  # noqa: E402
-    _canonical_graph_from_snapshot,
     _get_registry,
     _inject_jira_credentials,
+    _node_named,
     _node_resolver,
     _result_to_jira_section,
     run_daily_status_dag,
 )
 
-# --- registry + projection -------------------------------------------------
+from maistro.graph.definitions import Graph  # noqa: E402
+from maistro.graph.template_adapter import (  # noqa: E402
+    descriptor_to_template,
+    snapshot_to_template,
+)
+
+# --- registry + canonical template projection ------------------------------
+
+
+def _daily_status_graph(*, workspace_id: str = "w1", project_id: str = "p1") -> tuple[Any, Graph]:
+    template = descriptor_to_template(
+        _get_registry().get("daily-status"), workspace_id=workspace_id
+    )
+    return template, template.instantiate(project_id=project_id)
 
 
 def test_get_registry_returns_same_instance_each_call() -> None:
@@ -39,53 +52,60 @@ def test_registry_contains_daily_status_with_pm_use_case() -> None:
     assert desc.agent_id == "dag:daily-status"
 
 
-def test_inject_jira_credentials_mutates_jira_poll_node_only() -> None:
-    snap = {
-        "nodes": [
-            {"id": "jira_poll", "inputs": {"base_url": "", "pat": "", "flavor": "server"}},
-            {"id": "other", "inputs": {"untouched": True}},
-        ]
-    }
-    _inject_jira_credentials(
-        snap, pat="abc-pat", base_url="https://example.atlassian.net", flavor="cloud"
-    )
-    poll = next(n for n in snap["nodes"] if n["id"] == "jira_poll")
-    other = next(n for n in snap["nodes"] if n["id"] == "other")
-    assert poll["inputs"]["pat"] == "abc-pat"
-    assert poll["inputs"]["base_url"] == "https://example.atlassian.net"
-    assert poll["inputs"]["flavor"] == "cloud"
-    assert other["inputs"] == {"untouched": True}
+def test_registry_descriptor_projects_to_canonical_template() -> None:
+    template, _ = _daily_status_graph()
+    assert template.template_id == "daily-status"
+    assert template.version == 1
+    assert template.workspace_id == "w1"
+    assert template.metadata["entry_node"] == "jira_poll"
+    assert [node.node_id for node in template.nodes][:2] == ["jira_poll", "jira_items_alias"]
+    assert template.nodes[0].node_type == "jira.poll"
+    assert template.nodes[1].parameters["mapping"] == {"items": "issues"}
+    assert template.edges[0].from_node == "jira_poll"
+    assert template.edges[0].to_node == "jira_items_alias"
 
 
-def test_inject_credentials_no_jira_poll_is_noop() -> None:
-    snap = {"nodes": [{"id": "alt"}]}
-    out = _inject_jira_credentials(snap, pat="x", base_url="y")
-    assert out["nodes"] == [{"id": "alt"}]
-
-
-def test_registry_snapshot_projects_to_canonical_graph() -> None:
-    snapshot = dict(_get_registry().get("daily-status").snapshot)
-    graph = _canonical_graph_from_snapshot(
-        snapshot,
-        workspace_id="w1",
-        project_id="p1",
-    )
-    assert graph.graph_id == "daily-status"
+def test_instantiated_graph_carries_template_provenance() -> None:
+    template, graph = _daily_status_graph()
     assert graph.workspace_id == "w1"
     assert graph.project_id == "p1"
-    assert graph.metadata["entry_node"] == "jira_poll"
-    assert [node.node_id for node in graph.nodes][:2] == ["jira_poll", "jira_items_alias"]
-    assert graph.nodes[0].node_type == "jira.poll"
-    assert graph.nodes[1].parameters["mapping"] == {"items": "issues"}
-    assert graph.edges[0].from_node == "jira_poll"
-    assert graph.edges[0].to_node == "jira_items_alias"
+    assert graph.source_template is not None
+    assert graph.source_template.template_id == "daily-status"
+    assert graph.source_template.template_version == 1
+    assert graph.source_template.template_hash == template.content_hash
 
 
-def test_registry_snapshot_uses_explicit_fallback_scope_without_middleware() -> None:
-    snapshot = dict(_get_registry().get("daily-status").snapshot)
-    graph = _canonical_graph_from_snapshot(snapshot, workspace_id=None, project_id=None)
-    assert graph.workspace_id == "hive:daily-status"
-    assert graph.project_id == "hive:daily-status"
+def test_instantiation_remaps_entry_to_fresh_node_identity() -> None:
+    template, graph = _daily_status_graph()
+    template_ids = {node.node_id for node in template.nodes}
+    instantiated_ids = {node.node_id for node in graph.nodes}
+    assert template_ids.isdisjoint(instantiated_ids)
+    jira_poll = _node_named(graph, "jira_poll")
+    assert jira_poll is not None
+    assert graph.metadata["entry_node"] == jira_poll.node_id
+
+
+def test_inject_jira_credentials_mutates_jira_poll_node_only() -> None:
+    template, graph = _daily_status_graph()
+    _inject_jira_credentials(
+        graph, pat="abc-pat", base_url="https://example.atlassian.net", flavor="cloud"
+    )
+    poll = _node_named(graph, "jira_poll")
+    assert poll.inputs["pat"] == "abc-pat"
+    assert poll.inputs["base_url"] == "https://example.atlassian.net"
+    assert poll.inputs["flavor"] == "cloud"
+    alias = _node_named(graph, "jira_items_alias")
+    assert "pat" not in alias.inputs
+    # Credentials land on the instantiated Graph only; the template that
+    # provenance hashes stays secret-free.
+    assert "abc-pat" not in template.model_dump_json()
+    assert graph.source_template.template_hash == template.content_hash
+
+
+def test_inject_credentials_without_jira_poll_is_noop() -> None:
+    graph = Graph(workspace_id="w1", project_id="p1", name="empty")
+    out = _inject_jira_credentials(graph, pat="x", base_url="y")
+    assert out.nodes == []
 
 
 # --- _node_resolver compatibility seam ------------------------------------
@@ -110,8 +130,8 @@ def test_node_resolver_accepts_canonical_graph() -> None:
         "edges": [],
         "entry_node": "n1",
     }
-    graph = _canonical_graph_from_snapshot(snapshot, workspace_id="w1", project_id="p1")
-    node = _node_resolver("n1", graph)
+    graph = snapshot_to_template(snapshot, workspace_id="w1").instantiate(project_id="p1")
+    node = _node_resolver(graph.nodes[0].node_id, graph)
     assert type(node).__name__ == "TransformAliasKeysNode"
 
 
@@ -147,11 +167,17 @@ class _FakeNodeRun:
         self.error = error
 
 
+def _section_graph() -> Graph:
+    _, graph = _daily_status_graph()
+    return graph
+
+
 def test_result_to_jira_section_completed_returns_ok_with_issues() -> None:
     from maistro.graph.durable_runs import RunStatus
 
+    graph = _section_graph()
     jp_record = _FakeNodeRun(
-        "jira_poll",
+        _node_named(graph, "jira_poll").node_id,
         result={
             "count": 2,
             "issues": [
@@ -172,9 +198,13 @@ def test_result_to_jira_section_completed_returns_ok_with_issues() -> None:
             ],
         },
     )
-    filt_record = _FakeNodeRun("jira_epic_filter", result={"kept": 1, "dropped": 1})
+    filt_record = _FakeNodeRun(
+        _node_named(graph, "jira_epic_filter").node_id, result={"kept": 1, "dropped": 1}
+    )
     rec = _FakeRecord(RunStatus.COMPLETED, [jp_record, filt_record])
-    section = _result_to_jira_section(rec, base_url="https://jira.example.com", flavor="server")
+    section = _result_to_jira_section(
+        rec, graph=graph, base_url="https://jira.example.com", flavor="server"
+    )
     assert section["status"] == "ok"
     assert section["count"] == 2
     assert section["epics_kept"] == 1
@@ -186,12 +216,15 @@ def test_result_to_jira_section_completed_returns_ok_with_issues() -> None:
 def test_result_to_jira_section_failed_permission_returns_auth_failed() -> None:
     from maistro.graph.durable_runs import RunStatus
 
+    graph = _section_graph()
     jp_record = _FakeNodeRun(
-        "jira_poll",
+        _node_named(graph, "jira_poll").node_id,
         error="PermissionError: jira_auth_failed status=401 base=https://jira.example.com",
     )
     rec = _FakeRecord(RunStatus.FAILED, [jp_record], error="PermissionError: propagated")
-    section = _result_to_jira_section(rec, base_url="https://jira.example.com", flavor="server")
+    section = _result_to_jira_section(
+        rec, graph=graph, base_url="https://jira.example.com", flavor="server"
+    )
     assert section["status"] == "auth_failed"
     assert "jira_auth_failed" in section["detail"]
     assert section["issues"] == []
@@ -201,9 +234,13 @@ def test_result_to_jira_section_failed_permission_returns_auth_failed() -> None:
 def test_result_to_jira_section_other_failure_returns_error() -> None:
     from maistro.graph.durable_runs import RunStatus
 
-    jp_record = _FakeNodeRun("jira_poll", error="RuntimeError: jira_http_error status=500")
+    graph = _section_graph()
+    jp_record = _FakeNodeRun(
+        _node_named(graph, "jira_poll").node_id,
+        error="RuntimeError: jira_http_error status=500",
+    )
     rec = _FakeRecord(RunStatus.FAILED, [jp_record], error="RuntimeError: propagated")
-    section = _result_to_jira_section(rec, base_url="https://x", flavor="server")
+    section = _result_to_jira_section(rec, graph=graph, base_url="https://x", flavor="server")
     assert section["status"] == "error"
     assert section["issues"] == []
     assert section["detail"] == "RuntimeError: propagated"
@@ -212,15 +249,18 @@ def test_result_to_jira_section_other_failure_returns_error() -> None:
 def test_result_to_jira_section_missing_url_uses_constructed_browse_url() -> None:
     from maistro.graph.durable_runs import RunStatus
 
+    graph = _section_graph()
     jp_record = _FakeNodeRun(
-        "jira_poll",
+        _node_named(graph, "jira_poll").node_id,
         result={
             "count": 1,
             "issues": [{"key": "P-9", "summary": "x", "status": "Open"}],
         },
     )
     rec = _FakeRecord(RunStatus.COMPLETED, [jp_record])
-    section = _result_to_jira_section(rec, base_url="https://jira.example.com/", flavor="server")
+    section = _result_to_jira_section(
+        rec, graph=graph, base_url="https://jira.example.com/", flavor="server"
+    )
     assert section["issues"][0]["url"] == "https://jira.example.com/browse/P-9"
 
 

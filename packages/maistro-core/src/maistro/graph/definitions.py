@@ -203,6 +203,14 @@ class GraphTemplate(BaseModel):
             )
             for edge in self.edges
         ]
+        # Metadata can reference nodes by id (the executor's entry-frontier
+        # keys); those references must follow the fresh node identities or the
+        # instantiated Graph names nodes that no longer exist.
+        metadata = self.model_copy(deep=True).metadata
+        for key in ("entry_node", "entry"):
+            reference = metadata.get(key)
+            if isinstance(reference, str) and reference in node_id_map:
+                metadata[key] = node_id_map[reference]
         return Graph(
             graph_id=graph_id or _id(),
             workspace_id=self.workspace_id,
@@ -211,7 +219,7 @@ class GraphTemplate(BaseModel):
             description=self.description,
             nodes=nodes,
             edges=edges,
-            metadata=self.model_copy(deep=True).metadata,
+            metadata=metadata,
             source_template=TemplateProvenance(
                 template_id=self.template_id,
                 template_version=self.version,

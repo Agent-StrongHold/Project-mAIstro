@@ -190,3 +190,25 @@ def test_graph_content_hash_changes_with_definition_not_filing_identity() -> Non
 
     assert first.content_hash == same_definition.content_hash
     assert first.content_hash != changed.content_hash
+
+
+def test_graph_template_instantiation_remaps_entry_metadata_to_fresh_ids() -> None:
+    template = GraphTemplate(
+        workspace_id="workspace-1",
+        name="Entry",
+        nodes=[
+            Node(node_id="start", node_type="agent"),
+            Node(node_id="finish", node_type="transform"),
+        ],
+        edges=[Edge(from_node="start", to_node="finish")],
+        metadata={"entry_node": "start", "unrelated": "start"},
+    )
+
+    graph = template.instantiate(project_id="project-a")
+
+    fresh_ids = {node.node_id for node in graph.nodes}
+    assert graph.metadata["entry_node"] in fresh_ids
+    assert graph.metadata["entry_node"] != "start"
+    # Only the executor's entry keys carry node-id semantics; other metadata
+    # values that happen to collide with a template node id stay verbatim.
+    assert graph.metadata["unrelated"] == "start"
