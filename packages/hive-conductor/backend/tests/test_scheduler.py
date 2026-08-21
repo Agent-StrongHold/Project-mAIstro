@@ -1,13 +1,10 @@
-"""Boy Scout coverage: services/scheduler.py (was 0% line/branch).
+"""Coverage for services/scheduler.py.
 
-Covers:
-- start_scheduler / stop_scheduler singleton lifecycle
-- _ScheduleRunner.stop sets _running=False
-- _ScheduleRunner.run loop: _tick fires once + exception path logs
-- _fire_schedule writes audit + updates last_run; no template_id → no audit
-- _should_fire returns False for malformed cron / too-soon delta
-- _field_matches: '*', comma list, '/step', 'lo-hi', literal int
-- _field_matches edge cases: step<=0 → False, '*/N' → True at multiples
+The cron matcher this module used to own is gone: recurrence and fire
+semantics live in `maistro.scheduling`, verified there against a brute-force
+oracle. What remains here is the loop and its effects — lifecycle, projecting
+the live `/v1/schedules` row onto the canonical definition, and turning a
+fire into a Run.
 """
 
 from __future__ import annotations
@@ -35,135 +32,54 @@ def _reset_singleton():
     sched._runner = prev
 
 
-# --- field matcher --------------------------------------------------------
+def _schedule_stub(
+    sid: str,
+    template_id: str | None,
+    *,
+    cron: str = "* * * * *",
+    enabled: bool = True,
+    last_run: datetime | None = None,
+) -> Any:
+    class _Sched:
+        def __init__(self) -> None:
+            self.id = sid
+            self.enabled = enabled
+            self.cron_expression = cron
+            self.name = f"name-{sid}"
+            self.mission_template_id = template_id
+            self.user_id = "u1"
+            self.last_run = last_run
+            self.updated_at = None
+
+        def model_copy(self, *, update: dict[str, Any]) -> Any:
+            for k, v in update.items():
+                setattr(self, k, v)
+            return self
+
+    return _Sched()
 
 
-def test_field_matches_wildcard() -> None:
-    from services.scheduler import _field_matches
-
-    assert _field_matches("*", 0, 0, 59) is True
-    assert _field_matches("*", 42, 0, 59) is True
+# --- start/stop lifecycle ----------------------------------------------------
 
 
-def test_field_matches_literal_int() -> None:
-    from services.scheduler import _field_matches
-
-    assert _field_matches("5", 5, 0, 59) is True
-    assert _field_matches("5", 7, 0, 59) is False
-
-
-def test_field_matches_range() -> None:
-    from services.scheduler import _field_matches
-
-    assert _field_matches("10-15", 12, 0, 59) is True
-    assert _field_matches("10-15", 9, 0, 59) is False
-    assert _field_matches("10-15", 16, 0, 59) is False
-
-
-def test_field_matches_comma_list() -> None:
-    from services.scheduler import _field_matches
-
-    assert _field_matches("1,5,10", 5, 0, 59) is True
-    assert _field_matches("1,5,10", 6, 0, 59) is False
-
-
-def test_field_matches_step_wildcard() -> None:
-    from services.scheduler import _field_matches
-
-    # */5 → every 5th from low (0,5,10,15,...)
-    assert _field_matches("*/5", 0, 0, 59) is True
-    assert _field_matches("*/5", 10, 0, 59) is True
-    assert _field_matches("*/5", 7, 0, 59) is False
-
-
-def test_field_matches_step_with_base() -> None:
-    from services.scheduler import _field_matches
-
-    # 2/5 → 2, 7, 12, 17...
-    assert _field_matches("2/5", 2, 0, 59) is True
-    assert _field_matches("2/5", 7, 0, 59) is True
-    assert _field_matches("2/5", 3, 0, 59) is False
-
-
-def test_field_matches_step_zero_returns_false() -> None:
-    """Defensive: /0 step is invalid and must return False (not raise
-    ZeroDivisionError downstream)."""
-    from services.scheduler import _field_matches
-
-    assert _field_matches("*/0", 5, 0, 59) is False
-
-
-# --- _should_fire ---------------------------------------------------------
-
-
-def test_should_fire_rejects_malformed_cron() -> None:
-    """Cron must have 5 space-separated parts; anything else → False."""
-    from services.scheduler import _should_fire
-
-    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
-    last = now - timedelta(minutes=5)
-    assert _should_fire("* * *", last, now) is False  # 3 parts
-    # "not a cron at all" has 5 space-separated parts (not, a, cron, at, all),
-    # so it passes the parts==5 check but fails at _field_matches('not', minute, …)
-    # which calls int('not') → ValueError. Empty string fails len check.
-    assert _should_fire("", last, now) is False
-    assert _should_fire("a b c d", last, now) is False  # 4 parts
-
-
-def test_should_fire_too_soon_returns_false() -> None:
-    """Even if every field matches, refuses to fire within 1 minute of
-    the last check (debounce)."""
-    from services.scheduler import _should_fire
-
-    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
-    last = now - timedelta(seconds=30)  # <1 minute
-    assert _should_fire("* * * * *", last, now) is False
-
-
-def test_should_fire_when_all_fields_match_and_delta_ok() -> None:
-    from services.scheduler import _should_fire
-
-    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
-    last = now - timedelta(minutes=5)
-    assert _should_fire("* * * * *", last, now) is True
-
-
-def test_should_fire_field_mismatch_returns_false() -> None:
-    from services.scheduler import _should_fire
-
-    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
-    last = now - timedelta(minutes=5)
-    # minute=0 matches; hour=11 doesn't (now is 12:00)
-    assert _should_fire("0 11 * * *", last, now) is False
-
-
-# --- start_scheduler / stop_scheduler singleton ---------------------------
-
-
-def test_start_scheduler_creates_singleton_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_start_scheduler_creates_singleton_once(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.scheduler as sched
 
-    # Don't actually schedule the asyncio task; just verify singleton wiring.
     def _swallow(coro: Any) -> Any:
         coro.close()
         return None
 
     monkeypatch.setattr(sched.asyncio, "ensure_future", _swallow)
-
     assert sched._runner is None
     sched.start_scheduler()
     first = sched._runner
     assert first is not None
-    sched.start_scheduler()  # second call no-op
-    assert sched._runner is first  # same instance
+    sched.start_scheduler()
+    assert sched._runner is first
     sched.stop_scheduler()
 
 
-def test_stop_scheduler_clears_singleton(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_stop_scheduler_clears_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.scheduler as sched
 
     def _swallow(coro: Any) -> Any:
@@ -181,184 +97,151 @@ def test_stop_scheduler_when_not_running_is_noop() -> None:
     import services.scheduler as sched
 
     assert sched._runner is None
-    sched.stop_scheduler()  # no error
+    sched.stop_scheduler()
     assert sched._runner is None
 
 
 def test_runner_stop_flips_running() -> None:
     from services.scheduler import _ScheduleRunner
 
-    r = _ScheduleRunner()
-    assert r._running is True
-    r.stop()
-    assert r._running is False
+    runner = _ScheduleRunner()
+    assert runner._running is True
+    runner.stop()
+    assert runner._running is False
 
 
-# --- _tick / _fire_schedule --------------------------------------------
+# --- projection onto the canonical definition --------------------------------
 
 
-def test_tick_initializes_last_check_first_time() -> None:
+def test_row_projects_onto_a_canonical_schedule_definition() -> None:
     from services.scheduler import _ScheduleRunner
 
-    r = _ScheduleRunner()
-    r._last_check = None
-    asyncio.run(r._tick())
-    assert r._last_check is not None
+    from maistro.scheduling import OverlapPolicy
+
+    fired = datetime(2026, 8, 21, 9, 0, tzinfo=UTC)
+    definition = _ScheduleRunner()._as_definition(
+        "s1", _schedule_stub("s1", "daily-status", cron="0 9 * * *", last_run=fired)
+    )
+    assert definition is not None
+    assert definition.schedule_id == "s1"
+    assert definition.cron == "0 9 * * *"
+    assert definition.graph_template_id == "daily-status"
+    assert definition.last_fired_at == fired
+    assert definition.actor_principal_id == "u1"
+    # A long agent Run must never be stacked on itself by default.
+    assert definition.overlap_policy is OverlapPolicy.SKIP
 
 
-def test_tick_iterates_enabled_schedules_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A disabled schedule must NOT fire even if cron matches."""
+def test_sunday_schedules_now_evaluate_on_sunday() -> None:
+    """End-to-end guard on the bug the deleted matcher had: `0 9 * * 0` used to
+    fire Monday because day-of-week was indexed by Python's Monday=0."""
+    from services.scheduler import _ScheduleRunner
+
+    definition = _ScheduleRunner()._as_definition(
+        "s1", _schedule_stub("s1", "tpl", cron="0 9 * * 0")
+    )
+    assert definition is not None
+    fire = definition.next_fire_after(datetime(2026, 8, 19, tzinfo=UTC))
+    assert fire.strftime("%A") == "Sunday"
+
+
+def test_a_row_with_no_target_is_not_evaluated() -> None:
+    """A schedule that names nothing to run cannot produce work; it is skipped
+    rather than "fired" into nothing."""
+    from services.scheduler import _ScheduleRunner
+
+    assert _ScheduleRunner()._as_definition("s", _schedule_stub("s", None)) is None
+
+
+# --- tick --------------------------------------------------------------------
+
+
+def test_tick_evaluates_enabled_schedules_only(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.scheduler as sched_mod
     from services.scheduler import _ScheduleRunner
 
-    fired = []
-
-    class _FakeSched:
-        def __init__(self, sid: str, enabled: bool, cron: str) -> None:
-            self.id = sid
-            self.enabled = enabled
-            self.cron_expression = cron
-            self.name = sid
-            self.mission_template_id = None
-
-        def model_copy(self, *, update: dict[str, Any]) -> _FakeSched:
-            for k, v in update.items():
-                setattr(self, k, v)
-            return self
-
-    sched_a = _FakeSched("on", True, "* * * * *")
-    sched_b = _FakeSched("off", False, "* * * * *")
-
-    fake_store = {"on": sched_a, "off": sched_b}
+    evaluated: list[str] = []
 
     class _FakeStores:
-        schedules = fake_store
+        schedules: ClassVar = {
+            "on": _schedule_stub("on", None),
+            "off": _schedule_stub("off", None, enabled=False),
+        }
 
     monkeypatch.setitem(sys.modules, "stores", _FakeStores)
-    # force _should_fire to True
-    monkeypatch.setattr(sched_mod, "_should_fire", lambda *a, **kw: True)
 
-    async def _capture_fire(self: Any, sid: str, schedule: Any) -> None:
-        fired.append(sid)
+    async def _capture(self: Any, sid: str, schedule: Any, *, now: datetime) -> None:
+        evaluated.append(sid)
 
-    monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _capture_fire)
-
-    r = _ScheduleRunner()
-    r._last_check = datetime.now(UTC) - timedelta(minutes=5)
-    asyncio.run(r._tick())
-    assert fired == ["on"]
+    monkeypatch.setattr(_ScheduleRunner, "_evaluate_schedule", _capture)
+    asyncio.run(_ScheduleRunner()._tick())
+    assert evaluated == ["on"]
+    assert sched_mod is not None
 
 
-def test_fire_schedule_with_template_id_writes_audit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import stores
+def test_tick_swallows_evaluation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One bad schedule must not stop the loop for every other schedule."""
     from services.scheduler import _ScheduleRunner
 
-    # Pre-test wipe
-    for k in list(stores.audit_log.keys()):
-        stores.audit_log.pop(k)
+    class _FakeStores:
+        schedules: ClassVar = {"s": _schedule_stub("s", None)}
 
-    class _Sched:
-        id = "s1"
-        enabled = True
-        cron_expression = "* * * * *"
-        name = "my-schedule"
-        mission_template_id = "tpl-xyz"
-        last_run = None
-        updated_at = None
+    monkeypatch.setitem(sys.modules, "stores", _FakeStores)
 
-        def model_copy(self, *, update: dict[str, Any]) -> _Sched:
-            for k, v in update.items():
-                setattr(self, k, v)
-            return self
-
-    stores.schedules._data["s1"] = _Sched()  # type: ignore[attr-defined]
-    try:
-        r = _ScheduleRunner()
-        asyncio.run(r._fire_schedule("s1", stores.schedules._data["s1"]))  # type: ignore[attr-defined]
-        # Audit entry written
-        entries = list(stores.audit_log.values())
-        assert any(e["action"] == "schedule_fire" and e["target"] == "s1" for e in entries)
-    finally:
-        stores.schedules._data.pop("s1", None)  # type: ignore[attr-defined]
-
-
-def test_fire_schedule_no_template_id_skips_audit() -> None:
-    """schedule with no mission_template_id returns before audit."""
-    import stores
-    from services.scheduler import _ScheduleRunner
-
-    before = len(stores.audit_log)
-
-    class _Sched:
-        id = "s2"
-        enabled = True
-        cron_expression = "* * * * *"
-        name = "n2"
-        mission_template_id = None
-        last_run = None
-        updated_at = None
-
-        def model_copy(self, *, update: dict[str, Any]) -> _Sched:
-            for k, v in update.items():
-                setattr(self, k, v)
-            return self
-
-    stores.schedules._data["s2"] = _Sched()  # type: ignore[attr-defined]
-    try:
-        r = _ScheduleRunner()
-        asyncio.run(r._fire_schedule("s2", stores.schedules._data["s2"]))  # type: ignore[attr-defined]
-        # No new audit entry (no template means schedule isn't actionable)
-        new_for_s2 = [
-            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s2"
-        ]
-        assert new_for_s2 == []
-    finally:
-        stores.schedules._data.pop("s2", None)  # type: ignore[attr-defined]
-
-
-def test_tick_swallows_fire_exception(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If _fire_schedule raises, _tick logs + continues without
-    crashing the whole loop."""
-    import services.scheduler as sched_mod
-    from services.scheduler import _ScheduleRunner
-
-    class _Sched:
-        id = "s"
-        enabled = True
-        cron_expression = "* * * * *"
-        name = "n"
-
-    monkeypatch.setattr(sched_mod, "_should_fire", lambda *a, **kw: True)
-
-    async def _boom(self: Any, sid: str, schedule: Any) -> None:
+    async def _boom(self: Any, sid: str, schedule: Any, *, now: datetime) -> None:
         raise RuntimeError("synthetic")
 
-    monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _boom)
-
-    class _FakeStores:
-        schedules: ClassVar = {"s": _Sched()}
-
-    monkeypatch.setitem(sys.modules, "stores", _FakeStores)
-
-    r = _ScheduleRunner()
-    r._last_check = datetime.now(UTC) - timedelta(minutes=5)
-    # Must not raise
-    asyncio.run(r._tick())
+    monkeypatch.setattr(_ScheduleRunner, "_evaluate_schedule", _boom)
+    asyncio.run(_ScheduleRunner()._tick())  # must not raise
 
 
-# --- run() loop top-level catch ---------------------------------------
+def test_evaluate_fires_a_due_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.scheduler import _ScheduleRunner
+
+    fired: list[datetime] = []
+
+    async def _capture(
+        self: Any, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+    ) -> None:
+        assert scheduled_for is not None
+        fired.append(scheduled_for)
+
+    monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _capture)
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    stub = _schedule_stub("s", "tpl", cron="0 * * * *", last_run=now - timedelta(hours=1))
+    asyncio.run(_ScheduleRunner()._evaluate_schedule("s", stub, now=now))
+    assert fired == [datetime(2026, 8, 21, 12, 0, tzinfo=UTC)]
+
+
+def test_an_in_flight_schedule_does_not_stack_a_second_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlap SKIP: the default that keeps a twenty-minute agent Run off a
+    fifteen-minute schedule's back."""
+    from services.scheduler import _ScheduleRunner
+
+    fired: list[str] = []
+
+    async def _capture(
+        self: Any, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+    ) -> None:
+        fired.append(sid)
+
+    monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _capture)
+    runner = _ScheduleRunner()
+    runner._in_flight.add("s")
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    stub = _schedule_stub("s", "tpl", cron="0 * * * *", last_run=now - timedelta(hours=1))
+    asyncio.run(runner._evaluate_schedule("s", stub, now=now))
+    assert fired == []
+
+
+# --- run() loop --------------------------------------------------------------
 
 
 def test_run_loop_logs_and_continues_on_tick_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run() top-level except clause catches errors and continues."""
     import services.scheduler as sched_mod
     from services.scheduler import _ScheduleRunner
 
@@ -368,48 +251,24 @@ def test_run_loop_logs_and_continues_on_tick_exception(
         calls[0] += 1
         if calls[0] == 1:
             raise RuntimeError("synthetic tick error")
-        self._running = False  # second pass — stop
+        self._running = False
 
     monkeypatch.setattr(_ScheduleRunner, "_tick", _flaky_tick)
 
-    # Speed up the loop — provide a real (no-arg) async no-op
     async def _no_sleep(_: float) -> None:
         return None
 
     monkeypatch.setattr(sched_mod.asyncio, "sleep", _no_sleep)
-
-    r = _ScheduleRunner()
-    asyncio.run(r.run())
-    # First tick raised; second tick stopped → at least 2 calls
+    asyncio.run(_ScheduleRunner().run())
     assert calls[0] >= 2
 
 
-# --- Schedule -> canonical Run --------------------------------------------
-
-
-def _schedule_stub(sid: str, template_id: str | None) -> Any:
-    class _Sched:
-        id = sid
-        enabled = True
-        cron_expression = "* * * * *"
-        name = f"name-{sid}"
-        mission_template_id = template_id
-        user_id = "u1"
-        last_run = None
-        updated_at = None
-
-        def model_copy(self, *, update: dict[str, Any]) -> Any:
-            for k, v in update.items():
-                setattr(self, k, v)
-            return self
-
-    return _Sched()
+# --- Schedule -> canonical Run ------------------------------------------------
 
 
 def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
-    """Schedule → Run: a firing whose target is a registered DAG must execute
-    through the canonical durable path and audit the Run identity, not just
-    log that it fired."""
+    """A firing whose target is a registered DAG executes through the canonical
+    durable path and audits the Run identity, not just that it fired."""
     import stores
     from services.dag_agents import get_registry
     from services.scheduler import _ScheduleRunner
@@ -428,12 +287,16 @@ def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
     stores.schedules._data["s-run"] = stub  # type: ignore[attr-defined]
     before = len(stores.audit_log)
     try:
-        r = _ScheduleRunner()
-        asyncio.run(r._fire_schedule("s-run", stub))
+        scheduled_for = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+        asyncio.run(_ScheduleRunner()._fire_schedule("s-run", stub, scheduled_for=scheduled_for))
         new_entries = [
             e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-run"
         ]
-        assert any(e["action"] == "schedule_fire" for e in new_entries)
+        fires = [e for e in new_entries if e["action"] == "schedule_fire"]
+        assert len(fires) == 1
+        # The nominal occurrence is recorded, not the moment the tick noticed.
+        assert fires[0]["detail"]["scheduled_for"] == scheduled_for.isoformat()
+
         runs = [e for e in new_entries if e["action"] == "schedule_run"]
         assert len(runs) == 1
         detail = runs[0]["detail"]
@@ -456,8 +319,7 @@ def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
     stores.schedules._data["s-noop"] = stub  # type: ignore[attr-defined]
     before = len(stores.audit_log)
     try:
-        r = _ScheduleRunner()
-        asyncio.run(r._fire_schedule("s-noop", stub))
+        asyncio.run(_ScheduleRunner()._fire_schedule("s-noop", stub))
         new_entries = [
             e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-noop"
         ]
@@ -466,11 +328,26 @@ def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
         stores.schedules._data.pop("s-noop", None)  # type: ignore[attr-defined]
 
 
+def test_fire_schedule_no_template_id_skips_audit() -> None:
+    import stores
+    from services.scheduler import _ScheduleRunner
+
+    stub = _schedule_stub("s2", None)
+    stores.schedules._data["s2"] = stub  # type: ignore[attr-defined]
+    before = len(stores.audit_log)
+    try:
+        asyncio.run(_ScheduleRunner()._fire_schedule("s2", stub))
+        new_for_s2 = [
+            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s2"
+        ]
+        assert new_for_s2 == []
+    finally:
+        stores.schedules._data.pop("s2", None)  # type: ignore[attr-defined]
+
+
 def test_fire_schedule_run_failure_is_audited_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A DAG run that raises must not crash the tick loop; the failure is
-    audited with the error class."""
     import stores
     from services.dag_agents import get_registry
     from services.scheduler import _ScheduleRunner
@@ -497,12 +374,12 @@ def test_fire_schedule_run_failure_is_audited_not_raised(
     stores.schedules._data["s-fail"] = stub  # type: ignore[attr-defined]
     before = len(stores.audit_log)
     try:
-        r = _ScheduleRunner()
-        asyncio.run(r._fire_schedule("s-fail", stub))
-        new_entries = [
-            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-fail"
+        asyncio.run(_ScheduleRunner()._fire_schedule("s-fail", stub))
+        runs = [
+            e
+            for e in list(stores.audit_log.values())[before:]
+            if e.get("target") == "s-fail" and e["action"] == "schedule_run"
         ]
-        runs = [e for e in new_entries if e["action"] == "schedule_run"]
         assert len(runs) == 1
         assert runs[0]["detail"]["error"] == "RuntimeError"
     finally:
