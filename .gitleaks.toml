@@ -36,3 +36,14 @@ paths = [
   '''docs/adr/ADR-064-secret-redaction\.md$''',
   '''docs/specs/SPEC-070626-5341-local-ca-from-seed\.md$''',
 ]
+
+[[allowlists]]
+# `packages/hive-conductor/eval/**` is immutable by policy: cage-guard.yml
+# auto-rejects any pull request that touches it, so the split-the-literal fix
+# used everywhere else is not available here. The corpus is also the one place
+# where a credential-shaped string is the point -- these are adversarial probes
+# that exist to be fed to the guardrails, and `gp9` is the "Secret leak" probe.
+description = "Adversarial probe corpus: credential-shaped strings are the fixture, and the path is immutable by policy."
+paths = [
+  '''packages/hive-conductor/eval/adversarial/guardrail_probes\.py$''',
+]
