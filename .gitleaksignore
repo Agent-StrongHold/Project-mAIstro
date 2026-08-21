@@ -10,3 +10,30 @@ ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test
 # (Deliberately paraphrased: quoting the flagged line verbatim in this comment
 # makes this file trip the same rule.)
 4dc4726be614c9f5ebfd5f6d1462176f5fa94bd0:docs/specs/SPEC-070626-5341-local-ca-from-seed.md:generic-api-key:82
+# ---- Initial-snapshot blobs (this repository's own root commit) ----
+# This repo began as a single zero-parent snapshot commit. The secret-shaped
+# test fixtures it carried were fixed in the tree by the very next commits
+# (split literals, renamed type-annotation field), but the root commit's blobs
+# are immutable, so `gitleaks git --log-opts=--all` — which security.yml runs on
+# every push to main/integration/develop — re-reports them forever. These
+# fingerprints are keyed to THIS repo's root SHA, which never changes, so they
+# are stable (unlike the inherited entries above, whose old-repo SHAs never
+# existed here and which are retained only as documentation of the pattern).
+# All 16 are placeholder fixtures — FAKEKEYDATA PEM bodies, textbook demo JWTs,
+# sk-/sk_live_ test strings — none was ever a live credential.
+48ee34bcb89f9aadc68f08d576bc313c54b83961:formal/models/test_pii_filter.py:jwt:60
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/hive-conductor/backend/tests/test_credential_security_audit.py:generic-api-key:91
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-canvas/frontend/server/mcp/tests/test_e2e.py:generic-api-key:173
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/code_registry/test_registry.py:generic-api-key:16
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_sandbox_security.py:generic-api-key:58
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/skills/test_fixer.py:generic-api-key:147
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/skills/test_parser.py:generic-api-key:205
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/tools/test_env_sanitize.py:jwt:117
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:private-key:173
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:private-key:182
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:private-key:214
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:jwt:248
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:jwt:260
+48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:jwt:266
+48ee34bcb89f9aadc68f08d576bc313c54b83961:tests/security/test_sandbox_security.py:generic-api-key:58
+48ee34bcb89f9aadc68f08d576bc313c54b83961:tests/tools/test_env_sanitize.py:jwt:107
