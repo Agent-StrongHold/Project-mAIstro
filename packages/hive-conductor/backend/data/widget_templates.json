@@ -1,0 +1,150 @@
+[
+  {
+    "id": "tpl-kpi-blank",
+    "name": "KPI Tile",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "field": "runs_today",
+      "sub": "completions today"
+    },
+    "description": "Single headline metric with a caption."
+  },
+  {
+    "id": "tpl-kpi-latency",
+    "name": "Latency KPI",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "field": "avg_latency",
+      "sub": "p50 latency"
+    },
+    "description": "Track p50 response latency."
+  },
+  {
+    "id": "tpl-kpi-cost",
+    "name": "Cost KPI",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "field": "total_cost",
+      "sub": "LLM costs today"
+    },
+    "description": "Daily LLM spend."
+  },
+  {
+    "id": "tpl-jira-count",
+    "name": "Jira Count",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15
+    },
+    "description": "Issue count for a JQL filter."
+  },
+  {
+    "id": "tpl-jira-list",
+    "name": "Jira List",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 10
+    },
+    "description": "Scrolling list of matching issues."
+  },
+  {
+    "id": "tpl-jira-breakdown",
+    "name": "Status Breakdown",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "days": "14",
+      "refresh_minutes": 15
+    },
+    "description": "Issues grouped by status."
+  },
+  {
+    "id": "tpl-airtable-stacked",
+    "name": "Airtable Pipeline",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Stacked status pipeline from an Airtable table."
+  },
+  {
+    "id": "tpl-airtable-donut",
+    "name": "Airtable Donut",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 60
+    },
+    "description": "Category share as a donut chart."
+  },
+  {
+    "id": "tpl-airtable-list",
+    "name": "Airtable Records",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "10",
+      "refresh_minutes": 15
+    },
+    "description": "Most recent records from a table."
+  },
+  {
+    "id": "tpl-cost-donut",
+    "name": "Cost Donut",
+    "type": "cost-donut",
+    "size": "2",
+    "config": {},
+    "description": "Spend split by model/provider."
+  },
+  {
+    "id": "tpl-agent-orbs",
+    "name": "Agent Orbs",
+    "type": "agent-orbs",
+    "size": "2",
+    "config": {},
+    "description": "Live agent activity orbs."
+  },
+  {
+    "id": "tpl-invocations",
+    "name": "Invocations",
+    "type": "invocations",
+    "size": "2",
+    "config": {},
+    "description": "Invocation volume over time."
+  },
+  {
+    "id": "tpl-trace",
+    "name": "Trace Feed",
+    "type": "trace",
+    "size": "3",
+    "config": {},
+    "description": "Recent run traces."
+  }
+]

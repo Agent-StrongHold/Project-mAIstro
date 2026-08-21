@@ -1,0 +1,12 @@
+# A brand-new domain added via one YAML file — no Python changes (SPEC-192 acceptance).
+kind: department
+id: gardening
+evals:
+  - name: practicality
+    criteria:
+      - name: actionable_step
+        weight: 60
+        check: {op: keywords_any, words: [water, plant, prune, mulch, sow]}
+      - name: concise
+        weight: 40
+        check: {op: word_count, max: 200}

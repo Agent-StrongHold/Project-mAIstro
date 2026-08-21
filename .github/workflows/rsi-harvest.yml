@@ -1,0 +1,76 @@
+# RSI harvest — the trusted, minimal-privilege step that turns a completed
+# self-improvement run's exported patches into one PR per improved file.
+#
+# Trust model (ADR-070126-6386 / ADR-093): NO agent-authored code runs here.
+# The isolated RSI container that produced these patches never held a token; a
+# trusted orchestrator committed the run's `.rsi-exports/` (manifest.json +
+# *.patch) onto `export_ref` and dispatched this. The only credential is the
+# built-in GITHUB_TOKEN, scoped below to *open* PRs — never to merge them. A
+# human + branch protection is the promotion gate (approved_for_promotion).
+name: rsi-harvest
+
+on:
+  workflow_dispatch:
+    inputs:
+      export_ref:
+        description: "Branch/ref that carries the exported patches under .rsi-exports/."
+        required: true
+      pr_base:
+        description: "Base branch the per-file PRs target."
+        required: false
+        default: main
+
+# Least privilege: push branches + open PRs, nothing else. No merge, no admin.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rsi-harvest-${{ inputs.export_ref }}
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # TRUSTED code only: check out the ref this workflow runs from (the default
+      # branch it lives on), NOT the caller-supplied export_ref. This privileged
+      # job (contents+PR write) must never execute code from an untrusted branch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pull ONLY the export artifacts (patches + manifest) from export_ref, as
+      # DATA — never its code. Refuse the run if that directory holds anything
+      # else, so a poisoned export branch can't smuggle executable files in.
+      - name: Fetch export artifacts from ${{ inputs.export_ref }} (data only)
+        run: |
+          git fetch --no-tags origin "${{ inputs.export_ref }}"
+          rm -rf .rsi-exports
+          git checkout FETCH_HEAD -- .rsi-exports
+          test -f .rsi-exports/manifest.json || { echo "::error::no .rsi-exports/manifest.json on ${{ inputs.export_ref }}"; exit 1; }
+          if find .rsi-exports -type f ! -name '*.patch' ! -name 'manifest.json' | grep -q .; then
+            echo "::error::.rsi-exports contains files other than *.patch / manifest.json — refusing"; exit 1
+          fi
+
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v7
+      - run: uv python install 3.12
+      - run: uv sync --python 3.12 --locked
+
+      # harvest --clone-url clones the repo fresh at pr_base (LF working tree) and
+      # opens one PR per file. GH_TOKEN (the scoped built-in token) authenticates
+      # the push + PR via `gh auth setup-git`; the credential never leaves this job.
+      - name: Harvest exported promotions into per-file PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: packages/maistro-core/src:packages/maistro-evolve/src:packages/maistro-rsi/src:packages/maistro-bootstrap/src
+        run: |
+          uv run --python 3.12 python -m maistro_rsi harvest \
+            --export-dir .rsi-exports \
+            --clone-url "${{ github.server_url }}/${{ github.repository }}" \
+            --base "${{ inputs.pr_base }}" \
+            --pr-base "${{ inputs.pr_base }}" \
+            --session "run-${{ github.run_id }}" \
+            --push

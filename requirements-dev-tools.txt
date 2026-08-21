@@ -1,0 +1,25 @@
+# On-demand developer/CI analysis tools for the /code-health and /security-scan skills.
+# These are standalone CLI tools, NOT application dependencies — kept out of the
+# uv-resolved workspace because some (e.g. semgrep) carry transitive pins that
+# conflict with the app's resolution. Install in an isolated env or with pipx:
+#   pip install -r requirements-dev-tools.txt
+# Go binaries (gitleaks, trivy, grype, syft, osv-scanner, dockle) install via their
+# own release scripts — see .claude/skills/security-scan/SKILL.md.
+
+# --- /code-health : "better than a linter" analyzers ---
+radon>=6.0            # Apache-2.0 — cyclomatic complexity + maintainability
+xenon>=0.9            # GPL? wraps radon; complexity gate  (invoked CLI)
+vulture>=2.11         # MIT — dead-code detection
+lizard>=1.17          # MIT — god-function / param-count detection
+pylint>=3.3           # GPL (invoked CLI) — duplicate-code (R0801)
+
+# --- /security-scan : permissively-licensed (MIT/Apache/BSD) security stack ---
+bandit>=1.8           # Apache-2.0 — Python SAST
+dlint>=0.16           # BSD-3 — flake8 security plugin (DUO rules)
+semgrep>=1.100        # LGPL-2.1 (invoked CLI) — taint/dataflow SAST
+detect-secrets>=1.5   # Apache-2.0 — secret scanning
+pip-audit>=2.7        # Apache-2.0 — Python dependency CVEs
+checkov>=3.2          # Apache-2.0 — IaC / Dockerfile / GH-Actions misconfig
+cyclonedx-bom>=4.0    # Apache-2.0 — SBOM generation
+guarddog>=2.0         # Apache-2.0 — malicious-package / typosquat detection (PyPI + npm)
+yara-python>=4.5      # BSD-3 — malware signature matching

@@ -1,0 +1,16 @@
+{
+  "name": "Portfolio Overview",
+  "description": "Airtable-powered use case pipeline: V2 migration funnel, lifecycle status breakdown, cohort trends, and headline KPIs.",
+  "widgets": [
+    {"id": "po-total-ucs", "type": "custom", "title": "Total Use Cases", "size": "1", "config": {"source": "airtable", "table": "Use Case Submission", "group_by": "Status", "display": "count", "refresh_minutes": 30}},
+    {"id": "po-in-dev", "type": "custom", "title": "In Development", "size": "1", "config": {"source": "airtable", "table": "Use Case Submission", "filter_formula": "{Status}='Development'", "display": "count", "refresh_minutes": 30}},
+    {"id": "po-production", "type": "custom", "title": "In Production", "size": "1", "config": {"source": "airtable", "table": "Use Case Submission", "filter_formula": "{Status}='Commercialized'", "display": "count", "refresh_minutes": 30}},
+    {"id": "po-migrated", "type": "custom", "title": "V2 Migrated", "size": "1", "config": {"source": "airtable", "table": "Use Case Submission", "filter_formula": "{V2 Migration Status}='Migrated'", "display": "count", "refresh_minutes": 30}},
+    {"id": "po-status-pipeline", "type": "custom", "title": "Status Pipeline", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "field": "Status", "group_by": "Status", "display": "stacked", "max_records": "200", "refresh_minutes": 30}},
+    {"id": "po-v2-funnel", "type": "custom", "title": "V2 Migration Funnel", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "field": "V2 Migration Status", "group_by": "V2 Migration Status", "max_records": "200", "refresh_minutes": 30}},
+    {"id": "po-category-donut", "type": "custom", "title": "By Category", "size": "2", "config": {"source": "airtable", "table": "Use Case Submission", "field": "Category", "group_by": "Category", "display": "donut", "max_records": "200", "refresh_minutes": 60}},
+    {"id": "po-business-unit", "type": "custom", "title": "By Business Unit", "size": "2", "config": {"source": "airtable", "table": "Use Case Submission", "field": "Business Unit", "group_by": "Business Unit", "display": "donut", "max_records": "200", "refresh_minutes": 60}},
+    {"id": "po-recent-submissions", "type": "custom", "title": "Recent Submissions", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "display_field": "Use Case Name/ Project", "max_records": "10", "refresh_minutes": 15}},
+    {"id": "po-blockers", "type": "custom", "title": "Blocked / At Risk", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "filter_formula": "OR({Status}='Blocked',{Risk Assessment}='High')", "display_field": "Use Case Name/ Project", "max_records": "20", "refresh_minutes": 15}}
+  ]
+}

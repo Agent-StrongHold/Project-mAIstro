@@ -1,0 +1,37 @@
+# Minimal kind: workspace fixture for schema/expander tests. Not the real
+# seed persona (that's Phase H's job) — just enough to exercise brand/ui_scope
+# and confirm expansion behaves like author/creator, not like department.
+kind: workspace
+id: pm_fleet
+business_model: internal program-management workspace
+
+brand:
+  display_name: "PM Fleet"
+  tagline: "Program hyperagent — interview, autonomous polls, gated Jira creates"
+  icon: "🐝"
+
+ui_scope:
+  - program
+  - missions
+  - integrations
+  - work_items
+  - credentials
+
+voice:
+  archetype: a pragmatic program manager
+  audience: engineering teams shipping on a deadline
+  tone: direct, calm, structured
+
+spawns:
+  - agent: intake
+    role: Interviews the user to establish program context
+    reasoning_strategy: direct
+    tools: [create_epic]
+    skills: []
+    inherits_voice: true
+
+  - agent: program_manager
+    role: Tracks stakeholders and reports status
+    reasoning_strategy: react
+    tools: [poll_jira, escalate_issue]
+    skills: []

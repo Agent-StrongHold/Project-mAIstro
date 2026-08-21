@@ -1,0 +1,36 @@
+# maistro-engine sbx kit — creates a sandbox wired for builders/evolve/RSI.
+#
+# Usage (after ./deploy/sbx/build.sh):
+#   1. Replace LITELLM_HOST_PLACEHOLDER below with your gateway host:port
+#      (must be a host the sbx proxy can route to — see docs/install/sandbox-sbx.md).
+#   2. sbx kit validate ./deploy/sbx/kit
+#   3. sbx secret set LITELLM_VIRTUAL_KEY <key>   (and GITHUB_TOKEN if using --open-prs)
+#   4. sbx create --name maistro-rsi --kit ./deploy/sbx/kit shell
+#
+# NOTE: the kit format is experimental upstream; if `sbx kit validate` rejects
+# a key name here, check `sbx kit --help` for the current schema — this file
+# is deliberately kept minimal to limit exposure to schema drift.
+
+name: maistro-engine
+description: >
+  maistro builders/evolve/RSI toolchain in a microVM: private docker daemon
+  for nested test containers, egress limited to GitHub + the external LiteLLM
+  gateway, LiteLLM virtual key only (provider keys never enter the sandbox).
+
+template: maistro-sbx-template:latest
+
+network:
+  allowedDomains:
+    # https git clone/push + gh PR creation. ssh/git-protocol is blocked by
+    # the sbx proxy (HTTP/HTTPS only) — use https remotes.
+    - github.com:443
+    - api.github.com:443
+    - codeload.github.com:443
+    - objects.githubusercontent.com:443
+    # The EXTERNAL LiteLLM gateway — the only other egress. No registry
+    # domains: nested-container images are preseeded at template build time.
+    - LITELLM_HOST_PLACEHOLDER
+
+commands:
+  install:
+    - bash /opt/maistro/sbx-setup.sh

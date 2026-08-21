@@ -1,0 +1,14 @@
+{
+  "hair": "Dark brown, short, straight (represented as a rectangle)",
+  "skin_tone": "Light beige",
+  "eye_color": "Dark brown",
+  "face_shape": "Round",
+  "age_style": "Young child (consistent with age 5)",
+  "body_type": "Not visible in image",
+  "signature_features": [
+    "Rectangular dark brown hair",
+    "Dot eyes",
+    "Simple curved smile"
+  ],
+  "typical_expression": "Smiling, happy"
+}

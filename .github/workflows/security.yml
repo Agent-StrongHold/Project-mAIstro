@@ -1,0 +1,199 @@
+# Security gate — SAST + supply chain + container scanning.
+#
+# Pillar 5 of the QA gate. The heavy bag (container build + scan) runs only on
+# PR-to-main + main pushes + nightly. Lightweight SAST runs on every push.
+#
+# No DAST here. There was a `dast:` job that referenced a compose file that
+# was never part of this repo, so it skipped every step and reported green
+# while scanning nothing. The deployment stack it needs lives in the
+# deployment repo; if DAST is wanted it belongs there, next to the compose
+# file that defines the target.
+
+name: security
+
+# Least privilege: SAST/supply-chain/container scanning only read the repo.
+# (Image signing was removed; if it returns, grant id-token: write on that job.)
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main, integration, develop]
+  push:
+    branches: [main, integration, develop, feat/*]
+  schedule:
+    - cron: "30 7 * * *"
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  sast:
+    name: SAST (bandit + semgrep + gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync
+        run: uv sync --locked --all-extras
+      - name: install SAST tools
+        run: uv pip install bandit
+      - name: bandit (zero Medium+ on OUR code)
+        run: |
+          uv run bandit -r packages/maistro-core/src packages/hive-conductor/backend \
+                          packages/maistro-server/src \
+                          -ll --confidence-level=medium -f json -o bandit.json || true
+          uv run python -c "
+          import json, sys
+          data = json.load(open('bandit.json'))
+          new = [r for r in data.get('results', []) if r.get('issue_severity') in {'MEDIUM','HIGH'}]
+          if new:
+              print(f'::error::bandit found {len(new)} Medium+ finding(s) — strict 0-baseline:')
+              for r in new:
+                  print(f'  {r[\"filename\"]}:{r[\"line_number\"]} [{r[\"test_id\"]}] {r[\"issue_text\"]}')
+              sys.exit(1)
+          print('bandit Medium+ count: 0 (strict gate)')
+          "
+      - name: semgrep (custom + p/security-audit + p/owasp-top-ten + p/secrets)
+        run: |
+          set -o pipefail
+          uvx semgrep --metrics off \
+            --config tools/semgrep/maistro-rules.yaml \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            --exclude 'packages/hive-conductor/eval' \
+            --exclude 'packages/hive-conductor/cage' \
+            --error packages/ tests/ 2>&1 | tee semgrep-report.txt
+      - name: install gitleaks CLI
+        run: |
+          set -euo pipefail
+          curl -sSfL -o gitleaks.tgz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum --check
+          tar -xzf gitleaks.tgz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+      - name: gitleaks (full history on protected branches; changed range elsewhere)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            gitleaks git --redact --log-opts="$BASE_SHA..$HEAD_SHA" .
+          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "main" ] && [ "$REF_NAME" != "integration" ] && [ "$REF_NAME" != "develop" ]; then
+            if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              gitleaks git --redact --log-opts="$BEFORE_SHA..$HEAD_SHA" .
+            else
+              gitleaks git --redact --log-opts="$HEAD_SHA^..$HEAD_SHA" .
+            fi
+          else
+            gitleaks git --redact --log-opts="--all" .
+          fi
+
+  supply-chain:
+    name: Supply chain (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync
+        run: uv sync --locked --all-extras
+      - name: install supply-chain tools
+        run: uv pip install pip-audit
+      - name: pip-audit (strict; gate the known CVE list)
+        run: |
+          uv pip freeze --exclude-editable > /tmp/deps.txt
+          uv run pip-audit --strict --format=json -r /tmp/deps.txt > pip-audit.json || true
+          uv run python scripts/pip_audit_gate.py pip-audit.json
+
+  containers:
+    name: Container scan + SBOM + cosign
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build hive-conductor image
+        run: |
+          docker build -f packages/hive-conductor/Dockerfile \
+            --build-arg VITE_POC_MODE=pm \
+            --build-arg VITE_BASE_PATH=/pm/ \
+            -t hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} .
+      - name: Build maistro-engine image
+        run: docker build -t maistro-engine:pr-${{ github.event.pull_request.number || 'nightly' }} .
+
+      - name: Verify live Python packages supersede base-image SBOM inventory
+        run: |
+          docker run --rm --entrypoint python \
+            hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} \
+            -c "import importlib.metadata as m; from packaging.version import Version; assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); print('live msgpack='+m.version('msgpack')+', setuptools='+m.version('setuptools'))"
+
+      - name: Trivy scan (HIGH/CRITICAL only)
+        # Keep Chainguard's embedded SBOMs intact. The checked-in YAML ignore is
+        # deliberately version-scoped to the two stale Python package records
+        # from the pre-overlay base environment. The step above proves the live
+        # runtime has patched versions before those exact duplicate records are
+        # filtered. All other vendor-SBOM, filesystem, OS and binary findings
+        # remain blocking.
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          version: v0.73.0
+          image-ref: hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+
+      - name: Grype scan (cross-check)
+        run: |
+          curl -sSfL -o grype.tgz https://github.com/anchore/grype/releases/download/v0.116.0/grype_0.116.0_linux_amd64.tar.gz
+          echo "40aff724297312f91ea390d003bed8d8651c74cc7f5b26732db80b3a408d2fc5  grype.tgz" | sha256sum --check
+          tar -xzf grype.tgz grype && sudo mv grype /usr/local/bin/
+          grype hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} \
+            --fail-on high --only-fixed --output table
+
+      - name: SBOM (syft CycloneDX-JSON)
+        run: |
+          curl -sSfL -o syft.tgz https://github.com/anchore/syft/releases/download/v1.49.0/syft_1.49.0_linux_amd64.tar.gz
+          echo "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe  syft.tgz" | sha256sum --check
+          tar -xzf syft.tgz syft && sudo mv syft /usr/local/bin/
+          syft hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} \
+            -o cyclonedx-json > sbom-hive-conductor.json
+          syft maistro-engine:pr-${{ github.event.pull_request.number || 'nightly' }} \
+            -o cyclonedx-json > sbom-maistro-engine.json
+
+      - name: Upload SBOMs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sboms-${{ github.event.pull_request.number || 'nightly' }}
+          path: sbom-*.json
+
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: License compliance (no GPL/AGPL on new deps)
+        run: |
+          uv run pip install pip-licenses
+          uv run pip-licenses --fail-on='GPL;LGPL;AGPL' --format=markdown \
+            --output-file=licenses.md
+
+      # Image signing was removed, not fixed: the old step ran `cosign sign`
+      # against local Docker tags that were never pushed to a registry, so no
+      # consumer could verify the signature. Reinstate it with a real registry
+      # push and sign the pushed digest when that exists.

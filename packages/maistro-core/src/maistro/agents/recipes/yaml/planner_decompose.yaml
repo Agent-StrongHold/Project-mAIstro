@@ -1,0 +1,9 @@
+name: planner.decompose
+role: planner
+description: Decompose a task into ordered subtasks
+prompt_name: planner.decompose
+result_schema: schemas.PlanOutput
+min_tier: 2
+max_tier: 3
+temperature: 0.4
+max_tokens: 2048

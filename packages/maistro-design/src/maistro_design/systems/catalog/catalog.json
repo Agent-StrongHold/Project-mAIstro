@@ -1,0 +1,2413 @@
+[
+  {
+    "slug": "agentic",
+    "name": "Agentic",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Agentic, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/agentic",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "airbnb",
+    "name": "Airbnb",
+    "category": "E-Commerce & Retail",
+    "description": "Bundled Open Design package for Airbnb, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/airbnb",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "airtable",
+    "name": "Airtable",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Airtable, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/airtable",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "ant",
+    "name": "Ant",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Ant, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/ant",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "apple",
+    "name": "Apple",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for Apple, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/apple",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": [
+      "https://www.apple.com/",
+      "https://www.apple.com/environment/",
+      "https://www.apple.com/shop/accessories/all",
+      "https://www.apple.com/shop/buy-iphone/iphone-17-pro",
+      "https://www.apple.com/store"
+    ]
+  },
+  {
+    "slug": "application",
+    "name": "Application",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Application, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/application",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "arc",
+    "name": "Arc Browser",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Arc Browser, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/arc",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "artistic",
+    "name": "Artistic",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Artistic, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/artistic",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "atelier-zero",
+    "name": "Atelier Zero",
+    "category": "Editorial \u00b7 Studio",
+    "description": "Bundled Open Design package for Atelier Zero, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/atelier-zero",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "bento",
+    "name": "Bento",
+    "category": "Layout & Structure",
+    "description": "Bundled Open Design package for Bento, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/bento",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "binance",
+    "name": "Binance.US",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Binance.US, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/binance",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "bmw",
+    "name": "BMW",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for BMW, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/bmw",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "bmw-m",
+    "name": "BMW M",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for BMW M, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/bmw-m",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "bold",
+    "name": "Bold",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Bold, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/bold",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "brutalism",
+    "name": "Brutalism",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Brutalism, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/brutalism",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "bugatti",
+    "name": "Bugatti",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for Bugatti, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/bugatti",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "cafe",
+    "name": "Cafe",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Cafe, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/cafe",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "cal",
+    "name": "Cal.com",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Cal.com, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/cal",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "canva",
+    "name": "Canva",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Canva, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/canva",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "cisco",
+    "name": "Cisco",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for Cisco, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/cisco",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "claude",
+    "name": "Claude (Anthropic)",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Claude (Anthropic), derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/claude",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "clay",
+    "name": "Clay",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Clay, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/clay",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "claymorphism",
+    "name": "Claymorphism",
+    "category": "Morphism & Effects",
+    "description": "Bundled Open Design package for Claymorphism, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/claymorphism",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "clean",
+    "name": "Clean",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Clean, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/clean",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "clickhouse",
+    "name": "ClickHouse",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for ClickHouse, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/clickhouse",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "cohere",
+    "name": "Cohere",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Cohere, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/cohere",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "coinbase",
+    "name": "Coinbase",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Coinbase, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/coinbase",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "colorful",
+    "name": "Colorful",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Colorful, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/colorful",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "composio",
+    "name": "Composio",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for Composio, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/composio",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "contemporary",
+    "name": "Contemporary",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Contemporary, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/contemporary",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "corporate",
+    "name": "Corporate",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Corporate, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/corporate",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "cosmic",
+    "name": "Cosmic",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Cosmic, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/cosmic",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "creative",
+    "name": "Creative",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Creative, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/creative",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "cursor",
+    "name": "Cursor",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Cursor, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/cursor",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "dashboard",
+    "name": "Dashboard",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Dashboard, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/dashboard",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "default",
+    "name": "Neutral Modern",
+    "category": "Starter",
+    "description": "Bundled Open Design package for Neutral Modern, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/default",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "discord",
+    "name": "Discord",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Discord, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/discord",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "dithered",
+    "name": "Dithered",
+    "category": "Retro & Nostalgic",
+    "description": "Bundled Open Design package for Dithered, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/dithered",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "doodle",
+    "name": "Doodle",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Doodle, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/doodle",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "dramatic",
+    "name": "Dramatic",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Dramatic, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/dramatic",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "duolingo",
+    "name": "Duolingo",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Duolingo, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/duolingo",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "editorial",
+    "name": "Editorial",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Editorial, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/editorial",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "elegant",
+    "name": "Elegant",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Elegant, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/elegant",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "elevenlabs",
+    "name": "ElevenLabs",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for ElevenLabs, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/elevenlabs",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "energetic",
+    "name": "Energetic",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Energetic, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/energetic",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "enterprise",
+    "name": "Enterprise",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Enterprise, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/enterprise",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "expo",
+    "name": "Expo",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Expo, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/expo",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "expressive",
+    "name": "Expressive",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Expressive, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/expressive",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "fantasy",
+    "name": "Fantasy",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Fantasy, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/fantasy",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "ferrari",
+    "name": "Ferrari",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for Ferrari, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/ferrari",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "figma",
+    "name": "Figma",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Figma, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/figma",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "flat",
+    "name": "Flat",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Flat, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/flat",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "framer",
+    "name": "Framer",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Framer, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/framer",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "friendly",
+    "name": "Friendly",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Friendly, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/friendly",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "futuristic",
+    "name": "Futuristic",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Futuristic, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/futuristic",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "github",
+    "name": "GitHub",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for GitHub, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/github",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "glassmorphism",
+    "name": "Glassmorphism",
+    "category": "Morphism & Effects",
+    "description": "Bundled Open Design package for Glassmorphism, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/glassmorphism",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "gradient",
+    "name": "Gradient",
+    "category": "Morphism & Effects",
+    "description": "Bundled Open Design package for Gradient, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/gradient",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "hashicorp",
+    "name": "HashiCorp",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for HashiCorp, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/hashicorp",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "hud",
+    "name": "HUD Design System",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for HUD Design System, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/hud",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "huggingface",
+    "name": "Hugging Face",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Hugging Face, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/huggingface",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "ibm",
+    "name": "IBM",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for IBM, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/ibm",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "intercom",
+    "name": "Intercom",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Intercom, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/intercom",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "kami",
+    "name": "kami (\u7d19 / \u7eb8)",
+    "category": "Editorial & Print",
+    "description": "Bundled Open Design package for kami (\u7d19 / \u7eb8), derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/kami",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": [
+      "https://github.com/tw93/kami"
+    ]
+  },
+  {
+    "slug": "kraken",
+    "name": "Kraken",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Kraken, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/kraken",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "lamborghini",
+    "name": "Lamborghini",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for Lamborghini, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/lamborghini",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "levels",
+    "name": "Levels",
+    "category": "Layout & Structure",
+    "description": "Bundled Open Design package for Levels, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/levels",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "linear-app",
+    "name": "Linear",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Linear, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/linear-app",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "lingo",
+    "name": "Lingo",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Lingo, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/lingo",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "loom",
+    "name": "Loom Design System",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Loom Design System, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/loom",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "lovable",
+    "name": "Lovable",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Lovable, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/lovable",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "luxury",
+    "name": "Luxury",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Luxury, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/luxury",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "mastercard",
+    "name": "Mastercard",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Mastercard, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/mastercard",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "material",
+    "name": "Material",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Material, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/material",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "meta",
+    "name": "Meta (Store)",
+    "category": "E-Commerce & Retail",
+    "description": "Bundled Open Design package for Meta (Store), derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/meta",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "minimal",
+    "name": "Minimal",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Minimal, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/minimal",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "minimax",
+    "name": "MiniMax",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for MiniMax, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/minimax",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "mintlify",
+    "name": "Mintlify",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Mintlify, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/mintlify",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "miro",
+    "name": "Miro",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Miro, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/miro",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "mission-control",
+    "name": "Mission Control Design System",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Mission Control Design System, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/mission-control",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "mistral-ai",
+    "name": "Mistral AI",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Mistral AI, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/mistral-ai",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "modern",
+    "name": "Modern",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Modern, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/modern",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "mongodb",
+    "name": "MongoDB",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for MongoDB, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/mongodb",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "mono",
+    "name": "Mono",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Mono, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/mono",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "neobrutalism",
+    "name": "Neobrutalism",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Neobrutalism, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/neobrutalism",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "neon",
+    "name": "Neon",
+    "category": "Morphism & Effects",
+    "description": "Bundled Open Design package for Neon, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/neon",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "neumorphism",
+    "name": "Neumorphism",
+    "category": "Morphism & Effects",
+    "description": "Bundled Open Design package for Neumorphism, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/neumorphism",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "nike",
+    "name": "Nike",
+    "category": "E-Commerce & Retail",
+    "description": "Bundled Open Design package for Nike, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/nike",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "notion",
+    "name": "Notion",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Notion, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/notion",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "nvidia",
+    "name": "NVIDIA",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for NVIDIA, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/nvidia",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "ollama",
+    "name": "Ollama",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Ollama, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/ollama",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "openai",
+    "name": "OpenAI",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for OpenAI, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/openai",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "opencode-ai",
+    "name": "OpenCode",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for OpenCode, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/opencode-ai",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "pacman",
+    "name": "Pacman",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Pacman, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/pacman",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "paper",
+    "name": "Paper",
+    "category": "Retro & Nostalgic",
+    "description": "Bundled Open Design package for Paper, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/paper",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "perplexity",
+    "name": "Perplexity AI",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Perplexity AI, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/perplexity",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "perspective",
+    "name": "Perspective",
+    "category": "Layout & Structure",
+    "description": "Bundled Open Design package for Perspective, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/perspective",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "pinterest",
+    "name": "Pinterest",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for Pinterest, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/pinterest",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "playstation",
+    "name": "PlayStation",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for PlayStation, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/playstation",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "posthog",
+    "name": "PostHog",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for PostHog, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/posthog",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "premium",
+    "name": "Premium",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Premium, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/premium",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "professional",
+    "name": "Professional",
+    "category": "Professional & Corporate",
+    "description": "Bundled Open Design package for Professional, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/professional",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "publication",
+    "name": "Publication",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Publication, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/publication",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "raycast",
+    "name": "Raycast",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Raycast, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/raycast",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "refined",
+    "name": "Refined",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Refined, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/refined",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "renault",
+    "name": "Renault",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for Renault, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/renault",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "replicate",
+    "name": "Replicate",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Replicate, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/replicate",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "resend",
+    "name": "Resend",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Resend, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/resend",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "retro",
+    "name": "Retro",
+    "category": "Retro & Nostalgic",
+    "description": "Bundled Open Design package for Retro, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/retro",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "revolut",
+    "name": "Revolut",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Revolut, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/revolut",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "runwayml",
+    "name": "Runway",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Runway, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/runwayml",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "sanity",
+    "name": "Sanity",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for Sanity, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/sanity",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "sentry",
+    "name": "Sentry",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for Sentry, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/sentry",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "shadcn",
+    "name": "Shadcn",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Shadcn, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/shadcn",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "shopify",
+    "name": "Shopify",
+    "category": "E-Commerce & Retail",
+    "description": "Bundled Open Design package for Shopify, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/shopify",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "simple",
+    "name": "Simple",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Simple, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/simple",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "skeumorphism",
+    "name": "Skeumorphism",
+    "category": "Morphism & Effects",
+    "description": "Bundled Open Design package for Skeumorphism, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/skeumorphism",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "slack",
+    "name": "Slack",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Slack, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/slack",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "sleek",
+    "name": "Sleek",
+    "category": "Modern & Minimal",
+    "description": "Bundled Open Design package for Sleek, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/sleek",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "spacex",
+    "name": "SpaceX",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for SpaceX, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/spacex",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "spacious",
+    "name": "Spacious",
+    "category": "Layout & Structure",
+    "description": "Bundled Open Design package for Spacious, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/spacious",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "spotify",
+    "name": "Spotify",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for Spotify, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/spotify",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "starbucks",
+    "name": "Starbucks",
+    "category": "E-Commerce & Retail",
+    "description": "Bundled Open Design package for Starbucks, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/starbucks",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "storytelling",
+    "name": "Storytelling",
+    "category": "Creative & Artistic",
+    "description": "Bundled Open Design package for Storytelling, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/storytelling",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "stripe",
+    "name": "Stripe",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Stripe, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/stripe",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "supabase",
+    "name": "Supabase",
+    "category": "Backend & Data",
+    "description": "Bundled Open Design package for Supabase, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/supabase",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "superhuman",
+    "name": "Superhuman",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Superhuman, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/superhuman",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "tesla",
+    "name": "Tesla",
+    "category": "Automotive",
+    "description": "Bundled Open Design package for Tesla, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/tesla",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "tetris",
+    "name": "Tetris",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Tetris, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/tetris",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "theverge",
+    "name": "The Verge",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for The Verge, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/theverge",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "together-ai",
+    "name": "Together AI",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for Together AI, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/together-ai",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "totality-festival",
+    "name": "Totality Festival",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Totality Festival, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/totality-festival",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "trading-terminal",
+    "name": "Trading Terminal Design System",
+    "category": "Themed & Unique",
+    "description": "Bundled Open Design package for Trading Terminal Design System, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/trading-terminal",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "uber",
+    "name": "Uber",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for Uber, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/uber",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "urdu",
+    "name": "Urdu Modern (Indus Script System)",
+    "category": "Editorial / Personal / Publication",
+    "description": "Bundled Open Design package for Urdu Modern (Indus Script System), derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/urdu",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "vercel",
+    "name": "Vercel",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Vercel, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/vercel",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "vibrant",
+    "name": "Vibrant",
+    "category": "Bold & Expressive",
+    "description": "Bundled Open Design package for Vibrant, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/vibrant",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "vintage",
+    "name": "Vintage",
+    "category": "Retro & Nostalgic",
+    "description": "Bundled Open Design package for Vintage, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/vintage",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "vodafone",
+    "name": "Vodafone",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for Vodafone, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/vodafone",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "voltagent",
+    "name": "VoltAgent",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for VoltAgent, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/voltagent",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "warm-editorial",
+    "name": "Warm Editorial",
+    "category": "Starter",
+    "description": "Bundled Open Design package for Warm Editorial, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/warm-editorial",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "warp",
+    "name": "Warp",
+    "category": "Developer Tools",
+    "description": "Bundled Open Design package for Warp, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/warp",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "webex",
+    "name": "Webex",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Webex, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/webex",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "webflow",
+    "name": "Webflow",
+    "category": "Design & Creative",
+    "description": "Bundled Open Design package for Webflow, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/webflow",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "wechat",
+    "name": "WeChat Design System",
+    "category": "Social & Messaging",
+    "description": "Bundled Open Design package for WeChat Design System, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/wechat",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "wired",
+    "name": "WIRED",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for WIRED, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/wired",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "wise",
+    "name": "Wise",
+    "category": "Fintech & Crypto",
+    "description": "Bundled Open Design package for Wise, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/wise",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "x-ai",
+    "name": "xAI",
+    "category": "AI & LLM",
+    "description": "Bundled Open Design package for xAI, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/x-ai",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
+    "slug": "xiaohongshu",
+    "name": "Xiaohongshu",
+    "category": "Media & Consumer",
+    "description": "Bundled Open Design package for Xiaohongshu, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/xiaohongshu",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": [
+      "https://www.xiaohongshu.com/",
+      "https://www.xiaohongshu.com/explore"
+    ]
+  },
+  {
+    "slug": "zapier",
+    "name": "Zapier",
+    "category": "Productivity & SaaS",
+    "description": "Bundled Open Design package for Zapier, derived from curated DESIGN.md, tokens.css, and components.html fixtures.",
+    "tier": "catalog",
+    "trust_tier": "t2",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "nexu-io/open-design",
+      "path": "design-systems/zapier",
+      "ref": "099ca54ca49ecc9d2e06495e6d0b0ebea65d1afb"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  }
+]

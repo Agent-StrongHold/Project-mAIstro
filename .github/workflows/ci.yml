@@ -1,0 +1,250 @@
+name: CI
+
+on:
+  push:
+    branches: [main, integration, develop, merge/main-into-integration]
+  pull_request:
+    branches: [main, integration, develop]
+
+# Supersede in-flight runs for the same PR instead of letting them pile up.
+# Every push to a PR previously left the prior run's jobs burning runners —
+# including this workflow's own 20-minute `hive-conductor-e2e-ui` — which is
+# what left later jobs sitting `queued` for tens of minutes.
+#
+# Cancellation is scoped to pull_request on purpose: pushes to main/integration/
+# develop must run to completion, because ADR-095's branch model relies on
+# knowing whether a given commit on a protected branch was green. A cancelled
+# run reports neither success nor failure, so cancelling those would erase that
+# record rather than just saving time.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - run: bash scripts/verify-monorepo-layout.sh
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: >-
+          uv run mypy
+          packages/maistro-core/src
+          packages/maistro-server/src
+          packages/maistro-turing/src
+          packages/maistro-canvas/src
+          packages/maistro-bootstrap/src
+          packages/maistro-registry/src
+          packages/maistro-evolve/src
+          packages/maistro-rsi/src
+          packages/maistro-design/src
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: |
+          set -e
+          # Bounded: an unbounded apt-get or curl here hangs the whole job with
+          # no output. Observed 2026-08-19 — quality.yml sat 29 minutes on this
+          # step (past its own timeout-minutes) with every later step pending,
+          # because the fetch from dl.filippo.io never returned and nothing
+          # bounded it. `|| true` tolerates a *failed* apt, not a wedged one.
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y age || true
+          if ! command -v age-keygen &> /dev/null; then
+            echo "Installing age-keygen from source..."
+            mkdir -p /tmp/age && cd /tmp/age
+            curl -fsSL --max-time 120 --retry 3 --retry-delay 5 --retry-all-errors \
+              https://dl.filippo.io/age/latest/age-linux-amd64.tar.gz | tar xz
+            ls -la /tmp/age/
+            sudo mv /tmp/age/age /tmp/age/age-keygen /usr/local/bin/ || exit 1
+            echo "Verifying installation..."
+            age-keygen --help > /dev/null && echo "✓ age-keygen ready" || exit 1
+          fi
+      - run: uv sync --locked --extra dev --extra bootstrap
+      - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short
+      - run: uv run pytest packages/maistro-core/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-server/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-canvas/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-turing/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-turing/backend/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-design/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest tests/ --ignore=tests/tools/registry -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - run: uv run pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+          PYTHONPATH: packages/maistro-rsi/src:packages/maistro-evolve/src
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/hive-conductor/frontend/package-lock.json
+            packages/maistro-canvas/frontend/package-lock.json
+      - run: npm ci && npm run lint && npm run build
+        working-directory: packages/hive-conductor/frontend
+      - run: npm ci && npm run test:ci
+        working-directory: packages/maistro-canvas/frontend
+      - run: npm run lint
+        working-directory: packages/maistro-canvas/frontend
+      - run: npm run build
+        working-directory: packages/maistro-canvas/frontend
+      - run: npm audit --audit-level=high
+        working-directory: packages/maistro-canvas/frontend
+      - run: uv pip install --system -r packages/hive-conductor/backend/requirements.txt
+      - run: python -m pytest packages/hive-conductor/backend/tests -v --tb=short
+      - name: Suite inventory matches collected node IDs (C1/#286)
+        run: python scripts/check-suite-inventory.py
+
+  hive-conductor-e2e-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PM workflow Playwright UI e2e against a live hive-conductor
+        timeout-minutes: 14
+        working-directory: packages/hive-conductor
+        run: |
+          docker compose -f docker-compose.test.yml --profile test up --build \
+            --abort-on-container-exit --exit-code-from e2e-tests e2e-tests
+      - name: Diagnose — container state and per-service logs
+        if: always()
+        working-directory: packages/hive-conductor
+        run: |
+          echo "::group::compose ps (did hive ever start and report healthy?)"
+          docker compose -f docker-compose.test.yml ps -a || true
+          echo "::endgroup::"
+          echo "::group::hive service logs"
+          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true
+          echo "::endgroup::"
+          echo "::group::e2e-tests (playwright) logs"
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true
+          echo "::endgroup::"
+          echo "::group::is the app reachable, and what does GET / return?"
+          docker compose -f docker-compose.test.yml run --rm --no-deps -T \
+            --entrypoint sh e2e-tests -c \
+            'wget -S -T 10 -O /dev/null http://hive:8101/ 2>&1 | head -40; echo "exit=$?"' || true
+          echo "::endgroup::"
+      - name: Tear down
+        if: always()
+        working-directory: packages/hive-conductor
+        run: docker compose -f docker-compose.test.yml down -v
+
+  hive-conductor-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PM workflow e2e against a live hive-conductor
+        working-directory: packages/hive-conductor
+        run: |
+          docker compose -f docker-compose.test.yml --profile test up --build \
+            --abort-on-container-exit --exit-code-from api-tests api-tests
+      - name: Dump hive logs
+        if: always()
+        working-directory: packages/hive-conductor
+        run: |
+          docker compose -f docker-compose.test.yml ps -a || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true
+      - name: Tear down
+        if: always()
+        working-directory: packages/hive-conductor
+        run: docker compose -f docker-compose.test.yml down -v
+
+  wheel-imports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - name: Build every package wheel
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          for p in packages/*/; do
+            [ -f "$p/pyproject.toml" ] || continue
+            echo "::group::build $p"
+            uv build "$p" --out-dir dist/
+            echo "::endgroup::"
+          done
+          ls -1 dist/*.whl
+      - name: Import wheels from a clean venv
+        run: python scripts/verify-wheel-imports.py --dist dist/ --python 3.12
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - run: uv pip install pip-audit
+      - run: uv pip freeze --exclude-editable > /tmp/deps.txt
+      - run: uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || true
+      - run: python scripts/pip_audit_gate.py /tmp/pip-audit.json
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t maistro-engine:test .
+      - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
+
+  workflow-lint:
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: "1.7.7"
+      SHELLCHECK_VERSION: "0.10.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint + shellcheck
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz -C /tmp actionlint
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar xJ -C /tmp
+          install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
+      - name: "actionlint (with shellcheck over run: blocks)"
+        run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin

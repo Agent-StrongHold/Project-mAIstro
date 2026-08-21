@@ -1,0 +1,678 @@
+[
+  {
+    "title": "Open Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "Open"
+    }
+  },
+  {
+    "title": "Open Issues",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "Open"
+    }
+  },
+  {
+    "title": "Open Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "Open"
+    }
+  },
+  {
+    "title": "In Progress",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "In Progress"
+    }
+  },
+  {
+    "title": "In Progress",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "In Progress"
+    }
+  },
+  {
+    "title": "In Progress",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "In Progress"
+    }
+  },
+  {
+    "title": "Blocked Items",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "Blocked",
+      "days": "30"
+    }
+  },
+  {
+    "title": "Blocked Items",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "Blocked",
+      "days": "30"
+    }
+  },
+  {
+    "title": "Blocked Items",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "Blocked",
+      "days": "30"
+    }
+  },
+  {
+    "title": "Done This Week",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "Done",
+      "days": "7"
+    }
+  },
+  {
+    "title": "Done This Week",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "Done",
+      "days": "7"
+    }
+  },
+  {
+    "title": "Done This Week",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "Done",
+      "days": "7"
+    }
+  },
+  {
+    "title": "My Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "assignee": "currentUser()"
+    }
+  },
+  {
+    "title": "My Issues",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "assignee": "currentUser()"
+    }
+  },
+  {
+    "title": "My Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "assignee": "currentUser()"
+    }
+  },
+  {
+    "title": "Open Bugs",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "jql_extra": "type = Bug AND resolution = Unresolved"
+    }
+  },
+  {
+    "title": "Open Bugs",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "jql_extra": "type = Bug AND resolution = Unresolved"
+    }
+  },
+  {
+    "title": "Open Bugs",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "jql_extra": "type = Bug AND resolution = Unresolved"
+    }
+  },
+  {
+    "title": "Recent Activity",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "days": "14"
+    }
+  },
+  {
+    "title": "Recent Activity",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "days": "14"
+    }
+  },
+  {
+    "title": "Recent Activity",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "days": "14"
+    }
+  },
+  {
+    "title": "By Status",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Status",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Status",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Category",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Category",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Category",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Business Unit",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Business Unit",
+      "group_by": "Business Unit",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Business Unit",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Business Unit",
+      "group_by": "Business Unit",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Business Unit",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Business Unit",
+      "group_by": "Business Unit",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Priority",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Priority",
+      "group_by": "Priority",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Priority",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Priority",
+      "group_by": "Priority",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Priority",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Priority",
+      "group_by": "Priority",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Owner",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Owner",
+      "group_by": "Owner",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Owner",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Owner",
+      "group_by": "Owner",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Owner",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Owner",
+      "group_by": "Owner",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Risk Assessment",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Risk Assessment",
+      "group_by": "Risk Assessment",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Risk Assessment",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Risk Assessment",
+      "group_by": "Risk Assessment",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "By Risk Assessment",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Risk Assessment",
+      "group_by": "Risk Assessment",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "Blocked / At Risk",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15,
+      "filter_formula": "OR({Status}='Blocked',{Risk Assessment}='High')"
+    }
+  },
+  {
+    "title": "In Development",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15,
+      "filter_formula": "{Status}='Development'"
+    }
+  },
+  {
+    "title": "In Production",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15,
+      "filter_formula": "{Status}='Commercialized'"
+    }
+  },
+  {
+    "title": "Recently Added",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15
+    }
+  },
+  {
+    "title": "Runs Today",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "runs_today",
+      "sub": "completions today"
+    }
+  },
+  {
+    "title": "Avg Response",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "avg_latency",
+      "sub": "p50 latency"
+    }
+  },
+  {
+    "title": "Daily Spend",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "total_cost",
+      "sub": "LLM costs today"
+    }
+  },
+  {
+    "title": "Approval Rate",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "approval_rate",
+      "sub": "human approvals"
+    }
+  },
+  {
+    "title": "Active Agents",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "active_agents",
+      "sub": "agents online"
+    }
+  },
+  {
+    "title": "Time To First Token",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "ttft_ms",
+      "sub": "p50 TTFT"
+    }
+  },
+  {
+    "title": "High Priority",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jql_extra": "priority in (Highest, High)",
+      "jira_display": "list",
+      "refresh_minutes": 10
+    }
+  },
+  {
+    "title": "Unassigned Work",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jql_extra": "assignee is EMPTY AND statusCategory != Done",
+      "jira_display": "count",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "Stale Issues",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jql_extra": "updated <= -14d AND statusCategory != Done",
+      "jira_display": "list",
+      "refresh_minutes": 60
+    }
+  },
+  {
+    "title": "Migration Funnel",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Migration Status",
+      "group_by": "Migration Status",
+      "max_records": "200",
+      "refresh_minutes": 30
+    }
+  },
+  {
+    "title": "Tokens In",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "tokens_in_total",
+      "sub": "prompt tokens today"
+    }
+  },
+  {
+    "title": "Tokens Out",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "tokens_out_total",
+      "sub": "completion tokens today"
+    }
+  },
+  {
+    "title": "p95 Latency",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "latency_ms_p95",
+      "sub": "p95 latency"
+    }
+  }
+]

@@ -1,0 +1,314 @@
+[
+  {
+    "id": "deck-kpi-001",
+    "name": "Hero KPI \u2014 indigo",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.8rem;text-transform:uppercase;letter-spacing:0.3em;color:#a78bfa;margin-bottom:1rem\">Headline Metric</p><div style=\"font-size:5rem;font-weight:800;color:#ffffff\">87%</div><p style=\"font-size:1.1rem;color:#b8b3cc;margin-top:0.5rem\">of workflows fully automated</p></div>"
+  },
+  {
+    "id": "deck-kpi-002",
+    "name": "Hero KPI \u2014 ocean",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.8rem;text-transform:uppercase;letter-spacing:0.3em;color:#7dd3fc;margin-bottom:1rem\">Headline Metric</p><div style=\"font-size:5rem;font-weight:800;color:#ffffff\">87%</div><p style=\"font-size:1.1rem;color:#b8b3cc;margin-top:0.5rem\">of workflows fully automated</p></div>"
+  },
+  {
+    "id": "deck-kpi-003",
+    "name": "Hero KPI \u2014 ember",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.8rem;text-transform:uppercase;letter-spacing:0.3em;color:#fbbf24;margin-bottom:1rem\">Headline Metric</p><div style=\"font-size:5rem;font-weight:800;color:#ffffff\">87%</div><p style=\"font-size:1.1rem;color:#b8b3cc;margin-top:0.5rem\">of workflows fully automated</p></div>"
+  },
+  {
+    "id": "deck-kpi-004",
+    "name": "Hero KPI \u2014 forest",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.8rem;text-transform:uppercase;letter-spacing:0.3em;color:#6ee7b7;margin-bottom:1rem\">Headline Metric</p><div style=\"font-size:5rem;font-weight:800;color:#ffffff\">87%</div><p style=\"font-size:1.1rem;color:#b8b3cc;margin-top:0.5rem\">of workflows fully automated</p></div>"
+  },
+  {
+    "id": "deck-kpi-005",
+    "name": "Hero KPI \u2014 rose",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e16,#2b1226,#22101e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.8rem;text-transform:uppercase;letter-spacing:0.3em;color:#f9a8d4;margin-bottom:1rem\">Headline Metric</p><div style=\"font-size:5rem;font-weight:800;color:#ffffff\">87%</div><p style=\"font-size:1.1rem;color:#b8b3cc;margin-top:0.5rem\">of workflows fully automated</p></div>"
+  },
+  {
+    "id": "deck-kpi-006",
+    "name": "KPI Grid \u2014 indigo",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.4rem;margin-bottom:1.5rem;color:#ffffff\">Operations at a Glance</h2><div style=\"display:flex;gap:1rem\"><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#a78bfa\">142</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Runs today</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#a78bfa\">1.8s</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">p50 latency</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#a78bfa\">$4.20</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Daily spend</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#a78bfa\">99.2%</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Success rate</div></div></div></div>"
+  },
+  {
+    "id": "deck-kpi-007",
+    "name": "KPI Grid \u2014 ocean",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.4rem;margin-bottom:1.5rem;color:#ffffff\">Operations at a Glance</h2><div style=\"display:flex;gap:1rem\"><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#7dd3fc\">142</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Runs today</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#7dd3fc\">1.8s</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">p50 latency</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#7dd3fc\">$4.20</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Daily spend</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#7dd3fc\">99.2%</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Success rate</div></div></div></div>"
+  },
+  {
+    "id": "deck-kpi-008",
+    "name": "KPI Grid \u2014 ember",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.4rem;margin-bottom:1.5rem;color:#ffffff\">Operations at a Glance</h2><div style=\"display:flex;gap:1rem\"><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#fbbf24\">142</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Runs today</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#fbbf24\">1.8s</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">p50 latency</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#fbbf24\">$4.20</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Daily spend</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#fbbf24\">99.2%</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Success rate</div></div></div></div>"
+  },
+  {
+    "id": "deck-kpi-009",
+    "name": "KPI Grid \u2014 forest",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.4rem;margin-bottom:1.5rem;color:#ffffff\">Operations at a Glance</h2><div style=\"display:flex;gap:1rem\"><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#6ee7b7\">142</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Runs today</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#6ee7b7\">1.8s</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">p50 latency</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#6ee7b7\">$4.20</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Daily spend</div></div><div style=\"flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:1.2rem\"><div style=\"font-size:2rem;font-weight:700;color:#6ee7b7\">99.2%</div><div style=\"font-size:0.75rem;color:#b8b3cc;margin-top:0.3rem\">Success rate</div></div></div></div>"
+  },
+  {
+    "id": "deck-kpi-010",
+    "name": "Before/After \u2014 indigo",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Impact</h2><div style=\"display:flex;gap:2rem;align-items:center\"><div style=\"flex:1;text-align:center\"><div style=\"font-size:3rem;font-weight:700;color:#6b7280\">3 days</div><div style=\"font-size:0.8rem;color:#b8b3cc\">before</div></div><div style=\"font-size:2rem;color:#a78bfa\">\u2192</div><div style=\"flex:1;text-align:center\"><div style=\"font-size:3rem;font-weight:700;color:#a78bfa\">20 min</div><div style=\"font-size:0.8rem;color:#b8b3cc\">after</div></div></div></div>"
+  },
+  {
+    "id": "deck-kpi-011",
+    "name": "Before/After \u2014 ocean",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Impact</h2><div style=\"display:flex;gap:2rem;align-items:center\"><div style=\"flex:1;text-align:center\"><div style=\"font-size:3rem;font-weight:700;color:#6b7280\">3 days</div><div style=\"font-size:0.8rem;color:#b8b3cc\">before</div></div><div style=\"font-size:2rem;color:#7dd3fc\">\u2192</div><div style=\"flex:1;text-align:center\"><div style=\"font-size:3rem;font-weight:700;color:#7dd3fc\">20 min</div><div style=\"font-size:0.8rem;color:#b8b3cc\">after</div></div></div></div>"
+  },
+  {
+    "id": "deck-kpi-012",
+    "name": "Before/After \u2014 ember",
+    "category": "KPI",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Impact</h2><div style=\"display:flex;gap:2rem;align-items:center\"><div style=\"flex:1;text-align:center\"><div style=\"font-size:3rem;font-weight:700;color:#6b7280\">3 days</div><div style=\"font-size:0.8rem;color:#b8b3cc\">before</div></div><div style=\"font-size:2rem;color:#fbbf24\">\u2192</div><div style=\"flex:1;text-align:center\"><div style=\"font-size:3rem;font-weight:700;color:#fbbf24\">20 min</div><div style=\"font-size:0.8rem;color:#b8b3cc\">after</div></div></div></div>"
+  },
+  {
+    "id": "deck-charts-013",
+    "name": "Status Funnel \u2014 indigo",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Pipeline by Stage</h2><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Discovery</span><div style=\"height:22px;width:90%;background:linear-gradient(90deg,#6366f1,#a78bfa);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#a78bfa\">90</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Development</span><div style=\"height:22px;width:65%;background:linear-gradient(90deg,#6366f1,#a78bfa);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#a78bfa\">65</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Validation</span><div style=\"height:22px;width:40%;background:linear-gradient(90deg,#6366f1,#a78bfa);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#a78bfa\">40</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Production</span><div style=\"height:22px;width:25%;background:linear-gradient(90deg,#6366f1,#a78bfa);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#a78bfa\">25</span></div></div>"
+  },
+  {
+    "id": "deck-charts-014",
+    "name": "Status Funnel \u2014 ocean",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Pipeline by Stage</h2><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Discovery</span><div style=\"height:22px;width:90%;background:linear-gradient(90deg,#0ea5e9,#7dd3fc);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#7dd3fc\">90</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Development</span><div style=\"height:22px;width:65%;background:linear-gradient(90deg,#0ea5e9,#7dd3fc);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#7dd3fc\">65</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Validation</span><div style=\"height:22px;width:40%;background:linear-gradient(90deg,#0ea5e9,#7dd3fc);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#7dd3fc\">40</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Production</span><div style=\"height:22px;width:25%;background:linear-gradient(90deg,#0ea5e9,#7dd3fc);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#7dd3fc\">25</span></div></div>"
+  },
+  {
+    "id": "deck-charts-015",
+    "name": "Status Funnel \u2014 ember",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Pipeline by Stage</h2><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Discovery</span><div style=\"height:22px;width:90%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#fbbf24\">90</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Development</span><div style=\"height:22px;width:65%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#fbbf24\">65</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Validation</span><div style=\"height:22px;width:40%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#fbbf24\">40</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Production</span><div style=\"height:22px;width:25%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#fbbf24\">25</span></div></div>"
+  },
+  {
+    "id": "deck-charts-016",
+    "name": "Status Funnel \u2014 forest",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.5rem\">Pipeline by Stage</h2><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Discovery</span><div style=\"height:22px;width:90%;background:linear-gradient(90deg,#10b981,#6ee7b7);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#6ee7b7\">90</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Development</span><div style=\"height:22px;width:65%;background:linear-gradient(90deg,#10b981,#6ee7b7);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#6ee7b7\">65</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Validation</span><div style=\"height:22px;width:40%;background:linear-gradient(90deg,#10b981,#6ee7b7);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#6ee7b7\">40</span></div><div style=\"display:flex;align-items:center;gap:12px;margin-bottom:10px\"><span style=\"width:110px;font-size:0.8rem;color:#b8b3cc;text-align:right\">Production</span><div style=\"height:22px;width:25%;background:linear-gradient(90deg,#10b981,#6ee7b7);border-radius:4px\"></div><span style=\"font-size:0.8rem;color:#6ee7b7\">25</span></div></div>"
+  },
+  {
+    "id": "deck-charts-017",
+    "name": "Donut Mix \u2014 indigo",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;align-items:center;gap:3rem\"><div style=\"width:180px;height:180px;border-radius:50%;background:conic-gradient(#a78bfa 0 40%,#6366f1 40% 70%,#374151 70% 100%);display:flex;align-items:center;justify-content:center\"><div style=\"width:110px;height:110px;border-radius:50%;background:#0a0914;display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:700;color:#ffffff\">63</div></div><div><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Category Mix</h2><div style=\"font-size:0.85rem;color:#b8b3cc;line-height:2\"><span style=\"color:#a78bfa\">\u25cf</span> Automation \u2014 40%<br><span style=\"color:#6366f1\">\u25cf</span> Insights \u2014 30%<br><span style=\"color:#6b7280\">\u25cf</span> Other \u2014 30%</div></div></div></div>"
+  },
+  {
+    "id": "deck-charts-018",
+    "name": "Donut Mix \u2014 ocean",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;align-items:center;gap:3rem\"><div style=\"width:180px;height:180px;border-radius:50%;background:conic-gradient(#7dd3fc 0 40%,#0ea5e9 40% 70%,#374151 70% 100%);display:flex;align-items:center;justify-content:center\"><div style=\"width:110px;height:110px;border-radius:50%;background:#0a0914;display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:700;color:#ffffff\">63</div></div><div><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Category Mix</h2><div style=\"font-size:0.85rem;color:#b8b3cc;line-height:2\"><span style=\"color:#7dd3fc\">\u25cf</span> Automation \u2014 40%<br><span style=\"color:#0ea5e9\">\u25cf</span> Insights \u2014 30%<br><span style=\"color:#6b7280\">\u25cf</span> Other \u2014 30%</div></div></div></div>"
+  },
+  {
+    "id": "deck-charts-019",
+    "name": "Donut Mix \u2014 ember",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;align-items:center;gap:3rem\"><div style=\"width:180px;height:180px;border-radius:50%;background:conic-gradient(#fbbf24 0 40%,#f59e0b 40% 70%,#374151 70% 100%);display:flex;align-items:center;justify-content:center\"><div style=\"width:110px;height:110px;border-radius:50%;background:#0a0914;display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:700;color:#ffffff\">63</div></div><div><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Category Mix</h2><div style=\"font-size:0.85rem;color:#b8b3cc;line-height:2\"><span style=\"color:#fbbf24\">\u25cf</span> Automation \u2014 40%<br><span style=\"color:#f59e0b\">\u25cf</span> Insights \u2014 30%<br><span style=\"color:#6b7280\">\u25cf</span> Other \u2014 30%</div></div></div></div>"
+  },
+  {
+    "id": "deck-charts-020",
+    "name": "Donut Mix \u2014 forest",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;align-items:center;gap:3rem\"><div style=\"width:180px;height:180px;border-radius:50%;background:conic-gradient(#6ee7b7 0 40%,#10b981 40% 70%,#374151 70% 100%);display:flex;align-items:center;justify-content:center\"><div style=\"width:110px;height:110px;border-radius:50%;background:#0a0914;display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:700;color:#ffffff\">63</div></div><div><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Category Mix</h2><div style=\"font-size:0.85rem;color:#b8b3cc;line-height:2\"><span style=\"color:#6ee7b7\">\u25cf</span> Automation \u2014 40%<br><span style=\"color:#10b981\">\u25cf</span> Insights \u2014 30%<br><span style=\"color:#6b7280\">\u25cf</span> Other \u2014 30%</div></div></div></div>"
+  },
+  {
+    "id": "deck-charts-021",
+    "name": "Trend Line \u2014 indigo",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Weekly Trend</h2><svg viewBox=\"0 0 400 120\" style=\"width:100%;height:140px\"><polyline fill=\"none\" stroke=\"#a78bfa\" stroke-width=\"3\" points=\"0,100 60,85 120,90 180,60 240,55 300,30 360,20\"/><polyline fill=\"none\" stroke=\"#6366f1\" stroke-width=\"2\" stroke-dasharray=\"5,5\" points=\"0,110 60,105 120,100 180,95 240,90 300,85 360,80\"/></svg><p style=\"font-size:0.8rem;color:#b8b3cc\">runs/week vs. baseline</p></div>"
+  },
+  {
+    "id": "deck-charts-022",
+    "name": "Trend Line \u2014 ocean",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Weekly Trend</h2><svg viewBox=\"0 0 400 120\" style=\"width:100%;height:140px\"><polyline fill=\"none\" stroke=\"#7dd3fc\" stroke-width=\"3\" points=\"0,100 60,85 120,90 180,60 240,55 300,30 360,20\"/><polyline fill=\"none\" stroke=\"#0ea5e9\" stroke-width=\"2\" stroke-dasharray=\"5,5\" points=\"0,110 60,105 120,100 180,95 240,90 300,85 360,80\"/></svg><p style=\"font-size:0.8rem;color:#b8b3cc\">runs/week vs. baseline</p></div>"
+  },
+  {
+    "id": "deck-charts-023",
+    "name": "Trend Line \u2014 ember",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Weekly Trend</h2><svg viewBox=\"0 0 400 120\" style=\"width:100%;height:140px\"><polyline fill=\"none\" stroke=\"#fbbf24\" stroke-width=\"3\" points=\"0,100 60,85 120,90 180,60 240,55 300,30 360,20\"/><polyline fill=\"none\" stroke=\"#f59e0b\" stroke-width=\"2\" stroke-dasharray=\"5,5\" points=\"0,110 60,105 120,100 180,95 240,90 300,85 360,80\"/></svg><p style=\"font-size:0.8rem;color:#b8b3cc\">runs/week vs. baseline</p></div>"
+  },
+  {
+    "id": "deck-charts-024",
+    "name": "Trend Line \u2014 forest",
+    "category": "Charts",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1rem\">Weekly Trend</h2><svg viewBox=\"0 0 400 120\" style=\"width:100%;height:140px\"><polyline fill=\"none\" stroke=\"#6ee7b7\" stroke-width=\"3\" points=\"0,100 60,85 120,90 180,60 240,55 300,30 360,20\"/><polyline fill=\"none\" stroke=\"#10b981\" stroke-width=\"2\" stroke-dasharray=\"5,5\" points=\"0,110 60,105 120,100 180,95 240,90 300,85 360,80\"/></svg><p style=\"font-size:0.8rem;color:#b8b3cc\">runs/week vs. baseline</p></div>"
+  },
+  {
+    "id": "deck-layout-025",
+    "name": "Two Column \u2014 indigo",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;gap:2.5rem;height:100%;align-items:center\"><div style=\"flex:1\"><h2 style=\"font-size:1.6rem;color:#ffffff;margin-bottom:1rem\">The Problem</h2><p style=\"font-size:0.95rem;color:#b8b3cc;line-height:1.7\">Manual status-chasing eats hours every week and the answers are stale by standup.</p></div><div style=\"flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem\"><h2 style=\"font-size:1.6rem;color:#a78bfa;margin-bottom:1rem\">The Fix</h2><p style=\"font-size:0.95rem;color:#e8e8f0;line-height:1.7\">Agents poll the source systems and surface deltas \u2014 ask in chat, get the live answer.</p></div></div></div>"
+  },
+  {
+    "id": "deck-layout-026",
+    "name": "Two Column \u2014 ocean",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;gap:2.5rem;height:100%;align-items:center\"><div style=\"flex:1\"><h2 style=\"font-size:1.6rem;color:#ffffff;margin-bottom:1rem\">The Problem</h2><p style=\"font-size:0.95rem;color:#b8b3cc;line-height:1.7\">Manual status-chasing eats hours every week and the answers are stale by standup.</p></div><div style=\"flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem\"><h2 style=\"font-size:1.6rem;color:#7dd3fc;margin-bottom:1rem\">The Fix</h2><p style=\"font-size:0.95rem;color:#e8e8f0;line-height:1.7\">Agents poll the source systems and surface deltas \u2014 ask in chat, get the live answer.</p></div></div></div>"
+  },
+  {
+    "id": "deck-layout-027",
+    "name": "Two Column \u2014 ember",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;gap:2.5rem;height:100%;align-items:center\"><div style=\"flex:1\"><h2 style=\"font-size:1.6rem;color:#ffffff;margin-bottom:1rem\">The Problem</h2><p style=\"font-size:0.95rem;color:#b8b3cc;line-height:1.7\">Manual status-chasing eats hours every week and the answers are stale by standup.</p></div><div style=\"flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem\"><h2 style=\"font-size:1.6rem;color:#fbbf24;margin-bottom:1rem\">The Fix</h2><p style=\"font-size:0.95rem;color:#e8e8f0;line-height:1.7\">Agents poll the source systems and surface deltas \u2014 ask in chat, get the live answer.</p></div></div></div>"
+  },
+  {
+    "id": "deck-layout-028",
+    "name": "Two Column \u2014 forest",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"display:flex;gap:2.5rem;height:100%;align-items:center\"><div style=\"flex:1\"><h2 style=\"font-size:1.6rem;color:#ffffff;margin-bottom:1rem\">The Problem</h2><p style=\"font-size:0.95rem;color:#b8b3cc;line-height:1.7\">Manual status-chasing eats hours every week and the answers are stale by standup.</p></div><div style=\"flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem\"><h2 style=\"font-size:1.6rem;color:#6ee7b7;margin-bottom:1rem\">The Fix</h2><p style=\"font-size:0.95rem;color:#e8e8f0;line-height:1.7\">Agents poll the source systems and surface deltas \u2014 ask in chat, get the live answer.</p></div></div></div>"
+  },
+  {
+    "id": "deck-layout-029",
+    "name": "Section Divider \u2014 indigo",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.4em;color:#a78bfa;margin-bottom:1rem\">Part Two</p><h1 style=\"font-size:2.6rem;color:#ffffff;font-weight:800\">What We Shipped</h1><div style=\"width:80px;height:3px;background:#a78bfa;margin:1.5rem auto\"></div></div></div>"
+  },
+  {
+    "id": "deck-layout-030",
+    "name": "Section Divider \u2014 ocean",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.4em;color:#7dd3fc;margin-bottom:1rem\">Part Two</p><h1 style=\"font-size:2.6rem;color:#ffffff;font-weight:800\">What We Shipped</h1><div style=\"width:80px;height:3px;background:#7dd3fc;margin:1.5rem auto\"></div></div></div>"
+  },
+  {
+    "id": "deck-layout-031",
+    "name": "Section Divider \u2014 ember",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.4em;color:#fbbf24;margin-bottom:1rem\">Part Two</p><h1 style=\"font-size:2.6rem;color:#ffffff;font-weight:800\">What We Shipped</h1><div style=\"width:80px;height:3px;background:#fbbf24;margin:1.5rem auto\"></div></div></div>"
+  },
+  {
+    "id": "deck-layout-032",
+    "name": "Section Divider \u2014 forest",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.4em;color:#6ee7b7;margin-bottom:1rem\">Part Two</p><h1 style=\"font-size:2.6rem;color:#ffffff;font-weight:800\">What We Shipped</h1><div style=\"width:80px;height:3px;background:#6ee7b7;margin:1.5rem auto\"></div></div></div>"
+  },
+  {
+    "id": "deck-layout-033",
+    "name": "Big Statement \u2014 indigo",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h1 style=\"font-size:2.4rem;color:#ffffff;font-weight:800;line-height:1.3;max-width:80%\">Every action that works once becomes a <span style=\"color:#a78bfa\">one-click button</span>.</h1></div>"
+  },
+  {
+    "id": "deck-layout-034",
+    "name": "Big Statement \u2014 ocean",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h1 style=\"font-size:2.4rem;color:#ffffff;font-weight:800;line-height:1.3;max-width:80%\">Every action that works once becomes a <span style=\"color:#7dd3fc\">one-click button</span>.</h1></div>"
+  },
+  {
+    "id": "deck-layout-035",
+    "name": "Big Statement \u2014 ember",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h1 style=\"font-size:2.4rem;color:#ffffff;font-weight:800;line-height:1.3;max-width:80%\">Every action that works once becomes a <span style=\"color:#fbbf24\">one-click button</span>.</h1></div>"
+  },
+  {
+    "id": "deck-layout-036",
+    "name": "Big Statement \u2014 forest",
+    "category": "Layout",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h1 style=\"font-size:2.4rem;color:#ffffff;font-weight:800;line-height:1.3;max-width:80%\">Every action that works once becomes a <span style=\"color:#6ee7b7\">one-click button</span>.</h1></div>"
+  },
+  {
+    "id": "deck-title-037",
+    "name": "Title Slide \u2014 indigo",
+    "category": "Title",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:#a78bfa;margin-bottom:1.5rem\">Quarterly Review</p><h1 style=\"font-size:3rem;color:#ffffff;font-weight:800;margin-bottom:0.5rem\">Platform Update</h1><p style=\"font-size:1.1rem;color:#b8b3cc\">Team retrospective &amp; roadmap</p></div>"
+  },
+  {
+    "id": "deck-title-038",
+    "name": "Title Slide \u2014 ocean",
+    "category": "Title",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:#7dd3fc;margin-bottom:1.5rem\">Quarterly Review</p><h1 style=\"font-size:3rem;color:#ffffff;font-weight:800;margin-bottom:0.5rem\">Platform Update</h1><p style=\"font-size:1.1rem;color:#b8b3cc\">Team retrospective &amp; roadmap</p></div>"
+  },
+  {
+    "id": "deck-title-039",
+    "name": "Title Slide \u2014 ember",
+    "category": "Title",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:#fbbf24;margin-bottom:1.5rem\">Quarterly Review</p><h1 style=\"font-size:3rem;color:#ffffff;font-weight:800;margin-bottom:0.5rem\">Platform Update</h1><p style=\"font-size:1.1rem;color:#b8b3cc\">Team retrospective &amp; roadmap</p></div>"
+  },
+  {
+    "id": "deck-title-040",
+    "name": "Title Slide \u2014 forest",
+    "category": "Title",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:#6ee7b7;margin-bottom:1.5rem\">Quarterly Review</p><h1 style=\"font-size:3rem;color:#ffffff;font-weight:800;margin-bottom:0.5rem\">Platform Update</h1><p style=\"font-size:1.1rem;color:#b8b3cc\">Team retrospective &amp; roadmap</p></div>"
+  },
+  {
+    "id": "deck-title-041",
+    "name": "Title Slide \u2014 rose",
+    "category": "Title",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e16,#2b1226,#22101e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:#f9a8d4;margin-bottom:1.5rem\">Quarterly Review</p><h1 style=\"font-size:3rem;color:#ffffff;font-weight:800;margin-bottom:0.5rem\">Platform Update</h1><p style=\"font-size:1.1rem;color:#b8b3cc\">Team retrospective &amp; roadmap</p></div>"
+  },
+  {
+    "id": "deck-lists-042",
+    "name": "Status List \u2014 indigo",
+    "category": "Lists",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.2rem\">Roadmap</h2><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Chat-driven Jira polling</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Recurring action buttons</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Deck builder</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Beta</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#a78bfa;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Self-optimizing workflows</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Next</span></div></div>"
+  },
+  {
+    "id": "deck-lists-043",
+    "name": "Status List \u2014 ocean",
+    "category": "Lists",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.2rem\">Roadmap</h2><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#7dd3fc;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Chat-driven Jira polling</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#7dd3fc;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Recurring action buttons</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#7dd3fc;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Deck builder</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Beta</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#7dd3fc;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Self-optimizing workflows</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Next</span></div></div>"
+  },
+  {
+    "id": "deck-lists-044",
+    "name": "Status List \u2014 ember",
+    "category": "Lists",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.2rem\">Roadmap</h2><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#fbbf24;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Chat-driven Jira polling</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#fbbf24;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Recurring action buttons</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#fbbf24;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Deck builder</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Beta</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#fbbf24;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Self-optimizing workflows</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Next</span></div></div>"
+  },
+  {
+    "id": "deck-lists-045",
+    "name": "Status List \u2014 forest",
+    "category": "Lists",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0a1410,#11281c,#0d1f16);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.2rem\">Roadmap</h2><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#6ee7b7;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Chat-driven Jira polling</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#6ee7b7;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Recurring action buttons</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#6ee7b7;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Deck builder</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Beta</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#6ee7b7;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Self-optimizing workflows</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Next</span></div></div>"
+  },
+  {
+    "id": "deck-lists-046",
+    "name": "Status List \u2014 rose",
+    "category": "Lists",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e16,#2b1226,#22101e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:1.2rem\">Roadmap</h2><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#f9a8d4;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Chat-driven Jira polling</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#f9a8d4;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Recurring action buttons</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Shipped</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#f9a8d4;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Deck builder</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Beta</span></div><div style=\"display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;margin-bottom:8px\"><span style=\"width:8px;height:8px;border-radius:50%;background:#f9a8d4;flex-shrink:0\"></span><span style=\"font-size:0.9rem;color:#e8e8f0\">Self-optimizing workflows</span><span style=\"margin-left:auto;font-size:0.65rem;color:#8b83a8;background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:4px\">Next</span></div></div>"
+  },
+  {
+    "id": "deck-quote-047",
+    "name": "Quote \u2014 indigo",
+    "category": "Quote",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center;max-width:85%;margin:0 auto\"><div style=\"font-size:3rem;color:#a78bfa;line-height:1\">\u201c</div><p style=\"font-size:1.4rem;color:#ffffff;font-style:italic;line-height:1.6\">I type what I want in plain English and the system just does it.</p><p style=\"font-size:0.85rem;color:#b8b3cc;margin-top:1.5rem\">\u2014 Pilot user, week 2</p></div></div>"
+  },
+  {
+    "id": "deck-quote-048",
+    "name": "Quote \u2014 ocean",
+    "category": "Quote",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center;max-width:85%;margin:0 auto\"><div style=\"font-size:3rem;color:#7dd3fc;line-height:1\">\u201c</div><p style=\"font-size:1.4rem;color:#ffffff;font-style:italic;line-height:1.6\">I type what I want in plain English and the system just does it.</p><p style=\"font-size:0.85rem;color:#b8b3cc;margin-top:1.5rem\">\u2014 Pilot user, week 2</p></div></div>"
+  },
+  {
+    "id": "deck-quote-049",
+    "name": "Quote \u2014 ember",
+    "category": "Quote",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><div style=\"text-align:center;max-width:85%;margin:0 auto\"><div style=\"font-size:3rem;color:#fbbf24;line-height:1\">\u201c</div><p style=\"font-size:1.4rem;color:#ffffff;font-style:italic;line-height:1.6\">I type what I want in plain English and the system just does it.</p><p style=\"font-size:0.85rem;color:#b8b3cc;margin-top:1.5rem\">\u2014 Pilot user, week 2</p></div></div>"
+  },
+  {
+    "id": "deck-timeline-050",
+    "name": "Milestones \u2014 indigo",
+    "category": "Timeline",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:2rem\">Where We Are</h2><div style=\"height:2px;background:linear-gradient(90deg,#a78bfa 70%,#374151 70%);margin-bottom:-9px\"></div><div style=\"display:flex\"><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#a78bfa;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Prototype</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#a78bfa;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Pilot</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#a78bfa;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Rollout</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#374151;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#6b7280\">Scale</div></div></div></div>"
+  },
+  {
+    "id": "deck-timeline-051",
+    "name": "Milestones \u2014 ocean",
+    "category": "Timeline",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#0c1222,#0f172a,#16243a);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:2rem\">Where We Are</h2><div style=\"height:2px;background:linear-gradient(90deg,#7dd3fc 70%,#374151 70%);margin-bottom:-9px\"></div><div style=\"display:flex\"><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#7dd3fc;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Prototype</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#7dd3fc;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Pilot</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#7dd3fc;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Rollout</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#374151;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#6b7280\">Scale</div></div></div></div>"
+  },
+  {
+    "id": "deck-timeline-052",
+    "name": "Milestones \u2014 ember",
+    "category": "Timeline",
+    "html": "<div style=\"height:100%;background:linear-gradient(135deg,#1a0e0e,#2b1a12,#241410);border-radius:24px;padding:3rem;display:flex;flex-direction:column;justify-content:center;color:#e8e8f0;font-family:Inter,system-ui,sans-serif\"><h2 style=\"font-size:1.3rem;color:#ffffff;margin-bottom:2rem\">Where We Are</h2><div style=\"height:2px;background:linear-gradient(90deg,#fbbf24 70%,#374151 70%);margin-bottom:-9px\"></div><div style=\"display:flex\"><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#fbbf24;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Prototype</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#fbbf24;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Pilot</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#fbbf24;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#ffffff\">Rollout</div></div><div style=\"flex:1;text-align:center\"><div style=\"width:14px;height:14px;border-radius:50%;background:#374151;margin:0 auto 8px\"></div><div style=\"font-size:0.75rem;color:#6b7280\">Scale</div></div></div></div>"
+  }
+]

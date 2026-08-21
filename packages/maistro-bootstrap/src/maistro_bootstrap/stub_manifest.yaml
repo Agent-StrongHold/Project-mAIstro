@@ -1,0 +1,16 @@
+# Stub / preview lines merged into install plans until compose profiles are fully wired.
+version: 1
+feature_preview:
+  llm_proxy: >-
+    [preview] Root docker-compose.yml already includes `litellm`; optional `llm` profile
+    naming is documented in docs/install/compose-slices.example.yml.
+  observability: >-
+    [preview] Root compose includes `langfuse`; choosing Arize or Langfuse v2/v3 in answers
+    is a manifest hint until matching services are added to compose.
+  hive_conductor: >-
+    [preview] Hive Conductor package has its own compose under packages/hive-conductor/;
+    root stack is separate (SPEC-176).
+compose_addons:
+  hive_phoenix: >-
+    [preview] Phoenix fragment validates with `docker compose … config` when selected;
+    run path uses Podman per resolver.

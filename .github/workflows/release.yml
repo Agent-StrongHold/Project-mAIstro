@@ -1,0 +1,585 @@
+# Release pipeline (E3, #296) — the ONLY path that publishes anything.
+#
+# Implements ADR-073126-c4e1 "Release and versioning process":
+#   §1 lockstep versioning from the root VERSION file,
+#   §2 annotated vX.Y.Z tags on `main` (rc exception: `integration`),
+#   §3 release.yml is the sole publish path — no local twine upload, no manual
+#      docker push,
+#   §4 the `release` GitHub environment approval is the publish gate: guard,
+#      build, twine check and the clean-venv import smoke all run unattended,
+#      and the human decision is "publish these verified artifacts".
+#
+# Job order is deliberate:
+#
+#   guard ──> wheels ──> pypi     (environment: release)
+#         └──────────┴─> images   (environment: release)
+#                        └──────> github-release
+#
+# Everything expensive AND everything falsifiable happens before the gate, so
+# the approval prompt only ever appears for a release that already built and
+# imported cleanly. `images` waits on `wheels` for that reason alone — it has
+# no artifact dependency on it.
+#
+# NOT YET EXERCISED. At the time this landed the repository had zero tags and
+# no registered PyPI trusted publisher, so this workflow has never run. It is
+# statically verified (actionlint + shellcheck + yaml parse) and its non-YAML
+# logic lives in scripts/release_guard.py and scripts/release_notes.py, which
+# have unit tests (tests/test_release_guard.py). The maintainer prerequisites
+# are listed at the bottom of this file.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Read-only by default; each job widens only what it needs.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ghcr.io/agent-stronghold
+  # Pinned tool versions + checksums, matching how security.yml installs grype
+  # and syft: a pinned release tarball verified by hash, not `curl | sh` off a
+  # mutable branch. syft's pin is the same one security.yml already uses.
+  SYFT_VERSION: "1.49.0"
+  SYFT_SHA256: "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe"
+  COSIGN_VERSION: "2.6.1"
+  COSIGN_SHA256: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # guard — refuse to build anything for a tag that should not have been pushed.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Guard (tag shape, lockstep version, branch ancestry, CHANGELOG)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.guard.outputs.version }}
+      prerelease: ${{ steps.guard.outputs.prerelease }}
+      minor: ${{ steps.guard.outputs.minor }}
+      target_branch: ${{ steps.guard.outputs.target_branch }}
+      moves_latest: ${{ steps.pointers.outputs.moves_latest }}
+      moves_minor: ${{ steps.pointers.outputs.moves_minor }}
+    steps:
+      # fetch-depth: 0 is load-bearing, not hygiene — the ancestry check below
+      # cannot run on the shallow single-ref clone checkout does by default.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ADR §2: package versions never carry the rc suffix, so `vX.Y.Z` and
+      # `vX.Y.Z-rcN` both have to equal VERSION once `-rcN` is stripped. The
+      # script also runs scripts/bump_version.py --check (all 32 version sites)
+      # and asserts CHANGELOG.md carries a `## [X.Y.Z]` heading.
+      - name: Version + CHANGELOG guard
+        id: guard
+        run: python scripts/release_guard.py --tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"
+
+      # ADR §2: a final tag may only point at a commit on `main`; an rc is the
+      # sole exception and may point at `integration` so a candidate can soak.
+      # `merge-base --is-ancestor` accepts the branch tip itself, so "the tag
+      # IS main's head" passes too.
+      - name: Tag commit must descend from the release branch
+        env:
+          TARGET_BRANCH: ${{ steps.guard.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          tag_sha="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+          if ! git merge-base --is-ancestor "${tag_sha}" "origin/${TARGET_BRANCH}"; then
+            echo "::error::tag ${GITHUB_REF_NAME} (${tag_sha}) is not an ancestor of origin/${TARGET_BRANCH}."
+            echo "::error::ADR-073126-c4e1 §2: a final vX.Y.Z tag may only point at a commit on main;"
+            echo "::error::an rc tag vX.Y.Z-rcN may point at integration. Tags are immutable — supersede"
+            echo "::error::this one with a higher version rather than moving it."
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} (${tag_sha}) descends from origin/${TARGET_BRANCH}"
+
+      # Annotated, never lightweight (ADR §2) — the tag object carries the
+      # tagger and date that release provenance depends on. `cat-file -t`
+      # returns `tag` for an annotated tag and `commit` for a lightweight one.
+      - name: Tag must be annotated
+        run: |
+          set -euo pipefail
+          kind="$(git cat-file -t "${GITHUB_REF_NAME}")"
+          if [ "${kind}" != "tag" ]; then
+            echo "::error::${GITHUB_REF_NAME} is a lightweight tag (git object type '${kind}')."
+            echo "::error::ADR-073126-c4e1 §2 requires annotated tags: git tag -a ${GITHUB_REF_NAME} -m '...'"
+            exit 1
+          fi
+          git for-each-ref "refs/tags/${GITHUB_REF_NAME}" \
+            --format='annotated tag by %(taggername) on %(taggerdate:iso)'
+
+      # Which moving pointers this tag is allowed to move. A moving tag must
+      # only ever move FORWARD: a hotfix on an older line (v0.9.1 tagged after
+      # v1.0.0 shipped) is a legitimate release, but pointing `latest` at it
+      # would silently downgrade everyone who runs an unpinned `docker pull`.
+      # `X.Y` is the minor-line pointer and follows the same rule within its
+      # own line, so v1.0.1 moves `1.0` even when v1.1.0 already exists.
+      #
+      # Only finals are considered at all: `latest` and `X.Y` never point at a
+      # release candidate (that is the whole reason an rc is a separate tag).
+      - name: Which moving image tags may this release move?
+        id: pointers
+        env:
+          MINOR: ${{ steps.guard.outputs.minor }}
+          PRERELEASE: ${{ steps.guard.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "${PRERELEASE}" = "true" ]; then
+            echo "moves_latest=false" >> "${GITHUB_OUTPUT}"
+            echo "moves_minor=false" >> "${GITHUB_OUTPUT}"
+            echo "release candidate: no moving tag is touched"
+            exit 0
+          fi
+          # Finals only: the rc grammar is excluded by the anchored regex, and
+          # `sort -V` is correct over plain vX.Y.Z once rc tags are gone.
+          finals="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)"
+          highest="$(printf '%s\n' "${finals}" | tail -1)"
+          # Escape the dot in "1.0" so the minor-line pattern is literal.
+          line_re="^v${MINOR//./\\.}\.[0-9]+$"
+          highest_in_line="$(printf '%s\n' "${finals}" | grep -E "${line_re}" | tail -1)"
+          if [ "${highest}" = "${GITHUB_REF_NAME}" ]; then
+            echo "moves_latest=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "moves_latest=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::${GITHUB_REF_NAME} is not the highest release (${highest}); ':latest' stays put."
+          fi
+          if [ "${highest_in_line}" = "${GITHUB_REF_NAME}" ]; then
+            echo "moves_minor=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "moves_minor=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::${GITHUB_REF_NAME} is not the highest ${MINOR}.x release (${highest_in_line}); ':${MINOR}' stays put."
+          fi
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+          PRERELEASE: ${{ steps.guard.outputs.prerelease }}
+          TARGET_BRANCH: ${{ steps.guard.outputs.target_branch }}
+        run: |
+          {
+            echo "### Release guard passed"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| tag | \`${GITHUB_REF_NAME}\` |"
+            echo "| version | \`${VERSION}\` |"
+            echo "| prerelease | \`${PRERELEASE}\` |"
+            echo "| descends from | \`${TARGET_BRANCH}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  # ---------------------------------------------------------------------------
+  # wheels — build the publish set, twine check it, install+import it clean.
+  #
+  # The publish set is FIVE packages. maistro-server, maistro-turing,
+  # maistro-registry and maistro-design build in CI but are not published, and
+  # hive-conductor is an application (no pyproject.toml) and is shipped as a
+  # container image, never as a wheel.
+  # ---------------------------------------------------------------------------
+  wheels:
+    name: Build + verify wheels
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Build sdist + wheel for the publish set
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          for pkg in ${PUBLISH_SET}; do
+            path="packages/${pkg}"
+            test -f "${path}/pyproject.toml" || { echo "::error::${path}/pyproject.toml is missing"; exit 1; }
+            echo "::group::build ${pkg}"
+            # No --wheel/--sdist flag: `uv build` emits both, and the sdist is
+            # what a consumer on an unsupported platform actually falls back to.
+            uv build "${path}" --out-dir dist/
+            echo "::endgroup::"
+          done
+          ls -1 dist/
+
+      # A wheel that builds but has malformed metadata uploads to PyPI and then
+      # renders as a broken project page that cannot be replaced (versions are
+      # never reusable). Check before the gate, not after.
+      - name: twine check
+        run: uv tool run --from twine twine check --strict dist/*
+
+      # Every artifact must be for exactly the version the tag names, and the
+      # count must match the publish set — a silently skipped package would
+      # otherwise ship a release that is missing one of its five names.
+      - name: Artifact filenames must match the tagged version
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=0
+          for pkg in ${PUBLISH_SET}; do
+            expected=$((expected + 1))
+            # PEP 427/625 normalize '-' to '_' in both wheel and sdist names.
+            norm="${pkg//-/_}"
+            # `find -name` rather than a glob: the wheel's build/ABI/platform
+            # tags are not knowable here, and an unmatched glob in a `test -f`
+            # would be passed through literally and read as "file missing" for
+            # the wrong reason.
+            if [ -z "$(find dist -maxdepth 1 -name "${norm}-${VERSION}-*.whl" -print -quit)" ]; then
+              echo "::error::no wheel for ${pkg} at version ${VERSION}"; exit 1
+            fi
+            if [ ! -f "dist/${norm}-${VERSION}.tar.gz" ]; then
+              echo "::error::no sdist for ${pkg} at version ${VERSION}"; exit 1
+            fi
+          done
+          actual_whl="$(find dist -maxdepth 1 -name '*.whl' | wc -l)"
+          actual_sdist="$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)"
+          if [ "${actual_whl}" -ne "${expected}" ] || [ "${actual_sdist}" -ne "${expected}" ]; then
+            echo "::error::expected ${expected} wheels and ${expected} sdists, found ${actual_whl} and ${actual_sdist}"
+            ls -1 dist/
+            exit 1
+          fi
+          echo "all ${expected} packages built sdist+wheel at ${VERSION}"
+
+      # Same gate ci.yml's wheel-imports job runs, scoped to the publish set:
+      # install each wheel into a throwaway venv with only its DECLARED
+      # dependencies and import it. This is the check that catches an
+      # undeclared dependency the repo's own dev environment happens to supply
+      # (how `maistro.identity` shipped an unguarded `import nacl`).
+      - name: Install + import from a clean venv
+        run: |
+          set -euo pipefail
+          only=()
+          for pkg in ${PUBLISH_SET}; do only+=(--only "${pkg}"); done
+          python scripts/verify-wheel-imports.py --dist dist/ --python 3.12 "${only[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # pypi — trusted publishing (OIDC), gated by the `release` environment.
+  #
+  # BLOCKED ON MAINTAINER SETUP. The trusted publisher is NOT registered on
+  # PyPI/TestPyPI yet, and registering it cannot be automated from inside this
+  # repository. Until it is, this job runs and FAILS at the upload step with
+  # an authentication error — deliberately. The alternative (skip the upload
+  # when unconfigured) is a publish job that reports green having published
+  # nothing, which is worse than a red one.
+  #
+  # Required PyPI-side config, per package, for all five names:
+  #   owner: Agent-StrongHold   repository: maistro-engine
+  #   workflow: release.yml      environment: release
+  # ---------------------------------------------------------------------------
+  pypi:
+    name: Publish to ${{ needs.guard.outputs.prerelease == 'true' && 'TestPyPI' || 'PyPI' }}
+    needs: [guard, wheels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: release
+      url: ${{ needs.guard.outputs.prerelease == 'true' && 'https://test.pypi.org/project/maistro-core/' || 'https://pypi.org/project/maistro-core/' }}
+    permissions:
+      # id-token is what trusted publishing exchanges for a short-lived upload
+      # token. No PYPI_API_TOKEN secret exists or should be created (ADR §3).
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: List what is about to be published
+        run: ls -1 dist/
+
+      # A release candidate goes to TestPyPI only. Publishing an rc to PyPI
+      # would burn the version number on the real index for a build that has
+      # not been promoted, and PyPI versions are never reusable.
+      #
+      # skip-existing differs by index, and the asymmetry is deliberate:
+      #
+      #   TestPyPI (rc)  true  — ADR §2 keeps the rc suffix OUT of the package
+      #     version, so rc1 and rc2 both upload `1.0.0`. The second upload is a
+      #     duplicate by design, not a mistake, and failing it would make every
+      #     rc after the first unpublishable.
+      #   PyPI (final)   false — a duplicate on the real index means the
+      #     version was already published. That must be loud, not skipped.
+      - name: Publish (trusted publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: ${{ needs.guard.outputs.prerelease == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          skip-existing: ${{ needs.guard.outputs.prerelease == 'true' }}
+          print-hash: true
+
+  # ---------------------------------------------------------------------------
+  # images — build, push, cosign-sign the pushed DIGEST, and verify in-workflow.
+  #
+  # security.yml deliberately removed its old cosign step because it signed
+  # local Docker tags nothing had pushed, so no consumer could ever verify the
+  # signature — "reinstate alongside a real registry push (sign the pushed
+  # digest, not a local tag) when one exists". This is that push, and this is
+  # that reinstatement: it signs `repo@sha256:...` from build-push-action's
+  # digest output, then verifies the signature in the same run.
+  # ---------------------------------------------------------------------------
+  images:
+    name: Build, push + sign images
+    needs: [guard, wheels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: release
+      url: https://github.com/Agent-StrongHold/maistro-engine/pkgs/container/maistro-engine
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing
+    steps:
+      - uses: actions/checkout@v4
+
+      # The immutable vX.Y.Z (or vX.Y.Z-rcN) tag is always pushed. The two
+      # MOVING pointers — X.Y and latest — are pushed only when the guard says
+      # this release is the highest on its line / overall, so a hotfix on an
+      # older line never drags `latest` backwards, and no release candidate
+      # ever touches either (an unpinned `docker pull` and the installer's
+      # fallback both resolve to `latest`).
+      - name: Compute image tags
+        id: tags
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+          MINOR: ${{ needs.guard.outputs.minor }}
+          MOVES_MINOR: ${{ needs.guard.outputs.moves_minor }}
+          MOVES_LATEST: ${{ needs.guard.outputs.moves_latest }}
+        run: |
+          set -euo pipefail
+          for image in maistro-engine hive-conductor; do
+            repo="${IMAGE_NAMESPACE}/${image}"
+            tags="${repo}:${VERSION_TAG}"
+            [ "${MOVES_MINOR}" = "true" ] && tags="${tags},${repo}:${MINOR}"
+            [ "${MOVES_LATEST}" = "true" ] && tags="${tags},${repo}:latest"
+            echo "${image//-/_}=${tags}" >> "${GITHUB_OUTPUT}"
+            echo "${image}: ${tags}"
+          done
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push maistro-engine
+        id: engine
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.maistro_engine }}
+          provenance: true
+          sbom: true
+
+      - name: Build + push hive-conductor
+        id: conductor
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/hive-conductor/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.hive_conductor }}
+          provenance: true
+          sbom: true
+
+      # Pinned binary + hardcoded checksum, the same shape security.yml uses
+      # for grype and syft. Piping an unpinned installer off a mutable branch
+      # into a shell is the supply-chain attack signing exists to defend
+      # against; doing it to install the signer would be self-defeating.
+      - name: Install cosign + syft (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o cosign \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  cosign" | sha256sum --check
+          install -m0755 cosign /usr/local/bin/cosign
+          curl -sSfL -o syft.tgz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  syft.tgz" | sha256sum --check
+          tar -xzf syft.tgz syft && sudo mv syft /usr/local/bin/
+          cosign version
+          syft version
+
+      # Sign the DIGEST, not a tag. A tag is mutable — signing `:latest` binds
+      # the signature to a name that can later point somewhere else, which is
+      # precisely the property a signature is supposed to remove.
+      - name: Sign the pushed digests (keyless)
+        env:
+          COSIGN_YES: "true"
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"
+          cosign sign "${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}"
+
+      # Verifying in the same run is the difference between "we ran a signing
+      # command" and "a signature exists that a consumer can check". The
+      # identity is this workflow at this tag; the issuer is GitHub's OIDC
+      # provider. These are the exact flags the release notes tell users to run.
+      - name: Verify the signatures
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          for ref in \
+            "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}" \
+            "${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}"
+          do
+            echo "::group::verify ${ref}"
+            cosign verify \
+              --certificate-identity "${IDENTITY}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "${ref}"
+            echo "::endgroup::"
+          done
+
+      - name: SBOMs for both images (syft, CycloneDX-JSON)
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p sboms
+          syft "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}" \
+            -o cyclonedx-json > "sboms/sbom-maistro-engine-${GITHUB_REF_NAME}.cyclonedx.json"
+          syft "${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}" \
+            -o cyclonedx-json > "sboms/sbom-hive-conductor-${GITHUB_REF_NAME}.cyclonedx.json"
+          syft dir:. \
+            -o cyclonedx-json > "sboms/sbom-source-${GITHUB_REF_NAME}.cyclonedx.json"
+          ls -1 sboms/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sboms
+          path: sboms/
+          if-no-files-found: error
+          retention-days: 7
+
+      # The digests belong in the run summary: PINNED_IMAGES in
+      # maistro_bootstrap/delivery.py resolves by tag, and anyone wanting a
+      # digest pin needs them from somewhere other than a registry lookup.
+      - name: Record digests
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+        run: |
+          {
+            echo "### Published images"
+            echo
+            echo '```'
+            echo "maistro-engine:  ${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"
+            echo "hive-conductor:  ${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  # ---------------------------------------------------------------------------
+  # github-release — the release page, from the tag, with everything attached.
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: GitHub release
+    needs: [guard, wheels, pypi, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # creating a release writes to the repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: sboms
+          path: sboms/
+
+      # Body = the curated CHANGELOG section (which carries the ADR-076 API
+      # statement) + a verification block. The script appends the API statement
+      # itself only when the section lacks one, so it is stated exactly once.
+      - name: Build release notes
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: python scripts/release_notes.py --tag "${GITHUB_REF_NAME}" --version "${VERSION}" --output release-notes.md
+
+      # Everything a consumer downloads, in one flat directory, with one
+      # SHA256SUMS over all of it. Basenames only: get.sh's checksum
+      # verification looks up the bare `install.sh` entry
+      # (awk '$NF == "install.sh"'), so a path-prefixed manifest would not
+      # match it.
+      - name: Stage artifacts + SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp dist/* release/
+          cp sboms/* release/
+          cp get.sh get.ps1 install.sh release/
+          (cd release && sha256sum -- * > SHA256SUMS)
+          cat release/SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "${PRERELEASE}" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          # No --latest for finals: gh's default already picks "Latest" by
+          # semver, which is the behavior a hotfix on an older line needs —
+          # forcing --latest would let v0.9.1 displace v1.0.0 on the releases
+          # page just because it was tagged more recently.
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            "${flags[@]}" \
+            release/*
+# -----------------------------------------------------------------------------
+# Maintainer prerequisites — none of these can be done from inside this repo,
+# and the workflow fails loudly (never silently) without them:
+#
+#  1. PyPI + TestPyPI trusted publishers for all five publish-set names
+#     (maistro-core, maistro-canvas, maistro-evolve, maistro-rsi,
+#     maistro-bootstrap), each configured with
+#     owner Agent-StrongHold / repo maistro-engine / workflow release.yml /
+#     environment `release`. Until then the `pypi` job fails at upload.
+#  2. A GitHub environment named `release` with a required reviewer
+#     (ADR §4). Without it the `pypi` and `images` jobs run UNGATED — they
+#     still work, but the publish gate the ADR requires is absent.
+#  3. ghcr.io packages for `maistro-engine` and `hive-conductor` must accept
+#     writes from GITHUB_TOKEN (the default for packages created by this repo;
+#     pre-existing packages may need the repo added under Package settings).
+#  4. `main` and `integration` branch protection, which §2 turns into a
+#     release control: the ancestry guard is only as strong as the rules on
+#     the branch it checks against.
+# -----------------------------------------------------------------------------

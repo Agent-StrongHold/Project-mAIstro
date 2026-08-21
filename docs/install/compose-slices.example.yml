@@ -1,0 +1,20 @@
+# Compose profile patterns (documentation only)
+#
+# The checked-in docker-compose.yml keeps all services always-on so
+# `docker compose up -d` matches historical behavior.
+#
+# To adopt profiles without breaking defaults, duplicate services into a
+# docker-compose.override.yml locally or add `profiles:` per service in a fork.
+#
+# Suggested profile names (align with maistro-install / resolver-matrix.md):
+#   data            — postgres only (migrations, local DB)
+#   engine          — postgres + maistro-engine API
+#   llm             — litellm (often with data)
+#   observability   — langfuse (often with data)
+#   webui           — open-webui (depends on engine)
+#   full            — entire stack
+#
+# Example invocation after you edit compose:
+#   docker compose --profile full up -d
+
+x-doc-only: true

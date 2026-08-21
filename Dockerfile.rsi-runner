@@ -1,0 +1,45 @@
+# Full-isolation RSI runner: the ENTIRE self-improvement loop (agent, git,
+# tests, coverage, fitness) executes inside this container. The host is never
+# touched — nothing syncs back. Agent-authored code only ever runs in here.
+#
+# The loop uses --isolation local *inside* the container: "local" == this
+# container's own filesystem, which IS the sandbox boundary. The agent reaches
+# the LiteLLM gateway on the host via host.docker.internal (set at run time).
+#
+# Build:  docker build -f Dockerfile.rsi-runner -t maistro-rsi-runner:latest .
+# Run:    see tools/run_rsi_isolated.sh (or the docker run in the session).
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /workspace
+COPY . /workspace
+
+# The build context is a linked git worktree (its .git is a file pointing
+# outside the context), so bake a fresh, self-contained repo the loop can clone.
+# Normalise text files to LF first: the build context is copied from a Windows
+# checkout (CRLF), but the in-container agent writes LF — without this every
+# agent edit diffs as a whole-file CRLF->LF rewrite, which defeats the
+# complementary-merge (patches can't cleanly apply) and inflates every diff.
+RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.toml' \
+        -o -name '*.yaml' -o -name '*.yml' -o -name '*.cfg' -o -name '*.ini' \) \
+        -print0 | xargs -0 -r sed -i 's/\r$//' \
+    && rm -rf .git \
+    && git init -q \
+    && git add -A \
+    && git -c user.email=rsi@maistro.local -c user.name=RSI commit -qm "rsi baseline snapshot"
+
+# Install the workspace (maistro-core/evolve/rsi/bootstrap + their deps) plus the
+# fitness toolchain, so tests/coverage/lint gates all run in-container.
+RUN uv sync --python 3.12 --frozen || uv sync --python 3.12
+RUN uv pip install coverage bandit radon interrogate vulture pylint
+
+CMD ["sleep", "infinity"]

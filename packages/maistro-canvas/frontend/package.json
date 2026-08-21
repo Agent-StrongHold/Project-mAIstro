@@ -1,0 +1,41 @@
+{
+  "name": "canvas-studio-poc",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js & vite",
+    "server": "node server.js",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:ci": "vitest run --exclude '**/node_modules/**' --exclude 'tests/renderingPipeline.test.js'",
+    "test:watch": "vitest",
+    "lint": "eslint . --max-warnings 13",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "konva": "^10.2.5",
+    "pg": "^8.20.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-konva": "^19.2.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "jsdom": "^29.1.0",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5"
+  }
+}

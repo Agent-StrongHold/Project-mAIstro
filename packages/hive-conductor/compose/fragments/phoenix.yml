@@ -1,0 +1,10 @@
+# Merge this file with the base Hive compose when you selected the Phoenix add-on in `maistro-install`.
+# Example:
+#   docker compose -f packages/hive-conductor/docker-compose.yml \
+#     -f packages/hive-conductor/compose/fragments/phoenix.yml --profile observe up -d
+services:
+  phoenix:
+    profiles: ["observe"]
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"

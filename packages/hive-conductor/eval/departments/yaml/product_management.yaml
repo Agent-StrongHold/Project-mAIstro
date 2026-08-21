@@ -1,0 +1,86 @@
+department: product_management
+evals:
+  - name: requirements_completeness
+    criteria:
+      - name: has_user_stories
+        weight: 20
+        check:
+          op: all
+          of:
+            - {op: keywords_any, words: ["as a"]}
+            - {op: keywords_any, words: ["i want"]}
+      - name: has_acceptance_criteria
+        weight: 25
+        check: {op: keywords_any, words: ["acceptance criteria", given, when, then]}
+      - name: has_non_functional
+        weight: 20
+        check: {op: keywords_any, words: [performance, security, scalability, availability]}
+      - name: has_constraints
+        weight: 15
+        check: {op: keywords_any, words: [constraint, limitation, assumption, "out of scope"]}
+      - name: measurable
+        weight: 20
+        check: {op: regex, pattern: '\d+%|\d+\s*(ms|seconds|users)'}
+
+  - name: stakeholder_alignment
+    criteria:
+      - name: identifies_stakeholders
+        weight: 25
+        check: {op: keywords_any, words: [stakeholder, user, customer, engineering, design]}
+      - name: addresses_concerns
+        weight: 25
+        check: {op: keywords_any, words: [concern, risk, tradeoff, trade-off, impact]}
+      - name: clear_ownership
+        weight: 25
+        check: {op: keywords_any, words: [owner, responsible, accountable, dri]}
+      - name: communication_plan
+        weight: 25
+        check: {op: keywords_any, words: [update, sync, review, demo, communicate]}
+
+  - name: prioritization_logic
+    criteria:
+      - name: uses_framework
+        weight: 25
+        check: {op: keywords_any, words: [rice, moscow, ice, impact, effort, value]}
+      - name: quantified
+        weight: 25
+        check: {op: regex, pattern: '(score|priority|rank).*\d+', flags: i}
+      - name: justifies_ranking
+        weight: 25
+        check: {op: keywords_any, words: [because, since, "due to", rationale]}
+      - name: considers_dependencies
+        weight: 25
+        check: {op: keywords_any, words: ["depends on", "blocked by", prerequisite]}
+
+  - name: decomposition_quality
+    criteria:
+      - name: atomic_tasks
+        weight: 25
+        check: {op: regex_count, pattern: '^[\-\*]\s|^\d+\.', flags: m, min: 5}
+      - name: estimable
+        weight: 25
+        check: {op: keywords_any, words: [point, hour, day, sprint, estimate]}
+      - name: independent
+        weight: 25
+        check: {op: keywords_any, words: [independent, parallel, standalone]}
+      - name: testable
+        weight: 25
+        check: {op: keywords_any, words: [test, verify, validate, acceptance]}
+
+  - name: timeline_realism
+    criteria:
+      - name: has_dates
+        weight: 20
+        check: {op: regex, pattern: '\d{4}[-/]\d{2}|week \d|sprint \d|Q[1-4]'}
+      - name: includes_buffer
+        weight: 20
+        check: {op: keywords_any, words: [buffer, contingency, slack, risk]}
+      - name: phased_delivery
+        weight: 20
+        check: {op: keywords_any, words: [phase, milestone, mvp, iteration]}
+      - name: resource_aware
+        weight: 20
+        check: {op: keywords_any, words: [resource, "team size", capacity, bandwidth]}
+      - name: dependencies_mapped
+        weight: 20
+        check: {op: keywords_any, words: [depends, blocked, "critical path"]}

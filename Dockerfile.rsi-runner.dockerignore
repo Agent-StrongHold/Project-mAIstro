@@ -1,0 +1,17 @@
+# Keep the build context lean: source + pyproject + uv.lock + tests only.
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.git
+.pytest_cache
+.mypy_cache
+.ruff_cache
+**/dist
+**/build
+**/*.egg-info
+**/.coverage
+**/coverage.xml
+**/htmlcov
+**/.DS_Store

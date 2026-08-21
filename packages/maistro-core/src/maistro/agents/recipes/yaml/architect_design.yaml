@@ -1,0 +1,9 @@
+name: architect.design
+role: architect
+description: Design target directory structure and file mapping plan
+prompt_name: architect.design
+result_schema: schemas.ArchitectOutput
+min_tier: 3
+max_tier: 4
+temperature: 0.5
+max_tokens: 4096

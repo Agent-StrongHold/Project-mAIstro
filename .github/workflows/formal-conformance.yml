@@ -1,0 +1,101 @@
+name: Formal Conformance
+
+on:
+  pull_request:
+  push:
+    branches: [main, integration, develop]
+
+concurrency:
+  group: formal-conformance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  formal-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e formal/
+
+      - name: Install maistro-core
+        run: pip install -e packages/maistro-core
+
+      - name: Install maistro-evolve
+        run: pip install -e packages/maistro-evolve
+
+      - name: Extract constants from source
+        run: python -m formal.extractors.extract_security_constants
+
+      - name: Check for drift
+        id: drift
+        run: |
+          if git diff --quiet -- formal/generated/; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            git diff -- formal/generated/ > formal-models-drift.diff
+          fi
+
+      - name: Run formal models
+        run: pytest formal/models/ -v --timeout=300 --hypothesis-seed=0
+
+      - name: Upload drift diff artifact
+        if: steps.drift.outputs.drift == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-models-conformance-drift
+          path: formal-models-drift.diff
+
+      # Fork PRs get a read-only GITHUB_TOKEN, so createComment below would fail
+      # there. That used to be handled with `continue-on-error: true`, which
+      # swallowed every other failure mode too. Skipping forks by condition is the
+      # narrow fix; the drift gate below runs regardless of fork status.
+      - name: Comment on PR (drift detected)
+        if: >-
+          steps.drift.outputs.drift == 'true'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.fork == false
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              'Formal models conformance drift detected.',
+              '',
+              'The extracted constants (`formal/generated/security-constants.json`) do not match this PR.',
+              'Run `python -m formal.extractors.extract_security_constants` locally and commit the updated file.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
+      # Drift now FAILS the job. Until this step existed, `Check for drift` only set
+      # an output: a PR whose security constants no longer matched the formal models
+      # uploaded a diff, posted a comment, and passed. The workflow reported
+      # conformance it had just measured as broken.
+      #
+      # Last, so the diff artifact and the PR comment are produced first — a
+      # contributor gets the diff and the fix instruction alongside the failure.
+      # Verified clean on 2026-07-26: the extractor is a no-op against this tree.
+      - name: Gate on conformance drift
+        if: steps.drift.outputs.drift == 'true'
+        run: |
+          echo "::error::Formal models conformance drift — formal/generated/ does not match this tree."
+          echo "Run: python -m formal.extractors.extract_security_constants && git add formal/generated/"
+          git diff -- formal/generated/
+          exit 1

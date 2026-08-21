@@ -1,0 +1,17 @@
+name: delivery
+version: 1.0.0
+description: "Execution Engine for Sprint Velocity"
+reasoning:
+  strategy: direct
+model: auto
+tools: []
+skills: []
+delegation:
+  mode: none
+trust_tier: t2
+priority_tier: P2
+metadata:
+  tagline: "Execution Engine for Sprint Velocity"
+  capabilities: [sync_jira, create_jira_ticket, detect_blockers]
+  primary_capability: detect_blockers
+  primary_action_label: "Detect Blockers"

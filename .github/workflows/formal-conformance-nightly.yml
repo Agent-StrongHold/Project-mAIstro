@@ -1,0 +1,45 @@
+name: Formal Conformance (Nightly)
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  formal-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e formal/ && pip install -e packages/maistro-core && pip install -e packages/maistro-evolve
+
+      - name: Extract constants from source
+        run: python -m formal.extractors.extract_security_constants
+
+      - name: Run formal models (deep exploration)
+        run: pytest formal/models/ -v --timeout=1800 --nightly --hypothesis-seed=0
+        env:
+          MAISTRO_FORMAL_NIGHTLY_EXAMPLES: "10000"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-nightly-results
+          retention-days: 30
+          path: formal/models/

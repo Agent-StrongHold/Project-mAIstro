@@ -1,0 +1,76 @@
+name: Registry CI
+
+# Validate ADR/spec front-matter per engine#ADR-031.
+# Warn-only during the rollout window (until 2026-06-07);
+# Strict since 2026-07-27 (the ADR-031 30-day warn-only window closed
+# 2026-06-06; measured before flipping: 268 files, 0 warnings).
+
+on:
+  pull_request:
+    paths:
+      - 'docs/adr/**'
+      - 'docs/specs/**'
+      - 'packages/maistro-registry/**'
+      - 'tests/tools/registry/**'
+      - 'tests/tools/test_lint_lifecycle.py'
+      - 'tools/lint_lifecycle.py'
+      - 'quality/lifecycle-baseline.json'
+      - 'pyproject.toml'
+      - '.github/workflows/registry.yml'
+      # The AC-traceability gate reads @pytest.mark.ac markers out of every
+      # test root, so a PR that only deletes or renames a marker must still
+      # trigger this workflow — without these paths the gate advertised
+      # traceability it could not enforce (PR #479 review).
+      - 'packages/**/tests/**'
+      - 'tests/**'
+  push:
+    branches:
+      - main
+      - integration
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate ADR/spec front-matter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install minimal deps
+        run: pip install -e ./packages/maistro-registry pytest
+
+      - name: Run unit tests
+        run: |
+          pytest tests/tools/registry/ tests/tools/test_lint_lifecycle.py \
+            --confcutdir=tests/tools \
+            -p no:cacheprovider \
+            -v
+
+      - name: Lifecycle status machine (ADR-097)
+        # Statuses, forward-only transitions (backwards only with a `reason`),
+        # per-status required fields, and AC traceability for Tests Passing+
+        # specs. Ratchets against quality/lifecycle-baseline.json in both
+        # directions: new violations fail, and stale baseline entries fail
+        # until pruned — the baseline can only shrink.
+        run: python tools/lint_lifecycle.py
+
+      - name: Validate ADR/spec front-matter (warn-only window)
+        # `lint` is a strict superset of `walk`: same front-matter validation
+        # via _load_walk_validation, plus supersedes/blocks cycle detection,
+        # dangling cross-reference checks, and duplicate-ID detection — none of
+        # which any workflow previously invoked, so those defects were ungated
+        # across 118 ADRs and 151 specs. Verified clean at the time of this
+        # change: 268 files, 0 errors, 0 warnings, 0 DAG/dangling findings.
+        run: python -m maistro_registry.cli lint . --strict

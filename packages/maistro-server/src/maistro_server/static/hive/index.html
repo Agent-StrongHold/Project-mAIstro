@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hive Conductor · Maistro Engine</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a222d;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+      --mono: ui-monospace, "Cascadia Code", monospace;
+      --sans: "IBM Plex Sans", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.45;
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #151c26 0%, var(--bg) 100%);
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    header p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: grid;
+      gap: 1.25rem;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.25rem;
+    }
+    section h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    input, textarea, select {
+      width: 100%;
+      padding: 0.55rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+    }
+    textarea { min-height: 88px; resize: vertical; font-family: var(--mono); font-size: 0.88rem; }
+    .row { display: grid; gap: 0.75rem; }
+    @media (min-width: 640px) {
+      .row.cols-2 { grid-template-columns: 1fr 1fr; }
+    }
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 6px;
+      padding: 0.55rem 1rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      background: var(--accent);
+      color: #fff;
+    }
+    button.secondary { background: #30363d; color: var(--text); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    pre {
+      margin: 0;
+      padding: 0.75rem;
+      background: #0d1117;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      overflow: auto;
+      max-height: 220px;
+      border: 1px solid var(--border);
+    }
+    .pill {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .pill.ok { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+    .pill.degraded { background: rgba(210, 153, 34, 0.15); color: var(--warn); }
+    .pill.err { background: rgba(248, 81, 73, 0.15); color: var(--err); }
+    ul.tasks { list-style: none; padding: 0; margin: 0; }
+    ul.tasks li {
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.82rem;
+    }
+    ul.tasks li:last-child { border-bottom: none; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hive Conductor</h1>
+    <p>Control plane for <strong>Maistro Engine</strong> — health, readiness, and task queue (same-origin API).</p>
+  </header>
+  <main>
+    <section>
+      <h2>API access</h2>
+      <label for="apiKey">Bearer token (optional if server runs with no <code>API_KEYS</code>)</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="Paste API key…" />
+      <div class="row" style="margin-top:0.6rem;">
+        <button type="button" class="secondary" id="saveKey">Save in browser</button>
+        <button type="button" class="secondary" id="clearKey">Clear</button>
+      </div>
+      <p class="hint">Stored only in <code>sessionStorage</code> as <code>maistro_api_key</code>. Use HTTPS in production.</p>
+    </section>
+
+    <section>
+      <h2>Health <span id="healthPill" class="pill" style="display:none;"></span></h2>
+      <div class="row cols-2">
+        <button type="button" id="btnHealth">GET /health</button>
+        <button type="button" id="btnReady">GET /health/ready</button>
+      </div>
+      <pre id="healthOut" style="margin-top:0.75rem;">{}</pre>
+    </section>
+
+    <section>
+      <h2>New task</h2>
+      <div class="row">
+        <div>
+          <label for="desc">Description</label>
+          <textarea id="desc" placeholder="Describe the engineering task…"></textarea>
+        </div>
+        <div class="row cols-2">
+          <div>
+            <label for="workspace">Workspace path</label>
+            <input id="workspace" value="/tmp/maistro-workspace" />
+          </div>
+          <div>
+            <label for="tier">Tier (optional)</label>
+            <input id="tier" type="number" placeholder="e.g. 2" />
+          </div>
+        </div>
+      </div>
+      <button type="button" id="btnSubmit" style="margin-top:0.75rem;">POST /tasks</button>
+      <pre id="taskOut" style="margin-top:0.75rem;">{}</pre>
+    </section>
+
+    <section>
+      <h2>Recent tasks</h2>
+      <button type="button" id="btnList">GET /tasks</button>
+      <ul class="tasks" id="taskList" style="margin-top:0.75rem;"></ul>
+      <pre id="listRaw" style="margin-top:0.75rem;">{}</pre>
+    </section>
+  </main>
+  <script>
+(function () {
+  const KEY = "maistro_api_key";
+  const apiKeyEl = document.getElementById("apiKey");
+  const healthOut = document.getElementById("healthOut");
+  const taskOut = document.getElementById("taskOut");
+  const listRaw = document.getElementById("listRaw");
+  const taskList = document.getElementById("taskList");
+  const healthPill = document.getElementById("healthPill");
+
+  function headers() {
+    const h = { Accept: "application/json" };
+    const k = apiKeyEl.value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  }
+
+  function jsonHeaders() {
+    const h = headers();
+    h["Content-Type"] = "application/json";
+    return h;
+  }
+
+  if (sessionStorage.getItem(KEY)) apiKeyEl.value = sessionStorage.getItem(KEY);
+
+  document.getElementById("saveKey").onclick = () => {
+    sessionStorage.setItem(KEY, apiKeyEl.value.trim());
+  };
+  document.getElementById("clearKey").onclick = () => {
+    sessionStorage.removeItem(KEY);
+    apiKeyEl.value = "";
+  };
+
+  async function safeJson(r) {
+    const t = await r.text();
+    try { return JSON.parse(t); } catch { return { _raw: t, _status: r.status }; }
+  }
+
+  function showPill(ok, degraded) {
+    healthPill.style.display = "inline-block";
+    healthPill.className = "pill " + (ok ? "ok" : degraded ? "degraded" : "err");
+    healthPill.textContent = ok ? "live" : degraded ? "degraded" : "error";
+  }
+
+  document.getElementById("btnHealth").onclick = async () => {
+    const r = await fetch("/health", { headers: headers() });
+    const j = await safeJson(r);
+    healthOut.textContent = JSON.stringify(j, null, 2);
+    showPill(r.ok && j.status === "ok", false);
+  };
+
+  document.getElementById("btnReady").onclick = async () => {
+    const r = await fetch("/health/ready", { headers: headers() });
+    const j = await safeJson(r);
+    healthOut.textContent = JSON.stringify(j, null, 2);
+    const ok = r.ok && j.status === "ok";
+    const deg = r.ok && j.status === "degraded";
+    showPill(ok, deg || !r.ok);
+  };
+
+  document.getElementById("btnSubmit").onclick = async () => {
+    const body = {
+      description: document.getElementById("desc").value.trim() || "(empty)",
+      workspace: document.getElementById("workspace").value.trim() || "/tmp/maistro-workspace",
+      constraints: [],
+    };
+    const tierVal = document.getElementById("tier").value.trim();
+    if (tierVal !== "") body.tier = parseInt(tierVal, 10);
+    const r = await fetch("/tasks", { method: "POST", headers: jsonHeaders(), body: JSON.stringify(body) });
+    const j = await safeJson(r);
+    taskOut.textContent = JSON.stringify(j, null, 2);
+  };
+
+  document.getElementById("btnList").onclick = async () => {
+    const r = await fetch("/tasks?limit=20", { headers: headers() });
+    const j = await safeJson(r);
+    listRaw.textContent = JSON.stringify(j, null, 2);
+    taskList.innerHTML = "";
+    const items = (j && j.items) ? j.items : [];
+    items.forEach((t) => {
+      const li = document.createElement("li");
+      li.textContent = t.task_id + " · " + t.status + " · " + (t.description || "").slice(0, 80);
+      taskList.appendChild(li);
+    });
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.textContent = "(no tasks)";
+      li.style.color = "var(--muted)";
+      taskList.appendChild(li);
+    }
+  };
+})();
+  </script>
+</body>
+</html>

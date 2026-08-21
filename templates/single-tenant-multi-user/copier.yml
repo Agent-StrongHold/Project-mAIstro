@@ -1,0 +1,10 @@
+_min_version: "9.0.0"
+
+project_slug:
+  type: str
+  help: Short slug for the generated product directory (e.g. my-conductor)
+
+substrate_ref:
+  type: str
+  default: "maistro-engine#ADR-030"
+  help: ADR substrate cross-reference string written into generated ADR seeds

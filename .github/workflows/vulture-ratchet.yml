@@ -1,0 +1,29 @@
+name: Vulture Ratchet
+
+on:
+  pull_request:
+    branches: [develop, integration, main]
+  push:
+    branches: [develop, integration, main]
+
+permissions:
+  contents: read
+
+jobs:
+  exact-debt-ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - name: Install pinned analyzer
+        run: uv pip install --system vulture==2.16
+      - name: Require exact reviewed Vulture identities
+        run: >-
+          python scripts/check-vulture-baseline.py
+          packages/*/src
+          --min-confidence 60
+          --exclude '*/third_party/*'

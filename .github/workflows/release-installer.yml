@@ -1,0 +1,98 @@
+# Installer release plumbing (SPEC-072726-3439 Phase 5):
+#   - produce a SHA256SUMS manifest for the curl/iex entrypoints as a build
+#     artifact (get.sh verifies install.sh against it via
+#     MAISTRO_SHA256SUMS_URL; the *published* manifest is the one release.yml
+#     attaches to the GitHub release),
+#   - run a full installer smoke test: wizardless install with staged
+#     bootstrap credentials, asserting the stack is healthy, setup
+#     completed, and the credentials file was shredded.
+#
+# Runs on version tags and manual dispatch — the smoke job builds the whole
+# compose stack and takes tens of minutes; it is not a per-PR gate.
+#
+# This workflow DOES NOT PUBLISH. It used to carry a `build-images` job that
+# pushed ghcr.io/.../maistro-engine and hive-conductor at `:latest` and
+# `:${{ github.ref_name }}` on every `v*` tag. That was a second publish path,
+# which ADR-073126-c4e1 §3 forbids ("Publishing — to PyPI or to the container
+# registry — happens only via the tag-triggered release.yml workflow"), and it
+# published unsigned images and moved `:latest` even for a release candidate.
+# release.yml's `images` job replaces it: same two images, gated by the
+# `release` environment approval, cosign-signed by digest, and with `latest`
+# withheld from prereleases. Image digests for the PINNED_IMAGES map in
+# maistro_bootstrap/delivery.py are printed to that job's run summary.
+name: release-installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# Read-only: this workflow no longer pushes anything to the registry.
+permissions:
+  contents: read
+
+jobs:
+  checksums:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate SHA256SUMS for the entrypoints
+        run: |
+          sha256sum get.sh get.ps1 install.sh > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-checksums
+          path: SHA256SUMS
+          if-no-files-found: error
+
+  smoke-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage disposable bootstrap credentials
+        run: |
+          umask 077
+          cat > /tmp/smoke-credentials.json <<'EOF'
+          {
+            "admin_username": "smoke-admin",
+            "admin_password": "smoke-admin-pass-1",
+            "user_username": "smoke-user",
+            "user_password": "smoke-user-pass-1",
+            "optional_modules": [],
+            "hardware_preset": "auto"
+          }
+          EOF
+      - name: Run the installer headless
+        env:
+          MAISTRO_BOOTSTRAP_CREDENTIALS_FILE: /tmp/smoke-credentials.json
+          MAISTRO_INSTALL_CLI: "0"
+          MAISTRO_OPEN_BROWSER: "0"
+        run: ./install.sh --answers-file docs/install/examples/answers-v1-smoke.yaml
+      - name: Assert end state
+        run: |
+          set -euo pipefail
+          curl -sf http://127.0.0.1:8000/health/live >/dev/null || curl -sf http://127.0.0.1:8000/health >/dev/null
+          curl -sf http://127.0.0.1:8101/health/ready >/dev/null
+          status="$(curl -sf http://127.0.0.1:8101/v1/setup/status)"
+          echo "$status"
+          echo "$status" | grep -q '"setup_complete"[[:space:]]*:[[:space:]]*true'
+          # Terminal consumption: staged credentials must be shredded.
+          if [ -f /tmp/smoke-credentials.json ]; then
+            echo "bootstrap credentials file was not shredded" >&2
+            exit 1
+          fi
+          # Vault round-trip: the age vault was provisioned inside the container.
+          docker compose exec -T hive-conductor python -c "
+          import pathlib, subprocess
+          vault = pathlib.Path('/data/secrets.age')
+          key = pathlib.Path('/data/admin.key')
+          assert vault.exists() and key.exists(), 'vault not provisioned'
+          out = subprocess.run(['age', '-d', '-i', str(key)], input=vault.read_bytes(), capture_output=True)
+          assert out.returncode == 0, out.stderr.decode()
+          print('vault round-trip OK')
+          "
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail=100

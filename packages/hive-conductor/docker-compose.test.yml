@@ -1,0 +1,63 @@
+# Full-stack compose for e2e testing.
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build -d
+#   docker compose -f docker-compose.test.yml run --rm api-tests
+#   docker compose -f docker-compose.test.yml run --rm e2e-tests
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+  hive:
+    build:
+      context: ../..
+      dockerfile: packages/hive-conductor/Dockerfile
+    ports:
+      - "8101:8101"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HARDWARE_PRESET=beast
+      - CONDUCTOR_DATA_DIR=/tmp/conductor
+    # No curl/shell in the `hive` runtime image (Chainguard/Wolfi, near-zero
+    # CVEs — see Dockerfile). Its own HEALTHCHECK already uses Python's
+    # urllib for exactly this reason; mirror that here rather than `curl`,
+    # which silently fails every check and never reports healthy.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=3).status==200 else 1)",
+        ]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
+
+  api-tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    environment:
+      - HIVE_BASE_URL=http://hive:8101
+    depends_on:
+      hive:
+        condition: service_healthy
+    command: ["pytest", "tests/e2e/test_pm_workflow_api.py", "-v", "--tb=short"]
+    profiles: ["test"]
+
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile.playwright
+    environment:
+      - HIVE_BASE_URL=http://hive:8101
+      # Forwarded from the host, not inherited: compose does not pass the
+      # runner's environment into a container. playwright.config.ts keys its
+      # reduced CI budget off this, and without it the suite runs at local
+      # settings and overruns the job's step timeout. Empty when run locally.
+      - CI=${CI:-}
+    depends_on:
+      hive:
+        condition: service_healthy
+    command: ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]
+    profiles: ["test"]

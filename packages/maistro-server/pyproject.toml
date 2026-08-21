@@ -1,0 +1,36 @@
+[project]
+name = "maistro-server"
+version = "0.9.0"
+description = "FastAPI server for the Maistro multi-agent AI platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "maistro-core>=0.9.0",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.34,<1",
+    # fastmcp resolves at 3.x in the workspace lock, so the cap is <4 —
+    # the >=2.0 floor predates that major and is kept as the true minimum.
+    "fastmcp>=2.0,<4",
+    # Floor raised from >=2.60 to match hive-conductor, which declares the
+    # same dep: two packages in one workspace advertising different
+    # langfuse ranges is what makes a naive <3 cap look safe here when it
+    # would in fact make the workspace unsatisfiable (lock resolves 4.x).
+    "langfuse>=3.9.3,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.9,<1",
+    "mypy>=1.14,<2",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maistro_server"]

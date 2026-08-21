@@ -1,0 +1,17 @@
+# Runtime security: cage package mounted READ-ONLY in Turing's container.
+# This prevents any runtime process from modifying the enforcement layer.
+#
+# Usage: docker-compose -f docker-compose.yml -f compose/cage-readonly.yml up
+version: "3.8"
+
+services:
+  hive-conductor:
+    volumes:
+      # Cage is read-only — Turing cannot modify its own constraints
+      - ./packages/hive-conductor/cage:/app/cage:ro
+      # Evals are read-only — Turing cannot modify its own scoring
+      - ./packages/hive-conductor/eval:/app/eval:ro
+    # Drop all capabilities except what's needed, prevent privilege escalation
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # app needs /tmp, but cage/eval are :ro via volumes

@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "owner": "@BlakeMatthews-dev",
+  "policy": "Classify current vulture findings by runtime discovery mechanism or declarative framework surface. New unreachable-code findings are never allowlisted and must be fixed.",
+  "rules": [
+    {
+      "id": "fastapi-route-handler",
+      "category": "framework_decorator_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/.*/(routes|api|main)\\.py|packages/.*/(routes|api)/.*\\.py",
+      "message_regex": "unused function",
+      "rationale": "FastAPI route decorators register these callables dynamically; static import scanning cannot see decorator-based dispatch.",
+      "finding_count": 27,
+      "finding_sha256": "a784cfcf8446bf1c670a13ac45239da445eed43a9f256edc85335169c98c6160"
+    },
+    {
+      "id": "pydantic-declarative-field",
+      "category": "declarative_model_field",
+      "owner": "@BlakeMatthews-dev",
+      "message_regex": "unused (variable|attribute) '",
+      "source_contains_any": [
+        "BaseModel",
+        "pydantic",
+        "Field(",
+        "ConfigDict",
+        "StrEnum",
+        "Enum"
+      ],
+      "rationale": "Pydantic models and enums expose fields declaratively for validation/serialization rather than direct Python reads.",
+      "finding_count": 440,
+      "finding_sha256": "97fc29469448bd98e5c13ff1d6b17bc35be0375c57b2cb8bc036fca59aa4a5f6"
+    },
+    {
+      "id": "dataclass-declarative-field",
+      "category": "declarative_model_field",
+      "owner": "@BlakeMatthews-dev",
+      "message_regex": "unused (variable|attribute) '",
+      "source_contains_any": [
+        "@dataclass",
+        "dataclass(",
+        "TypedDict",
+        "NamedTuple"
+      ],
+      "rationale": "Dataclass/typed record fields are constructed and serialized by convention or reflection, not always read directly in package-local code.",
+      "finding_count": 110,
+      "finding_sha256": "f0578b07c72ef60cf87cbaeef1849019d995b1d43f821adbeb145cf53fbcd372"
+    },
+    {
+      "id": "fastapi-app-state",
+      "category": "framework_decorator_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-server/src/maistro_server/main\\.py|packages/hive-conductor/backend/main\\.py",
+      "message_regex": "unused attribute",
+      "source_contains_any": [
+        "app.state"
+      ],
+      "rationale": "FastAPI/Starlette app.state attributes are dynamic framework state consumed through the application object.",
+      "finding_count": 1,
+      "finding_sha256": "362f426956aa1f1715df103f2e1a3bbcd0f5cae887319c8841406f969a55b832"
+    },
+    {
+      "id": "hive-service-api-surface",
+      "category": "dynamic_import_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/hive-conductor/backend/services/.*\\.py|packages/hive-conductor/cage/.*\\.py",
+      "message_regex": "unused (function|class|method|variable|attribute)",
+      "rationale": "Hive services are invoked from routes, websocket handlers, chat/tool dispatch, and operational scripts; this category preserves service APIs pending narrower per-service baselines.",
+      "finding_count": 0,
+      "finding_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "maistro-cli-command-surface",
+      "category": "dynamic_import_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-core/src/maistro/cli/.*\\.py",
+      "message_regex": "unused function",
+      "rationale": "CLI subcommands are invoked through argparse dispatch and command wiring rather than direct function imports.",
+      "finding_count": 10,
+      "finding_sha256": "20100c6567413daeab807517b6f3d3cdb65c2acadfd9f70bb13d0044af87ca96"
+    },
+    {
+      "id": "bootstrap-builder-surface",
+      "category": "planned_implementation_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-bootstrap/src/maistro_bootstrap/(builders|plan|resolver|schema).*\\.py",
+      "message_regex": "unused (function|variable|attribute)",
+      "rationale": "Bootstrap builder/resolver outputs are public plan fields or feature-slice hooks used by generated plans and product scaffolding.",
+      "finding_count": 2,
+      "finding_sha256": "b1758588fcdc6a012c179bd8f0652f231ff17cd2b37fc7c46e15939572fa8d04"
+    },
+    {
+      "id": "core-public-api-surface",
+      "category": "public_extension_point",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-core/src/maistro/.*\\.py",
+      "message_regex": "unused (function|class|method|variable|attribute)",
+      "rationale": "maistro-core exports package APIs consumed by downstream products and sibling repos, so package-local vulture cannot distinguish all public consumers.",
+      "finding_count": 655,
+      "finding_sha256": "b724e94d51bdeddedfbb71e858f85dc3bd33ee0ae0baca73734b19189b8e6aa6"
+    },
+    {
+      "id": "pytest-discovered-test-surface",
+      "category": "test_discovery_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": ".*/tests?/.*\\.py|tests/.*\\.py",
+      "message_regex": "unused (function|class|method|variable|attribute)",
+      "rationale": "Pytest discovers test functions, fixtures, and helper classes by naming and fixture injection.",
+      "finding_count": 0,
+      "finding_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "protocol-and-adapter-port",
+      "category": "public_extension_point",
+      "owner": "@BlakeMatthews-dev",
+      "message_regex": "unused (class|method|property)",
+      "source_contains_any": [
+        "Protocol",
+        "ABC",
+        "@abstractmethod",
+        "__all__",
+        "adapter",
+        "port"
+      ],
+      "rationale": "Ports and protocol members define supported extension contracts even when concrete use is indirect.",
+      "finding_count": 122,
+      "finding_sha256": "eb945cde6d2665912d729796c694553b8c8eb763911564b5243289f9ea79f599"
+    },
+    {
+      "id": "runtime-plugin-entrypoint",
+      "category": "dynamic_import_surface",
+      "owner": "@BlakeMatthews-dev",
+      "message_regex": "unused (function|class|method) '",
+      "source_contains_any": [
+        "entrypoint",
+        "entry point",
+        "plugin",
+        "registry",
+        "register_",
+        "__getattr__"
+      ],
+      "rationale": "Plugin, registry, and lazy-import entrypoints are intentionally discovered by string/name lookup.",
+      "finding_count": 8,
+      "finding_sha256": "19c0c53af5fcd16e3403232795a14509c8367529cee05c970c895647ea58e520"
+    },
+    {
+      "id": "schema-enum-member",
+      "category": "declarative_model_field",
+      "owner": "@BlakeMatthews-dev",
+      "message_regex": "unused variable '[A-Z][A-Z0-9_]*'",
+      "rationale": "Enum members are serialized values and may not appear as direct reads in package-local static analysis.",
+      "finding_count": 2,
+      "finding_sha256": "ed4c86e8600e17a44a121363f55875ec0051be90955f6cfbef718e2be32272da"
+    },
+    {
+      "id": "planned-package-api",
+      "category": "planned_implementation_surface",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-(turing|evolve|rsi|canvas|design)/.*\\.py",
+      "message_regex": "unused (function|class|method|variable|attribute)",
+      "rationale": "Experimental and product-adjacent package APIs are retained as planned implementation surfaces pending per-package hardening specs.",
+      "finding_count": 45,
+      "finding_sha256": "53559f231f4fea94eb3880dbee7da28269cba21f605796645d21efed613277bc"
+    },
+    {
+      "id": "tool-or-cli-entrypoint",
+      "category": "dynamic_import_surface",
+      "owner": "@BlakeMatthews-dev",
+      "message_regex": "unused function '(_?tool_|cmd_|run_|execute_|handle_|stream_|list_|get_|create_|update_|delete_|cancel_)",
+      "rationale": "Tool, CLI, route, and handler entrypoints are frequently invoked by dispatch tables, CLIs, frameworks, or external clients.",
+      "finding_count": 1,
+      "finding_sha256": "009ab6799c76d34328f3c4a107e450a06a1e2bb921724a5e824ecb526ff8190d"
+    }
+  ]
+}

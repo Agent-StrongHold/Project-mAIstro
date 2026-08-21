@@ -1,0 +1,12 @@
+# Example local override — not used by default CI.
+# Copy to `docker-compose.override.yml` at repo root to experiment with profiles.
+#
+# Suggested profile names (see docs/install/compose-slices.example.yml):
+#   data, engine, llm, observability, webui, full
+#
+# Example:
+# services:
+#   litellm:
+#     profiles: ["llm"]
+
+services: {}

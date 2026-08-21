@@ -1,0 +1,19 @@
+# Example: request full root stack bring-up when apply_spec resolves (requires repo root).
+schema_version: "1"
+install_mode: preview
+features:
+  - core_lib
+  - server
+  - data
+compose_addons: []
+product: null
+dry_run: true
+llm_gateway: litellm
+observability_backend: langfuse_v2
+deployment_tier: local_docker
+container_runtime: docker
+users_intent: bootstrap_admin
+stack_bringup: root_full
+provider_accounts:
+  openai: false
+  anthropic: true

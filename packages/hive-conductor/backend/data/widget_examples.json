@@ -1,0 +1,846 @@
+[
+  {
+    "id": "ex-001",
+    "category": "Jira",
+    "title": "Open Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "Open"
+    },
+    "description": "Jira widget \u2014 open issues"
+  },
+  {
+    "id": "ex-002",
+    "category": "Jira",
+    "title": "Open Issues",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "Open"
+    },
+    "description": "Jira widget \u2014 open issues"
+  },
+  {
+    "id": "ex-003",
+    "category": "Jira",
+    "title": "Open Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "Open"
+    },
+    "description": "Jira widget \u2014 open issues"
+  },
+  {
+    "id": "ex-004",
+    "category": "Jira",
+    "title": "In Progress",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "In Progress"
+    },
+    "description": "Jira widget \u2014 in progress"
+  },
+  {
+    "id": "ex-005",
+    "category": "Jira",
+    "title": "In Progress",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "In Progress"
+    },
+    "description": "Jira widget \u2014 in progress"
+  },
+  {
+    "id": "ex-006",
+    "category": "Jira",
+    "title": "In Progress",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "In Progress"
+    },
+    "description": "Jira widget \u2014 in progress"
+  },
+  {
+    "id": "ex-007",
+    "category": "Jira",
+    "title": "Blocked Items",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "Blocked",
+      "days": "30"
+    },
+    "description": "Jira widget \u2014 blocked items"
+  },
+  {
+    "id": "ex-008",
+    "category": "Jira",
+    "title": "Blocked Items",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "Blocked",
+      "days": "30"
+    },
+    "description": "Jira widget \u2014 blocked items"
+  },
+  {
+    "id": "ex-009",
+    "category": "Jira",
+    "title": "Blocked Items",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "Blocked",
+      "days": "30"
+    },
+    "description": "Jira widget \u2014 blocked items"
+  },
+  {
+    "id": "ex-010",
+    "category": "Jira",
+    "title": "Done This Week",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "status": "Done",
+      "days": "7"
+    },
+    "description": "Jira widget \u2014 done this week"
+  },
+  {
+    "id": "ex-011",
+    "category": "Jira",
+    "title": "Done This Week",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "status": "Done",
+      "days": "7"
+    },
+    "description": "Jira widget \u2014 done this week"
+  },
+  {
+    "id": "ex-012",
+    "category": "Jira",
+    "title": "Done This Week",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "status": "Done",
+      "days": "7"
+    },
+    "description": "Jira widget \u2014 done this week"
+  },
+  {
+    "id": "ex-013",
+    "category": "Jira",
+    "title": "My Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "assignee": "currentUser()"
+    },
+    "description": "Jira widget \u2014 my issues"
+  },
+  {
+    "id": "ex-014",
+    "category": "Jira",
+    "title": "My Issues",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "assignee": "currentUser()"
+    },
+    "description": "Jira widget \u2014 my issues"
+  },
+  {
+    "id": "ex-015",
+    "category": "Jira",
+    "title": "My Issues",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "assignee": "currentUser()"
+    },
+    "description": "Jira widget \u2014 my issues"
+  },
+  {
+    "id": "ex-016",
+    "category": "Jira",
+    "title": "Open Bugs",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "jql_extra": "type = Bug AND resolution = Unresolved"
+    },
+    "description": "Jira widget \u2014 open bugs"
+  },
+  {
+    "id": "ex-017",
+    "category": "Jira",
+    "title": "Open Bugs",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "jql_extra": "type = Bug AND resolution = Unresolved"
+    },
+    "description": "Jira widget \u2014 open bugs"
+  },
+  {
+    "id": "ex-018",
+    "category": "Jira",
+    "title": "Open Bugs",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "jql_extra": "type = Bug AND resolution = Unresolved"
+    },
+    "description": "Jira widget \u2014 open bugs"
+  },
+  {
+    "id": "ex-019",
+    "category": "Jira",
+    "title": "Recent Activity",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "count",
+      "refresh_minutes": 15,
+      "days": "14"
+    },
+    "description": "Jira widget \u2014 recent activity"
+  },
+  {
+    "id": "ex-020",
+    "category": "Jira",
+    "title": "Recent Activity",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "list",
+      "refresh_minutes": 15,
+      "days": "14"
+    },
+    "description": "Jira widget \u2014 recent activity"
+  },
+  {
+    "id": "ex-021",
+    "category": "Jira",
+    "title": "Recent Activity",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jira_display": "status-breakdown",
+      "refresh_minutes": 15,
+      "days": "14"
+    },
+    "description": "Jira widget \u2014 recent activity"
+  },
+  {
+    "id": "ex-022",
+    "category": "Airtable",
+    "title": "By Status",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by status"
+  },
+  {
+    "id": "ex-023",
+    "category": "Airtable",
+    "title": "By Status",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by status"
+  },
+  {
+    "id": "ex-024",
+    "category": "Airtable",
+    "title": "By Status",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Status",
+      "group_by": "Status",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by status"
+  },
+  {
+    "id": "ex-025",
+    "category": "Airtable",
+    "title": "By Category",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by category"
+  },
+  {
+    "id": "ex-026",
+    "category": "Airtable",
+    "title": "By Category",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by category"
+  },
+  {
+    "id": "ex-027",
+    "category": "Airtable",
+    "title": "By Category",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Category",
+      "group_by": "Category",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by category"
+  },
+  {
+    "id": "ex-028",
+    "category": "Airtable",
+    "title": "By Business Unit",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Business Unit",
+      "group_by": "Business Unit",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by business unit"
+  },
+  {
+    "id": "ex-029",
+    "category": "Airtable",
+    "title": "By Business Unit",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Business Unit",
+      "group_by": "Business Unit",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by business unit"
+  },
+  {
+    "id": "ex-030",
+    "category": "Airtable",
+    "title": "By Business Unit",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Business Unit",
+      "group_by": "Business Unit",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by business unit"
+  },
+  {
+    "id": "ex-031",
+    "category": "Airtable",
+    "title": "By Priority",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Priority",
+      "group_by": "Priority",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by priority"
+  },
+  {
+    "id": "ex-032",
+    "category": "Airtable",
+    "title": "By Priority",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Priority",
+      "group_by": "Priority",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by priority"
+  },
+  {
+    "id": "ex-033",
+    "category": "Airtable",
+    "title": "By Priority",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Priority",
+      "group_by": "Priority",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by priority"
+  },
+  {
+    "id": "ex-034",
+    "category": "Airtable",
+    "title": "By Owner",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Owner",
+      "group_by": "Owner",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by owner"
+  },
+  {
+    "id": "ex-035",
+    "category": "Airtable",
+    "title": "By Owner",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Owner",
+      "group_by": "Owner",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by owner"
+  },
+  {
+    "id": "ex-036",
+    "category": "Airtable",
+    "title": "By Owner",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Owner",
+      "group_by": "Owner",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by owner"
+  },
+  {
+    "id": "ex-037",
+    "category": "Airtable",
+    "title": "By Risk Assessment",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Risk Assessment",
+      "group_by": "Risk Assessment",
+      "display": "stacked",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by risk assessment"
+  },
+  {
+    "id": "ex-038",
+    "category": "Airtable",
+    "title": "By Risk Assessment",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Risk Assessment",
+      "group_by": "Risk Assessment",
+      "display": "donut",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by risk assessment"
+  },
+  {
+    "id": "ex-039",
+    "category": "Airtable",
+    "title": "By Risk Assessment",
+    "type": "custom",
+    "size": "2",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Risk Assessment",
+      "group_by": "Risk Assessment",
+      "display": "count",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 by risk assessment"
+  },
+  {
+    "id": "ex-040",
+    "category": "Airtable",
+    "title": "Blocked / At Risk",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15,
+      "filter_formula": "OR({Status}='Blocked',{Risk Assessment}='High')"
+    },
+    "description": "Airtable widget \u2014 blocked / at risk"
+  },
+  {
+    "id": "ex-041",
+    "category": "Airtable",
+    "title": "In Development",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15,
+      "filter_formula": "{Status}='Development'"
+    },
+    "description": "Airtable widget \u2014 in development"
+  },
+  {
+    "id": "ex-042",
+    "category": "Airtable",
+    "title": "In Production",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15,
+      "filter_formula": "{Status}='Commercialized'"
+    },
+    "description": "Airtable widget \u2014 in production"
+  },
+  {
+    "id": "ex-043",
+    "category": "Airtable",
+    "title": "Recently Added",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "display_field": "Name",
+      "max_records": "20",
+      "refresh_minutes": 15
+    },
+    "description": "Airtable widget \u2014 recently added"
+  },
+  {
+    "id": "ex-044",
+    "category": "Metrics",
+    "title": "Runs Today",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "runs_today",
+      "sub": "completions today"
+    },
+    "description": "Metrics widget \u2014 runs today"
+  },
+  {
+    "id": "ex-045",
+    "category": "Metrics",
+    "title": "Avg Response",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "avg_latency",
+      "sub": "p50 latency"
+    },
+    "description": "Metrics widget \u2014 avg response"
+  },
+  {
+    "id": "ex-046",
+    "category": "Metrics",
+    "title": "Daily Spend",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "total_cost",
+      "sub": "LLM costs today"
+    },
+    "description": "Metrics widget \u2014 daily spend"
+  },
+  {
+    "id": "ex-047",
+    "category": "Metrics",
+    "title": "Approval Rate",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "approval_rate",
+      "sub": "human approvals"
+    },
+    "description": "Metrics widget \u2014 approval rate"
+  },
+  {
+    "id": "ex-048",
+    "category": "Metrics",
+    "title": "Active Agents",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "active_agents",
+      "sub": "agents online"
+    },
+    "description": "Metrics widget \u2014 active agents"
+  },
+  {
+    "id": "ex-049",
+    "category": "Metrics",
+    "title": "Time To First Token",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "ttft_ms",
+      "sub": "p50 TTFT"
+    },
+    "description": "Metrics widget \u2014 time to first token"
+  },
+  {
+    "id": "ex-050",
+    "category": "Jira",
+    "title": "High Priority",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jql_extra": "priority in (Highest, High)",
+      "jira_display": "list",
+      "refresh_minutes": 10
+    },
+    "description": "Jira widget \u2014 high priority"
+  },
+  {
+    "id": "ex-051",
+    "category": "Jira",
+    "title": "Unassigned Work",
+    "type": "jira",
+    "size": "1",
+    "config": {
+      "project": "DEMO",
+      "jql_extra": "assignee is EMPTY AND statusCategory != Done",
+      "jira_display": "count",
+      "refresh_minutes": 30
+    },
+    "description": "Jira widget \u2014 unassigned work"
+  },
+  {
+    "id": "ex-052",
+    "category": "Jira",
+    "title": "Stale Issues",
+    "type": "jira",
+    "size": "2",
+    "config": {
+      "project": "DEMO",
+      "jql_extra": "updated <= -14d AND statusCategory != Done",
+      "jira_display": "list",
+      "refresh_minutes": 60
+    },
+    "description": "Jira widget \u2014 stale issues"
+  },
+  {
+    "id": "ex-053",
+    "category": "Airtable",
+    "title": "Migration Funnel",
+    "type": "custom",
+    "size": "3",
+    "config": {
+      "source": "airtable",
+      "table": "Use Case Submission",
+      "field": "Migration Status",
+      "group_by": "Migration Status",
+      "max_records": "200",
+      "refresh_minutes": 30
+    },
+    "description": "Airtable widget \u2014 migration funnel"
+  },
+  {
+    "id": "ex-054",
+    "category": "Metrics",
+    "title": "Tokens In",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "tokens_in_total",
+      "sub": "prompt tokens today"
+    },
+    "description": "Metrics widget \u2014 tokens in"
+  },
+  {
+    "id": "ex-055",
+    "category": "Metrics",
+    "title": "Tokens Out",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "tokens_out_total",
+      "sub": "completion tokens today"
+    },
+    "description": "Metrics widget \u2014 tokens out"
+  },
+  {
+    "id": "ex-056",
+    "category": "Metrics",
+    "title": "p95 Latency",
+    "type": "kpi",
+    "size": "1",
+    "config": {
+      "source": "metrics",
+      "field": "latency_ms_p95",
+      "sub": "p95 latency"
+    },
+    "description": "Metrics widget \u2014 p95 latency"
+  }
+]

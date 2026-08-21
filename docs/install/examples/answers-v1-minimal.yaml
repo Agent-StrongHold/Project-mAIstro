@@ -1,0 +1,16 @@
+# Example install answers (v1). Do not put API keys in this file.
+schema_version: "1"
+install_mode: preview
+features:
+  - core_lib
+  - server
+compose_addons: []
+product: null
+dry_run: true
+llm_gateway: litellm
+observability_backend: none
+deployment_tier: local_docker
+container_runtime: auto
+users_intent: skip
+stack_bringup: none
+provider_accounts: {}

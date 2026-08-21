@@ -1,0 +1,11 @@
+---
+globs: packages/maistro-core/**/*.py
+alwaysApply: false
+---
+
+## maistro-core
+
+- This is the **canonical shared library** (`maistro.*`). Keep imports stable for downstream products.
+- Follow existing patterns: protocols in `maistro.protocols`, types in `maistro.types`, DI via `maistro.container` where applicable.
+- Add or update tests under `packages/maistro-core/tests/` mirroring the module layout.
+- For agent behavior changes, check strategies under `maistro/agents/strategies/` and roster under `maistro/agents/`.

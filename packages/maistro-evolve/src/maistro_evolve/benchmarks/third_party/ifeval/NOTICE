@@ -1,0 +1,51 @@
+Vendored third-party code and data: IFEval
+=========================================
+
+Source
+------
+Google Research, `instruction_following_eval`
+  https://github.com/google-research/google-research/tree/master/instruction_following_eval
+
+Accompanying the paper:
+  "Instruction-Following Evaluation for Large Language Models"
+  Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Siddhartha Brahma, Sujoy Basu,
+  Yi Luan, Denny Zhou, Le Hou. arXiv:2311.07911.
+
+License
+-------
+Apache License, Version 2.0. Copyright The Google Research Authors.
+Full text: http://www.apache.org/licenses/LICENSE-2.0
+Each vendored .py file retains its original Apache 2.0 header.
+
+This repository (maistro-engine) is also Apache 2.0, so no license
+compatibility work is required. Attribution is preserved above and in the
+per-file headers.
+
+Contents
+--------
+  instructions.py           the 25 instruction verifiers
+  instructions_registry.py  instruction_id -> verifier class mapping
+  instructions_util.py       word/sentence tokenization helpers
+  evaluation_lib.py         strict and loose verdict functions
+  data/input_data.jsonl     the official 541-prompt corpus
+
+Provenance is pinned by sha256 of the exact upstream bytes, recorded in
+scripts/vendor_ifeval.py. Modifications are limited to the import rewrite
+documented in that script and enforced by its --check mode.
+
+Runtime dependencies
+--------------------
+The vendored verifier requires absl-py, immutabledict, nltk and langdetect,
+declared as the `ifeval` extra of maistro-evolve. nltk additionally needs the
+`punkt` tokenizer data, which must be pre-fetched (the scoring container is
+network-denied by design):
+
+    python3 -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
+
+Why these are not shimmed away: the nltk word tokenizer is trivially
+replaceable (RegexpTokenizer(r"\w+") == re.findall(r"\w+")), but the punkt
+*sentence* tokenizer and langdetect are not — substituting them would change
+verdicts on `length_constraints:number_sentences` (52 prompts) and
+`language:response_language` (31 prompts). A grader that is only approximately
+the official grader must not be labelled `real`, so the real dependencies are
+required instead.

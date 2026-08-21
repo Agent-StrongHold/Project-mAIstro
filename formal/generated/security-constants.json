@@ -1,0 +1,41 @@
+{
+  "auth": {
+    "category_count": 12,
+    "scope_count": 38
+  },
+  "blocked_host_paths": [
+    "/boot",
+    "/dev",
+    "/etc",
+    "/proc",
+    "/root",
+    "/run/docker.sock",
+    "/sys",
+    "/var/run/docker.sock"
+  ],
+  "dangerous_command_pattern_count": 3,
+  "dangerous_tool_names": [
+    "apply_patch",
+    "exec",
+    "fs_delete",
+    "fs_move",
+    "sandbox_destroy",
+    "sessions_send",
+    "sessions_spawn",
+    "shell",
+    "spawn"
+  ],
+  "extractor_version": 1,
+  "injection_pattern_count": 2,
+  "rate_limit_defaults": {
+    "burst_limit": 10,
+    "requests_per_minute": 60
+  },
+  "strike_escalation": {
+    "disable_at_strike": 3,
+    "lockout_hours": 8
+  },
+  "trust_boundary": {
+    "has_permission_max_input": true
+  }
+}

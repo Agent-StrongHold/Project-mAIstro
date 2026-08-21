@@ -1,0 +1,15 @@
+{
+  "name": "Capability Attribution",
+  "description": "Maps platform capabilities to use cases and Jira delivery work. Shows coverage gaps and readiness.",
+  "widgets": [
+    {"id": "ca-total-caps", "type": "kpi", "title": "Capabilities", "size": "1", "config": {"field": "runs_today", "sub": "platform capabilities tracked"}},
+    {"id": "ca-covered", "type": "kpi", "title": "Covered", "size": "1", "config": {"field": "approval_rate", "sub": "% with Jira stories"}},
+    {"id": "ca-gaps", "type": "kpi", "title": "Gaps", "size": "1", "config": {"field": "active_agents", "sub": "capabilities without coverage"}},
+    {"id": "ca-coverage-breakdown", "type": "custom", "title": "Coverage Status", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "field": "Support Needed", "group_by": "Support Needed", "max_records": "200", "refresh_minutes": 60}},
+    {"id": "ca-readiness", "type": "custom", "title": "Use Case Readiness", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "field": "Status", "group_by": "Status", "display": "stacked", "max_records": "200", "refresh_minutes": 60}},
+    {"id": "ca-uncovered-list", "type": "custom", "title": "Uncovered Capabilities", "size": "3", "config": {"source": "airtable", "table": "Use Case Submission", "filter_formula": "{Support Needed}='Not Started'", "display_field": "Use Case Name/ Project", "max_records": "25", "refresh_minutes": 30}},
+    {"id": "ca-jira-backlog", "type": "jira", "title": "Delivery Backlog", "size": "3", "config": {"project": "DEMO", "status": "To Do", "jira_display": "list", "refresh_minutes": 15}},
+    {"id": "ca-in-progress", "type": "jira", "title": "In Progress", "size": "2", "config": {"project": "DEMO", "status": "In Progress", "jira_display": "list", "refresh_minutes": 10}},
+    {"id": "ca-done-this-week", "type": "jira", "title": "Completed This Week", "size": "1", "config": {"project": "DEMO", "status": "Done", "days": "7", "jira_display": "count", "refresh_minutes": 30}}
+  ]
+}

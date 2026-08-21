@@ -1,0 +1,132 @@
+{
+  "name": "PM Operations Dashboard",
+  "description": "Polished PM operations dashboard with donut charts, funnel stages, KPI tiles, and status breakdowns. All widgets are deterministic — no LLM at render time.",
+  "widgets": [
+    {
+      "id": "pm-kpi-velocity",
+      "type": "kpi",
+      "title": "Sprint Velocity",
+      "size": "1",
+      "config": {"field": "runs_today", "sub": "completions this sprint"}
+    },
+    {
+      "id": "pm-kpi-latency",
+      "type": "kpi",
+      "title": "Avg Response",
+      "size": "1",
+      "config": {"field": "avg_latency", "sub": "p50 latency"}
+    },
+    {
+      "id": "pm-kpi-cost",
+      "type": "kpi",
+      "title": "Daily Spend",
+      "size": "1",
+      "config": {"field": "total_cost", "sub": "LLM costs today"}
+    },
+    {
+      "id": "pm-kpi-approval",
+      "type": "kpi",
+      "title": "Approval Rate",
+      "size": "1",
+      "config": {"field": "approval_rate", "sub": "thumbs up %"}
+    },
+    {
+      "id": "pm-kpi-agents",
+      "type": "kpi",
+      "title": "Active Agents",
+      "size": "1",
+      "config": {"field": "active_agents", "sub": "currently running"}
+    },
+    {
+      "id": "pm-kpi-ttft",
+      "type": "kpi",
+      "title": "TTFT",
+      "size": "1",
+      "config": {"field": "ttft", "sub": "time to first token"}
+    },
+    {
+      "id": "pm-status-breakdown",
+      "type": "jira",
+      "title": "Project Status Breakdown",
+      "size": "3",
+      "config": {"project": "DEMO", "days": "14", "jira_display": "status-breakdown", "refresh_minutes": 15}
+    },
+    {
+      "id": "pm-cost-donut",
+      "type": "cost-donut",
+      "title": "Cost Distribution",
+      "size": "2",
+      "config": {"refresh_minutes": 30}
+    },
+    {
+      "id": "pm-agent-fleet",
+      "type": "agent-orbs",
+      "title": "Agent Fleet",
+      "size": "3",
+      "config": {"refresh_minutes": 0}
+    },
+    {
+      "id": "pm-my-work",
+      "type": "jira",
+      "title": "My Open Work",
+      "size": "3",
+      "config": {"project": "DEMO", "assignee": "currentUser()", "jira_display": "list", "refresh_minutes": 5}
+    },
+    {
+      "id": "pm-blockers",
+      "type": "jira",
+      "title": "Blockers",
+      "size": "2",
+      "config": {"project": "DEMO", "status": "Blocked", "days": "30", "jira_display": "list", "refresh_minutes": 5}
+    },
+    {
+      "id": "pm-invocations",
+      "type": "invocations",
+      "title": "Agent Invocations",
+      "size": "2",
+      "config": {"refresh_minutes": 15}
+    },
+    {
+      "id": "pm-weekly-done",
+      "type": "jira",
+      "title": "Completed This Week",
+      "size": "2",
+      "config": {"project": "DEMO", "days": "7", "status": "Done", "jira_display": "count", "refresh_minutes": 30}
+    },
+    {
+      "id": "pm-bugs",
+      "type": "jira",
+      "title": "Open Bugs",
+      "size": "1",
+      "config": {"project": "DEMO", "jql_extra": "type = Bug AND resolution = Unresolved", "jira_display": "count", "refresh_minutes": 30}
+    },
+    {
+      "id": "pm-trace",
+      "type": "trace",
+      "title": "Latest Trace",
+      "size": "3",
+      "config": {"refresh_minutes": 0}
+    },
+    {
+      "id": "pm-metrics-latency",
+      "type": "custom",
+      "title": "Latency (ms)",
+      "size": "1",
+      "config": {"source": "metrics", "metric": "latency", "refresh_minutes": 5}
+    },
+    {
+      "id": "pm-metrics-tokens",
+      "type": "custom",
+      "title": "Tokens Used",
+      "size": "1",
+      "config": {"source": "metrics", "metric": "tokens", "refresh_minutes": 15}
+    },
+    {
+      "id": "pm-metrics-errors",
+      "type": "custom",
+      "title": "Errors",
+      "size": "1",
+      "config": {"source": "metrics", "metric": "errors", "refresh_minutes": 5}
+    }
+  ]
+}

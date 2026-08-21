@@ -1,0 +1,44 @@
+Vendored third-party code and data: BFCL (Berkeley Function Calling Leaderboard)
+================================================================================
+
+Source
+------
+`bfcl-eval` 2026.3.23, the official evaluation package of the Berkeley Function
+Calling Leaderboard (Gorilla project, UC Berkeley):
+  https://pypi.org/project/bfcl-eval/2026.3.23/
+  https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard
+
+Accompanying the Gorilla / BFCL work:
+  "Gorilla: Large Language Model Connected with Massive APIs"
+  Shishir G. Patil, Tianjun Zhang, Xin Wang, Joseph E. Gonzalez.
+
+License
+-------
+Apache License, Version 2.0 (per the package's declared license).
+Full text: http://www.apache.org/licenses/LICENSE-2.0
+
+Contents
+--------
+  ast_checker.py             the official AST-comparison grader
+  type_convertor/            java/js type converters (imported by the checker;
+                             the java/js corpora are deliberately NOT vendored)
+  enums.py                   Language enum
+  type_mappings.py           java/js type conversion tables
+  _model_config_shim.py      OURS, not upstream — see its docstring. Replaces a
+                             model-registry import that would drag in every
+                             vendor SDK; strictly harsher than upstream.
+  data/                      the Python AST track: simple_python (400),
+                             multiple (200), parallel (200),
+                             parallel_multiple (200) — 1,000 instances — plus
+                             the official possible_answer ground truth for each.
+
+Provenance is pinned by the wheel's sha256 (matching PyPI's published digest)
+and a sha256 per extracted member, recorded in scripts/vendor_bfcl.py.
+Modifications are limited to the rewrites documented in that script and
+enforced by its --check mode.
+
+Runtime dependencies
+--------------------
+None beyond the standard library. The vendor-SDK-laden model registry is the
+one import shimmed away (see _model_config_shim.py); tree-sitter is only needed
+for grading java/js corpora, which are not vendored.

@@ -1,0 +1,9 @@
+name: reviewer.score
+role: reviewer
+description: Score and critique agent output for quality and correctness
+prompt_name: reviewer.score
+result_schema: schemas.ReviewOutput
+min_tier: 2
+max_tier: 3
+temperature: 0.3
+max_tokens: 2048

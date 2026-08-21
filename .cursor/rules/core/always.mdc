@@ -1,0 +1,11 @@
+---
+alwaysApply: true
+---
+
+## maistro-engine — universal agent rules
+
+- Prefer implementing and changing code under `packages/*/src/`, especially `packages/maistro-core/src/maistro/`. Do not add product code at repo root `src/` (see `AGENTS.md`).
+- Run `uv run pytest` after non-trivial Python changes; scope tests to affected packages when possible.
+- Use `uv run ruff check` / `ruff format` on touched files; respect existing types (mypy strict).
+- Never commit secrets or `.env` files. Use environment variables and document required vars in PRs or ADRs.
+- Read relevant ADRs in `docs/adr/` before changing cross-product contracts or public APIs.

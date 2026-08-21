@@ -1,0 +1,20 @@
+# CI installer smoke-test answers (release-installer.yml). source_build so the
+# smoke run works before any pinned image exists; no optional features.
+schema_version: "1"
+install_mode: preview
+features: []
+compose_addons: []
+dry_run: true
+llm_gateway: litellm
+observability_backend: none
+deployment_tier: local_docker
+container_runtime: docker
+users_intent: bootstrap_admin
+stack_bringup: none
+install_surface: curl
+delivery_mode: source_build
+sandbox_profile: safe
+crypto_profile: no_crypto
+admin_user: smoke-admin
+daily_driver_user: smoke-user
+reactor_enabled: true

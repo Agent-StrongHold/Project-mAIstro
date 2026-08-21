@@ -1,0 +1,267 @@
+"""PostgreSQL persistence for DesignProject and DesignOutput artifacts.
+
+Uses raw SQL via sqlalchemy.text() — same pattern as canvas/store.py.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import text
+
+from maistro_design.trust import TrustTier
+from maistro_design.types import (
+    ArtifactKind,
+    ArtifactNode,
+    DesignOutput,
+    DesignProject,
+    DiscoveryResult,
+    OutputFormat,
+)
+
+
+def _coerce_design_project(row: Any, outputs: list[DesignOutput] | None = None) -> DesignProject:
+    """Coerce database row to DesignProject dataclass."""
+    d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+    discovery_data = d.get("discovery_json")
+    discovery: DiscoveryResult | None = None
+    if discovery_data:
+        if isinstance(discovery_data, str):
+            discovery_data = json.loads(discovery_data)
+        discovery = DiscoveryResult(
+            skill_slug=discovery_data.get("skill_slug", ""),
+            responses=discovery_data.get("responses", {}),
+            design_system_slug=discovery_data.get("design_system_slug", "default"),
+            trust_tier=TrustTier(discovery_data.get("trust_tier", "t3")),
+            created_at=datetime.fromisoformat(discovery_data["created_at"])
+            if "created_at" in discovery_data
+            else datetime.now(UTC),
+        )
+
+    return DesignProject(
+        id=str(d["id"]),
+        name=d["name"],
+        skill_slug=d["skill_slug"],
+        design_system_slug=d["design_system_slug"],
+        org_id=d["org_id"],
+        team_id=d.get("team_id"),
+        trust_tier=TrustTier(d.get("trust_tier", "t3")),
+        canvas_id=d.get("canvas_id"),
+        outputs=outputs or [],
+        discovery=discovery,
+        created_at=d.get("created_at", datetime.now(UTC)),
+        updated_at=d.get("updated_at", datetime.now(UTC)),
+    )
+
+
+def _coerce_design_output(row: Any) -> DesignOutput:
+    """Coerce database row to DesignOutput dataclass."""
+    d = dict(row)
+    metadata = d.get("metadata_json") or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+
+    return DesignOutput(
+        root=ArtifactNode(
+            key="root",
+            kind=ArtifactKind.FILE,
+            format=OutputFormat(d["format"]),
+            value=d["content"],
+        ),
+        url=d.get("url"),
+        trust_tier=TrustTier(d.get("trust_tier", "t3")),
+        metadata=metadata,
+    )
+
+
+class PgDesignProjectStore:
+    """PostgreSQL implementation of DesignProjectStore protocol."""
+
+    def __init__(self, session_factory: Any) -> None:
+        """Initialize with AsyncSession factory."""
+        self.session_factory = session_factory
+
+    async def create(self, project: DesignProject) -> DesignProject:
+        """Create a new design project and persist its outputs."""
+        project_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+
+        discovery_json: str | None = None
+        if project.discovery:
+            discovery_json = json.dumps(
+                {
+                    "skill_slug": project.discovery.skill_slug,
+                    "responses": project.discovery.responses,
+                    "design_system_slug": project.discovery.design_system_slug,
+                    "trust_tier": project.discovery.trust_tier.value,
+                    "created_at": project.discovery.created_at.isoformat(),
+                }
+            )
+
+        async with self.session_factory() as session:
+            await session.execute(
+                text("""
+                    INSERT INTO design_projects
+                    (id, name, skill_slug, design_system_slug, org_id, team_id,
+                     trust_tier, canvas_id, discovery_json, created_at, updated_at)
+                    VALUES (:id, :name, :skill_slug, :design_system_slug, :org_id,
+                            :team_id, :trust_tier, :canvas_id, :discovery_json::jsonb,
+                            :created_at, :updated_at)
+                """),
+                {
+                    "id": project_id,
+                    "name": project.name,
+                    "skill_slug": project.skill_slug,
+                    "design_system_slug": project.design_system_slug,
+                    "org_id": project.org_id,
+                    "team_id": project.team_id,
+                    "trust_tier": project.trust_tier.value,
+                    "canvas_id": project.canvas_id,
+                    "discovery_json": discovery_json,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+
+            for output in project.outputs:
+                metadata_json = json.dumps(output.metadata) if output.metadata else None
+                await session.execute(
+                    text("""
+                        INSERT INTO design_outputs
+                        (project_id, format, content, url, trust_tier, metadata_json, created_at)
+                        VALUES (:project_id, :format, :content, :url, :trust_tier, :metadata_json::jsonb, :created_at)
+                    """),
+                    {
+                        "project_id": project_id,
+                        "format": output.format.value if output.format is not None else None,
+                        "content": output.content,
+                        "url": output.url,
+                        "trust_tier": output.trust_tier.value,
+                        "metadata_json": metadata_json,
+                        "created_at": now,
+                    },
+                )
+
+            await session.commit()
+
+        persisted_project = project
+        persisted_project.id = project_id
+        persisted_project.created_at = now
+        persisted_project.updated_at = now
+        return persisted_project
+
+    async def get(self, project_id: str) -> DesignProject | None:
+        """Retrieve a design project by ID, including all outputs."""
+        async with self.session_factory() as session:
+            row = await session.execute(
+                text("SELECT * FROM design_projects WHERE id = :id"),
+                {"id": project_id},
+            )
+            project_row = row.fetchone()
+            if not project_row:
+                return None
+
+            output_rows = await session.execute(
+                text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
+                {"project_id": project_id},
+            )
+            outputs = [_coerce_design_output(row) for row in output_rows.fetchall()]
+
+            return _coerce_design_project(project_row, outputs)
+
+    async def list_by_skill(self, skill_slug: str, org_id: str) -> list[DesignProject]:
+        """List all projects for a skill in an org."""
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                text("""
+                    SELECT * FROM design_projects
+                    WHERE skill_slug = :skill_slug AND org_id = :org_id
+                    ORDER BY created_at DESC
+                """),
+                {"skill_slug": skill_slug, "org_id": org_id},
+            )
+            projects = []
+            for project_row in rows.fetchall():
+                project_id = str(dict(project_row)["id"])
+                output_rows = await session.execute(
+                    text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
+                    {"project_id": project_id},
+                )
+                outputs = [_coerce_design_output(row) for row in output_rows.fetchall()]
+                projects.append(_coerce_design_project(project_row, outputs))
+
+            return projects
+
+    async def list_by_org(self, org_id: str) -> list[DesignProject]:
+        """List all projects in an org."""
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                text("""
+                    SELECT * FROM design_projects
+                    WHERE org_id = :org_id
+                    ORDER BY created_at DESC
+                """),
+                {"org_id": org_id},
+            )
+            projects = []
+            for project_row in rows.fetchall():
+                project_id = str(dict(project_row)["id"])
+                output_rows = await session.execute(
+                    text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
+                    {"project_id": project_id},
+                )
+                outputs = [_coerce_design_output(row) for row in output_rows.fetchall()]
+                projects.append(_coerce_design_project(project_row, outputs))
+
+            return projects
+
+    async def update(self, project: DesignProject) -> DesignProject:
+        """Update an existing design project."""
+        now = datetime.now(UTC)
+
+        discovery_json: str | None = None
+        if project.discovery:
+            discovery_json = json.dumps(
+                {
+                    "skill_slug": project.discovery.skill_slug,
+                    "responses": project.discovery.responses,
+                    "design_system_slug": project.discovery.design_system_slug,
+                    "trust_tier": project.discovery.trust_tier.value,
+                    "created_at": project.discovery.created_at.isoformat(),
+                }
+            )
+
+        async with self.session_factory() as session:
+            await session.execute(
+                text("""
+                    UPDATE design_projects
+                    SET name = :name, trust_tier = :trust_tier,
+                        canvas_id = :canvas_id, discovery_json = :discovery_json::jsonb,
+                        updated_at = :updated_at
+                    WHERE id = :id
+                """),
+                {
+                    "id": project.id,
+                    "name": project.name,
+                    "trust_tier": project.trust_tier.value,
+                    "canvas_id": project.canvas_id,
+                    "discovery_json": discovery_json,
+                    "updated_at": now,
+                },
+            )
+            await session.commit()
+
+        project.updated_at = now
+        return project
+
+    async def delete(self, project_id: str) -> None:
+        """Delete a design project (cascades to outputs)."""
+        async with self.session_factory() as session:
+            await session.execute(
+                text("DELETE FROM design_projects WHERE id = :id"),
+                {"id": project_id},
+            )
+            await session.commit()

@@ -1,0 +1,14 @@
+services:
+  hive-conductor:
+    build:
+      context: ../..
+      dockerfile: packages/hive-conductor/Dockerfile
+    ports:
+      - "8101:8101"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # maistro-core integration — set these to enable real agents:
+      # - MAISTRO_ROUTER_API_KEY=your-key
+      # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1
+      # - MAISTRO_LLM_API_KEY=sk-your-key
+      # - MAISTRO_MODEL=gpt-4o

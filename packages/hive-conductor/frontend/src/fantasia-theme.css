@@ -1,0 +1,260 @@
+/* Fantasia Engine Theme
+ *
+ * Fantasia-inspired: deep indigo, purple, gold accents, starfield feel.
+ * Applied via [data-theme="fantasia"] on <html>.
+ * Overrides CSS custom properties from index.css without touching any component code.
+ */
+
+[data-theme="fantasia"] {
+  /* Surfaces */
+  --paper:   #0c0a1a;
+  --paper-2: #130f2a;
+  --bg-elevated: #1a1535;
+
+  /* Text */
+  --ink:     #e8e4f5;
+  --pencil:  #a89ec8;
+  --muted:   #7b6fa0;
+  --text:    #e8e4f5;
+
+  /* Borders */
+  --rule:    rgba(139, 92, 246, 0.15);
+  --border:  rgba(139, 92, 246, 0.2);
+  --wax:     #2d2555;
+
+  /* Primary accent — sorcerer purple */
+  --accent:       #a78bfa;
+  --accent-light: rgba(167, 139, 250, 0.1);
+  --accent-hover: #c4b5fd;
+  --accent-bg:    rgba(167, 139, 250, 0.08);
+
+  /* Secondary accent — enchanted gold */
+  --honey:       #fbbf24;
+  --honey-light: rgba(251, 191, 36, 0.08);
+  --honey-dark:  #f59e0b;
+
+  /* Status */
+  --danger: #f87171;
+  --ok:     #4ade80;
+  --warn:   #fbbf24;
+  --purple: #a78bfa;
+
+  /* Backgrounds */
+  --comb-bg: rgba(167, 139, 250, 0.04);
+
+  /* Fonts */
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+
+  /* Apply */
+  font-family: var(--sans);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* Sidebar in Fantasia theme */
+[data-theme="fantasia"] .icon-sidebar,
+[data-theme="fantasia"] .sidebar {
+  background: #0a0818;
+  border-color: rgba(139, 92, 246, 0.12);
+}
+
+[data-theme="fantasia"] .nav-icon.active,
+[data-theme="fantasia"] .nav-link.active {
+  background: rgba(167, 139, 250, 0.15);
+  color: #c4b5fd;
+}
+
+/* Brand mark */
+[data-theme="fantasia"] .brand {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.2);
+}
+
+/* Cards */
+[data-theme="fantasia"] .card,
+[data-theme="fantasia"] [class*="card"] {
+  background: #130f2a;
+  border-color: rgba(139, 92, 246, 0.15);
+}
+
+/* Buttons */
+[data-theme="fantasia"] button[class*="primary"],
+[data-theme="fantasia"] .btn-primary {
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  color: #fff;
+  border: none;
+}
+
+[data-theme="fantasia"] button[class*="primary"]:hover,
+[data-theme="fantasia"] .btn-primary:hover {
+  background: linear-gradient(135deg, #6d28d9, #8b5cf6);
+}
+
+/* Inputs */
+[data-theme="fantasia"] input,
+[data-theme="fantasia"] textarea,
+[data-theme="fantasia"] select {
+  background: #0c0a1a;
+  border-color: rgba(139, 92, 246, 0.2);
+  color: #e8e4f5;
+}
+
+[data-theme="fantasia"] input:focus,
+[data-theme="fantasia"] textarea:focus {
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.15);
+}
+
+/* Scrollbar */
+[data-theme="fantasia"] ::-webkit-scrollbar {
+  width: 6px;
+}
+[data-theme="fantasia"] ::-webkit-scrollbar-track {
+  background: #0c0a1a;
+}
+[data-theme="fantasia"] ::-webkit-scrollbar-thumb {
+  background: #2d2555;
+  border-radius: 3px;
+}
+
+/* Subtle starfield effect on main content */
+[data-theme="fantasia"] .main-content {
+  background-image: radial-gradient(1px 1px at 20% 30%, rgba(167, 139, 250, 0.3) 0%, transparent 100%),
+                    radial-gradient(1px 1px at 80% 10%, rgba(251, 191, 36, 0.2) 0%, transparent 100%),
+                    radial-gradient(1px 1px at 50% 80%, rgba(139, 92, 246, 0.2) 0%, transparent 100%);
+}
+
+/* ─── Dashboard Chat Bar ─────────────────────────────── */
+
+.dashboard-chat-bar {
+  margin-bottom: 1.25rem;
+  position: relative;
+}
+
+.chat-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--paper-2, #130f2a);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  transition: border-color 0.15s;
+}
+
+.chat-bar-inner:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.1);
+}
+
+.chat-bar-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.chat-bar-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.88rem;
+  outline: none;
+  padding: 0.25rem 0;
+}
+
+.chat-bar-input::placeholder {
+  color: var(--pencil);
+}
+
+.chat-bar-send {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.chat-bar-send:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.chat-bar-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 0.4rem;
+  padding: 0.5rem;
+  background: var(--paper-2, #130f2a);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  z-index: 10;
+}
+
+.suggestion-chip {
+  padding: 0.3rem 0.7rem;
+  border-radius: 16px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--pencil);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.suggestion-chip:hover {
+  background: var(--accent-light);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ─── Widget Grid ────────────────────────────────────── */
+
+.widget-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.widget-grid .widget-sm { grid-column: span 1; }
+.widget-grid .widget-md { grid-column: span 2; }
+.widget-grid .widget-lg { grid-column: span 3; }
+.widget-grid .widget-full { grid-column: 1 / -1; }
+
+.widget-card {
+  background: var(--paper-2, #130f2a);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 1rem;
+  position: relative;
+}
+
+.widget-card:hover .widget-remove {
+  opacity: 1;
+}
+
+.widget-remove {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  opacity: 0;
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: opacity 0.15s;
+}
+

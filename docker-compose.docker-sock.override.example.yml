@@ -1,0 +1,22 @@
+# OPT-IN OVERRIDE — host Docker socket for the builder sandbox.
+#
+# ⚠️  SECURITY WARNING ⚠️
+# Mounting the host Docker socket grants the maistro-engine container full
+# control of the host Docker daemon. A compromise of the container is then a
+# compromise of the HOST (root-equivalent). This mount was removed from the
+# default stack (June audit 3.1); only use this override on a machine you
+# accept that risk on, and prefer an isolated sandbox backend (deploy/sbx,
+# microVM) (see deploy/sbx for the sandboxed alternative).
+#
+# Usage:
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.docker-sock.override.example.yml up
+# or copy this file to docker-compose.override.yml (picked up automatically).
+#
+# MAISTRO_DOCKER_SOCK is detected by install.sh: Docker Desktop uses
+# /var/run/docker.sock, but Colima exposes it under ~/.colima/.../docker.sock.
+
+services:
+  maistro-engine:
+    volumes:
+      - ${MAISTRO_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock

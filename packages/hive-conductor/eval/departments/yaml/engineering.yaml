@@ -1,0 +1,86 @@
+department: engineering
+evals:
+  - name: tests_pass
+    criteria:
+      - name: has_test_code
+        weight: 25
+        check: {op: keywords_any, words: ["def test_", "it(", assert, "expect("]}
+      - name: covers_happy_path
+        weight: 25
+        check: {op: keywords_any, words: [success, valid, expected, correct]}
+      - name: covers_edge_cases
+        weight: 25
+        check: {op: keywords_any, words: [edge, empty, null, none, zero, boundary]}
+      - name: covers_error_cases
+        weight: 25
+        check: {op: keywords_any, words: [error, exception, raise, throw, fail]}
+
+  - name: coverage
+    criteria:
+      - name: tests_all_functions
+        weight: 30
+        check: {op: regex_count, pattern: 'def test_|it\(|test\(', min: 3}
+      - name: tests_branches
+        weight: 25
+        check: {op: keywords_any, words: ["if", "else", branch, condition]}
+      - name: integration_test
+        weight: 25
+        check: {op: keywords_any, words: [integration, e2e, "full flow"]}
+      - name: no_trivial_tests
+        weight: 20
+        check: {op: keywords_none, words: ["assert True"]}
+
+  - name: security
+    criteria:
+      - name: input_validation
+        weight: 25
+        check: {op: keywords_any, words: [validat, sanitiz, escape, parameteriz]}
+      - name: no_hardcoded_secrets
+        weight: 25
+        check: {op: regex_absent, pattern: '(password|secret|key)\s*=\s*[''"][^''"]{8,}'}
+      - name: auth_checks
+        weight: 25
+        check: {op: keywords_any, words: [auth, permission, token, jwt]}
+      - name: error_handling
+        weight: 25
+        check: {op: keywords_any, words: ["try:", catch, except, ".catch("]}
+
+  - name: style_match
+    criteria:
+      - name: has_docstrings
+        weight: 30
+        check:
+          op: any
+          of:
+            - {op: regex, pattern: '"""'}
+            - {op: regex, pattern: '/\*\*'}
+            - {op: regex, pattern: '///'}
+      - name: type_annotations
+        weight: 30
+        check: {op: keywords_any, words: ["-> ", ": str", ": int", ": list", ": string"]}
+      - name: reasonable_length
+        weight: 20
+        check: {op: metric, name: max_line_length, cmp: lte, value: 120}
+      - name: consistent_naming
+        weight: 20
+        # not (snake_case AND camelCase mixed) — regex_absent on the combined pattern
+        check: {op: regex_absent, pattern: '(?=.*[a-z]_[a-z])(?=.*[a-z][A-Z])', flags: s}
+
+  - name: review_score
+    criteria:
+      - name: readable
+        weight: 25
+        check: {op: regex, pattern: '^\s*(#|//)', flags: m}
+      - name: modular
+        weight: 25
+        check:
+          op: any
+          of:
+            - {op: regex_count, pattern: 'def ', min: 2}
+            - {op: regex_count, pattern: 'function ', min: 2}
+      - name: no_code_smells
+        weight: 25
+        check: {op: keywords_none, words: [TODO, HACK, FIXME]}
+      - name: handles_errors
+        weight: 25
+        check: {op: keywords_any, words: ["try:", catch, except, "Result<"]}

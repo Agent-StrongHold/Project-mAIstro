@@ -1,0 +1,41 @@
+# Project-specific Semgrep rules for maistro-engine.
+# Referenced by .github/workflows/security.yml alongside the public registries
+# (p/security-audit, p/owasp-top-ten, p/secrets). Add domain rules here.
+rules:
+  - id: maistro-unsafe-yaml-load
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use yaml.safe_load(...) instead of yaml.load(...). yaml.load with the
+      default loader can construct arbitrary Python objects from untrusted
+      input (RCE). Pass Loader=yaml.SafeLoader if a loader is required.
+    patterns:
+      - pattern: yaml.load(...)
+      - pattern-not: yaml.load(..., Loader=yaml.SafeLoader)
+      - pattern-not: yaml.load(..., yaml.SafeLoader)
+
+  - id: maistro-subprocess-shell-true
+    languages: [python]
+    severity: WARNING
+    message: >-
+      subprocess called with shell=True can enable command injection when any
+      argument is attacker-influenced. Pass the command as an argument list
+      (shell=False) instead.
+    pattern: subprocess.$FN(..., shell=True, ...)
+
+  - id: maistro-mounted-docker-socket
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Referencing the host Docker socket grants effective root on the host.
+      Per ADR-058, untrusted/sandbox code must not reach the Docker socket;
+      use the SandboxProtocol microVM backend (SPEC-190).
+    pattern-regex: /var/run/docker\.sock
+    paths:
+      exclude:
+        # containers.py is the HTTP client for the host Docker API (read-only container stats).
+        # Does not pass untrusted input to the socket.
+        - packages/hive-conductor/backend/routes/containers.py
+        # patterns.py lists /var/run/docker.sock in BLOCKED_HOST_PATHS, a security boundary list
+        # that *denies* sandbox access to the socket — the opposite of exposure.
+        - packages/maistro-core/src/maistro/security/patterns.py

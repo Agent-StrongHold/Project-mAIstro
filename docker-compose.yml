@@ -1,0 +1,176 @@
+version: "3.9"
+
+services:
+  maistro-engine:
+    build: .
+    container_name: maistro-engine
+    ports:
+      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${MAISTRO_PORT:-8000}:8000"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=maistro
+      - DB_USER=maistro
+      - DB_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      - LITELLM_URL=http://litellm:4000
+      - LITELLM_BASE_URL=http://litellm:4000
+      - LITELLM_PROXY_URL=http://litellm:4000
+      - LITELLM_API_BASE=http://litellm:4000/v1
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - LITELLM_PROXY_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gemini/gemini-2.5-flash}
+      - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
+      - MAISTRO_BUILDERS_MODEL=${MAISTRO_BUILDERS_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
+      - API_KEYS=${API_KEYS:?Run ./install.sh to generate API_KEYS}
+      - MAISTRO_ACCESS_TOKEN=${MAISTRO_ACCESS_TOKEN:-}
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+      - CI_WEBHOOK_SECRET=${CI_WEBHOOK_SECRET:-}
+      - SANDBOX_NETWORK_DISABLED=true
+    volumes:
+      # The host Docker socket is NOT mounted by default: it grants the
+      # container control of the host Docker daemon (container escape = host
+      # root; June audit 3.1 / HN-LAUNCH-AUDIT). If the builder sandbox needs
+      # it, opt in explicitly:
+      #   docker compose -f docker-compose.yml \
+      #     -f docker-compose.docker-sock.override.example.yml up
+      # (or copy that override into docker-compose.override.yml).
+      - workspace-data:/repos
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+    stop_grace_period: 30s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: maistro-postgres
+    environment:
+      POSTGRES_USER: maistro
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      POSTGRES_DB: maistro
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maistro"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: maistro-litellm
+    ports:
+      # Host interface the gateway binds to. Default 127.0.0.1 = loopback only
+      # (this machine). Set LITELLM_BIND_ADDR=0.0.0.0 in .env to expose it to your
+      # LAN. See .env.example for the trade-offs.
+      - "${LITELLM_BIND_ADDR:-127.0.0.1}:4000:4000"
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/litellm
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY:-}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_HOST=http://langfuse:3000
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: maistro-langfuse
+    ports:
+      - "127.0.0.1:3100:3000"
+    environment:
+      - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:3100
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET in .env}
+      - SALT=${LANGFUSE_SALT:?Set LANGFUSE_SALT in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Agent Conductor app: chat UI, DAG views, and deck builder (React SPA + FastAPI).
+  # Wired to the same LiteLLM gateway and engine so the curl install brings up the
+  # full UI, not just the headless API. Frontend is built inside its Dockerfile.
+  hive-conductor:
+    build:
+      context: .
+      dockerfile: packages/hive-conductor/Dockerfile
+    container_name: maistro-hive-conductor
+    ports:
+      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${HIVE_PORT:-8101}:8101"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # OpenAI-compatible gateway (must end in /v1).
+      - LITELLM_API_BASE=http://litellm:4000/v1
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - LITELLM_PROXY_URL=http://litellm:4000
+      - LITELLM_PROXY_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
+      # Engine router for DAG execution (REQUIRE_AUTH=true expects the access token).
+      # Settings.maistro_base_url / maistro_router_api_key (config.py) read these
+      # MAISTRO_* names directly; CONDUCTOR_ROUTER_URL/ROUTER_API_KEY are not bound
+      # to any field, so task dispatch silently fell back to localhost with no auth.
+      - MAISTRO_BASE_URL=http://maistro-engine:8000
+      - MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:-}
+      # Telemetry (optional; blank keys disable it).
+      - LANGFUSE_BASE_URL=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      # Foundation state (SQLite/vault/state) on a persistent volume. /data is
+      # pre-owned by the nonroot uid 65532 in the image so the volume is writable.
+      - CONDUCTOR_DATA_DIR=/data
+      - HARDWARE_PRESET=${HARDWARE_PRESET:-laptop}
+    volumes:
+      - conductor-data:/data
+    depends_on:
+      litellm:
+        condition: service_started
+      maistro-engine:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pgdata:
+  workspace-data:
+  conductor-data:

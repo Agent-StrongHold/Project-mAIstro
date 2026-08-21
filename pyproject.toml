@@ -1,0 +1,285 @@
+[project]
+name = "maistro-workspace"
+version = "0.9.0"
+description = "Monorepo workspace root — all code lives in packages/"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    # API
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    # Tool Protocol
+    "fastmcp>=2.0",
+    # Observability — vendor-neutral OpenTelemetry (see maistro-core[observability])
+    "opentelemetry-api>=1.30",
+    # Database
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "pgvector>=0.3",
+    "alembic>=1.14",
+    # Utilities
+    "pydantic-settings>=2.7",
+    "structlog>=24.4",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+    "bcrypt>=4.0",
+    "argon2-cffi>=23.1",
+    "maistro-registry",
+    # [identity] so the dev/test environment can exercise maistro.identity. The
+    # API image deliberately installs maistro-core[llm,sandbox,observability]
+    # WITHOUT it — see the identity extra's comment in maistro-core/pyproject.toml.
+    "maistro-core[tui,identity]",
+    # Depend on the package rather than re-listing its transitive libs here: this
+    # is what supplies Pillow to the root env for `uv run mypy`/`uv run pytest`
+    # over packages/maistro-canvas. Hand-copying a package's deps into the root
+    # dev extra is what let the identity ImportError hide (see the wheel-imports
+    # CI job).
+    "maistro-canvas",
+    "temporalio>=1.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    # scripts/check-ac-state.py parses the acceptance-criteria Gherkin with the
+    # real grammar, not a regex. It arrives transitively today via
+    # hive-conductor's pytest-bdd, which is a different package's dependency
+    # and free to drop it — and the failure would be an ImportError in a gate,
+    # i.e. the same shape as the two notes above.
+    "gherkin-official>=29.0",
+    "radon>=6.0",
+    "vulture>=2.14",
+    "types-PyYAML>=6.0",
+    "types-regex>=2024.5.15",
+    "questionary>=2.0",
+    "aiosqlite>=0.20",
+    "hypothesis>=6.0",
+    "cosmic-ray>=8.0.0",
+    # THREE workflows pass `--timeout=` to pytest; only quality.yml installed
+    # this ad-hoc. In mutation.yml the omission was silently catastrophic —
+    # without the plugin pytest exits 4 (usage error), cosmic-ray reads any
+    # nonzero exit as "the tests killed this mutant", and the gate reports a
+    # vacuous 100% kill rate having verified nothing.
+    "pytest-timeout>=2.3",
+    # Warden's RE2 acceleration is an *optional* extra on maistro-core, and
+    # `uv sync --all-extras` at this root does not pull a member package's
+    # extras — so without this line CI has no `re2`, the engine-equivalence
+    # test skips, and the suite goes green having verified nothing about the
+    # accelerated path. Same shape as the pytest-timeout note above: the gate
+    # existed, ran, and proved nothing. Consumers still opt in via
+    # `maistro-core[re2]`; this only guarantees *our* CI exercises both engines.
+    "google-re2>=1.1",
+]
+browser = ["playwright>=1.49"]
+scheduling = ["apscheduler>=3.11"]
+# NOTE: the on-demand /code-health and /security-scan toolchains are NOT project
+# extras — several (semgrep) carry transitive pins that conflict with the app's
+# resolution. They are standalone CLI tools listed in requirements-dev-tools.txt;
+# install with `pip install -r requirements-dev-tools.txt` (or pipx per tool).
+bootstrap = [
+    "maistro-bootstrap",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    # scripts/check-ac-state.py parses the acceptance-criteria Gherkin with the
+    # real grammar, not a regex. It arrives transitively today via
+    # hive-conductor's pytest-bdd, which is a different package's dependency
+    # and free to drop it — and the failure would be an ImportError in a gate,
+    # i.e. the same shape as the two notes above.
+    "gherkin-official>=29.0",
+    "types-PyYAML>=6.0",
+    "types-regex>=2024.5.15",
+    "questionary>=2.0",
+    "aiosqlite>=0.20",
+    "hypothesis>=6.0",
+    "cosmic-ray>=8.0.0",
+    "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
+]
+
+[project.scripts]
+maistro-registry = "maistro_registry.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+# The workspace root is a dependency-only meta package — every actual
+# module lives under packages/. Tell hatchling to build an empty wheel
+# rather than search for a directory matching `maistro_workspace`.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [
+    "packages/maistro-bootstrap/mutants",
+    "packages/maistro-evolve/mutants",
+    # Vendored upstream benchmark graders, reproduced by scripts/vendor_*.py and
+    # pinned by content hash. Deliberately NOT reformatted: the whole value of a
+    # vendored grader is that it is byte-comparable to the published one, and
+    # `vendor_ifeval.py --check` enforces that. Reformatting would quietly make
+    # it our grader wearing the official grader's name.
+    "packages/*/src/*/benchmarks/third_party",
+]
+src = [
+    "packages/maistro-core/src",
+    "packages/maistro-server/src",
+    "packages/maistro-turing/src",
+    "packages/maistro-canvas/src",
+    "packages/maistro-bootstrap/src",
+    "packages/maistro-registry/src",
+    "packages/maistro-evolve/src",
+    "packages/maistro-rsi/src",
+    "packages/maistro-design/src",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
+# UP046/UP047 (PEP 695 type-parameter syntax) only fire once target-version
+# reaches py312 (C2/#287). The 9 existing TypeVar/Generic[T] sites they'd flag
+# (maistro.credentials.rotation, maistro.graph.executor/nodes.base,
+# maistro.repertoire.run, maistro.skills.connectors, maistro_rsi.merge) are
+# correct pre-3.12-style generics, not new debt — rewriting them to `def
+# foo[T](...)`/`class Foo[T]:` is a real, separate change with its own mypy
+# --strict + pydantic interaction risk across public API signatures, not a
+# side effect of a floor-alignment PR. Tracked as follow-up, not silently
+# dropped.
+ignore = ["E501", "UP046", "UP047"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency-injection idiom puts Depends(...) calls in argument
+# defaults; B008 is the wrong call there for the Turing backend app routes.
+"packages/maistro-turing/backend/**" = ["B008"]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = [
+    "packages/maistro-core/tests",
+    "packages/maistro-server/tests",
+    "packages/maistro-turing/tests",
+    "packages/maistro-turing/backend/tests",
+    "packages/maistro-canvas/tests",
+    "packages/maistro-bootstrap/tests",
+    "packages/maistro-evolve/tests",
+    "packages/maistro-rsi/tests",
+    "packages/maistro-design/tests",
+    "tests",
+]
+asyncio_mode = "auto"
+markers = [
+    "ac: Acceptance Criteria traceability (SPEC-NNN/AC-N)",
+    "contract: ADR-032 contract axis (boundary | behavioral | cross_service)",
+    "scope: test scope axis (unit | integration | e2e | property)",
+]
+pythonpath = [
+    "packages/maistro-core/src",
+    "packages/maistro-server/src",
+    "packages/maistro-turing/src",
+    "packages/maistro-canvas/src",
+    "packages/maistro-design/src",
+    "packages/maistro-bootstrap/src",
+    "packages/maistro-rsi/src",
+    "packages/maistro-evolve/src",
+    ".",
+]
+
+# Vendored upstream source (Google's IFEval verifier, BFCL's AST checker) is
+# kept byte-faithful so the benchmarks run the official implementation rather
+# than a paraphrase. We do not unit-test someone else's library — the adapters
+# around it are what carry our tests — so measuring it makes the number mean
+# less in both directions: it buries a real regression in our code under a
+# constant mass of untested upstream lines. Measured on maistro-evolve:
+# 64% including the vendored tree, 86% excluding it, for identical test code.
+[tool.coverage.run]
+omit = ["*/third_party/*"]
+
+[tool.coverage.report]
+omit = ["*/third_party/*"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+# `maistro.models.*` lives in the hive-conductor app (not on the mypy src path
+# for the package type-check); treat its imports as missing rather than erroring.
+[[tool.mypy.overrides]]
+module = ["maistro.models.*"]
+ignore_missing_imports = true
+
+# Genuinely optional integrations, absent in minimal scan environments.
+# `regex` and `nacl.*` used to be listed here — they are declared runtime deps of
+# maistro-core now (and both ship type information), so the override would mask a
+# real missing install rather than describe an optional one.
+[[tool.mypy.overrides]]
+module = ["yaml", "asyncpg", "PIL", "PIL.*", "pptx", "pptx.*"]
+ignore_missing_imports = true
+
+# bip-utils is a declared runtime dep, but publishes no py.typed marker and has no
+# stub package on PyPI. This override covers the missing stubs, not a missing
+# install — drop it if bip-utils ever ships types.
+[[tool.mypy.overrides]]
+module = ["bip_utils"]
+ignore_missing_imports = true
+
+# Vendored upstream benchmark graders (see the ruff exclude above and each
+# subpackage's NOTICE). Untyped Google research code, kept byte-comparable to
+# upstream on purpose, so it is neither annotated nor annotatable by us.
+# `follow_imports = skip` keeps our own adapters strict while not demanding
+# types from code we must not edit.
+[[tool.mypy.overrides]]
+module = ["maistro_evolve.benchmarks.third_party.*"]
+ignore_errors = true
+follow_imports = "skip"
+
+# The vendored IFEval verifier's own third-party deps, behind the `ifeval`
+# extra. Absent unless that extra is installed, which is the normal case.
+[[tool.mypy.overrides]]
+module = ["nltk", "nltk.*", "langdetect", "langdetect.*", "immutabledict", "absl", "absl.*"]
+ignore_missing_imports = true
+
+# Every directory under packages/ is a real distribution with its own
+# pyproject.toml — including hive-conductor, which joined the workspace with F1.
+# Declaring the members table is what makes `uv lock` resolve all of them
+# together against ONE dependency set instead of leaving each package (and,
+# before F1, the conductor's requirements.txt) to resolve independently.
+[tool.uv.workspace]
+members = ["packages/*"]
+
+# Workspace-root sources are inherited by every member, so a member depending on
+# e.g. maistro-core gets the local checkout rather than an index lookup for a
+# name that is not published yet. `workspace = true` is the canonical pairing
+# with the members table above (it replaces the earlier
+# `{ path = ..., editable = true }` form, which said the same thing by hand).
+[tool.uv.sources]
+maistro-bootstrap = { workspace = true }
+maistro-core = { workspace = true }
+maistro-registry = { workspace = true }
+maistro-design = { workspace = true }
+maistro-canvas = { workspace = true }
+# Not root dependencies, but uv requires every workspace member that any member
+# depends on to have a source entry (maistro-rsi -> maistro-evolve is the live
+# case). Listing all of them keeps the table complete rather than one edit away
+# from a resolution error.
+maistro-evolve = { workspace = true }
+maistro-rsi = { workspace = true }
+maistro-server = { workspace = true }
+maistro-turing = { workspace = true }
+# Listed so any member (or a developer) that depends on it resolves to this
+# checkout. It is not published to PyPI — see packages/hive-conductor/pyproject.toml.
+hive-conductor = { workspace = true }

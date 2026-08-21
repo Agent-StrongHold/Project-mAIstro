@@ -1,0 +1,19 @@
+name: program_manager
+version: 1.0.0
+description: "Staff-Level TPM That Never Sleeps"
+reasoning:
+  strategy: delegate
+  max_subtasks: 12
+model: auto
+tools: []
+skills: []
+delegation:
+  mode: selective
+  sub_agents: [delivery, risk_dependency]
+trust_tier: t2
+priority_tier: P2
+metadata:
+  tagline: "Staff-Level TPM That Never Sleeps"
+  capabilities: [decompose_initiative, create_epic, create_story, link_dependency, fetch_program_state]
+  primary_capability: fetch_program_state
+  primary_action_label: "Fetch Program State"

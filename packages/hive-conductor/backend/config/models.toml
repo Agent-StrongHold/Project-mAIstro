@@ -1,0 +1,242 @@
+# Hive Conductor Model Reference
+# Generated from benchmark comparison research (GPQA, AIME24, MATH-500, IFEval, SWE-bench, LiveCode, Arena Hard, HLE)
+# Quality scores 0-100. ✓ = published. ~ = estimated.
+
+# Task quality formulas:
+#   Quartermaster: AIME24*0.40 + GPQA*0.30 + IFEval*0.30
+#   Archie:        GPQA*0.30 + IFEval*0.30 + ArenaHard*0.25 + SWE*0.15
+#   Mason:         SWE*0.45 + LiveCode*0.30 + ArenaHard*0.25
+#   Auditor:       GPQA*0.35 + SWE*0.35 + IFEval*0.30
+#   Gatekeeper:    IFEval*0.60 + MATH*0.40
+#   Router:        IFEval*0.70 + MATH*0.30
+#   Sentinel:      IFEval*0.50 + GPQA*0.50
+#   Agent Turing:  GPQA*0.30 + HLE*0.30 + LongCtx*0.20 + IFEval*0.20
+#   Book Writer:   IFEval*0.60 + ArenaHard*0.40
+
+[models]
+
+[models.claude-opus-4-6]
+alias = "openrouter-anthropic/claude-opus-4.6"
+gpqa = 83
+aime24 = 76
+math500 = 92
+ifeval = 92
+swe_bench = 75
+livecode = 68
+arena_hard = 90
+hle = 50
+ctx_k = 200
+quality = { qm = 0.83, archie = 0.86, mason = 0.77, auditor = 0.83, gatekeeper = 0.92, router = 0.92, sentinel = 0.88, turing = 0.76, book_writer = 0.91 }
+cost = "paid"
+notes = "Best synthesis + instruction follow. Paid only — use when free quota exhausted."
+
+[models.gemini-2-5-pro]
+alias = "google-gemini-3.5-pro"
+gpqa = 84
+aime24 = 92
+math500 = 97
+ifeval = 90
+swe_bench = 63
+livecode = 65
+arena_hard = 88
+hle = 55
+ctx_k = 1000
+quality = { qm = 0.89, archie = 0.84, auditor = 0.78, gatekeeper = 0.93, sentinel = 0.87, turing = 0.79, book_writer = 0.89 }
+cost = "freemium"
+free_tokens_per_month = "1.1B"
+notes = "Best reasoning. 1M ctx ideal for Archie + Turing. RPM=5 on free tier."
+
+[models.deepseek-r1-0528]
+alias = "sambanova-deepseek-r1-0528"
+gpqa = 77
+aime24 = 88
+math500 = 97
+ifeval = 84
+swe_bench = 52
+livecode = 65
+arena_hard = 82
+hle = 45
+ctx_k = 64
+quality = { qm = 0.84, auditor = 0.70, sentinel = 0.81, turing = 0.66 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Best free reasoning. ~400 t/s on SambaNova RDU. 64K ctx limit."
+
+[models.qwen3-235b]
+alias = "cerebras-qwen-3-235b-a22b-2507"
+gpqa = 73
+aime24 = 85
+math500 = 95
+ifeval = 87
+swe_bench = 65
+livecode = 62
+arena_hard = 86
+hle = 35
+ctx_k = 32
+quality = { qm = 0.82, archie = 0.79, mason = 0.69, auditor = 0.74, gatekeeper = 0.90, sentinel = 0.80, turing = 0.61, book_writer = 0.87 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Best free all-rounder. 300 t/s Cerebras. Primary P1-P2 workhorse."
+
+[models.kimi-k2]
+alias = "groq-moonshotai/kimi-k2"
+gpqa = 73
+aime24 = 75
+math500 = 91
+ifeval = 88
+swe_bench = 65
+livecode = 60
+arena_hard = 83
+hle = 28
+ctx_k = 128
+quality = { qm = 0.78, archie = 0.79, mason = 0.68, auditor = 0.75, sentinel = 0.81, turing = 0.64, book_writer = 0.86 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Fast agentic coding. 400 t/s Groq. Strong auditor for P1 tasks."
+
+[models.gemini-2-5-flash]
+alias = "gemini-flash"
+gpqa = 70
+aime24 = 77
+math500 = 92
+ifeval = 89
+swe_bench = 50
+livecode = 55
+arena_hard = 78
+hle = 28
+ctx_k = 1000
+quality = { gatekeeper = 0.90, router = 0.90, book_writer = 0.85 }
+cost = "free"
+free_tokens_per_month = "7B"
+notes = "PRIMARY ROUTER. Best speed/quality/quota for intent classification. 1M ctx. Failover to qwen3-32b on Groq at 25 RPM."
+
+[models.qwen3-32b]
+alias = "groq-qwen/qwen3-32b"
+gpqa = 65
+aime24 = 80
+math500 = 93
+ifeval = 85
+swe_bench = 56
+livecode = 58
+arena_hard = 78
+hle = 22
+ctx_k = 32
+quality = { qm = 0.77, gatekeeper = 0.88, router = 0.87 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Fast + strong reasoning at 32B. 300 t/s Groq. Router failover from Flash."
+
+[models.mistral-small]
+alias = "mistral-small"
+gpqa = 47
+aime24 = 28
+math500 = 70
+ifeval = 84
+swe_bench = 38
+livecode = 32
+arena_hard = 55
+hle = 12
+ctx_k = 32
+quality = { router = 0.80, book_writer = 0.72 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Legacy router. Usable but gemini-flash is better for routing."
+
+[models.devstral-medium-2507]
+alias = "mistral-devstral-medium-2507"
+gpqa = 48
+aime24 = 35
+math500 = 68
+ifeval = 82
+swe_bench = 68
+livecode = 58
+arena_hard = 62
+hle = 12
+ctx_k = 256
+quality = { mason = 0.64 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Purpose-built agentic coder. 256K ctx. Route P1 refactors here."
+
+[models.codestral-2508]
+alias = "mistral-codestral-2508"
+gpqa = 45
+aime24 = 30
+math500 = 68
+ifeval = 83
+swe_bench = 53
+livecode = 65
+arena_hard = 50
+hle = 10
+ctx_k = 256
+quality = { mason = 0.56 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "FIM autocomplete king (~95%). Route file completions here always regardless of composite score."
+
+[models.gemma-3-27b]
+alias = "google-gemma-3-27b"
+gpqa = 42
+aime24 = 20
+math500 = 65
+ifeval = 78
+swe_bench = 30
+livecode = 28
+arena_hard = 58
+hle = 10
+ctx_k = 128
+quality = {}
+cost = "free"
+notes = "Lightweight. For trivial tasks / overflow only."
+
+[models.llama-3-3-70b]
+alias = "groq-llama-3.3-70b"
+gpqa = 51
+aime24 = 35
+math500 = 78
+ifeval = 86
+swe_bench = 46
+livecode = 40
+arena_hard = 72
+hle = 18
+ctx_k = 128
+quality = { gatekeeper = 0.83, sentinel = 0.69 }
+cost = "free"
+free_tokens_per_month = "4.3B"
+notes = "Solid gatekeeper fallback."
+
+[models.minimax-m2-5]
+alias = "sambanova-minimax-m2.5"
+gpqa = 45
+aime24 = 30
+math500 = 70
+ifeval = 78
+swe_bench = 35
+livecode = 30
+arena_hard = 62
+hle = 20
+ctx_k = 1000
+quality = { turing = 0.52 }
+cost = "free"
+notes = "1M ctx. Route episodic memory consolidation here regardless of composite score. Tag: long_context, episodic_retrieval."
+
+[models.aya-expanse-32b]
+alias = "cohere-c4ai-aya-expanse-32b"
+gpqa = 38
+aime24 = 15
+math500 = 60
+ifeval = 82
+swe_bench = 28
+livecode = 22
+arena_hard = 65
+hle = 8
+ctx_k = 128
+quality = {}
+cost = "free"
+notes = "130+ languages natively. Route multilingual book writing here."
+
+# Router failover chain:
+#   gemini-3.5-flash (primary, 7B free, q=0.90)
+#   → qwen3-32b on Groq (300 t/s, q=0.87)
+#   → gemini-flash-lite (10.8B free, q=0.85)
+#   → cerebras-llama8b (2100 t/s, trivial/classification only, q=0.62)

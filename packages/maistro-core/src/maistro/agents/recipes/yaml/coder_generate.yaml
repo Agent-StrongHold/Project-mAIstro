@@ -1,0 +1,9 @@
+name: coder.generate
+role: coder
+description: Generate or modify code to fulfil a task
+prompt_name: coder.generate
+result_schema: schemas.CodeOutput
+min_tier: 2
+max_tier: 4
+temperature: 0.7
+max_tokens: 8192

@@ -1,0 +1,84 @@
+schemaVersion: "1"
+kind: mixin
+name: maistro-rsi
+displayName: maistro RSI toolchain
+description: >-
+  Runs the maistro recursive-self-improvement (RSI) loop inside a Docker
+  Sandboxes (sbx) microVM. maistro-core (runtime), maistro.builders (the
+  spec -> tests -> code -> review pipeline that writes the actual change), and
+  maistro-evolve/-rsi (the loop + Elo tournament) work together: builders is the
+  code-modifying agent, evolve/rsi branches, tests, benchmarks, and scores it.
+  This kit layers that toolchain, a locked-down network contract, and
+  MAISTRO_RSI_SANDBOX=local onto any host agent (e.g.
+  `sbx run opencode --kit ./sbx/maistro-rsi`) so the cycle runs against the
+  mounted codebase without a nested sandbox — sbx is the isolation boundary.
+
+# Deny-by-default egress; only what an RSI cycle legitimately needs to reach.
+# Model-provider endpoints are handled by sbx's host-side secret proxy — add
+# them under `network.serviceDomains` + `network.serviceAuth` for your provider
+# (example below) rather than pasting keys into the sandbox.
+network:
+  allowedDomains:
+    - pypi.org
+    - files.pythonhosted.org
+    - github.com
+    - codeload.github.com
+    - objects.githubusercontent.com
+    - api.github.com
+  # serviceDomains:
+  #   api.anthropic.com: anthropic
+  # serviceAuth:
+  #   anthropic:
+  #     headerName: x-api-key
+  #     valueFormat: "{token}"
+
+environment:
+  variables:
+    # Flip the RSI runner to its LocalSandbox backend: sbx already gave us an
+    # isolated microVM, so a nested DockerMicroVmSandbox would be Docker-in-Docker.
+    MAISTRO_RSI_SANDBOX: local
+    # Attest the containment that makes the line above safe. LocalSandbox runs
+    # the coding agent straight against the mounted filesystem, so
+    # create_rsi_sandbox() refuses `local` unless it can either detect a
+    # container/VM itself or read this attestation. This kit is the thing that
+    # *creates* the microVM, so it is the honest place to assert it exists —
+    # a hand-set MAISTRO_RSI_SANDBOX=local on a developer's real host gets
+    # refused instead of silently turning an auto-approved agent loose on it.
+    MAISTRO_RSI_SANDBOX_ATTEST_ISOLATED: i-am-inside-a-disposable-vm
+
+commands:
+  # Runs once at sandbox creation. Assumes the sandbox project directory is the
+  # maistro-engine checkout (the codebase RSI improves); installs the toolchain
+  # editable from the mounted repo rather than from PyPI (it is a monorepo).
+  install:
+    - command: >-
+        pip install --quiet uv &&
+        uv pip install --system
+        -e "packages/maistro-core[llm]"
+        -e packages/maistro-evolve
+        -e packages/maistro-rsi
+      user: "0"
+      # maistro-core carries maistro.builders (the code-writing pipeline); evolve
+      # + rsi add the loop and the Elo tournament.
+      description: Install the maistro RSI toolchain (editable, from the mounted repo)
+  # Runs on every sandbox start; must be idempotent.
+  startup:
+    - command: ["git", "config", "--global", "--add", "safe.directory", "*"]
+      user: "1000"
+      background: false
+      description: Trust mounted repos so RSI can branch / patch / test them
+
+# Appended to the agent's memory file so the agent knows it is operating as the
+# RSI harness and what the guardrails are.
+agentContext: |
+  You are running inside a Docker Sandboxes (sbx) microVM as the maistro RSI
+  harness. The mounted project is a maistro-engine checkout — the codebase you
+  may branch, patch, test, and benchmark. Three subsystems compose here:
+  maistro-core is the runtime; maistro.builders is the spec -> tests -> code ->
+  review pipeline that produces the actual code change (it is the RSI cycle's
+  apply_patch agent); maistro-evolve/-rsi run the loop and the Elo tournament
+  that decides whether a candidate beat the baseline. Guardrails still apply:
+  every self-diff is scanned by Warden and, if it touches sensitive surface
+  (sandbox control, security wiring, the self-branch/runner pipeline), requires
+  an additional adversarial review before it can leave the sandbox as a draft
+  PR. Run the RSI cycle via maistro_rsi; the sandbox backend is already `local`.

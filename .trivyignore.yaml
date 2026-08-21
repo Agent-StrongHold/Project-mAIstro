@@ -1,0 +1,20 @@
+vulnerabilities:
+  - id: GHSA-6v7p-g79w-8964
+    purls:
+      - pkg:pypi/msgpack@1.1.2
+    expired_at: 2026-09-30
+    statement: >-
+      Chainguard's embedded base-image SBOM reports msgpack 1.1.2 from the
+      pre-overlay Python environment. The final runtime venv contains msgpack
+      1.2.1 or newer and CI verifies the live installed version immediately
+      before Trivy runs. This suppresses only the stale package/version tuple.
+  - id: CVE-2025-47273
+    purls:
+      - pkg:pypi/setuptools@70.3.0
+    expired_at: 2026-09-30
+    statement: >-
+      Chainguard's embedded base-image SBOM reports setuptools 70.3.0 from the
+      pre-overlay Python environment. The final runtime venv contains
+      setuptools 78.1.1 or newer and CI verifies the live installed version
+      immediately before Trivy runs. This suppresses only the stale
+      package/version tuple.

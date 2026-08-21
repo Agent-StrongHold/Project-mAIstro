@@ -1,0 +1,17 @@
+name: risk_dependency
+version: 1.0.0
+description: "Your Always-On RAID Brain"
+reasoning:
+  strategy: direct
+model: auto
+tools: []
+skills: []
+delegation:
+  mode: none
+trust_tier: t2
+priority_tier: P2
+metadata:
+  tagline: "Your Always-On RAID Brain"
+  capabilities: [create_raid_entry, scan_risks, map_dependency, fetch_dependency_graph, escalate_issue]
+  primary_capability: scan_risks
+  primary_action_label: "Scan Risks"

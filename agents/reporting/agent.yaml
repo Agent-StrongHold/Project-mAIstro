@@ -1,0 +1,17 @@
+name: reporting
+version: 1.0.0
+description: "Executive Visibility in Under 30 Seconds"
+reasoning:
+  strategy: direct
+model: auto
+tools: []
+skills: []
+delegation:
+  mode: none
+trust_tier: t2
+priority_tier: P2
+metadata:
+  tagline: "Executive Visibility in Under 30 Seconds"
+  capabilities: [generate_exec_summary, fetch_program_metrics, publish_dashboard]
+  primary_capability: generate_exec_summary
+  primary_action_label: "Generate Summary"

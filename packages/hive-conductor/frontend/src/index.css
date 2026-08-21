@@ -1,0 +1,1134 @@
+:root {
+  --paper:   #fafafa;
+  --paper-2: #f5f5f5;
+  --ink:     #1a1a1a;
+  --pencil:  #6b7280;
+  --rule:    rgba(0, 0, 0, 0.08);
+  --accent:  #2563eb;
+  --accent-light: rgba(37, 99, 235, 0.08);
+  --accent-hover: #1d4ed8;
+  --accent-2: #7c3aed;
+  --accent-gradient: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+  --honey:   #2563eb;
+  --honey-light: rgba(37, 99, 235, 0.06);
+  --honey-dark: #1d4ed8;
+  --wax:     #e5e7eb;
+  --comb-bg: transparent;
+  --danger:  #dc2626;
+  --ok:      #16a34a;
+  --warn:    #d97706;
+  --purple:  #7c3aed;
+  /* Meter/chart track + scrollbar thumb -- must invert with the theme, so
+     charts stay visible on dark surfaces (themes/dark.css overrides). */
+  --track:   rgba(0, 0, 0, 0.05);
+  --scroll-thumb: rgba(0, 0, 0, 0.15);
+  --sans:    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono:    'SF Mono', ui-monospace, Menlo, monospace;
+  --hand:    var(--sans);
+  /* Elevation scale -- a soft, layered shadow system (never a single hard
+     drop-shadow) so raised surfaces read as lifted paper, not stickers. */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.05), 0 4px 12px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.06), 0 12px 32px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 8px 24px rgba(16, 24, 40, 0.08), 0 24px 64px rgba(16, 24, 40, 0.10);
+  --shadow-accent: 0 4px 16px rgba(37, 99, 235, 0.18);
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: var(--sans);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+#root { min-height: 100vh; }
+a { color: var(--accent); }
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  min-height: 100vh;
+  /* A whisper of color at the top-left keeps the shell from reading as flat
+     white without ever competing with content -- it's a wash, not a card. */
+  background:
+    radial-gradient(ellipse 1100px 700px at 12% -8%, rgba(37, 99, 235, 0.05), transparent 60%),
+    var(--paper);
+}
+
+.icon-sidebar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 12px;
+  gap: 2px;
+  border-right: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.icon-sidebar::before {
+  content: '';
+  display: none;
+}
+
+.nav-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-family: var(--mono);
+  color: var(--pencil);
+  background: transparent;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.nav-icon:hover {
+  color: var(--ink);
+  border-color: var(--honey);
+  background: var(--honey-light);
+}
+
+.nav-icon.active {
+  color: #fff;
+  background: var(--accent-gradient);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: var(--shadow-accent);
+}
+
+/* Label next to each icon — hidden by default (compact sidebar). Shown only
+   when the viewport is wide enough that we can afford to expand the rail. */
+.nav-icon-label {
+  display: none;
+}
+
+/* Expanded sidebar mode: viewport >= 1200px gets icons + labels on a wider
+   rail so the user can read where they're going instead of guessing icons. */
+@media (min-width: 1200px) {
+  .app-shell {
+    grid-template-columns: 168px 1fr;
+  }
+  .icon-sidebar {
+    align-items: stretch;
+    padding: 8px 6px;
+  }
+  .icon-sidebar::before {
+    align-self: center;
+  }
+  .nav-icon {
+    width: auto;
+    height: auto;
+    justify-content: flex-start;
+    padding: 7px 10px;
+    gap: 8px;
+    /* Lose the diamond clip on active so the label remains readable. */
+    clip-path: none !important;
+  }
+  .nav-icon.active {
+    clip-path: none;
+  }
+  .nav-icon-label {
+    display: inline;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+}
+
+.main-content {
+  padding: 14px 18px;
+  overflow: auto;
+  min-height: 100vh;
+  position: relative;
+}
+
+.mobile-user-bar {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--pencil);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  z-index: 10;
+}
+
+.hamburger {
+  display: none;
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1100;
+  background: var(--paper);
+  border: 1.3px solid var(--ink);
+  border-radius: 5px;
+  padding: 6px 8px;
+  cursor: pointer;
+  flex-direction: column;
+  gap: 3px;
+}
+.hamburger span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--ink);
+  border-radius: 1px;
+}
+
+.drawer-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1200;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+.drawer-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  background: var(--paper-2);
+  border-right: 1.5px solid var(--honey);
+  z-index: 1300;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+  flex-direction: column;
+  padding: 0;
+  overflow-y: auto;
+}
+.drawer.open {
+  transform: translateX(0);
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.drawer-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--pencil);
+  padding: 4px;
+  line-height: 1;
+}
+.drawer-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--pencil);
+}
+.drawer-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.drawer-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+}
+.drawer-link:hover {
+  background: var(--honey-light);
+}
+.drawer-link.active {
+  color: var(--accent);
+  background: var(--honey-light);
+  font-weight: 600;
+  border-right: 3px solid var(--accent);
+}
+.drawer-link-icon {
+  width: 24px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.page-sidebar {
+  min-width: 200px;
+  max-width: 280px;
+  flex-shrink: 0;
+}
+
+.page-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.page-header .subtitle {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--pencil);
+}
+
+.muted { color: var(--pencil); margin: 0; font-size: 0.85rem; }
+
+.hex-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 10px;
+  min-width: 40px;
+  height: 24px;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  clip-path: polygon(10% 0%, 90% 0%, 100% 50%, 90% 100%, 10% 100%, 0% 50%);
+  background: var(--honey-light);
+  color: var(--honey-dark);
+  border: none;
+  text-transform: uppercase;
+}
+
+.hex-badge-ok { background: rgba(90,154,74,0.15); color: #4a7a3a; }
+.hex-badge-danger { background: rgba(196,69,42,0.15); color: #c4452a; }
+.hex-badge-warn { background: rgba(232,160,58,0.15); color: #b07820; }
+.hex-badge-purple { background: rgba(122,90,245,0.15); color: #5a3ad5; }
+.hex-badge-muted { background: rgba(107,93,73,0.12); color: var(--pencil); }
+
+.bee-queen { color: var(--accent); filter: drop-shadow(0 0 4px rgba(212,160,23,0.5)); }
+.bee-worker { color: var(--ink); }
+.bee-drone { color: var(--pencil); }
+.bee-scout { color: var(--ok); }
+
+.card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  padding: 14px 18px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.card:hover {
+  border-color: rgba(37, 99, 235, 0.3);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 5px 6px;
+  border-bottom: 1px dotted var(--rule);
+}
+
+.table th {
+  color: var(--pencil);
+  font-weight: 500;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.toggle {
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--rule);
+  position: relative;
+  cursor: pointer;
+  display: inline-block;
+  vertical-align: middle;
+}
+.toggle.on { background: var(--accent); }
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid rgba(0,0,0,0.2);
+  left: 2px;
+  transition: 0.15s;
+}
+.toggle.on::after { left: 14px; }
+.toggle { transition: background 0.2s var(--ease); }
+.toggle::after { transition: left 0.2s var(--ease); }
+
+.progress-bar {
+  height: 6px;
+  background: var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: 3px;
+  transition: width 0.4s var(--ease);
+}
+
+.input-field {
+  border: 1.3px solid var(--ink);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--paper-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink);
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.input-field::placeholder { color: var(--pencil); }
+
+.btn {
+  border: 1.3px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.15s var(--ease), background 0.15s var(--ease);
+}
+.btn:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); box-shadow: var(--shadow-xs); }
+.btn-accent {
+  background: var(--accent-gradient);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: var(--shadow-accent);
+}
+.btn-accent:hover { border-color: transparent; box-shadow: 0 6px 20px rgba(37, 99, 235, 0.28); }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.stat-card {
+  text-align: center;
+  padding: 12px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.stat-card:hover {
+  border-color: rgba(37, 99, 235, 0.25);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.stat-card .label {
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--pencil);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-card .value {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin-top: 3px;
+}
+
+@media (max-width: 900px) {
+  .hamburger { display: flex; }
+  .drawer { display: flex; }
+  .drawer-overlay { display: block; }
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+  .icon-sidebar { display: none; }
+  .main-content { padding: 10px 12px; padding-top: 44px; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .page-sidebar { min-width: 0; max-width: 100%; width: 100%; }
+}
+
+@media (max-width: 640px) {
+  :root { font-size: 14px; }
+  .page-header h1 { font-size: 20px; }
+  .main-content { padding: 8px 10px; padding-top: 28px; }
+  .card { padding: 8px 10px; }
+  .stat-card .value { font-size: 14px; }
+  .stat-card { padding: 6px 4px; }
+  .input-field { font-size: 16px; }
+  .mobile-user-bar {
+    top: 2px;
+    right: 8px;
+    font-size: 8px;
+    gap: 4px;
+  }
+}
+
+/* ── Chat Page ─────────────────────────────────────────────── */
+.chat-layout { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.chat-header { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--rule); }
+.chat-header-title { font-size: 15px; font-weight: 600; flex: 1; }
+.chat-main { display: flex; flex-direction: column; flex: 1; overflow: hidden; max-width: 800px; margin: 0 auto; width: 100%; }
+.message-list { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+.message { display: flex; flex-direction: column; max-width: 80%; }
+.message--user { align-self: flex-end; }
+.message--assistant { align-self: flex-start; }
+.message-bubble { padding: 12px 16px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; border-radius: 16px; border: none; box-shadow: var(--shadow-xs); }
+.message--user .message-bubble { background: var(--accent-gradient); color: white; border-bottom-right-radius: 4px; }
+.message--assistant .message-bubble { background: var(--paper-2); border-bottom-left-radius: 4px; }
+.message-time { font-family: var(--mono); font-size: 10px; color: var(--pencil); margin-top: 4px; padding: 0 4px; }
+.chat-input-bar { display: flex; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--rule); max-width: 800px; margin: 0 auto; width: 100%; }
+.chat-textarea { flex: 1; resize: none; border: 1px solid var(--rule); border-radius: 12px; padding: 12px 16px; font-family: var(--sans); font-size: 14px; background: var(--paper); color: var(--ink); outline: none; box-shadow: var(--shadow-xs); transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease); }
+.chat-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.send-btn { padding: 12px 24px; border-radius: 12px; font-weight: 600; font-size: 14px; box-shadow: var(--shadow-accent); transition: box-shadow 0.15s var(--ease), transform 0.15s var(--ease), background 0.15s var(--ease); }
+.send-btn:hover:not(:disabled) { box-shadow: 0 6px 20px rgba(37, 99, 235, 0.28); transform: translateY(-1px); }
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 20px; padding: 48px 24px; }
+.empty-title { font-size: 28px; font-weight: 700; color: var(--ink); letter-spacing: -0.02em; }
+.suggested-prompts { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 480px; }
+.prompt-btn { cursor: pointer; font-size: 14px; padding: 14px 18px; text-align: left; border-radius: 12px; border: 1px solid var(--rule); background: var(--paper); box-shadow: var(--shadow-xs); transition: border-color 0.15s var(--ease), background 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.15s var(--ease); }
+.prompt-btn:hover { background: var(--accent-light); border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.typing-indicator { display: flex; gap: 5px; padding: 14px 18px; }
+.typing-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pencil); animation: bounce 1.4s infinite ease-in-out; }
+.typing-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); } 40% { transform: scale(1); } }
+.model-selector { position: relative; }
+.btn-model { background: none; border: 1px solid var(--rule); border-radius: 8px; padding: 6px 12px; font-family: var(--mono); font-size: 11px; cursor: pointer; color: var(--pencil); transition: border-color 0.15s; }
+.btn-model:hover { border-color: var(--accent); }
+.model-dropdown { position: absolute; top: 100%; right: 0; margin-top: 4px; background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; list-style: none; padding: 4px; min-width: 180px; z-index: 100; box-shadow: var(--shadow-lg); animation: panel-in 0.15s var(--ease); }
+.model-option { padding: 8px 12px; font-family: var(--mono); font-size: 12px; cursor: pointer; border-radius: 6px; transition: background 0.15s var(--ease); }
+.model-option:hover { background: var(--accent-light); }
+.model-option--active { color: var(--accent); font-weight: 600; }
+.drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.2); z-index: 90; }
+.chat-layout .drawer { position: fixed; left: 0; top: 0; bottom: 0; width: 280px; background: var(--paper); border-right: 1px solid var(--rule); z-index: 100; transform: translateX(-100%); transition: transform 0.2s; display: flex; flex-direction: column; }
+.chat-layout .drawer--open { transform: translateX(0); }
+.drawer-title { font-size: 14px; font-weight: 600; }
+.drawer-link-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.drawer-link-time { font-size: 10px; color: var(--pencil); }
+.drawer-link--active { background: var(--accent-light); border-right: 3px solid var(--accent); }
+.btn-icon { background: none; border: none; font-size: 18px; cursor: pointer; padding: 6px 10px; border-radius: 8px; transition: background 0.15s var(--ease); }
+.btn-icon:hover { background: var(--accent-light); }
+.btn-primary { background: var(--accent-gradient); color: white; border: none; cursor: pointer; font-family: var(--sans); border-radius: 10px; box-shadow: var(--shadow-accent); transition: box-shadow 0.15s var(--ease), transform 0.15s var(--ease); }
+.btn-primary:hover { box-shadow: 0 6px 20px rgba(37, 99, 235, 0.28); transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (min-width: 768px) {
+  .chat-layout .drawer { position: static; transform: none; width: 260px; flex-shrink: 0; border-right: 1px solid var(--rule); }
+  .chat-layout .hamburger { display: none; }
+  .drawer-backdrop { display: none; }
+}
+
+/* This file previously accumulated ~18 duplicate, order-dependent
+   `!important` button/input/font rules (each labeled with a stray
+   "hill-climb pass N" comment) from an earlier automated styling pass.
+   They fought each other and every deliberately-styled component (down to
+   clobbering Dashboard.tsx's own inline-styled icon buttons, since an
+   `!important` stylesheet rule beats a plain inline `style`), which was the
+   root cause of this app's "no coherent theme" problem. Replaced with one
+   deliberate, non-important baseline: it only ever applies to a plain,
+   otherwise-unstyled `<button>`/input, and yields immediately to any
+   component's own class or inline style, exactly as the cascade should
+   work. */
+button {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 8px 16px;
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.15s var(--ease);
+}
+button:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.35);
+  background: var(--accent-light);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+button:active:not(:disabled) { transform: translateY(0); box-shadow: var(--shadow-xs); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:focus-visible, [role="button"]:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input, select, textarea {
+  font-family: var(--sans);
+  color: var(--ink);
+}
+
+
+.overview-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+
+.dashboard-widget-card {
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow 0.2s var(--ease), border-color 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.dashboard-widget-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.dashboard-header-actions button {
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow 0.15s var(--ease), transform 0.15s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.dashboard-header-actions button:hover:not(:disabled) {
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+.dashboard-header-actions button:disabled { box-shadow: none; }
+
+.dashboard-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.63rem;
+  font-weight: 600;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  background: rgba(22, 163, 74, 0.09);
+  color: var(--ok);
+}
+.dashboard-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 rgba(22, 163, 74, 0.5);
+  animation: status-pulse 2.2s var(--ease) infinite;
+}
+@keyframes status-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.35); }
+  70%  { box-shadow: 0 0 0 5px rgba(22, 163, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+
+/* Persona/Workspace system: tab strip for switching between a user's
+   workspaces. */
+.workspace-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+}
+.workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+/* .workspace-toolbar .workspace-tab (not just .workspace-tab): this file has
+   accumulated several auto-generated `button:not([class*="..."])` rules
+   whose :not() argument counts as a selector for specificity purposes, so a
+   bare single class here loses the cascade to them. The doubled-up selector
+   safely outranks any single-class-plus-element combination.
+   Scoped to `.workspace-toolbar` (not the narrower `.workspace-tabs`) so it
+   also reaches the Share/Tools/New-persona toggle buttons -- they reuse the
+   `workspace-tab` class but render as `.workspace-tabs`' siblings, not its
+   descendants, so the narrower selector silently missed them and let all
+   four buttons in the toolbar look inconsistent with each other. */
+.workspace-toolbar .workspace-tab {
+  padding: 5px 12px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--rule) !important;
+  background: var(--paper-2) !important;
+  color: var(--pencil) !important;
+  font-family: var(--sans);
+  font-size: 12px !important;
+  cursor: pointer;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: border-color 0.18s var(--ease), color 0.18s var(--ease), background 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.workspace-toolbar .workspace-tab:hover {
+  border-color: var(--accent) !important;
+  color: var(--ink) !important;
+  background: var(--paper) !important;
+  box-shadow: var(--shadow-xs) !important;
+  transform: none !important;
+}
+.workspace-toolbar .workspace-tab.active {
+  background: var(--paper) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+  box-shadow: 0 0 0 3px var(--accent-light), var(--shadow-xs) !important;
+}
+.workspace-tab-add {
+  font-weight: 700;
+  line-height: 1;
+}
+.workspace-tab-new-form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-tab-new-form input,
+.workspace-tab-new-form select {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  font-family: var(--sans);
+}
+.workspace-tab-new-form input {
+  min-width: 140px;
+}
+.workspace-tab-new-form select {
+  max-width: 140px;
+}
+.workspace-tab-new-form button {
+  padding: 3px 8px !important;
+  font-size: 12px !important;
+}
+.workspace-tab-error {
+  font-size: 11px;
+  color: var(--danger);
+  font-family: var(--mono);
+}
+
+/* Every button inside these three workspace-toolbar dropdown panels
+   (Share/Tools/PersonaWizard) falls back, by default, to whichever of this
+   file's many auto-generated `button { ... }` rules happens to win the
+   cascade -- a different radius/border/shadow on nearly every one of them,
+   which is where most of the panels' "no coherent theme" feel came from.
+   One rule per panel, scoped by class+element (beats a bare `button`
+   regardless of source order), gives every button in these panels the same
+   quiet, thin-bordered look as the rest of the app -- the danger-colored
+   remove/delete buttons below have their own higher-specificity selectors
+   and still win over this. */
+.workspace-share-panel button,
+.workspace-tool-bindings-panel button,
+.persona-wizard-panel button {
+  padding: 5px 11px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--rule) !important;
+  background: var(--paper) !important;
+  color: var(--ink) !important;
+  font-family: var(--sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  box-shadow: var(--shadow-xs) !important;
+  transform: none !important;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.workspace-share-panel button:hover,
+.workspace-tool-bindings-panel button:hover,
+.persona-wizard-panel button:hover {
+  border-color: var(--accent) !important;
+  background: var(--accent-light) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+.workspace-share-panel button:disabled,
+.workspace-tool-bindings-panel button:disabled,
+.persona-wizard-panel button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+.persona-wizard-panel button[type="submit"] {
+  background: var(--accent-gradient) !important;
+  border-color: transparent !important;
+  color: #fff !important;
+  box-shadow: var(--shadow-accent) !important;
+}
+.persona-wizard-panel button[type="submit"]:hover {
+  background: var(--accent-gradient) !important;
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.28) !important;
+}
+
+/* A soft rise-and-fade-in for the toolbar's three dropdown panels + the
+   PersonaWizard overlay -- purely decorative, keeps the panel from just
+   snapping into existence. */
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Share/invite panel for the active workspace. */
+.workspace-share {
+  position: relative;
+  flex-shrink: 0;
+}
+.workspace-share-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 12px;
+  animation: panel-in 0.16s var(--ease);
+}
+.workspace-share-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--pencil);
+  margin-bottom: 6px;
+}
+.workspace-share-members {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.workspace-share-members li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.workspace-share-member-id {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-share-role {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--pencil);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--paper-2);
+}
+.workspace-share-panel button.workspace-share-remove {
+  padding: 0 4px !important;
+  font-size: 11px !important;
+  color: var(--danger) !important;
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.workspace-share-invite-form {
+  display: flex;
+  gap: 4px;
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+.workspace-share-invite-form input,
+.workspace-share-invite-form select {
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  font-family: var(--sans);
+  min-width: 0;
+  flex: 1;
+}
+.workspace-share-panel button[type="submit"] {
+  padding: 3px 8px !important;
+  font-size: 12px !important;
+}
+.workspace-share-error {
+  font-size: 11px;
+  color: var(--danger);
+  margin-top: 6px;
+}
+
+.workspace-share-danger-zone {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-top: 1px solid var(--rule);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.workspace-share-panel .workspace-share-danger-zone button {
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+}
+.workspace-share-panel .workspace-share-danger-zone button.workspace-share-delete,
+.workspace-share-panel .workspace-share-danger-zone button.workspace-share-delete-confirm {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+.workspace-share-confirm-text {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* Per-workspace tool-binding settings screen (services/tool_binding.py). */
+.workspace-tool-bindings {
+  position: relative;
+  flex-shrink: 0;
+}
+.workspace-tool-bindings-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 280px;
+  max-width: 340px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: panel-in 0.16s var(--ease);
+}
+.workspace-tool-bindings-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--pencil);
+}
+.workspace-tool-bindings-empty {
+  font-size: 12px;
+  color: var(--pencil);
+}
+.workspace-tool-bindings-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+.workspace-tool-bindings-agent-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.workspace-tool-bindings-agent-role {
+  font-weight: 400;
+  color: var(--pencil);
+}
+.workspace-tool-bindings-defaults {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.workspace-tool-bindings-defaults label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-tool-bindings-agent input,
+.workspace-tool-bindings-agent textarea {
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  font-family: var(--sans);
+}
+.workspace-tool-bindings-agent textarea {
+  resize: vertical;
+  min-height: 40px;
+}
+.workspace-tool-bindings-error {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* PersonaWizard: in-app persona authoring, a step-by-step modal. */
+.persona-wizard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.persona-wizard-panel {
+  width: min(480px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  padding: 18px 20px;
+  animation: panel-in 0.18s var(--ease);
+}
+.persona-wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--hand);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 14px;
+}
+.persona-wizard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--pencil);
+  margin-bottom: 14px;
+}
+.persona-wizard-step {
+  padding: 3px 8px;
+  border-radius: 20px;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.persona-wizard-step.active {
+  color: var(--accent);
+  background: var(--accent-light);
+  font-weight: 600;
+}
+.persona-wizard-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.persona-wizard-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--pencil);
+}
+.persona-wizard-fields input {
+  font-size: 13px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  font-family: var(--sans);
+}
+.persona-wizard-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.persona-wizard-agent {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+  gap: 4px;
+}
+.persona-wizard-agent input {
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  font-family: var(--sans);
+  min-width: 0;
+}
+.persona-wizard-hint {
+  font-size: 12px;
+  color: var(--pencil);
+  margin: 0 0 8px;
+}
+.persona-wizard-interview-question {
+  display: grid;
+  grid-template-columns: 1fr 1fr 2fr auto;
+  gap: 4px;
+}
+.persona-wizard-interview-question input {
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  font-family: var(--sans);
+  min-width: 0;
+}
+.persona-wizard-review {
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.persona-wizard-review-title {
+  font-size: 15px;
+}
+.persona-wizard-review ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.persona-wizard-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin-top: 8px;
+}
+.persona-wizard-nav {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  border-top: 1px solid var(--rule);
+  padding-top: 12px;
+}
+.persona-wizard-success {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}

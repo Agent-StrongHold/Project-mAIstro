@@ -1,0 +1,21 @@
+name: Cage Guard — Auto-reject PRs touching cage/ or eval/
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'packages/hive-conductor/cage/**'
+      - 'packages/hive-conductor/eval/**'
+
+jobs:
+  block:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject immutable path changes
+        run: |
+          echo "::error::❌ This PR modifies cage/ or eval/ — these paths are IMMUTABLE."
+          echo "::error::The Turing Cage and Eval suite cannot be modified by automated processes."
+          echo "::error::If this is a legitimate human-initiated change, a repo admin must merge manually."
+          exit 1

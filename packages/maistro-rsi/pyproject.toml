@@ -1,0 +1,37 @@
+[project]
+name = "maistro-rsi"
+version = "0.9.0"
+description = "Recursive self-improvement: agents that branch, patch, and benchmark their own codebase in isolated microVM sandboxes"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    # [llm] because selfbranch.py imports maistro.tools.git.server, which needs
+    # fastmcp. Depending on bare maistro-core made `import maistro_rsi.selfbranch`
+    # (and cli/runner through it) raise ModuleNotFoundError from an installed wheel.
+    "maistro-core[llm]>=0.9.0",
+    "maistro-evolve>=0.9.0",
+    "maistro-bootstrap>=0.9.0",
+    "pydantic>=2.0,<3",
+    "httpx>=0.27,<1",
+    "structlog>=24.0,<26",
+]
+
+[project.scripts]
+maistro-rsi = "maistro_rsi.cli:main"
+maistro-rsi-autorun = "maistro_rsi.autorun:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.9,<1",
+    "mypy>=1.14,<2",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maistro_rsi"]

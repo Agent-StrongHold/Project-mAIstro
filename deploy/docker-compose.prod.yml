@@ -1,0 +1,146 @@
+# Production reference topology for maistro-engine (SPEC-070226-fbe3 / ADR-081).
+#
+# Load balancer (nginx) -> 2x stateless maistro-server replicas
+# -> PostgreSQL primary + streaming replica, Redis, shared file store.
+#
+# Usage:
+#   cp .env.example .env   # set POSTGRES_PASSWORD, REPLICATION_PASSWORD, REDIS_PASSWORD, API_KEYS
+#   docker compose -f deploy/docker-compose.prod.yml up -d
+#
+# No secrets inline — everything sensitive comes from the environment / .env.
+# This is a REFERENCE artifact: production deployments should pin image digests
+# and move the sandbox worker off the host docker socket (CRIT-01, DEPLOYMENT-STANCE.md).
+
+services:
+  lb:
+    image: nginx:1.27-alpine
+    ports:
+      - "${MAISTRO_BIND_HOST:-0.0.0.0}:${MAISTRO_LB_PORT:-8080}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - maistro-server-1
+      - maistro-server-2
+    restart: unless-stopped
+
+  maistro-server-1: &maistro-server
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment: &maistro-env
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-maistro}
+      DB_USER: ${POSTGRES_USER:-maistro}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
+      API_KEYS: ${API_KEYS:?Set API_KEYS in .env}
+      REQUIRE_AUTH: "true"
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
+      FILE_STORE_PATH: /var/lib/maistro/files
+    volumes:
+      - file-store:/var/lib/maistro/files
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 30s   # connection drain (ADR-081 rolling update contract)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  maistro-server-2:
+    <<: *maistro-server
+
+  postgres-primary:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-maistro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-maistro}
+      # Streaming replication + WAL archival (daily full + continuous WAL).
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=5
+      - -c
+      - wal_keep_size=512MB
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f
+      - -c
+      - hot_standby=on
+    volumes:
+      - pgdata-primary:/var/lib/postgresql/data
+      - wal-archive:/var/lib/postgresql/wal_archive
+      - ./init-replication.sh:/docker-entrypoint-initdb.d/init-replication.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maistro}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  postgres-replica:
+    image: pgvector/pgvector:pg17
+    environment:
+      PGPASSWORD: ${REPLICATION_PASSWORD:?Set REPLICATION_PASSWORD in .env}
+    # Bootstrap a hot standby via pg_basebackup on first start, then run postgres.
+    command:
+      - bash
+      - -ceu
+      - |
+        if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+          until pg_basebackup -h postgres-primary -U replicator -D /var/lib/postgresql/data \
+            -X stream -R --checkpoint=fast; do sleep 2; done
+          chmod 700 /var/lib/postgresql/data
+        fi
+        exec docker-entrypoint.sh postgres -c hot_standby=on
+    volumes:
+      - pgdata-replica:/var/lib/postgresql/data
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maistro}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # RDB snapshots (daily off-host copy via scripts/backup.sh) + AOF on-instance.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      - --appendonly
+      - "yes"
+      - --save
+      - "3600 1"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    restart: unless-stopped
+
+volumes:
+  pgdata-primary:
+  pgdata-replica:
+  wal-archive:
+  redis-data:
+  file-store:

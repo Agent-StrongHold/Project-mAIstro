@@ -1,0 +1,81 @@
+department: creative_writing
+evals:
+  - name: age_appropriateness
+    criteria:
+      - name: no_inappropriate
+        weight: 40
+        # whole-word match via regex, which is stricter than the original .split() approach
+        check: {op: regex_absent, pattern: '\b(death|kill|blood|murder|hate|stupid|drunk|sex|violence|gun)\b', flags: i}
+      - name: simple_vocabulary
+        weight: 20
+        check: {op: metric, name: long_word_ratio, cmp: lt, value: 0.05}
+      - name: short_sentences
+        weight: 20
+        check: {op: metric, name: avg_sentence_words, cmp: lt, value: 20}
+      - name: positive_tone
+        weight: 20
+        check: {op: keywords_any, words: [happy, friend, love, kind, brave, fun]}
+
+  - name: story_arc
+    criteria:
+      - name: has_beginning
+        weight: 20
+        check: {op: keywords_any, words: ["once", "there was", "one day", "long ago"], slice_end: 200}
+      - name: has_conflict
+        weight: 25
+        check: {op: keywords_any, words: [but, however, problem, "couldn't", worried]}
+      - name: has_resolution
+        weight: 25
+        check: {op: keywords_any, words: [finally, "at last", learned, happy, solved], slice_start: -300}
+      - name: has_ending
+        weight: 15
+        check: {op: keywords_any, words: ["the end", "ever after", "from that day"], slice_start: -200}
+      - name: logical_flow
+        weight: 15
+        check: {op: regex_count, pattern: '\. ', min: 5}
+
+  - name: character_consistency
+    criteria:
+      - name: named_character
+        weight: 25
+        check: {op: regex, pattern: '\b[A-Z][a-z]{2,}\b'}
+      - name: character_traits
+        weight: 25
+        check: {op: keywords_any, words: [brave, kind, curious, shy, clever, gentle]}
+      - name: character_actions
+        weight: 25
+        check: {op: regex, pattern: '(he|she|they)\s+(said|went|looked|felt|ran)', flags: i}
+      - name: character_growth
+        weight: 25
+        check: {op: keywords_any, words: [learned, realized, grew, understood]}
+
+  - name: word_count
+    criteria:
+      - name: meets_minimum
+        weight: 40
+        check: {op: word_count, min: 100}
+      - name: under_maximum
+        weight: 30
+        check: {op: word_count, max: 3000}
+      - name: not_padded
+        weight: 30
+        check: {op: metric, name: unique_word_ratio, cmp: gt, value: 0.3}
+
+  - name: read_aloud_quality
+    criteria:
+      - name: varied_sentence_length
+        weight: 25
+        check: {op: metric, name: sentence_length_variety, cmp: gte, value: 3}
+      - name: dialogue_present
+        weight: 25
+        check:
+          op: all
+          of:
+            - {op: regex, pattern: '"'}
+            - {op: keywords_any, words: [said]}
+      - name: sensory_language
+        weight: 25
+        check: {op: keywords_any, words: [soft, bright, warm, cold, loud, quiet]}
+      - name: rhythm
+        weight: 25
+        check: {op: regex, pattern: '(\b\w+\b).*\1.*\1', slice_end: 500}

@@ -1,0 +1,4 @@
+# Force LF on shell scripts regardless of platform checkout settings. A
+# CRLF shebang line (e.g. from a Windows clone with core.autocrlf=true)
+# breaks bash with "$'\r': command not found" or worse.
+*.sh text eol=lf

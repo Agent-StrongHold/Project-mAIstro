@@ -1,0 +1,101 @@
+# Agent Conductor (hive-conductor) — the household/personal app that ships from
+# this monorepo.
+#
+# NOT in the PyPI publish set (that set is maistro-core, -canvas, -evolve, -rsi,
+# -bootstrap). This file exists for build hygiene and image builds: it puts the
+# app's dependency resolution inside the workspace lock instead of a second,
+# unlocked `requirements.txt` resolution, and enrolls it in the wheel-imports
+# CI build loop. Do not add it to a publish job.
+#
+# Wheel layout: `backend/` is a FLAT module layout — no package root, no
+# `backend/__init__.py` — and the app imports its own modules top-level-relative
+# (`from config import get_settings`, `from routes import ...`, `from
+# middleware.auth import AuthMiddleware`). Those imports are resolved by putting
+# `backend/` itself on sys.path: the Dockerfile sets `PYTHONPATH=/app/backend`
+# and `backend/tests/conftest.py` inserts it at `sys.path[0]`. The wheel
+# therefore ships the sources remapped under a `hive_conductor/` prefix so it
+# installs without colliding with anything else in site-packages, but the app is
+# NOT importable as `hive_conductor.main` — see the `hive-conductor` entry in
+# scripts/verify-wheel-imports.py's SKIPPED_DISTS.
+[project]
+name = "hive-conductor"
+version = "0.9.0"
+description = "Agent Conductor — FastAPI backend for the Maistro household/personal app"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    # Translated from backend/requirements.txt, bounds preserved verbatim.
+    "pyyaml>=6.0.0,<7",
+    "fastapi>=0.115.0,<1",
+    "uvicorn[standard]>=0.32.0,<1",
+    "pydantic>=2.0.0,<3",
+    "pydantic-settings>=2.0.0,<3",
+    "python-multipart>=0.0.9,<1",
+    "httpx>=0.27.0,<1",
+    # Starlette 1.x TestClient uses httpx2; httpx above remains the application
+    # HTTP client. Keeping both prevents test-only deprecation warnings.
+    "httpx2>=2.0.0,<3",
+    # maistro-server declares the same dep with a lower floor (>=3.9.3,<5
+    # there too after E2); the workspace resolves langfuse 4.x, so the cap
+    # is <5 in both rather than the <3 a naive "next major" read would give.
+    "langfuse>=3.9.3,<5",
+    "argon2-cffi>=23.1.0,<25",
+    "bcrypt>=4.0.0,<6",
+    "cryptography>=50.0.0,<51",
+    "structlog>=24.1.0,<26",
+    "sqlalchemy[asyncio]>=2.0.0,<3",
+    # maistro-core is now declared properly here rather than only reached via
+    # sys.path (backend/tests/conftest.py) — that arrangement is what forced
+    # requirements.txt to restate maistro-core's own hard deps. The restated
+    # deps are deliberately KEPT: the Dockerfile still pip-installs
+    # requirements.txt directly (not this pyproject), and `regex` in particular
+    # is load-bearing there, so removing them would silently degrade the image.
+    #
+    # Bound is `>=0.9.0,<2` because 0.9.0 is what every package in this repo is
+    # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
+    # `>=1.0.0,<2` at tag time, per E1/E2 of the v1.0.0 release plan.
+    "maistro-core>=0.9.0,<2",
+    # `regex` powers Warden's per-search ReDoS timeout: before it became an
+    # unconditional import, this environment silently ran the security scanner
+    # on stdlib `re` with no timeout support at all — the exact degraded mode
+    # the conditional fallback was deleted for hiding. Declared by maistro-core
+    # too; pinned here so the app's own resolution cannot drop it.
+    "regex>=2024.5.15,<2027",
+]
+
+[project.optional-dependencies]
+# Test-only, matching the sibling packages' `dev` extra convention. These were
+# runtime entries in requirements.txt (which is also the CI/Docker install
+# path), so they stay in that file; here they are correctly optional.
+dev = [
+    "pytest>=8.0.0,<10",
+    "pytest-asyncio>=0.25,<2",
+    "pytest-bdd>=8.0.0,<9",
+    "hypothesis>=6.0.0,<7",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+# Only the backend Python sources ship. The Vite frontend (`frontend/`) is built
+# by the Dockerfile's node stage into the image — its build artifacts are never
+# part of the wheel (F1 acceptance criterion).
+[tool.hatch.build.targets.wheel]
+only-include = ["backend"]
+sources = { "backend" = "hive_conductor" }
+exclude = [
+    "backend/tests",
+    "backend/__pycache__",
+    "backend/Dockerfile",
+    "backend/requirements.txt",
+    "backend/.env.example",
+]
+
+[tool.hatch.build.targets.sdist]
+# Siblings define no sdist target; hive-conductor needs one only to keep the
+# default sdist from sweeping in `frontend/node_modules` and the app's data dirs.
+only-include = ["backend", "README.md", "LICENSE"]
+exclude = ["backend/__pycache__"]

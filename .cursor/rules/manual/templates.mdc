@@ -1,0 +1,10 @@
+---
+alwaysApply: false
+---
+
+## Manual rules (mention with @ in chat)
+
+Use this file for long-lived templates or checklists that should **not** auto-load into every session.
+
+- When adding a new subsystem, consider an ADR in `docs/adr/` if two or more products depend on the contract.
+- When touching the registry or templates, run the tooling described in `README.md` / ADR-033 if applicable.

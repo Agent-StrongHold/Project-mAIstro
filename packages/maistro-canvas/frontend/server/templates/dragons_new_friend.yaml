@@ -1,0 +1,182 @@
+slug: dragons-new-friend
+display_title: "The Dragon's New Friend"
+title_pattern: "{child_name} and the Dragon's New Friend"
+age_range: [3, 8]
+page_count: 32
+illustration_style: full_color
+compatible_products:
+  - picture_book
+  - picture_book_landscape
+
+required_variables:
+  - id: child_name
+    label: "Child's first name"
+    type: text
+    required: true
+    validation:
+      max_length: 20
+      pattern: "^[A-Za-z]+$"
+  - id: child_age
+    label: "Child's age"
+    type: number
+    required: true
+    validation:
+      min: 2
+      max: 12
+  - id: child_photo
+    label: "Child's photo"
+    type: photo
+    required: true
+
+optional_variables:
+  - id: pet_name
+    label: "Pet's name (optional)"
+    type: text
+    required: false
+    placeholder: "e.g. Fluffy"
+  - id: favorite_color
+    label: "Favorite color"
+    type: text
+    required: false
+    placeholder: "e.g. blue"
+  - id: dragon_name
+    label: "Dragon's name (or let AI choose)"
+    type: text
+    required: false
+    placeholder: "e.g. Ember"
+
+wizard_steps:
+  - id: child_info
+    title: "About the star"
+    description: "Tell us about the main character"
+    fields:
+      - child_name
+      - child_age
+  - id: photo_upload
+    title: "Photo"
+    description: "Upload a photo for personalized illustrations"
+    fields:
+      - child_photo
+  - id: personalization
+    title: "Personal touches"
+    description: "Optional details to make the story extra special"
+    fields:
+      - pet_name
+      - favorite_color
+      - dragon_name
+  - id: preview_confirm
+    title: "Preview & confirm"
+    description: "Review your book details"
+
+story_prompt: >
+  A heartwarming children's picture book about a child named {child_name}, age {child_age},
+  who discovers a lost baby dragon in their backyard. The dragon is shy and scared,
+  but {child_name} shows kindness and patience. Together they go on a gentle adventure
+  through a magical garden, over a rainbow stream, and past friendly forest animals,
+  trying to find the dragon's way home. Along the way {child_name} learns that
+  friendship means being brave even when you're scared, and that the best adventures
+  are the ones you share. The story should have a cozy, warm tone with moments of
+  gentle humor. Each page should have 1-3 sentences of text suitable for ages {child_age}.
+  {pet_name_var}{favorite_color_var}{dragon_name_var}
+
+scene_structure:
+  - page: 1
+    type: title_page
+    description: "Title page with child's name in decorative text"
+  - page: 2
+    type: dedication
+    description: "Dedication page"
+  - page: 3
+    type: story_beat
+    title: "A Strange Sound"
+    description: "{child_name} hears a strange sound coming from the bushes"
+    mood: curious
+  - page: 4
+    type: story_beat
+    title: "The Discovery"
+    description: "A tiny baby dragon tumbles out, sneezing sparks"
+    mood: surprised
+  - page: 5
+    type: story_beat
+    title: "A New Friend"
+    description: "{child_name} offers a hand and the dragon sniffs it cautiously"
+    mood: gentle
+  - page: 6
+    type: story_beat
+    title: "The Magical Garden"
+    description: "They explore a garden where flowers glow and butterflies are the size of birds"
+    mood: wonder
+  - page: 7
+    type: story_beat
+    title: "Rainbow Stream"
+    description: "They come to a stream that flows in rainbow colors"
+    mood: magical
+  - page: 8
+    type: emotional_beat
+    title: "The Dragon's Sadness"
+    description: "The dragon looks sad — it misses its family"
+    mood: tender
+  - page: 9
+    type: story_beat
+    title: "Being Brave"
+    description: "{child_name} promises to help, even though the path looks scary"
+    mood: determined
+  - page: 10
+    type: story_beat
+    title: "Friendly Animals"
+    description: "Forest animals guide them — a wise owl, playful squirrels, a gentle deer"
+    mood: playful
+  - page: 11
+    type: action_beat
+    title: "The Highest Hill"
+    description: "They climb the highest hill where the dragon's family might see them"
+    mood: exciting
+  - page: 12
+    type: story_beat
+    title: "The Signal"
+    description: "{child_name} has an idea — what if they make a big firework of sparks?"
+    mood: clever
+  - page: 13
+    type: action_beat
+    title: "Sparks Fly"
+    description: "The dragon sneezes the biggest sneeze ever — a fountain of colorful sparks lights up the sky"
+    mood: thrilling
+  - page: 14
+    type: emotional_beat
+    title: "Family Found"
+    description: "In the distance, three large dragons fly toward them"
+    mood: joyful
+  - page: 15
+    type: story_beat
+    title: "Saying Goodbye"
+    description: "The baby dragon nuzzles {child_name} one last time"
+    mood: bittersweet
+  - page: 16
+    type: ending
+    title: "Looking Up"
+    description: "{child_name} watches the dragons fly away, knowing they'll always be friends. A tiny spark lingers in the sky like a star."
+    mood: hopeful
+
+themes:
+  - friendship
+  - courage
+  - kindness
+  - adventure
+  - dragons
+
+etsy_tags:
+  - personalized childrens book
+  - custom kids book
+  - dragon book
+  - personalized gift
+  - birthday gift for child
+  - custom storybook
+  - kids dragon adventure
+
+description: >
+  A personalized children's picture book where YOUR child discovers a lost baby dragon
+  and goes on a magical adventure to help it find its way home. Beautifully illustrated
+  with your child as the main character. Perfect for ages 3-8. 32 full-color pages,
+  professionally printed on premium paper.
+
+max_characters: 1

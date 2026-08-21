@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Test/Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.hypothesis/
+
+# Claude Code — share project skills + hooks, keep personal/runtime files local
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+
+# Database
+*.db
+*.sqlite
+
+# Docker
+acme.json
+
+# Frontend
+node_modules/
+test-results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node.js — install per package with npm ci / npm install (never commit)
+node_modules/
+
+# Cursor (local overrides — keep project .cursor/ rules committed)
+.cursor/mcp.local.json
+.cursor/hooks/state/
+.cursor/hooks/*.log
+
+# Frozen snapshots — do not commit at repo root (see docs/specs/SPEC-178-legacy-snapshot-retention.md).
+# These patterns block accidental re-vendoring of large snapshot trees at repo root.
+code-worth-implementing-from-*/
+
+# Materialized installer plan + staged bootstrap credentials (install.sh)
+.maistro-install/

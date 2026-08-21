@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maistro-evolve"
+version = "0.9.0"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["pydantic>=2.0,<3", "pyyaml>=6.0,<7", "httpx>=0.27,<1"]
+
+# Dependencies of the vendored official IFEval verifier
+# (src/maistro_evolve/benchmarks/third_party/ifeval — see its NOTICE). An extra
+# rather than a base dependency because only the `real`-fidelity ifeval adapter
+# needs them; the proxy registry has no third-party requirements.
+#
+# These are NOT shimmed away. nltk's word tokenizer would be trivial to replace
+# (RegexpTokenizer(r"\w+") == re.findall(r"\w+")), but its punkt *sentence*
+# tokenizer and langdetect are not, and substituting them would change verdicts
+# on length_constraints:number_sentences (52 prompts) and
+# language:response_language (31 prompts). A grader that is only approximately
+# the official grader must not be labelled `real`.
+#
+# nltk also needs its `punkt` data, which pip cannot install:
+#     python3 -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
+# Pre-fetch it when building the image — the scoring container is
+# network-denied by design, so a download at score time will fail.
+[project.optional-dependencies]
+ifeval = ["absl-py>=1.4", "immutabledict>=4.0", "nltk>=3.9", "langdetect>=1.0.9"]
+
+[tool.hatch.build.targets.wheel]
+# hatchling ships every file under `packages`, including the vendored IFEval
+# corpus (benchmarks/third_party/ifeval/data/input_data.jsonl). That matters:
+# the adapter checksum-verifies that file at load time, so a wheel missing it
+# raises IFEvalUnavailableError rather than scoring anything.
+packages = ["src/maistro_evolve"]

@@ -1,0 +1,106 @@
+"""Design project persistence schema — design_projects and design_outputs tables.
+
+Adds tables for design project artifacts, discovery context, and trust tier tracking.
+Complements canvas layer (canvases, layers) for design skill outputs.
+
+Revision ID: 003
+Revises: 002
+Create Date: 2026-06-28
+"""
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects import postgresql
+
+revision = "003"
+down_revision = "002"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    # ── design_projects (DesignProject) ────────────────────────────
+    op.create_table(
+        "design_projects",
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            primary_key=True,
+            server_default=sa.func.gen_random_uuid(),
+        ),
+        sa.Column("name", sa.Text, nullable=False),
+        sa.Column("skill_slug", sa.Text, nullable=False),
+        sa.Column("design_system_slug", sa.Text, nullable=False),
+        sa.Column("org_id", sa.Text, nullable=False),
+        sa.Column("team_id", sa.Text, nullable=True),
+        sa.Column("trust_tier", sa.Text, nullable=False, server_default="t3"),
+        sa.Column("canvas_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("discovery_json", postgresql.JSONB, nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.ForeignKeyConstraint(["org_id"], ["orgs.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="SET NULL"),
+    )
+
+    # Indexes for design_projects
+    op.create_index("idx_design_projects_org_id", "design_projects", ["org_id"])
+    op.create_index("idx_design_projects_org_skill", "design_projects", ["org_id", "skill_slug"])
+    op.create_index("idx_design_projects_skill_slug", "design_projects", ["skill_slug"])
+    op.create_index(
+        "idx_design_projects_created_at",
+        "design_projects",
+        ["created_at"],
+        postgresql_order_by="created_at DESC",
+    )
+
+    # ── design_outputs (DesignOutput) ──────────────────────────────
+    op.create_table(
+        "design_outputs",
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            primary_key=True,
+            server_default=sa.func.gen_random_uuid(),
+        ),
+        sa.Column("project_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("format", sa.Text, nullable=False),
+        sa.Column("content", sa.Text, nullable=False),
+        sa.Column("url", sa.Text, nullable=True),
+        sa.Column("trust_tier", sa.Text, nullable=False, server_default="t3"),
+        sa.Column("metadata_json", postgresql.JSONB, nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.ForeignKeyConstraint(["project_id"], ["design_projects.id"], ondelete="CASCADE"),
+    )
+
+    # Indexes for design_outputs
+    op.create_index("idx_design_outputs_project_id", "design_outputs", ["project_id"])
+    op.create_index("idx_design_outputs_format", "design_outputs", ["format"])
+    op.create_index(
+        "idx_design_outputs_created_at",
+        "design_outputs",
+        ["created_at"],
+        postgresql_order_by="created_at DESC",
+    )
+
+
+def downgrade() -> None:
+    # Drop indexes
+    op.drop_index("idx_design_outputs_created_at")
+    op.drop_index("idx_design_outputs_format")
+    op.drop_index("idx_design_outputs_project_id")
+    op.drop_index("idx_design_projects_created_at")
+    op.drop_index("idx_design_projects_skill_slug")
+    op.drop_index("idx_design_projects_org_skill")
+    op.drop_index("idx_design_projects_org_id")
+
+    # Drop tables
+    op.drop_table("design_outputs")
+    op.drop_table("design_projects")

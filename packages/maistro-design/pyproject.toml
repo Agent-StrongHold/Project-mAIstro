@@ -1,0 +1,30 @@
+[project]
+name = "maistro-design"
+version = "0.9.0"
+description = "Composable design skills + design systems + canvas composition engine"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "maistro-core>=0.9.0",
+    "maistro-canvas>=0.9.0",
+    "httpx>=0.28,<1",
+    "pydantic>=2.0,<3",
+    "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "hypothesis>=6.130,<7",
+    "ruff>=0.9,<1",
+    "mypy>=1.14,<2",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maistro_design"]

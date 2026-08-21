@@ -1,0 +1,80 @@
+department: legal
+evals:
+  - name: clause_completeness
+    criteria:
+      - name: has_definitions
+        weight: 20
+        check: {op: keywords_any, words: ["defined as", means, herein, definition, '"']}
+      - name: has_obligations
+        weight: 20
+        check: {op: keywords_any, words: [shall, must, obligat, "required to", "agrees to"]}
+      - name: has_termination
+        weight: 20
+        check: {op: keywords_any, words: [terminat, expir, cancel, "end of term"]}
+      - name: has_liability
+        weight: 20
+        check: {op: keywords_any, words: [liability, indemnif, damages, "limitation of"]}
+      - name: has_governing_law
+        weight: 20
+        check: {op: keywords_any, words: ["governing law", jurisdiction, venue, "governed by"]}
+
+  - name: ambiguity_score
+    criteria:
+      - name: no_vague_terms
+        weight: 25
+        check: {op: keywords_none, words: ["reasonable efforts", "as appropriate", "from time to time", "as needed"]}
+      - name: defined_terms_used
+        weight: 25
+        check: {op: regex, pattern: '"[A-Z][^"]+"|[A-Z][a-z]+(?:\s[A-Z][a-z]+)+'}
+      - name: specific_timeframes
+        weight: 25
+        check: {op: regex, pattern: '\d+\s*(days?|months?|years?|business days?)'}
+      - name: clear_conditions
+        weight: 25
+        check: {op: keywords_any, words: ["if", "provided that", "subject to", unless, except]}
+
+  - name: risk_exposure
+    criteria:
+      - name: identifies_risks
+        weight: 25
+        check: {op: keywords_any, words: [risk, exposure, liability, breach, default]}
+      - name: caps_damages
+        weight: 25
+        check: {op: keywords_any, words: [limitation, cap, "not exceed", maximum, aggregate]}
+      - name: indemnification
+        weight: 25
+        check: {op: keywords_any, words: [indemnif]}
+      - name: insurance_requirements
+        weight: 25
+        check: {op: keywords_any, words: [insurance, coverage, policy, certificate]}
+
+  - name: jurisdiction
+    criteria:
+      - name: specifies_jurisdiction
+        weight: 30
+        check: {op: keywords_any, words: ["state of", "county of", "district of", "courts of"]}
+      - name: choice_of_law
+        weight: 25
+        check: {op: keywords_any, words: ["governed by", "laws of", "choice of law", "applicable law"]}
+      - name: dispute_resolution
+        weight: 25
+        check: {op: keywords_any, words: [arbitration, mediation, dispute, resolution, litigation]}
+      - name: venue
+        weight: 20
+        check: {op: keywords_any, words: [venue, forum, "exclusive jurisdiction", "submit to"]}
+
+  - name: plain_language
+    criteria:
+      - name: short_sentences
+        weight: 25
+        check: {op: metric, name: avg_sentence_words, cmp: lt, value: 30}
+      - name: active_voice
+        weight: 25
+        # "shall be" count < "will" count + 1 — requires count comparison
+        check: {op: registered, name: active_voice_ratio}
+      - name: minimal_latin
+        weight: 25
+        check: {op: registered, name: latin_phrase_count, args: {max: 1}}
+      - name: headers_used
+        weight: 25
+        check: {op: regex, pattern: '#{1,3}\s|^\d+\.\s|^[A-Z][A-Z\s]+$', flags: m}

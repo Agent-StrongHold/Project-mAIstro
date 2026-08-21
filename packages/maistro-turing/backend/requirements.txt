@@ -1,0 +1,6 @@
+# Turing backend app deps. The backend imports the maistro_turing library and
+# maistro-core; install those editable from the workspace alongside these.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx>=0.28
+pydantic>=2.0

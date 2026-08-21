@@ -1,0 +1,9 @@
+name: scout.analyze
+role: scout
+description: Inventory a codebase — files, imports, exports, dependency graph
+prompt_name: scout.analyze
+result_schema: schemas.ScoutOutput
+min_tier: 2
+max_tier: 3
+temperature: 0.3
+max_tokens: 4096

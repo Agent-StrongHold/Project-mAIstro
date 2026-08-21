@@ -1,0 +1,26 @@
+# Mutation testing is temporarily disabled until self-hosted runner capacity is
+# restored. Do not run mutation automatically on pull requests or schedules,
+# and do not consume GitHub-hosted Actions minutes while it is parked.
+#
+# The mutation implementation, scheduler, checkpointing, history, baselines,
+# and repository-health tooling remain in the repository and Git history.
+# Restore PR safety and repository-health execution here when self-hosted
+# capacity is available again.
+
+name: mutation
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mutation-deferred:
+    name: Mutation testing deferred to self-hosted runners
+    runs-on: self-hosted
+    steps:
+      - name: Mutation temporarily disabled
+        run: |
+          echo "Mutation testing is temporarily disabled until self-hosted runners are restored."
+          echo "No mutation workload is configured on GitHub-hosted runners."

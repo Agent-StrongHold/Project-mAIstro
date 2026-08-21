@@ -1,0 +1,89 @@
+# The PM Fleet persona -- Persona/Workspace system, Phase H.
+#
+# This is the seed-data equivalent of three previously-hardcoded sources,
+# migrated here verbatim so "PM Fleet" stops being a special case and becomes
+# just the first `kind: workspace` persona:
+#   - maistro.agents.pm_fleet.PM_FLEET (agent roster + capabilities per agent)
+#   - maistro.agents.program_context.INTERVIEW_TEMPLATES["pm_fleet"] (the
+#     5-question intake script; unchanged, still lives in program_context.py,
+#     listed here only for traceability)
+#   - hive-conductor frontend's src/lib/pmBranding.ts (brand + nav strings,
+#     verbatim)
+#
+# This file is the DATA half of Phase H only. It makes
+# `GET /v1/workspaces/persona-templates/pm_fleet/checklist` return real data
+# instead of 404ing. Re-pointing the ~26 call sites that still gate on
+# is_pm_poc_mode()/HIVE_POC_MODE, and deleting that env-var gate, is its own
+# follow-up pass -- deliberately not bundled here, per the plan's own
+# sequencing note that this is the highest-risk part of the phase by file
+# count and should be its own set of sub-commits, not one diff.
+kind: workspace
+id: pm_fleet
+business_model: internal program-management workspace
+
+brand:
+  display_name: "PM Fleet"
+  tagline: "Program hyperagent — interview, autonomous polls, gated Jira creates"
+
+# Verbatim PM_NAV_* label strings from pmBranding.ts.
+ui_scope:
+  - Program
+  - Activity
+  - Integrations
+  - Jira drafts
+  - Credentials
+
+voice:
+  archetype: a pragmatic program manager
+  audience: engineering teams shipping on a deadline
+  tone: direct, calm, structured
+
+# One spawn per maistro.agents.pm_fleet.PM_FLEET entry (the roster that
+# actually drives runtime behavior via register_pm_fleet(), not the
+# divergent agents/*/agent.yaml filesystem tree used by a different,
+# unrelated identity-manifest system). Capabilities land in `skills`,
+# matching register_pm_fleet()'s own AgentCard wiring today
+# (tools=(), skills=defn.capabilities) -- a straight data move, not a
+# reinterpretation of which capabilities count as "tools" vs "skills".
+spawns:
+  - agent: intake
+    role: "The Front Door to Structured Execution"
+    tools: []
+    skills: [create_initiative, route_to_pm_agent]
+
+  - agent: program_manager
+    role: "Staff-Level TPM That Never Sleeps"
+    tools: []
+    skills:
+      - decompose_initiative
+      - create_epic
+      - create_story
+      - create_dev_task
+      - poll_airtable
+      - link_dependency
+      - fetch_program_state
+
+  - agent: research
+    role: "Web search for program background, market context, and technical landscape"
+    tools: []
+    skills: [web_search_background, summarize_research, fetch_program_state]
+
+  - agent: delivery
+    role: "Execution Engine for Sprint Velocity"
+    tools: []
+    skills: [poll_jira, sync_jira, create_jira_ticket, create_subtask, detect_blockers]
+
+  - agent: risk_dependency
+    role: "Your Always-On RAID Brain"
+    tools: []
+    skills:
+      - create_raid_entry
+      - scan_risks
+      - map_dependency
+      - fetch_dependency_graph
+      - escalate_issue
+
+  - agent: reporting
+    role: "Executive Visibility in Under 30 Seconds"
+    tools: []
+    skills: [generate_exec_summary, fetch_program_metrics, publish_dashboard]

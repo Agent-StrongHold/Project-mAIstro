@@ -1,0 +1,10 @@
+# Example answers file for `maistro-install --answers-file`
+features:
+  - core_lib
+  - server
+  - tui
+# Optional: merge compose fragments (e.g. Hive + Phoenix); validate prints before Podman preface.
+compose_addons:
+  - hive_phoenix
+product: none
+dry_run: true

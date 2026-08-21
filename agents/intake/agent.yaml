@@ -1,0 +1,19 @@
+name: intake
+version: 1.0.0
+description: "The Front Door to Structured Execution"
+reasoning:
+  strategy: direct
+  max_subtasks: 8
+model: auto
+tools: []
+skills: []
+delegation:
+  mode: selective
+  sub_agents: [program_manager]
+trust_tier: t2
+priority_tier: P2
+metadata:
+  tagline: "The Front Door to Structured Execution"
+  capabilities: [create_initiative, route_to_pm_agent]
+  primary_capability: create_initiative
+  primary_action_label: "Create Initiative"

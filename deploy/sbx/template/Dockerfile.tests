@@ -1,0 +1,23 @@
+# maistro-engine-tests — the image RSI's NESTED test containers run
+# (SANDBOX_IMAGE). These containers run with --network=none and a sanitized
+# environment, so every dependency needed to execute the target repo's test
+# suite must already be in the image: uv with a cache warmed from this repo's
+# uv.lock, so `uv sync --frozen --offline` succeeds against the clone mounted
+# at /workspace.
+#
+# Built host-side by deploy/sbx/build.sh (needs network once, at build time).
+FROM python:3.12-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Warm uv's cache with everything uv.lock resolves, so offline sync works.
+# The venv created here is throwaway — only the cache matters; the real
+# `uv sync` runs against the clone at /workspace inside the container.
+COPY pyproject.toml uv.lock /opt/lockseed/
+COPY packages/ /opt/lockseed/packages/
+RUN cd /opt/lockseed && uv sync --frozen --no-install-workspace || true
+
+WORKDIR /workspace

@@ -1,0 +1,12 @@
+48f4d12b3834aaac520b80cb9d366d719722a526:packages/maistro-core/tests/agents/auditor/test_checks.py:aws-access-token:238
+2ee85e34ffbc8c32a458f992cb500c13d4252d77:packages/maistro-core/tests/code_registry/test_registry.py:generic-api-key:15
+ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test_parser.py:generic-api-key:193
+258b095529c00519367212af90976d0e16e5e53a:packages/maistro-core/tests/skills/test_fixer.py:generic-api-key:147
+# Type annotation, not a value. The line flagged in the local-CA design spec is
+# a dataclass field declaration inside a Python pseudocode block, naming an
+# Ed25519 key type. The generic-api-key rule matches the field-name prefix
+# without regard to whether what follows is a secret or a type name. Recorded
+# here rather than by rewording migrated design text.
+# (Deliberately paraphrased: quoting the flagged line verbatim in this comment
+# makes this file trip the same rule.)
+4dc4726be614c9f5ebfd5f6d1462176f5fa94bd0:docs/specs/SPEC-070626-5341-local-ca-from-seed.md:generic-api-key:82

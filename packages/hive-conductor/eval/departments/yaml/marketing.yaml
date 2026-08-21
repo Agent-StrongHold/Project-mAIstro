@@ -1,0 +1,104 @@
+department: marketing
+evals:
+  - name: brand_voice
+    criteria:
+      - name: consistent_tone
+        # not (casual slang AND legal formalism) = not-casual OR not-formal
+        weight: 25
+        check:
+          op: any
+          of:
+            - {op: keywords_none, words: [lol, omg, bruh]}
+            - {op: keywords_none, words: [hereby, pursuant, whereas]}
+      - name: brand_keywords
+        weight: 25
+        check: {op: keywords_any, words: [innovative, trusted, leading]}
+      - name: personality_match
+        weight: 25
+        check:
+          op: all
+          of:
+            - {op: regex_count, pattern: '!', max: 4}
+            - {op: regex_count, pattern: '\?', max: 9}
+      - name: no_competitor_mentions
+        weight: 25
+        # defaults to empty competitors list → always passes; context can override via registered predicate
+        check: {op: keywords_none, words: []}
+
+  - name: cta_clarity
+    criteria:
+      - name: has_cta
+        weight: 30
+        check: {op: keywords_any, words: ["sign up", "get started", "learn more", try, buy, subscribe, download, contact]}
+      - name: single_primary_cta
+        weight: 25
+        check: {op: registered, name: keyword_count_max, args: {words: ["sign up", "get started", "buy now", subscribe], max: 2}}
+      - name: urgency
+        weight: 25
+        check: {op: keywords_any, words: [today, now, limited, "don't miss", exclusive, free]}
+      - name: benefit_clear
+        weight: 20
+        check: {op: keywords_any, words: [save, get, unlock, discover, transform, boost]}
+
+  - name: audience_targeting
+    criteria:
+      - name: identifies_audience
+        weight: 25
+        check: {op: keywords_any, words: [you, your, customer, user, professional, team]}
+      - name: addresses_pain_point
+        weight: 25
+        check: {op: keywords_any, words: [struggle, challenge, problem, "tired of", frustrated, pain]}
+      - name: speaks_their_language
+        weight: 25
+        check:
+          op: all
+          of:
+            - {op: word_count, min: 21}
+            - {op: keywords_none, words: [synergy, paradigm]}
+      - name: relevant_examples
+        weight: 25
+        check: {op: keywords_any, words: [example, like, "such as", imagine, "picture this"]}
+
+  - name: channel_fit
+    criteria:
+      - name: appropriate_length
+        weight: 25
+        check: {op: word_count, max: 500}
+      - name: format_correct
+        weight: 25
+        check:
+          op: any
+          of:
+            - {op: regex, pattern: '#{1,3}\s|^\-\s|\*\*', flags: m}
+            - {op: word_count, max: 42}   # ≤280 chars ≈ ≤42 words at avg 6.5 chars/word
+      - name: visual_cues
+        weight: 25
+        check:
+          op: any
+          of:
+            - {op: keywords_any, words: ["📧", "🎯", "✅", "→", "•", "—"]}
+            - {op: keywords_any, words: [image]}
+      - name: platform_conventions
+        weight: 25
+        check:
+          op: any
+          of:
+            - {op: regex, pattern: '#\w+'}
+            - {op: regex, pattern: '@\w+'}
+            - {op: regex, pattern: 'https?://'}
+            - {op: metric, name: paragraph_count, cmp: gte, value: 2}
+
+  - name: measurability
+    criteria:
+      - name: has_metrics
+        weight: 30
+        check: {op: keywords_any, words: [conversion, ctr, "open rate", engagement, roi, cac, ltv]}
+      - name: has_targets
+        weight: 25
+        check: {op: regex, pattern: '\d+%|\d+x|\d+\s*(leads|clicks|views|users)', flags: i}
+      - name: tracking_plan
+        weight: 25
+        check: {op: keywords_any, words: [track, measure, analytics, utm, pixel, tag]}
+      - name: timeline
+        weight: 20
+        check: {op: keywords_any, words: [week, month, quarter, daily, weekly, "by"]}
