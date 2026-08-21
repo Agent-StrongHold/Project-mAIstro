@@ -1000,7 +1000,6 @@
         "packages/maistro-core/src/maistro/memory/outcomes.py::unused method 'list_outcomes'",
         "packages/maistro-core/src/maistro/memory/store.py::unused class 'KnowledgeNode'",
         "packages/maistro-core/src/maistro/memory/store.py::unused class 'MemoryEntry'",
-        "packages/maistro-core/src/maistro/memory/store.py::unused class 'TaskRecord'",
         "packages/maistro-core/src/maistro/memory/store.py::unused function 'get_db_session'",
         "packages/maistro-core/src/maistro/memory/store.py::unused variable 'metadata_'",
         "packages/maistro-core/src/maistro/memory/store.py::unused variable 'metadata_'",

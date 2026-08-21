@@ -1,7 +1,10 @@
-"""In-memory task queue (Phase 1).
+"""In-memory task queue with best-effort TaskRecord persistence (ADR-018).
 
-All task state is held in memory. A process restart loses all tasks.
-Phase 2 will add PostgreSQL persistence via TaskRecord.
+Live task state is held in memory. When a database is configured
+(``get_async_session_factory()`` returns a factory), every ``submit()`` and
+``update_status()`` also upserts a ``TaskRecord`` row — fire-and-forget, so
+task execution never fails because the database is unavailable. With no
+database the queue behaves exactly as before and a restart loses all tasks.
 """
 
 from __future__ import annotations
@@ -11,10 +14,12 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
+from maistro.memory.store import TaskRecord, get_async_session_factory
 from maistro.observability.metrics import (
     active_tasks,
     tasks_completed_total,
@@ -25,6 +30,46 @@ from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskRes
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
+
+
+def _naive(value: datetime | None) -> datetime | None:
+    """TaskRecord columns are timezone-naive; store UTC wall-clock values."""
+    if value is None:
+        return None
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _record_values(task: TaskResponse) -> dict[str, Any]:
+    """Snapshot the TaskRecord column values for one task, taken synchronously
+    so the fire-and-forget write cannot race later in-memory mutation."""
+    return {
+        "id": task.task_id,
+        "status": task.status.value,
+        "description": task.description,
+        "workspace": task.workspace,
+        "tier": task.tier,
+        "phase": task.phase,
+        "progress": task.progress.model_dump(mode="json") if task.progress else None,
+        "result": task.result.model_dump(mode="json") if task.result else None,
+        "started_at": _naive(task.started_at),
+        "completed_at": _naive(task.completed_at),
+    }
+
+
+async def _write_record(factory: Any, values: dict[str, Any]) -> None:
+    """Upsert one TaskRecord. Failures are logged and swallowed (ADR-018):
+    persistence is best-effort and must never take task execution down."""
+    try:
+        async with factory() as session:
+            await session.merge(TaskRecord(**values))
+            await session.commit()
+    except Exception as exc:
+        logger.warning(
+            "task_record_persist_failed",
+            task_id=values.get("id"),
+            error=str(exc),
+        )
+
 
 # Maximum number of tasks stored in memory before pruning terminal tasks
 MAX_TASK_STORE_SIZE = 10_000
@@ -44,6 +89,18 @@ class TaskQueue:
         self._lock = asyncio.Lock()
         self._claimed: set[str] = set()
         self._events: dict[str, asyncio.Event] = {}
+        # In-flight fire-and-forget TaskRecord writes (ADR-018); referenced so
+        # the event loop cannot garbage-collect them mid-write.
+        self._persist_writes: set[asyncio.Task[None]] = set()
+
+    def _persist(self, task: TaskResponse) -> None:
+        """Schedule a best-effort TaskRecord upsert when a DB is configured."""
+        factory = get_async_session_factory()
+        if factory is None:
+            return
+        write = asyncio.create_task(_write_record(factory, _record_values(task)))
+        self._persist_writes.add(write)
+        write.add_done_callback(self._persist_writes.discard)
 
     def _get_event(self, task_id: str) -> asyncio.Event:
         """Get or create an asyncio.Event for a task."""
@@ -102,6 +159,7 @@ class TaskQueue:
         async with self._lock:
             self._tasks[task_id] = task
             self._maybe_prune()
+        self._persist(task)
         await self._pending.put(task_id)
         tasks_submitted_total.inc()
         active_tasks.inc()
@@ -153,6 +211,8 @@ class TaskQueue:
                     tasks_completed_total.inc()
                 elif status == TaskStatus.FAILED:
                     tasks_failed_total.inc()
+
+            self._persist(task)
 
         self._notify(task_id)
         return True
