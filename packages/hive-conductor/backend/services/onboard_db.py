@@ -7,7 +7,9 @@ import httpx
 
 from maistro.http import shared_client
 
-POSTGREST_URL = os.environ.get("POSTGREST_URL") or os.environ.get("DEPLOY_TARGET_POSTGREST_URL") or ""
+POSTGREST_URL = (
+    os.environ.get("POSTGREST_URL") or os.environ.get("DEPLOY_TARGET_POSTGREST_URL") or ""
+)
 
 
 async def _req(method: str, table: str, **kwargs) -> httpx.Response:

@@ -27,8 +27,8 @@
         "Enum"
       ],
       "rationale": "Pydantic models and enums expose fields declaratively for validation/serialization rather than direct Python reads.",
-      "finding_count": 440,
-      "finding_sha256": "97fc29469448bd98e5c13ff1d6b17bc35be0375c57b2cb8bc036fca59aa4a5f6"
+      "finding_count": 438,
+      "finding_sha256": "bfb63b196cb354462bcb254d707f7c3db475dd7be03d8db6cd3d4a09491ddf8d"
     },
     {
       "id": "dataclass-declarative-field",
@@ -42,8 +42,8 @@
         "NamedTuple"
       ],
       "rationale": "Dataclass/typed record fields are constructed and serialized by convention or reflection, not always read directly in package-local code.",
-      "finding_count": 110,
-      "finding_sha256": "f0578b07c72ef60cf87cbaeef1849019d995b1d43f821adbeb145cf53fbcd372"
+      "finding_count": 111,
+      "finding_sha256": "dc8015ebe6c462247b3f3b18b36753e6d70d0c20f2a23ba86b4248e21e48e75b"
     },
     {
       "id": "fastapi-app-state",

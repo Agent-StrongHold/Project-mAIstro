@@ -41,6 +41,7 @@ FLAT_APPS = (
         path="packages/hive-conductor/backend",
         roots=("main",),
         dynamic_roots=(
+            "routes.design",
             "routes.canvas",
             "routes.pm_fleet_v2",
             "routes.evolution",

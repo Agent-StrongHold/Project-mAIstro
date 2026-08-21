@@ -201,8 +201,7 @@ class FrontMatter(BaseModel):
         for ref in v:
             if not _is_valid_ref(ref):
                 raise ValueError(
-                    f"reference must match `<repo>#<ID>`, got {ref!r}. "
-                    f"Repo: maistro-engine."
+                    f"reference must match `<repo>#<ID>`, got {ref!r}. Repo: maistro-engine."
                 )
         return v
 
