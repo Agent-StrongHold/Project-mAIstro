@@ -141,3 +141,41 @@ class TestKeyExtractionPriority:
         # token-b has its own, still-fresh bucket.
         response_b = client.get("/thing", headers=headers_b)
         assert response_b.status_code == 200
+
+
+class TestAdr037RequestDuration:
+    def test_request_observes_route_template_and_outcome(self) -> None:
+        """ADR-037's maistro_request_duration_seconds records the matched route
+        TEMPLATE (low-cardinality), never the raw URL with embedded ids."""
+        from maistro.observability.metrics import maistro_request_duration_seconds
+
+        app = FastAPI()
+
+        @app.get("/items/{item_id}")
+        def item(item_id: str) -> dict[str, str]:
+            return {"id": item_id}
+
+        app.add_middleware(RateLimitMiddleware)
+        client = TestClient(app)
+        assert client.get("/items/abc123").status_code == 200
+
+        samples = {
+            (s["labels"]["route"], s["labels"]["outcome"]): s
+            for s in maistro_request_duration_seconds.collect()
+        }
+        assert ("/items/{item_id}", "2xx") in samples
+        assert not any(route == "/items/abc123" for route, _ in samples)
+
+    def test_unrouted_request_uses_fallback_label(self) -> None:
+        from maistro.observability.metrics import maistro_request_duration_seconds
+
+        app = FastAPI()
+        app.add_middleware(RateLimitMiddleware)
+        client = TestClient(app)
+        assert client.get("/no-such-route").status_code == 404
+
+        samples = {
+            (s["labels"]["route"], s["labels"]["outcome"])
+            for s in maistro_request_duration_seconds.collect()
+        }
+        assert ("unrouted", "4xx") in samples

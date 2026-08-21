@@ -18,7 +18,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from maistro.config.settings import get_settings
-from maistro.observability.metrics import http_request_duration, http_requests_total
+from maistro.observability.metrics import (
+    http_request_duration,
+    http_requests_total,
+    maistro_request_duration_seconds,
+)
 from maistro.security._types import RateLimitConfig
 from maistro.security.rate_limiter import InMemoryRateLimiter
 
@@ -82,4 +86,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             method=request.method, path=request.url.path, status=str(response.status_code)
         )
         http_request_duration.observe(duration, method=request.method, path=request.url.path)
+        maistro_request_duration_seconds.observe(
+            duration,
+            route=_route_template(request),
+            outcome=f"{response.status_code // 100}xx",
+        )
         return response
+
+
+def _route_template(request: Request) -> str:
+    """The matched route's path template (ADR-037's low-cardinality `route`
+    label) — never the raw URL, which would explode the label space with ids."""
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    return template if isinstance(template, str) else "unrouted"

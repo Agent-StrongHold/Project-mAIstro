@@ -165,3 +165,23 @@ circuit_breaker_state = registry.gauge(
     "circuit_breaker_state", "Circuit breaker state (0=closed, 1=open, 2=half_open)"
 )
 sandbox_containers_active = registry.gauge("sandbox_containers_active", "Active sandbox containers")
+
+# --- ADR-037 engine-core baseline -------------------------------------------
+# These names are the taxonomy contract (docs/adr/ADR-037). Three of the six
+# baseline metrics are live below; maistro_llm_tokens_total,
+# maistro_llm_cost_usd_total, and maistro_quota_remaining_ratio still need
+# their label provenance (model / service_key / period) plumbed to an emission
+# seam — no current call site knows those values — and remain `gap-impl`
+# under [engine-031].
+maistro_request_duration_seconds = registry.histogram(
+    "maistro_request_duration_seconds",
+    "HTTP request latency in seconds (ADR-037; labels: route, outcome)",
+)
+maistro_security_block_total = registry.counter(
+    "maistro_security_block_total",
+    "Requests blocked at a security gate (ADR-037; labels: gate, reason)",
+)
+maistro_circuit_state = registry.gauge(
+    "maistro_circuit_state",
+    "Circuit state per dependency (ADR-037; 0=closed, 1=half-open, 2=open)",
+)

@@ -16,6 +16,8 @@ from enum import StrEnum
 
 import structlog
 
+from maistro.observability.metrics import maistro_circuit_state
+
 logger = structlog.get_logger()
 
 
@@ -23,6 +25,14 @@ class CircuitState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
+
+
+# ADR-037 gauge encoding: 0=closed, 1=half-open, 2=open.
+_CIRCUIT_GAUGE_VALUE = {
+    CircuitState.CLOSED: 0,
+    CircuitState.HALF_OPEN: 1,
+    CircuitState.OPEN: 2,
+}
 
 
 class CircuitBreaker:
@@ -41,6 +51,10 @@ class CircuitBreaker:
         self._failure_count = 0
         self._last_failure_time = 0.0
         self._success_count = 0
+        self._publish_state()
+
+    def _publish_state(self) -> None:
+        maistro_circuit_state.set(_CIRCUIT_GAUGE_VALUE[self._state], dependency=self.name)
 
     @property
     def state(self) -> CircuitState:
@@ -49,6 +63,7 @@ class CircuitBreaker:
             and time.monotonic() - self._last_failure_time >= self.recovery_timeout
         ):
             self._state = CircuitState.HALF_OPEN
+            self._publish_state()
             logger.info("circuit_half_open", name=self.name)
         return self._state
 
@@ -62,6 +77,7 @@ class CircuitBreaker:
         if self._state == CircuitState.HALF_OPEN:
             logger.info("circuit_closed", name=self.name)
             self._state = CircuitState.CLOSED
+            self._publish_state()
         self._failure_count = 0
         self._success_count += 1
 
@@ -78,6 +94,7 @@ class CircuitBreaker:
                     recovery_timeout=self.recovery_timeout,
                 )
             self._state = CircuitState.OPEN
+            self._publish_state()
 
 
 class CircuitOpenError(Exception):
