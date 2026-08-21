@@ -101,8 +101,8 @@ The three engine ADRs that closed `gap-spec` items (036/037/038) become `Impleme
 | Item | Part | Status | Detail |
 |---|---|---|---|
 | `[engine-030]` Ontology Semantic facet | substrate | Implemented | Per `[engine#ADR-036]`. v1.0 ships Semantic only; Kinetic + Dynamic deferred to v2.0 |
-| `[engine-031]` Observability primitives | substrate | Accepted; `gap-impl` | Per `[engine#ADR-037]`. 15 required spans, 6 metrics, 6 event topics |
-| `[engine-032]` Reliability primitives | substrate | Accepted; `gap-impl` | Per `[engine#ADR-038]`. retry / circuit-breaker / fallback / SLO / healthchecks |
+| `[engine-031]` Observability primitives | substrate | Accepted; `gap-impl` | Per `[engine#ADR-037]`. 3 of 6 baseline metrics live (circuit state, security blocks, request duration); the rest await model/service_key/period label plumbing; spans + event topics open |
+| `[engine-032]` Reliability primitives | substrate | Accepted; `gap-impl` | Per `[engine#ADR-038]`. All five primitives shipped (SLO error budgets landed as `maistro.resilience.slo`); throttle wiring to the router scarcity input outstanding |
 
 ### Phase E — Per-variant v1.0 (weeks 1–12, parallel to A–D)
 
@@ -284,13 +284,13 @@ engine-032 (Reliability)
 
 ## Progress dashboard
 
-Verified against the tree on 2026-08-20. Maintained by hand; `engine-002` would regenerate it from the registry.
+Verified against the tree on 2026-08-21. Maintained by hand; `engine-002` would regenerate it from the registry.
 
 ```
 Phase A Foundation enforcement      [x] ██████████ 100%   Registry CI landed and strict since 2026-07-27; all ADRs carry front-matter
 Phase B Templates bootstrapped      [~] ███░░░░░░░  30%   Three templates scaffolded; documented knobs + round-trip CI outstanding
 Phase C Drift closure                [x] ██████████ 100%   Engine ADRs canonical; the product-side spec items are obsolete (those specs are not in this repo)
-Phase D Substrate code parity        [~] ██████░░░░  60%   Ontology Semantic done; reliability 4/5 (no SLO budgets); observability primitives only
+Phase D Substrate code parity        [~] ███████░░░  70%   Ontology Semantic done; reliability 5/5 substrate (router throttle wiring pending); observability primitives + 3/6 baseline metrics
 Phase E.conductor Conductor v1.0     [~] ███████░░░  70%   Setup wizard, per-user isolation (+property test), JWT auth, DID identity shipped
 Phase E.turing  Autonoetic v1.0      [~] ████░░░░░░  40%   Trait/facet model, weight floors, provenance shipped; loops + property tests pending
 Phase E.sh      Multi-tenant v1.0    [·] ░░░░░░░░░░   n/a  Planned downstream build; engine-level COMPLIANCE.md controls shipped

@@ -81,11 +81,11 @@ Maintained per [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md). S
 - Per `[engine#ADR-036]`. v1.0 ships Semantic only
 
 **[engine-031] Observability primitives — Accepted; `gap-impl` — v1.0 M4**
-- Per `[engine#ADR-037]`. 12 spans, 6 metrics, 5 event topics
+- Per `[engine#ADR-037]`. 3 of 6 baseline metrics live (circuit state, security blocks, request duration); remaining three await model/service_key/period label plumbing; spans + event topics open
 - See also `[engine-094]` for janitor-style signal files extending event topics
 
 **[engine-032] Reliability primitives — Accepted; `gap-impl` — v1.0 M4**
-- Per `[engine#ADR-038]`. retry / circuit-breaker / fallback / SLO / healthchecks
+- Per `[engine#ADR-038]`. All five primitives shipped (SLO error budgets in `maistro.resilience.slo`); throttle wiring to the router scarcity input outstanding
 - See also Khamel83/oneshot lane-fallback-chain pattern in `INSPIRATIONS.md`
 
 ### Contracts (M5 — weeks 6–12)
