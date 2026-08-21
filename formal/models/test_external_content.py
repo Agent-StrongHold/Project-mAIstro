@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
@@ -34,7 +36,16 @@ class ExternalContentMachine(RuleBasedStateMachine):
         result = wrap_external_content(content, source)
         assert _START_MARKER in result
         assert _END_MARKER in result
-        assert content in result
+        # The wrapper deliberately normalizes before wrapping (NFKC + invisible
+        # chars stripped) so a forged marker cannot hide behind foldable text,
+        # then strips markers case-insensitively. So the invariant is that the
+        # content survives *up to that sanitization* -- asserting the raw input
+        # survives would assert the pre-hardening behaviour, and fails for the
+        # ~7% of code points NFKC rewrites (e.g. U+00A8 -> space + U+0308).
+        expected = _normalize_text(content)
+        for marker in (_START_MARKER, _END_MARKER):
+            expected = re.sub(re.escape(marker), "", expected, flags=re.IGNORECASE)
+        assert expected in result
         self.wrapped_count += 1
 
     @invariant()
