@@ -633,6 +633,16 @@
    "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
   },
   {
+   "key": "packages/maistro-core/src/maistro/skills/marketplace.py::SkillMarketplace.install",
+   "path": "packages/maistro-core/src/maistro/skills/marketplace.py",
+   "line": 147,
+   "name": "install",
+   "classname": "SkillMarketplace",
+   "rank": "C",
+   "complexity": 11,
+   "rationale": "Security remediation added a salvage pass to the install path: fix_content() then a re-scan of the repaired text, with distinct rejections for unfixable findings and for residual CRITICALs. Each added branch is a refusal to persist content that has not been re-verified, so the complexity is the control itself. Tracked under SPEC-264 with the rest of the C-rank backlog."
+  },
+  {
    "key": "packages/maistro-core/src/maistro/skills/parser.py::parse_skill_file",
    "path": "packages/maistro-core/src/maistro/skills/parser.py",
    "line": 76,
@@ -640,16 +650,6 @@
    "classname": null,
    "rank": "C",
    "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/tasks/queue.py::TaskQueue.list_tasks",
-   "path": "packages/maistro-core/src/maistro/tasks/queue.py",
-   "line": 196,
-   "name": "list_tasks",
-   "classname": "TaskQueue",
-   "rank": "C",
-   "complexity": 11,
    "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
   },
   {
