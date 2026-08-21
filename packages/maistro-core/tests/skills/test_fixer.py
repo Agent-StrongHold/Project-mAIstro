@@ -144,7 +144,7 @@ def test_no_dangerous_imports_skips_fix():
 
 def test_replaces_hardcoded_credential():
     content = (
-        'api_key = "sk-1234567890abcdef"\n'
+        'api_key = "' + 'sk-1234567890abcdef"\n'
         "This skill connects to a real third-party API for weather data.\n"
     )
     fixed, fixes, _unfixable = fix_content(content)

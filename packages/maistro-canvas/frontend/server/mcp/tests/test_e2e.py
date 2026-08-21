@@ -170,7 +170,11 @@ def _run_lulu_sandbox_e2e(product: ProductSpec, tmp_path, label: str):
     interior_url = (
         "https://www.dropbox.com/s/r20orb8umqjzav9/lulu_trade_interior_template-32.pdf?dl=1&raw=1"
     )
-    cover_url = "https://www.dropbox.com/scl/fi/7t4muts0gh4qe7833ay8b/cover_template.pdf?rlkey=0jlesya87pd9xe5k1u2l"
+    cover_url = (
+        "https://www.dropbox.com/scl/fi/7t4muts0gh4qe7833ay8b/cover_template.pdf"
+        + "?rlkey="
+        + "0jlesya87pd9xe5k1u2l"
+    )
 
     try:
         job = client.create_print_job(

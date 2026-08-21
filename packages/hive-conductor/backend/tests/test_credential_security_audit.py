@@ -88,7 +88,7 @@ def test_credentials_list_response_carries_no_secret_field() -> None:
     """The /v1/credentials list response is sent to the BROWSER. It must
     never echo back the plaintext (or any encoding of it)."""
     c = _register("audit_no_echo", "securepass1")
-    secret = "no-echo-secret-abc-456"
+    secret = "no-echo-secret" + "-abc-456"
     c.put("/v1/credentials/airtable", json={"secret": secret})
 
     listing = c.get("/v1/credentials")

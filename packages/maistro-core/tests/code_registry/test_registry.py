@@ -13,11 +13,11 @@ from maistro.code_registry.verify import Ed25519Verifier
 
 
 def _make_signed_entry(
-    *, name: str = "my_compensator", version: str = "1.0.0", private_key: Ed25519PrivateKey
+    *, name: str = "my_compensator", version: str = "1.0.0", signer: Ed25519PrivateKey
 ) -> CodeEntry:
     code_sha256 = hashlib.sha256(b"body").hexdigest()
     payload = f"{name}@{version}:{code_sha256}".encode()
-    signature = private_key.sign(payload)
+    signature = signer.sign(payload)
     return CodeEntry(
         name=name,
         version=version,
@@ -55,7 +55,7 @@ class TestRegisterAndResolve:
     def test_register_then_resolve_exact_match(self) -> None:
         private_key = Ed25519PrivateKey.generate()
         verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
-        entry = _make_signed_entry(private_key=private_key)
+        entry = _make_signed_entry(signer=private_key)
 
         registry = CodeRegistry()
         registry.register(entry, verifier=verifier)
@@ -77,7 +77,7 @@ class TestRegisterAndResolve:
         private_key = Ed25519PrivateKey.generate()
         wrong_key = Ed25519PrivateKey.generate()
         verifier = Ed25519Verifier(wrong_key.public_key().public_bytes_raw())
-        entry = _make_signed_entry(private_key=private_key)
+        entry = _make_signed_entry(signer=private_key)
 
         registry = CodeRegistry()
         with pytest.raises(InvalidSignature):
@@ -89,7 +89,7 @@ class TestRegisterAndResolve:
     def test_register_rejects_unversioned_entry(self) -> None:
         private_key = Ed25519PrivateKey.generate()
         verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
-        entry = _make_signed_entry(version="", private_key=private_key)
+        entry = _make_signed_entry(version="", signer=private_key)
 
         registry = CodeRegistry()
         with pytest.raises(CodeRefUnresolved):

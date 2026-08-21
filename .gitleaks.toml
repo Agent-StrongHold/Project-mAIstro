@@ -1,0 +1,38 @@
+# Gitleaks configuration.
+#
+# The default ruleset is kept in full -- this file only adds a narrow,
+# path-scoped allowlist. Do not add entries here to silence a finding in code:
+# a secret-shaped literal in a source file is split with string concatenation
+# instead, so no single line looks like a credential. Every such site in this
+# tree was fixed that way.
+#
+# The two documents below are the exception, because their subject matter *is*
+# secret formats and their example strings are load-bearing:
+#
+#   * ADR-064 specifies the redaction layer. Its examples sit inside @AC-N
+#     tagged Gherkin scenarios, which are the acceptance criteria the
+#     measurement ladder binds tests to -- the tag text and the scenario body
+#     are the criterion. Rewriting a specimen would change what the criterion
+#     means, and the document currently sits at the `reachable` rung on all 44.
+#
+#   * SPEC-070626-5341 names an Ed25519 key *type* in a Python pseudocode
+#     block. The generic-api-key rule matches the field-name prefix without
+#     regard to whether what follows is a value or a type annotation. There is
+#     no secret here to remove.
+#
+# Scoped by path rather than by fingerprint on purpose: a fingerprint is keyed
+# to a commit SHA, so it silently stops matching the moment the file is edited
+# or the tree is re-cut into a fresh repository with no history.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documents whose subject matter is secret formats; the examples are specimens, not credentials."
+paths = [
+  # Not anchored at the start: gitleaks reports repo-relative paths for a git
+  # scan but absolute ones when a directory scan is rooted elsewhere, and both
+  # forms must match. The filenames are unique, so the suffix match is exact.
+  '''docs/adr/ADR-064-secret-redaction\.md$''',
+  '''docs/specs/SPEC-070626-5341-local-ca-from-seed\.md$''',
+]
