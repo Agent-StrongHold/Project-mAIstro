@@ -9,11 +9,18 @@ inputs, not promises that the capability is complete in v1.
 
 ### Task queue persistence
 
-The task queue is in memory. A process restart discards queued and active task
-state; it does not recover tasks from durable storage.
+The live task queue is in memory. When a database is configured, every
+submit and status change now upserts a `TaskRecord` row per
+[ADR-018](docs/adr/ADR-018-task-record-persistence.md) (best-effort,
+fire-and-forget), so task history survives a restart — but the queue does
+not yet *recover* from those rows: queued and active tasks are still
+discarded on restart, and no requeue/fail-over policy for interrupted tasks
+has been decided.
 
-Tracking: implement the persistence and recovery design in
-[ADR-018](docs/adr/ADR-018-task-record-persistence.md).
+Tracking: decide and implement the recovery policy (requeue vs. fail
+interrupted tasks; relationship to
+[ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s checkpoint-based
+design).
 
 ### Canvas background job runner
 
