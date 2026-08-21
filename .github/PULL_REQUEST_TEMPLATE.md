@@ -4,6 +4,6 @@
 
 ## Checks
 
-- [ ] Base branch is `develop` (topic branches) — see [`ADR-095`](../docs/adr/ADR-095-four-tier-branch-model.md)
+- [ ] Base branch is `main` (this repository runs single-trunk; [`ADR-095`](../docs/adr/ADR-095-four-tier-branch-model.md)'s four-tier model applies in the development repository)
 - [ ] Tests at the right layer per [`ADR-032`](../docs/adr/ADR-032-contracts-as-acceptance-criteria.md); CI green
 - [ ] ADR/spec added or status corrected if this changes a decision or contradicts a doc claim

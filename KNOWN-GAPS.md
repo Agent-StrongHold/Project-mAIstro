@@ -38,7 +38,7 @@ The Conductor can continue in a degraded state when optional services are
 unavailable. Startup now makes optional-router failures observable, but the
 degraded state is not yet a complete user-facing operating mode.
 
-Tracking: finish the visible degraded-mode behavior in [F3](https://github.com/BlakeMatthews-dev/maistro-engine/issues/302).
+Tracking: finish the visible degraded-mode behavior in F3 (#302).
 
 ### Canvas Studio cutover
 

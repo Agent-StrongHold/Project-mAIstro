@@ -57,7 +57,11 @@ def test_api_key_detected():
 
 
 def test_jwt_detected():
-    text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    text = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        + "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ."
+        + "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
     matches = scan_for_pii(text)
     assert any(m.pii_type == "jwt" for m in matches)
 

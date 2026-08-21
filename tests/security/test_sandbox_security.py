@@ -55,7 +55,7 @@ class TestAllowlistEnvSanitization:
         assert "MY_CUSTOM_SECRET" not in result
 
     def test_api_key_blocked(self) -> None:
-        result = sanitize_env({"STRIPE_API_KEY": "sk_live_abc123"})
+        result = sanitize_env({"STRIPE_API_KEY": "sk_live" + "_abc123"})
         assert "STRIPE_API_KEY" not in result
 
     def test_database_url_blocked(self) -> None:

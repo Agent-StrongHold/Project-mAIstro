@@ -28,6 +28,7 @@ The shared Python runtime — and the consolidation monorepo — behind the Mais
 - **Library-first** — `maistro-core` is a pure Python library; the FastAPI surface (`maistro-server`) is a thin wrapper. The app is optional.
 - **Canonical ADRs & specs** — architectural decisions and specifications under `docs/adr/` and `docs/specs/`.
 - **Registry CI host** — the front-matter validator, link-checker, and registry generator that enforce doc conventions (`packages/maistro-registry`).
+- **A fresh cut** — this repository began as a single snapshot commit of a longer private development history. Issue and PR numbers cited in `docs/` and in code comments (e.g. `#350`, `#479`) predate that cut and refer to the private repository's numbering; they are preserved as historical rationale, not links into this repository. New work references this repository's own numbering.
 
 > **History note.** This engine was previously split across several sibling repositories. The canonical shape as of 2026-05 is this single substrate monorepo.
 
@@ -96,7 +97,7 @@ request ──► conduit ──► classifier ──► orchestrator ──► 
 - **router** — picks model and agent via the scoring formula `quality^(qw·p) / (1 + normalized_cost)^cw`
 - **agents** — base / factory / strategies / roster + A2A delegation
 - **memory** — learning, episodic, outcome stores; episodic decays without reinforcement (driven hourly, see feature table). **Not vector-backed:** the learnings/outcome Postgres stores have no embedding column; retrieval is keyword/attribute matching
-- **security** — Warden (input), Sentinel (output), Gate (boundary), PII filter. ⚠️ **These are library components, not a pipeline the Conductor's chat path currently traverses** — see [#350](https://github.com/BlakeMatthews-dev/maistro-engine/issues/350) and `SECURITY.md`
+- **security** — Warden (input), Sentinel (output), Gate (boundary), PII filter. ⚠️ **These are library components, not a pipeline the Conductor's chat path currently traverses** — see #350 and `SECURITY.md`
 - **skills** — marketplace + Forge + canary (library only; the Conductor's Skills UI is a separate CRUD store — see feature table)
 - **graph** — DAG execution: nodes, executor, optimizer ([`ADR-062`](docs/adr/ADR-062-graph-execution-protocol.md))
 - **observability** — traces, Prometheus metrics, structlog logs, domain events ([`ADR-037`](docs/adr/ADR-037-observability-taxonomy.md))

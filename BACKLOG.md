@@ -7,7 +7,7 @@ Companion to [`ROADMAP.md`](ROADMAP.md). Items are tagged by the part of the pro
 - `turing-NNN` — autonoetic variant
 - `sh-NNN` — multi-tenant variant (Stronghold)
 
-Maintained per [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Status follows [`engine#ADR-031`](https://github.com/BlakeMatthews-dev/maistro-engine/blob/main/docs/adr/ADR-031-front-matter-and-registry.md) lifecycle. External-library adoption per [`engine#ADR-039`](https://github.com/BlakeMatthews-dev/maistro-engine/blob/main/docs/adr/ADR-039-external-library-adoption-policy.md).
+Maintained per [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Status follows [`engine#ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md) lifecycle. External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md).
 
 ## Status legend
 

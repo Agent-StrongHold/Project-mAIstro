@@ -9,7 +9,9 @@ import httpx
 from cryptography.fernet import Fernet
 
 _MASTER_KEY_ENV = "HIVE_CREDENTIALS_MASTER_KEY"
-POSTGREST_URL = os.environ.get("POSTGREST_URL") or os.environ.get("DEPLOY_TARGET_POSTGREST_URL") or ""
+POSTGREST_URL = (
+    os.environ.get("POSTGREST_URL") or os.environ.get("DEPLOY_TARGET_POSTGREST_URL") or ""
+)
 TABLE = "hive_credentials_v2"
 
 

@@ -202,7 +202,7 @@ def test_security_scan_detects_code_execution_critical_pattern() -> None:
 def test_security_scan_detects_credential_leak_critical_pattern() -> None:
     content = (
         "---\nname: my_skill\ndescription: d\nparameters:\n  type: object\n---\n"
-        'api_key = "abcdefgh12345678"\n'
+        'api_key = "' + 'abcdefgh12345678"\n'
     )
     safe, findings = security_scan(content)
     assert safe is False

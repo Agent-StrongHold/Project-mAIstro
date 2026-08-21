@@ -177,7 +177,7 @@ Detail in `BACKLOG.md` `[engine-100]`–`[engine-105]`.
 
 ### Phase F — Contracts as the bar (weeks 6–12)
 
-Per [`engine#ADR-032`](https://github.com/BlakeMatthews-dev/maistro-engine/blob/main/docs/adr/ADR-032-contracts-as-acceptance-criteria.md). Mutation-testing kill rate is the v1.0 quality bar.
+Per [`engine#ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md). Mutation-testing kill rate is the v1.0 quality bar.
 
 | Item | Part | Status | Detail |
 |---|---|---|---|

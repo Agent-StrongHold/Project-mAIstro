@@ -81,7 +81,7 @@ creates `/tmp/maistro-workspace`.
 ```bash
 sbx exec -it maistro-rsi -- bash -lc '
   maistro-rsi run \
-    --repo-url https://github.com/BlakeMatthews-dev/maistro-engine \
+    --repo-url https://github.com/Agent-StrongHold/Project-mAIstro \
     --goal "Reduce duplication in packages/maistro-core/src/maistro/router/" \
     --test-command "uv sync --frozen --offline && uv run pytest packages/maistro-rsi -q" \
     --json

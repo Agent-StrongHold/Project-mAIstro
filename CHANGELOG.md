@@ -141,5 +141,5 @@ register:
 > `/v2/canvas` cutover, and API-wide HTTP content negotiation from ADR-076 is
 > deferred to v1.1.
 
-[Unreleased]: https://github.com/BlakeMatthews-dev/maistro-engine/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/BlakeMatthews-dev/maistro-engine/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Agent-StrongHold/Project-mAIstro/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Agent-StrongHold/Project-mAIstro/releases/tag/v1.0.0

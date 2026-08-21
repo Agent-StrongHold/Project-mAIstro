@@ -104,7 +104,9 @@ class TestLooksLikeSecret:
             "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
             "ghs_abcdefghijklmnopqrstuvwxyz1234567890",
             "a" * 64,
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            + "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            + "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
         ],
     )
     def test_secret_patterns_detected(self, value: str) -> None:

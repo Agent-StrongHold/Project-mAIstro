@@ -176,6 +176,16 @@ class TestCliWiringSmoke:
 
         workspace_root = tmp_path / "maistro-workspace"
         monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (workspace_root,))
+        # The scrub hardened `git_clone` with a scheme allowlist so an agent
+        # cannot hand git a local path or a `-`-prefixed flag. Production
+        # clones over https; a hermetic test of *real* git needs a local
+        # origin, so it opts into `file://` here rather than the allowlist
+        # being widened for everyone -- the same shape as the
+        # ALLOWED_HOST_ROOTS relaxation just above.
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+            ("https://", "git://", "ssh://", "file://"),
+        )
 
         async def fake_create_rsi_sandbox(workspace, settings=None, env=None, backend=None):
             return _FakeMicroVmSandbox()
