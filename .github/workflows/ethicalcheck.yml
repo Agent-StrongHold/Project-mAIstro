@@ -30,16 +30,12 @@ name: EthicalCheck-Workflow
 
 # Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "claude/maistro-engine-migration-njhaq5" branch
-  # Customize trigger events based on your DevSecOps processes.
-  push:
-    branches: [ "claude/maistro-engine-migration-njhaq5" ]
-  pull_request:
-    branches: [ "claude/maistro-engine-migration-njhaq5" ]
-  schedule:
-    - cron: '32 4 * * 6'
-
-  # Allows you to run this workflow manually from the Actions tab
+  # Manual-only for now: `apisec-inc/ethicalcheck-action` does not resolve
+  # (GitHub's action resolver reports "not found" on every run), so push/PR/
+  # schedule triggers can only ever produce a red check. Restore those triggers
+  # once the action resolves again — and point `oas-url` at a real maistro
+  # OpenAPI spec first; the current value is the vendor's demo banking API from
+  # the starter template, so a passing run would be testing their demo, not us.
   workflow_dispatch:
 
 permissions:
