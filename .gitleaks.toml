@@ -29,6 +29,11 @@ useDefault = true
 
 [[allowlists]]
 description = "Documents whose subject matter is secret formats; the examples are specimens, not credentials."
+# Scoped to the rule families the specimens legitimately trigger. A credential
+# of any OTHER class pasted into these documents later (a GitHub PAT, an AWS
+# key, a Slack token, ...) is still detected -- the exemption covers the
+# subject matter, not the file.
+targetRules = ["generic-api-key", "gcp-api-key", "private-key", "jwt"]
 paths = [
   # Not anchored at the start: gitleaks reports repo-relative paths for a git
   # scan but absolute ones when a directory scan is rooted elsewhere, and both
@@ -44,6 +49,7 @@ paths = [
 # where a credential-shaped string is the point -- these are adversarial probes
 # that exist to be fed to the guardrails, and `gp9` is the "Secret leak" probe.
 description = "Adversarial probe corpus: credential-shaped strings are the fixture, and the path is immutable by policy."
+targetRules = ["generic-api-key"]
 paths = [
   '''packages/hive-conductor/eval/adversarial/guardrail_probes\.py$''',
 ]
