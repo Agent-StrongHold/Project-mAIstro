@@ -65,20 +65,30 @@ general content-negotiation scheme.
 
 Tracking: implement ADR-076's API-wide version negotiation in v1.1.
 
-### Recurring schedules do not survive a restart
+### Recurring schedules created through the API do not survive a restart
 
-`/v1/schedules` accepts and runs recurring tasks, but the schedule store is
-in-memory. A process restart discards every schedule, with no error and no
-indication to the user who created it.
+Recurrence itself is now correct and durable-capable:
+[ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)
+replaced the two disagreeing cron matchers with one verified POSIX dialect,
+gave schedules a timezone with explicit DST rules, added catchup and overlap
+policies, and shipped a schedule store with in-memory and SQLite
+implementations held to the same tests. A fired schedule produces a canonical
+Run.
 
-This diverges from [ADR-046](docs/adr/ADR-046-scheduler.md), which specifies
-Postgres persistence and re-registration of enabled schedules on startup. The
-divergence is unrecorded drift rather than a decision — the shipped scheduler
-arrived inside an unrelated coverage PR and cites nothing (#343).
+What is **not** closed: Hive's `/v1/schedules` routes still write
+`stores.schedules`, which is in memory. A schedule created through the live
+API is therefore still lost on restart, with no error and no indication to
+the user who created it. The durable store it needs already exists; the
+remaining work is migrating the CRUD path behind the unchanged HTTP contract.
 
-Tracking: implement [SPEC-080126-3a7c](docs/specs/SPEC-080126-3a7c-durable-scheduler.md)
-in v1.1. ADR-046 remains the target; it is deliberately not being superseded by
-what currently ships.
+Two smaller follow-ups from the same ADR: the Hive schedule row has no
+timezone column, so recurrence there is evaluated in UTC until one is added,
+and `maistro_schedule_fires_total` / the `schedule.fire` span are not emitted
+yet (Run identity is in the audit trail today).
+
+Tracking: the "not yet" rows in
+[ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)'s
+implementation-status table. ADR-046 and SPEC-080126-3a7c are superseded.
 
 ### Security controls specified but not reachable
 

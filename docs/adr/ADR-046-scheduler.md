@@ -3,7 +3,7 @@ id: ADR-046
 title: Scheduler — Recurring agent tasks
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Superseded
 accepted: 2026-06-10
 created: 2026-05-13
 substrate:
@@ -14,6 +14,8 @@ related:
   - maistro-engine#ADR-047
   - maistro-engine#ADR-048
 supersedes: []
+superseded-by:
+  - maistro-engine#ADR-082126-f69c
 blocks: []
 blocked-by: []
 contracts:
@@ -27,9 +29,18 @@ history:
   - status: Accepted
     date: 2026-06-10
     date: 2026-05-13
+  - status: Superseded
+    date: 2026-08-21
 ---
 
 # ADR-046: Scheduler — Recurring agent tasks
+
+> **Superseded by [ADR-082126-f69c](ADR-082126-f69c-recurrence-produces-runs.md) (2026-08-21).** The durable-persistence, `max_runs`, timezone and fire-observability
+> requirements below were right and are kept. The *mechanism* was overtaken by this
+> repository's own progress: the canonical Run/NodeRun/Attempt spine landed after this
+> ADR was accepted, so a scheduler that brings its own persistent job store (APScheduler)
+> and parents fires to `task.run` would install a second durable execution engine and
+> bind recurrence to a lifecycle being dissolved. Recurrence now produces Runs.
 
 **Implementation status (2026-08-01, #343):** this decision is **not implemented**, and a
 *different* scheduler ships in its place. `routes/schedules.py` (`/v1/schedules`),

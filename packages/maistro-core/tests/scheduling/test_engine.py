@@ -43,9 +43,7 @@ def test_nothing_due_yields_no_fires_but_still_reports_next_due() -> None:
 def test_an_occurrence_that_came_due_fires_once() -> None:
     schedule = _schedule(last_fired_at=NOON)
     result = evaluate(schedule, now=NOON + timedelta(hours=1, seconds=5))
-    assert [f.scheduled_for for f in result.fires] == [
-        datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
-    ]
+    assert [f.scheduled_for for f in result.fires] == [datetime(2026, 8, 21, 13, 0, tzinfo=UTC)]
     assert result.fires[0].catchup is False
 
 
@@ -129,9 +127,7 @@ def test_cancel_other_asks_the_caller_to_cancel_the_in_flight_run() -> None:
 def test_backfilled_occurrences_overlap_the_run_the_first_one_starts() -> None:
     """With SKIP and three missed occurrences, the first becomes the in-flight
     Run and the rest are overlapped — not three concurrent Runs."""
-    schedule = _schedule(
-        cron="*/15 * * * *", last_fired_at=NOON, overlap_policy=OverlapPolicy.SKIP
-    )
+    schedule = _schedule(cron="*/15 * * * *", last_fired_at=NOON, overlap_policy=OverlapPolicy.SKIP)
     result = evaluate(schedule, now=NOON + timedelta(minutes=46))
     assert len(result.fires) == 1
     assert [s.reason for s in result.skipped] == [SkipReason.OVERLAP, SkipReason.OVERLAP]
@@ -197,9 +193,7 @@ def test_every_due_occurrence_is_either_fired_or_explains_itself(
     while (cursor := schedule.next_fire_after(cursor)) <= now:
         expected.append(cursor)
 
-    accounted = [f.scheduled_for for f in result.fires] + [
-        s.scheduled_for for s in result.skipped
-    ]
+    accounted = [f.scheduled_for for f in result.fires] + [s.scheduled_for for s in result.skipped]
     assert sorted(accounted) == expected
     assert len(accounted) == len(set(accounted))
 
@@ -208,9 +202,7 @@ def test_every_due_occurrence_is_either_fired_or_explains_itself(
     runs_so_far=st.integers(min_value=0, max_value=6),
     max_runs=st.integers(min_value=1, max_value=6),
 )
-def test_fires_never_exceed_the_remaining_run_budget(
-    runs_so_far: int, max_runs: int
-) -> None:
+def test_fires_never_exceed_the_remaining_run_budget(runs_so_far: int, max_runs: int) -> None:
     schedule = _schedule(
         cron="*/15 * * * *",
         last_fired_at=NOON,

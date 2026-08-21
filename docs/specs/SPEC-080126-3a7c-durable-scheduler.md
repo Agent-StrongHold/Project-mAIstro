@@ -3,7 +3,7 @@ id: SPEC-080126-3a7c
 title: "Durable recurring-task scheduler — reconciling the shipped runner with ADR-046"
 repo: maistro-engine
 kind: spec
-status: Proposed
+status: Superseded
 created: 2026-08-01
 substrate:
   - maistro-engine#ADR-018
@@ -17,6 +17,8 @@ related:
   - maistro-engine#SPEC-240
   - maistro-engine#SPEC-241
 supersedes: []
+superseded-by:
+  - maistro-engine#ADR-082126-f69c
 blocks: []
 blocked-by: []
 contracts:
@@ -30,6 +32,8 @@ owners:
 history:
   - status: Proposed
     date: 2026-08-01
+  - status: Superseded
+    date: 2026-08-21
 ---
 
 # SPEC-080126-3a7c: Durable recurring-task scheduler
@@ -47,10 +51,13 @@ This SPEC closes that gap by specifying the work to bring the implementation to 
 per the governance rule that an implementation contradicting an ADR is either drift — fix
 the code — or intentional, in which case a superseding ADR is required.
 
-> **Contingent on the #343 decision.** This SPEC assumes the drift is resolved *toward*
-> ADR-046. If the maintainer instead decides the smaller shipped scheduler is what the
-> product wants, this SPEC is void and a superseding ADR replaces ADR-046 rather than this
-> implementing it. Do not begin work here until #343 is answered.
+> **Superseded by [ADR-082126-f69c](../adr/ADR-082126-f69c-recurrence-produces-runs.md)
+> (2026-08-21).** This SPEC named its own exit condition: it was contingent on the #343
+> decision, and void if that decision replaced ADR-046 rather than implementing it. #343 was
+> answered that way — but toward neither prior option. The problem statement below is still
+> an accurate account of what was wrong; the plan is not what was built, because a scheduler
+> bringing its own persistent job store would have installed a second durable execution
+> engine beside the Run spine. See the superseding ADR for what shipped.
 
 ## Problem
 

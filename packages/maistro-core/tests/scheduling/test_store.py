@@ -153,9 +153,7 @@ async def test_disable_on_exhaustion_stops_the_schedule_being_due(
 
 
 async def test_record_fire_on_unknown_schedule_returns_none(store: ScheduleStore) -> None:
-    assert (
-        await store.record_fire("nope", fired_at=NOON, run_id=None, next_due_at=None)
-    ) is None
+    assert (await store.record_fire("nope", fired_at=NOON, run_id=None, next_due_at=None)) is None
 
 
 # --- the actual defect --------------------------------------------------------
