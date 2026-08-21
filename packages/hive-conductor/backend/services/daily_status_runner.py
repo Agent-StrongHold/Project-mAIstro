@@ -1,12 +1,10 @@
 """Run the daily-status graph and shape the result for the Daily Report frontend.
 
-The Hive registry still stores the historical editable DAG snapshot format. At
-this application boundary the registered descriptor is projected through the
-canonical definition layer — ``descriptor_to_template`` → ``GraphTemplate`` →
-``instantiate()`` — so the executed Graph carries ``TemplateProvenance`` back
-to the exact registered revision, executes through the canonical durable
-Run/NodeRun persistence path, and the result is translated back into the
-response shape DailyReport.tsx already consumes.
+The Hive registry still stores the historical editable DAG snapshot format.
+This boundary executes the registered descriptor through the shared
+``services.dag_agents`` path — canonical GraphTemplate instantiation with
+``TemplateProvenance``, durable Run/NodeRun persistence — and translates the
+result back into the response shape DailyReport.tsx already consumes.
 
 Per-request Jira credentials are overlaid on the *instantiated* Graph, after
 provenance is stamped: the template's content hash is provenance and must stay
@@ -18,24 +16,12 @@ from __future__ import annotations
 import logging
 from typing import Any, ClassVar
 
-from maistro.container import build_node_resolver
-from maistro.graph.dag_registry import DagRegistry
 from maistro.graph.definitions import Graph
-from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus, run_durable_graph
-from maistro.graph.seeds import daily_status_seed
-from maistro.graph.template_adapter import descriptor_to_template
+from maistro.graph.durable_runs import RunStatus
+from services.dag_agents import get_registry, run_registered_dag
 
 logger = logging.getLogger(__name__)
 
-
-# Module-level registry so a per-process boot registers once + reuses.
-_registry: DagRegistry | None = None
-
-# Module-level resolver: this app imports maistro-core pieces directly rather
-# than constructing a full Container, so build_node_resolver()'s no-arg
-# defaults (the shared usage log, an empty harness-adapter map) are what it
-# picks up. The resolver receives the canonical Graph from run_durable_graph.
-_node_resolver = build_node_resolver()
 
 # The current Hive Daily Report route predates Workspace/Project middleware and
 # can still invoke this service without either scope id. The store used here is
@@ -45,13 +31,9 @@ _node_resolver = build_node_resolver()
 _FALLBACK_SCOPE_ID = "hive:daily-status"
 
 
-def _get_registry() -> DagRegistry:
-    """Lazily build the DagRegistry + register the bundled seeds."""
-    global _registry
-    if _registry is None:
-        _registry = DagRegistry()
-        _registry.register(daily_status_seed())
-    return _registry
+def _get_registry() -> Any:
+    """The shared DAG-as-agent registry (kept as this module's historical name)."""
+    return get_registry()
 
 
 def _node_named(graph: Graph, name: str) -> Any:
@@ -87,18 +69,15 @@ async def run_daily_status_dag(
     resolved_project_id = project_id or _FALLBACK_SCOPE_ID
     resolved_workspace_id = workspace_id or resolved_project_id
 
-    descriptor = _get_registry().get("daily-status")
-    template = descriptor_to_template(descriptor, workspace_id=resolved_workspace_id)
-    graph = template.instantiate(project_id=resolved_project_id)
-    _inject_jira_credentials(graph, pat=pat, base_url=base_url, flavor=flavor)
-
-    store = InMemoryDurableRunStore()
     try:
-        result = await run_durable_graph(
-            graph,
-            store=store,
-            node_resolver=_node_resolver,
-            actor_principal_id=user_id,
+        graph, result = await run_registered_dag(
+            "daily-status",
+            workspace_id=resolved_workspace_id,
+            project_id=resolved_project_id,
+            user_id=user_id,
+            configure=lambda graph: _inject_jira_credentials(
+                graph, pat=pat, base_url=base_url, flavor=flavor
+            ),
         )
     except Exception as exc:
         logger.warning("daily_status_dag_run_failed: %s", exc)

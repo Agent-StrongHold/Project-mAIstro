@@ -112,6 +112,48 @@ class _ScheduleRunner:
 
         log_audit("schedule_fire", "system", target=sid, detail={"name": schedule.name})  # type: ignore[attr-defined]
 
+        # Schedule → Run: a firing whose target is a registered DAG produces
+        # canonical durable work — the same GraphTemplate-provenanced Run path
+        # every other Hive DAG execution uses — instead of a bare audit line.
+        # Targets that don't resolve keep the historical log-only behavior
+        # (no other mission-template kind is executable yet).
+        from services.dag_agents import get_registry, run_registered_dag
+
+        if get_registry().get(str(template_id)) is None:
+            return
+
+        scope_id = f"hive:schedule:{sid}"
+        user_id = str(getattr(schedule, "user_id", "") or "") or None
+        try:
+            graph, record = await run_registered_dag(
+                str(template_id),
+                workspace_id=scope_id,
+                project_id=scope_id,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            logger.warning("Schedule %s run failed: %s", sid, exc)
+            log_audit(
+                "schedule_run",
+                "system",
+                target=sid,
+                detail={"dag_id": str(template_id), "error": type(exc).__name__},
+            )
+            return
+
+        provenance = graph.source_template
+        log_audit(
+            "schedule_run",
+            "system",
+            target=sid,
+            detail={
+                "dag_id": str(template_id),
+                "run_id": record.run.run_id,
+                "status": str(record.run.status.value),
+                "template_version": provenance.template_version if provenance else None,
+            },
+        )
+
 
 def _should_fire(cron_expr: str, last: datetime, now: datetime) -> bool:
     parts = cron_expr.strip().split()

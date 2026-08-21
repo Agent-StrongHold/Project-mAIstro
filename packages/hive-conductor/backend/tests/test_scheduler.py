@@ -382,3 +382,129 @@ def test_run_loop_logs_and_continues_on_tick_exception(
     asyncio.run(r.run())
     # First tick raised; second tick stopped → at least 2 calls
     assert calls[0] >= 2
+
+
+# --- Schedule -> canonical Run --------------------------------------------
+
+
+def _schedule_stub(sid: str, template_id: str | None) -> Any:
+    class _Sched:
+        id = sid
+        enabled = True
+        cron_expression = "* * * * *"
+        name = f"name-{sid}"
+        mission_template_id = template_id
+        user_id = "u1"
+        last_run = None
+        updated_at = None
+
+        def model_copy(self, *, update: dict[str, Any]) -> Any:
+            for k, v in update.items():
+                setattr(self, k, v)
+            return self
+
+    return _Sched()
+
+
+def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
+    """Schedule → Run: a firing whose target is a registered DAG must execute
+    through the canonical durable path and audit the Run identity, not just
+    log that it fired."""
+    import stores
+    from services.dag_agents import get_registry
+    from services.scheduler import _ScheduleRunner
+
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "sched-synth",
+            "name": "Sched Synth",
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+    stub = _schedule_stub("s-run", "sched-synth")
+    stores.schedules._data["s-run"] = stub  # type: ignore[attr-defined]
+    before = len(stores.audit_log)
+    try:
+        r = _ScheduleRunner()
+        asyncio.run(r._fire_schedule("s-run", stub))
+        new_entries = [
+            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-run"
+        ]
+        assert any(e["action"] == "schedule_fire" for e in new_entries)
+        runs = [e for e in new_entries if e["action"] == "schedule_run"]
+        assert len(runs) == 1
+        detail = runs[0]["detail"]
+        assert detail["dag_id"] == "sched-synth"
+        assert detail["status"] == "completed"
+        assert detail["run_id"]
+        assert detail["template_version"] == 1
+    finally:
+        stores.schedules._data.pop("s-run", None)  # type: ignore[attr-defined]
+        registry.deregister("sched-synth")
+
+
+def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
+    """A mission_template_id that is not a registered DAG audits the fire and
+    produces no run (no other mission-template kind is executable yet)."""
+    import stores
+    from services.scheduler import _ScheduleRunner
+
+    stub = _schedule_stub("s-noop", "tpl-not-a-dag")
+    stores.schedules._data["s-noop"] = stub  # type: ignore[attr-defined]
+    before = len(stores.audit_log)
+    try:
+        r = _ScheduleRunner()
+        asyncio.run(r._fire_schedule("s-noop", stub))
+        new_entries = [
+            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-noop"
+        ]
+        assert [e["action"] for e in new_entries] == ["schedule_fire"]
+    finally:
+        stores.schedules._data.pop("s-noop", None)  # type: ignore[attr-defined]
+
+
+def test_fire_schedule_run_failure_is_audited_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DAG run that raises must not crash the tick loop; the failure is
+    audited with the error class."""
+    import stores
+    from services.dag_agents import get_registry
+    from services.scheduler import _ScheduleRunner
+
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "sched-boom",
+            "name": "Sched Boom",
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+
+    async def _boom(*a: Any, **kw: Any) -> Any:
+        raise RuntimeError("synthetic run failure")
+
+    import services.dag_agents as dag_agents_mod
+
+    monkeypatch.setattr(dag_agents_mod, "run_durable_graph", _boom)
+
+    stub = _schedule_stub("s-fail", "sched-boom")
+    stores.schedules._data["s-fail"] = stub  # type: ignore[attr-defined]
+    before = len(stores.audit_log)
+    try:
+        r = _ScheduleRunner()
+        asyncio.run(r._fire_schedule("s-fail", stub))
+        new_entries = [
+            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-fail"
+        ]
+        runs = [e for e in new_entries if e["action"] == "schedule_run"]
+        assert len(runs) == 1
+        assert runs[0]["detail"]["error"] == "RuntimeError"
+    finally:
+        stores.schedules._data.pop("s-fail", None)  # type: ignore[attr-defined]
+        registry.deregister("sched-boom")

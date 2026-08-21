@@ -12,11 +12,11 @@ import pytest
 _BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_BACKEND_DIR))
 
+from services.dag_agents import _node_resolver  # noqa: E402
 from services.daily_status_runner import (  # noqa: E402
     _get_registry,
     _inject_jira_credentials,
     _node_named,
-    _node_resolver,
     _result_to_jira_section,
     run_daily_status_dag,
 )
@@ -358,7 +358,7 @@ async def test_run_daily_status_dag_catches_unexpected_exception(
     async def _boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic boom")
 
-    monkeypatch.setattr(runner, "run_durable_graph", _boom)
+    monkeypatch.setattr(runner, "run_registered_dag", _boom)
     section = await run_daily_status_dag(
         user_id="u1",
         project_id="p1",
