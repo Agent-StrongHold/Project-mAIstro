@@ -132,3 +132,27 @@ def test_recording_publishes_remaining_budget_gauge() -> None:
         for s in maistro_slo_remaining_budget_seconds.collect()
     }
     assert samples[("gauge-svc", "availability")] == pytest.approx(expected)
+
+
+def test_the_periodic_throttle_check_refreshes_a_recovered_budget() -> None:
+    """Budget recovery is time-driven: downtime ages out with no new event to
+    record. A gauge written only on record_downtime would sit at its depleted
+    value forever after a service healed."""
+    budget = ErrorBudget(SloDefinition(service_key="recovering", slo="availability", target=0.999))
+    now = 1_000_000.0
+    budget.record_downtime(600.0, now=now)
+    depleted = _gauge("recovering")
+    assert depleted == pytest.approx(budget.definition.total_budget_seconds - 600.0)
+
+    # The window rolls; nothing new is recorded.
+    later = now + _WINDOW + 1.0
+    budget.should_throttle(now=later)
+    assert _gauge("recovering") == pytest.approx(budget.definition.total_budget_seconds)
+    assert _gauge("recovering") > depleted
+
+
+def _gauge(service_key: str) -> float:
+    for sample in maistro_slo_remaining_budget_seconds.collect():
+        if sample["labels"]["service_key"] == service_key:
+            return float(sample["value"])
+    raise AssertionError(f"no gauge sample for {service_key!r}")

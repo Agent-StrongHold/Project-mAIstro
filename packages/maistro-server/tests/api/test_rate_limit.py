@@ -179,3 +179,21 @@ class TestAdr037RequestDuration:
             for s in maistro_request_duration_seconds.collect()
         }
         assert ("unrouted", "4xx") in samples
+
+    def test_rate_limited_requests_are_observed_too(self, tight_limits: None) -> None:
+        """Rejections are traffic. Omitting 429s understated volume and latency
+        during exactly the overload the metric exists to show."""
+        from maistro.observability.metrics import maistro_request_duration_seconds
+
+        def counted() -> int:
+            return sum(
+                s["count"]
+                for s in maistro_request_duration_seconds.collect()
+                if s["labels"] == {"route": "/thing", "outcome": "4xx"}
+            )
+
+        before = counted()
+        client = TestClient(_make_app())
+        statuses = [client.get("/thing").status_code for _ in range(4)]
+        assert 429 in statuses
+        assert counted() >= before + statuses.count(429)

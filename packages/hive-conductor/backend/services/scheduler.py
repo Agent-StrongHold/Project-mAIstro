@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 # column is the only remaining step to per-user local schedules.
 _DEFAULT_TIMEZONE = "UTC"
 
+# Fallback creation time for a row that predates the column. Treating such a
+# row as "created at the dawn of time" keeps it firing; treating it as new
+# would silently retire it.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
 _runner: _ScheduleRunner | None = None
 
 
@@ -131,6 +136,11 @@ class _ScheduleRunner:
             enabled=True,
             overlap_policy=OverlapPolicy.SKIP,
             last_fired_at=getattr(schedule, "last_run", None),
+            # Carry the row's real creation time. Without it the definition
+            # defaults to *now*, and the rule that a schedule cannot fire for
+            # occurrences predating its own existence would suppress every
+            # tick — a scheduler that never fires.
+            created_at=getattr(schedule, "created_at", None) or _EPOCH,
             actor_principal_id=str(getattr(schedule, "user_id", "") or "") or None,
         )
 

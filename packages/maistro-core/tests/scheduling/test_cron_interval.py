@@ -46,6 +46,7 @@ OK = [
     "0,15,30,45 9-17 * * 1-5",  # business-hours quarter-hourly
     "0 9 * * 1-5",  # weekday mornings
     "0 0 1 * *",  # monthly
+    "0 0 1 3 *",  # a single fire each March
 ]
 
 
@@ -88,7 +89,21 @@ def test_a_schedule_exposes_its_own_gap_for_product_enforcement() -> None:
     assert schedule.minimum_gap() < PRODUCT_FLOOR
 
 
-def test_infrequent_expressions_report_an_unbounded_gap() -> None:
-    """A yearly schedule fires at most once in the sampling window; the gap is
-    reported as unbounded rather than as a misleading small number."""
-    assert minimum_gap("0 0 1 1 *") == timedelta.max
+def test_month_restricted_expressions_are_measured_where_they_actually_fire() -> None:
+    """Regression: sampling a fixed calendar window anchored in January saw no
+    fires at all for a March-only expression and reported it as unbounded — the
+    dangerous direction, because a product floor would then accept a schedule
+    that really fires ten minutes apart."""
+    assert minimum_gap("0,10 0 1 3 *") == timedelta(minutes=10)
+    assert _rejects("0,10 0 1 3 *")
+
+
+def test_yearly_schedules_report_their_real_spacing() -> None:
+    assert minimum_gap("0 0 1 1 *") == timedelta(days=365)
+    assert not _rejects("0 0 1 1 *")
+
+
+def test_a_recurrence_rarer_than_the_horizon_reports_unbounded() -> None:
+    """Feb 29 fires once inside the four-year sample; with no consecutive pair
+    to measure, the gap is unbounded — safe, since the true spacing is years."""
+    assert minimum_gap("0 0 29 2 *") == timedelta.max

@@ -253,9 +253,14 @@ def parse_cron(expression: str) -> CronExpression:
     )
 
 
-# A fortnight covers every gap a 5-field expression can express: the shortest
-# interval always recurs within one month-boundary-crossing window.
-_GAP_SAMPLE_DAYS: Final = 14
+# Sampling must follow the fires, not a fixed calendar window. A window
+# anchored in January sees nothing at all for a month-restricted expression
+# like `0,10 0 1 3 *` and would report it as unbounded — which is the
+# dangerous direction, since a product floor would then accept a schedule
+# that actually fires ten minutes apart. Four years covers the leap cycle,
+# and the fire cap bounds the walk for dense expressions.
+_GAP_HORIZON_DAYS: Final = 4 * 366
+_GAP_MAX_FIRES: Final = 512
 
 
 def minimum_gap(expression: str, *, timezone: str = "UTC") -> timedelta:
@@ -266,17 +271,20 @@ def minimum_gap(expression: str, *, timezone: str = "UTC") -> timedelta:
     — the day-of-month and day-of-week fields included, which a minute-and-
     hour-only estimate silently ignores.
 
-    Returns ``timedelta.max`` when the expression fires at most once in the
-    sampling window.
+    Returns ``timedelta.max`` only when the expression fires at most once in
+    four years, which is the genuinely unbounded case.
     """
     parsed = parse_cron(expression)
     # A fixed, arbitrary start: gaps are a property of the expression, and
     # anchoring makes the answer deterministic.
     cursor = datetime(2027, 1, 1, tzinfo=_zone(timezone))
-    horizon = cursor + timedelta(days=_GAP_SAMPLE_DAYS)
+    horizon = cursor + timedelta(days=_GAP_HORIZON_DAYS)
     smallest = timedelta.max
     previous: datetime | None = None
-    while (cursor := parsed.next_fire(cursor, timezone=timezone)) <= horizon:
+    for _ in range(_GAP_MAX_FIRES):
+        cursor = parsed.next_fire(cursor, timezone=timezone)
+        if cursor > horizon:
+            break
         if previous is not None:
             smallest = min(smallest, cursor - previous)
         previous = cursor

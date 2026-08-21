@@ -28,19 +28,35 @@ __all__ = [
     "evaluate",
 ]
 
-# Defensive cap on how many occurrences one evaluation will enumerate. The
-# catchup window is the real bound; this stops a pathological combination
-# (per-minute cron, very wide window) from building an unbounded list.
+# How many occurrences one evaluation will carry. The catchup window is the
+# real bound — at one-minute granularity a one-hour window holds 60 and a
+# one-day window 1440 — and this caps what a single decision returns.
 _MAX_ENUMERATED_FIRES: Final = 512
+
+# Backstop on the walk itself, not a working limit: it must stay far above any
+# realistic window so the newest occurrences are always reached, since those
+# are the ones a caller still wants to act on. 50k covers roughly a month of
+# per-minute fires.
+_MAX_WALK_STEPS: Final = 50_000
 
 
 class SkipReason(StrEnum):
     """Why an occurrence that came due did not produce a Run."""
 
+    BUFFERED = "buffered"
+    """Held back under BUFFER_ONE while a Run is active. The cursor does not
+    advance, so it becomes due again on the next evaluation — which is what
+    "run one queued occurrence afterwards" means to a polling caller."""
+
     DISABLED = "disabled"
     EXHAUSTED = "exhausted"
     OUTSIDE_CATCHUP = "outside_catchup"
     OVERLAP = "overlap"
+
+    TRUNCATED = "truncated"
+    """Beyond the per-evaluation enumeration cap. Reported rather than dropped
+    silently, since a caller that advances its cursor on this decision would
+    otherwise lose the occurrence with no record of it."""
 
 
 @dataclass(frozen=True)
@@ -78,16 +94,31 @@ class ScheduleEvaluation:
     """max_runs is reached once these fires are recorded; disable the schedule."""
 
 
-def _enumerate_due(schedule: Schedule, *, since: datetime, now: datetime) -> list[datetime]:
-    """Occurrences in (since, now], oldest first."""
+def _enumerate_due(
+    schedule: Schedule, *, since: datetime, now: datetime
+) -> tuple[list[datetime], list[datetime]]:
+    """Occurrences in (since, now], oldest first, plus any dropped by the cap.
+
+    When more occurrences are due than one evaluation will carry, the *newest*
+    are kept: they are the ones a caller still wants to act on. The older
+    remainder is returned separately so it can be reported rather than
+    vanishing.
+    """
     occurrences: list[datetime] = []
     cursor = since
-    for _ in range(_MAX_ENUMERATED_FIRES):
+    while True:
         cursor = schedule.next_fire_after(cursor)
         if cursor > now:
             break
         occurrences.append(cursor)
-    return occurrences
+        if len(occurrences) >= _MAX_WALK_STEPS:
+            # Only reachable with an absurd window; stop rather than walk
+            # forever. The split below still keeps the newest of what we saw.
+            break
+    if len(occurrences) <= _MAX_ENUMERATED_FIRES:
+        return occurrences, []
+    split = len(occurrences) - _MAX_ENUMERATED_FIRES
+    return occurrences[split:], occurrences[:split]
 
 
 def _catchup_horizon(schedule: Schedule, *, now: datetime) -> datetime:
@@ -111,6 +142,10 @@ def _partition_by_catchup(
     return eligible, stale
 
 
+def _held(occurrences: list[datetime]) -> list[SkippedFire]:
+    return [SkippedFire(scheduled_for=moment, reason=SkipReason.BUFFERED) for moment in occurrences]
+
+
 def _overlapped(occurrences: list[datetime]) -> list[SkippedFire]:
     return [SkippedFire(scheduled_for=moment, reason=SkipReason.OVERLAP) for moment in occurrences]
 
@@ -128,34 +163,28 @@ def _apply_overlap(
     if policy is OverlapPolicy.CANCEL_OTHER:
         # Only the newest occurrence matters when the rule is "latest wins".
         newest = eligible[-1:]
-        superseded = [
-            SkippedFire(scheduled_for=moment, reason=SkipReason.OVERLAP) for moment in eligible[:-1]
-        ]
-        return newest, superseded, active_run and bool(newest)
+        return newest, _overlapped(eligible[:-1]), active_run and bool(newest)
 
-    if active_run:
-        if policy is OverlapPolicy.BUFFER_ONE:
-            buffered = eligible[-1:]
-            return buffered, _overlapped(eligible[:-1]), False
+    if policy is OverlapPolicy.BUFFER_ONE:
+        # Buffering is not concurrency. At most one occurrence may be waiting,
+        # and it does not run until the active Run finishes: it is held with
+        # its cursor un-advanced, so it comes due again on the next
+        # evaluation. Everything older than the held one is dropped, which is
+        # the "at most one queued" half of the policy.
+        runnable = [] if active_run else eligible[:1]
+        waiting = eligible[len(runnable) :]
         return (
-            [],
-            [SkippedFire(scheduled_for=moment, reason=SkipReason.OVERLAP) for moment in eligible],
+            runnable,
+            _overlapped(waiting[:-1]) + _held(waiting[-1:]),
             False,
         )
 
+    if active_run:
+        return [], _overlapped(eligible), False
+
     # Nothing running: the first occurrence fires and itself becomes the
     # in-flight Run, so later occurrences in the same batch overlap it.
-    first, rest = eligible[:1], eligible[1:]
-    if policy is OverlapPolicy.BUFFER_ONE:
-        kept = first + rest[-1:]
-        dropped = rest[:-1]
-    else:
-        kept, dropped = first, rest
-    return (
-        kept,
-        [SkippedFire(scheduled_for=moment, reason=SkipReason.OVERLAP) for moment in dropped],
-        False,
-    )
+    return eligible[:1], _overlapped(eligible[1:]), False
 
 
 def _apply_max_runs(
@@ -186,10 +215,12 @@ def evaluate(
         return ScheduleEvaluation(next_due_at=None, exhausted=True)
 
     horizon = _catchup_horizon(schedule, now=now)
-    # Never look further back than the catchup window: it bounds both the
-    # semantics and the size of the walk.
-    since = max(schedule.last_fired_at or horizon, horizon)
-    occurrences = _enumerate_due(schedule, since=since, now=now)
+    # Three lower bounds, all of them real: the catchup window (which bounds
+    # both the semantics and the size of the walk), the last fire, and the
+    # moment the schedule came into existence — creating a schedule must not
+    # retroactively schedule work from before it existed.
+    since = max(schedule.last_fired_at or horizon, horizon, schedule.created_at)
+    occurrences, truncated = _enumerate_due(schedule, since=since, now=now)
     eligible, stale = _partition_by_catchup(occurrences, horizon=horizon)
 
     to_fire, overlapped, cancel_active = _apply_overlap(
@@ -205,9 +236,12 @@ def evaluate(
     )
     remaining_after = schedule.runs_remaining
     exhausted = remaining_after is not None and len(allowed) >= remaining_after
+    dropped = [
+        SkippedFire(scheduled_for=moment, reason=SkipReason.TRUNCATED) for moment in truncated
+    ]
     return ScheduleEvaluation(
         fires=fires,
-        skipped=tuple(stale + overlapped + refused),
+        skipped=tuple(dropped + stale + overlapped + refused),
         next_due_at=schedule.next_fire_after(now),
         cancel_active_run=cancel_active,
         exhausted=exhausted,

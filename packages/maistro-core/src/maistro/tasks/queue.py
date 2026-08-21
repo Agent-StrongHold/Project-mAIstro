@@ -1,15 +1,18 @@
 """In-memory task queue with best-effort TaskRecord persistence (ADR-018).
 
 Live task state is held in memory. When a database is configured
-(``get_async_session_factory()`` returns a factory), every ``submit()`` and
-``update_status()`` also upserts a ``TaskRecord`` row — fire-and-forget, so
-task execution never fails because the database is unavailable. With no
-database the queue behaves exactly as before and a restart loses all tasks.
+(``get_async_session_factory()`` returns a factory), every mutation —
+``submit()``, ``update_status()``, ``set_result()`` and ``update_progress()``
+— upserts a ``TaskRecord`` row, fire-and-forget, so task execution never
+fails because the database is unavailable. Writes for one task are chained so
+they land in the order the state changed. With no database the queue behaves
+exactly as before and a restart loses all tasks.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -56,6 +59,20 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
     }
 
 
+async def _write_after(
+    previous: asyncio.Task[None] | None, factory: Any, values: dict[str, Any]
+) -> None:
+    """Wait for this task's prior write, then upsert.
+
+    Ordering is the point: without it the persisted row is last-writer-wins
+    across concurrent sessions rather than last-state-wins.
+    """
+    if previous is not None and not previous.done():
+        with contextlib.suppress(BaseException):
+            await previous
+    await _write_record(factory, values)
+
+
 async def _write_record(factory: Any, values: dict[str, Any]) -> None:
     """Upsert one TaskRecord. Failures are logged and swallowed (ADR-018):
     persistence is best-effort and must never take task execution down."""
@@ -92,15 +109,34 @@ class TaskQueue:
         # In-flight fire-and-forget TaskRecord writes (ADR-018); referenced so
         # the event loop cannot garbage-collect them mid-write.
         self._persist_writes: set[asyncio.Task[None]] = set()
+        # The most recent write per task, so the next one for that task can
+        # wait on it. Independent writes with independent sessions can commit
+        # in any order, and a slow `queued` merge landing after `completed`
+        # would silently regress the persisted row to an older status.
+        self._last_write: dict[str, asyncio.Task[None]] = {}
 
     def _persist(self, task: TaskResponse) -> None:
-        """Schedule a best-effort TaskRecord upsert when a DB is configured."""
+        """Schedule a best-effort TaskRecord upsert when a DB is configured.
+
+        The snapshot is taken synchronously so it cannot race later in-memory
+        mutation, and each task's writes are chained so they commit in the
+        order the state actually changed.
+        """
         factory = get_async_session_factory()
         if factory is None:
             return
-        write = asyncio.create_task(_write_record(factory, _record_values(task)))
+        values = _record_values(task)
+        previous = self._last_write.get(task.task_id)
+        write = asyncio.create_task(_write_after(previous, factory, values))
         self._persist_writes.add(write)
-        write.add_done_callback(self._persist_writes.discard)
+        self._last_write[task.task_id] = write
+
+        def _done(finished: asyncio.Task[None]) -> None:
+            self._persist_writes.discard(finished)
+            if self._last_write.get(task.task_id) is finished:
+                self._last_write.pop(task.task_id, None)
+
+        write.add_done_callback(_done)
 
     def _get_event(self, task_id: str) -> asyncio.Event:
         """Get or create an asyncio.Event for a task."""
@@ -221,12 +257,18 @@ class TaskQueue:
         task = self._tasks.get(task_id)
         if task:
             task.progress = progress
+            self._persist(task)
             self._notify(task_id)
 
     def set_result(self, task_id: str, result: TaskResult) -> None:
         task = self._tasks.get(task_id)
         if task:
             task.result = result
+            # The runner transitions to COMPLETED/FAILED *before* attaching the
+            # result, so persisting only on status change stored every finished
+            # task with a NULL result — durable rows that answer neither an
+            # audit nor a recovery.
+            self._persist(task)
             self._notify(task_id)
 
     async def cancel(self, task_id: str) -> bool:

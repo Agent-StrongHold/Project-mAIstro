@@ -10,6 +10,12 @@ fires when the rate exceeds 2.0 sustained over one hour.
 Reliability declares ``maistro_slo_remaining_budget_seconds`` per
 ``(service_key, slo)`` to the ADR-037 observability substrate: ADR-037 owns
 the naming/registry contract, this module owns the metric's meaning.
+
+The gauge is refreshed whenever downtime is recorded and whenever
+``should_throttle`` is evaluated. Since recovery is time-driven rather than
+event-driven, a consumer that only records downtime must call
+``should_throttle`` (or ``publish``) on a periodic cadence, or the gauge will
+lag the budget it reports.
 """
 
 from __future__ import annotations
@@ -132,8 +138,17 @@ class ErrorBudget:
 
         The orchestrator defers non-critical work while this holds; the
         router's scarcity input (ADR-007) is the intended consumer.
+
+        This is the periodic caller, so it also republishes the gauge. Budget
+        recovery is time-driven — downtime ages out of the rolling window with
+        no new event to record — so a gauge written only on `record_downtime`
+        would sit at its depleted value indefinitely after a service recovered,
+        and dashboards would report an exhaustion that had already healed.
         """
-        return self.burn_rate(lookback_seconds=lookback_seconds, now=now) > threshold
+        resolved = self._resolve_now(now)
+        throttling = self.burn_rate(lookback_seconds=lookback_seconds, now=resolved) > threshold
+        self.publish(now=resolved)
+        return throttling
 
     def publish(self, *, now: float | None = None) -> float:
         """Set the ADR-037 gauge to the current remaining budget; returns it."""

@@ -95,6 +95,23 @@ class Schedule(BaseModel):
     updated_at: datetime = Field(default_factory=_now)
 
     @model_validator(mode="after")
+    def _normalise_timestamps(self) -> Schedule:
+        """Force every timestamp to be timezone-aware.
+
+        The engine and stores compare these against an aware ``now``. A naive
+        value used to validate cleanly and then raise `TypeError: can't
+        compare offset-naive and offset-aware datetimes` deep inside
+        `evaluate()` or `due()`, which takes the schedule out of service for a
+        reason nothing on the creation path reported. A naive input is read as
+        UTC, which is what a bare wall-clock string means here.
+        """
+        for field in ("last_fired_at", "next_due_at", "created_at", "updated_at"):
+            value = getattr(self, field)
+            if isinstance(value, datetime) and value.tzinfo is None:
+                object.__setattr__(self, field, value.replace(tzinfo=UTC))
+        return self
+
+    @model_validator(mode="after")
     def _validate(self) -> Schedule:
         if not self.workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")

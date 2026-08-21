@@ -49,6 +49,7 @@ def _schedule_stub(
             self.mission_template_id = template_id
             self.user_id = "u1"
             self.last_run = last_run
+            self.created_at = datetime(2026, 1, 1, tzinfo=UTC)
             self.updated_at = None
 
         def model_copy(self, *, update: dict[str, Any]) -> Any:
@@ -127,6 +128,7 @@ def test_row_projects_onto_a_canonical_schedule_definition() -> None:
     assert definition.cron == "0 9 * * *"
     assert definition.graph_template_id == "daily-status"
     assert definition.last_fired_at == fired
+    assert definition.created_at == datetime(2026, 1, 1, tzinfo=UTC)
     assert definition.actor_principal_id == "u1"
     # A long agent Run must never be stacked on itself by default.
     assert definition.overlap_policy is OverlapPolicy.SKIP
@@ -151,6 +153,18 @@ def test_a_row_with_no_target_is_not_evaluated() -> None:
     from services.scheduler import _ScheduleRunner
 
     assert _ScheduleRunner()._as_definition("s", _schedule_stub("s", None)) is None
+
+
+def test_a_row_without_a_creation_time_still_fires() -> None:
+    """A row predating the column must not be read as brand new — that would
+    suppress every occurrence and silently retire the schedule."""
+    from services.scheduler import _ScheduleRunner
+
+    stub = _schedule_stub("s", "tpl", cron="0 * * * *")
+    stub.created_at = None
+    definition = _ScheduleRunner()._as_definition("s", stub)
+    assert definition is not None
+    assert definition.created_at.year == 1970
 
 
 # --- tick --------------------------------------------------------------------

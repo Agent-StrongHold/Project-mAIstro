@@ -26,6 +26,9 @@ def _schedule(**overrides: object) -> Schedule:
         "name": "hourly",
         "cron": "0 * * * *",
         "graph_template_id": "daily-status",
+        # Real schedules predate the moment they are evaluated; the default
+        # factory would stamp *now*, which is after these fixed test instants.
+        "created_at": NOON - timedelta(days=30),
     }
     return Schedule(**{**defaults, **overrides})  # type: ignore[arg-type]
 
@@ -99,7 +102,8 @@ def test_a_zero_catchup_window_refuses_all_backfill() -> None:
         (OverlapPolicy.SKIP, 0),
         (OverlapPolicy.ALLOW, 1),
         (OverlapPolicy.CANCEL_OTHER, 1),
-        (OverlapPolicy.BUFFER_ONE, 1),
+        # Buffering is not concurrency: nothing runs until the active Run ends.
+        (OverlapPolicy.BUFFER_ONE, 0),
     ],
 )
 def test_overlap_policy_governs_firing_while_a_run_is_in_flight(
@@ -213,3 +217,87 @@ def test_fires_never_exceed_the_remaining_run_budget(runs_so_far: int, max_runs:
     )
     result = evaluate(schedule, now=NOON + timedelta(hours=3))
     assert len(result.fires) <= max(0, max_runs - runs_so_far)
+
+
+# --- review findings, locked ---------------------------------------------------
+
+
+def test_creation_does_not_retroactively_schedule_work() -> None:
+    """A newly created schedule must not treat occurrences from before it
+    existed as missed work: an hourly schedule created just after the hour
+    waits for its first future occurrence."""
+    created = datetime(2026, 8, 21, 12, 1, tzinfo=UTC)
+    schedule = _schedule(cron="0 * * * *", created_at=created, last_fired_at=None)
+    result = evaluate(schedule, now=created + timedelta(seconds=30))
+    assert result.fires == ()
+    assert result.next_due_at == datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
+
+
+def test_a_minutely_schedule_does_not_backfill_an_hour_on_creation() -> None:
+    created = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    schedule = _schedule(
+        cron="* * * * *",
+        created_at=created,
+        last_fired_at=None,
+        overlap_policy=OverlapPolicy.ALLOW,
+    )
+    result = evaluate(schedule, now=created + timedelta(seconds=30))
+    assert result.fires == ()
+
+
+def test_occurrences_beyond_the_enumeration_cap_are_reported_not_dropped() -> None:
+    """A caller that advances its cursor on this decision must not lose
+    occurrences without a record. The newest are kept; the remainder is
+    reported as truncated."""
+    schedule = _schedule(
+        cron="* * * * *",
+        last_fired_at=NOON - timedelta(days=1),
+        overlap_policy=OverlapPolicy.ALLOW,
+        catchup_window_seconds=86_400,
+        created_at=NOON - timedelta(days=30),
+    )
+    result = evaluate(schedule, now=NOON)
+    accounted = [f.scheduled_for for f in result.fires] + [s.scheduled_for for s in result.skipped]
+    assert len(accounted) == 1440  # every minute of the window
+    assert any(s.reason is SkipReason.TRUNCATED for s in result.skipped)
+    # The newest occurrences survive — they are the ones still worth running.
+    assert max(accounted) == NOON
+
+
+def test_buffer_one_never_runs_alongside_an_active_run() -> None:
+    """BUFFER_ONE means "one queued occurrence afterwards", not "run it now"."""
+    schedule = _schedule(
+        cron="*/15 * * * *",
+        last_fired_at=NOON,
+        overlap_policy=OverlapPolicy.BUFFER_ONE,
+    )
+    result = evaluate(schedule, now=NOON + timedelta(minutes=46), active_run=True)
+    assert result.fires == ()
+    assert [s.reason for s in result.skipped].count(SkipReason.BUFFERED) == 1
+
+
+def test_buffer_one_holds_at_most_one_when_idle() -> None:
+    """Idle: the first occurrence runs, exactly one is held for afterwards, and
+    the rest are dropped."""
+    schedule = _schedule(
+        cron="*/15 * * * *",
+        last_fired_at=NOON,
+        overlap_policy=OverlapPolicy.BUFFER_ONE,
+    )
+    result = evaluate(schedule, now=NOON + timedelta(minutes=46), active_run=False)
+    assert len(result.fires) == 1
+    reasons = [s.reason for s in result.skipped]
+    assert reasons.count(SkipReason.BUFFERED) == 1
+    assert reasons.count(SkipReason.OVERLAP) == 1
+
+
+def test_a_buffered_occurrence_becomes_due_again_once_the_run_ends() -> None:
+    """The held occurrence is not consumed: its cursor never advanced, so the
+    next evaluation with nothing active runs it."""
+    schedule = _schedule(
+        cron="0 * * * *", last_fired_at=NOON, overlap_policy=OverlapPolicy.BUFFER_ONE
+    )
+    now = NOON + timedelta(hours=1, minutes=5)
+    assert evaluate(schedule, now=now, active_run=True).fires == ()
+    later = evaluate(schedule, now=now, active_run=False)
+    assert [f.scheduled_for for f in later.fires] == [datetime(2026, 8, 21, 13, 0, tzinfo=UTC)]

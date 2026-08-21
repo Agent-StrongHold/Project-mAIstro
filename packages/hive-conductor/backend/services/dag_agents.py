@@ -31,6 +31,19 @@ _registry: DagRegistry | None = None
 # picks up. The resolver receives the canonical Graph from run_durable_graph.
 _node_resolver = build_node_resolver()
 
+# One store for the process, not one per invocation. A fresh store per call
+# discarded the whole Run/NodeRun history the moment the call returned, so the
+# run_id written to the audit trail named something that could not be fetched,
+# resumed, or inspected — and child-run parentage vanished with it. Sharing it
+# makes those records retrievable for the life of the process; a durable
+# implementation behind the same protocol is what outlives a restart.
+_run_store = InMemoryDurableRunStore()
+
+
+def get_run_store() -> InMemoryDurableRunStore:
+    """The shared durable-run store backing every registered-DAG execution."""
+    return _run_store
+
 
 def get_registry() -> DagRegistry:
     """Lazily build the shared DagRegistry + register the bundled seeds."""
@@ -72,7 +85,7 @@ async def run_registered_dag(
         configure(graph)
     record = await run_durable_graph(
         graph,
-        store=InMemoryDurableRunStore(),
+        store=_run_store,
         node_resolver=_node_resolver,
         actor_principal_id=user_id,
         parent_run_id=parent_run_id,
