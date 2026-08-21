@@ -48,6 +48,8 @@ async def run_registered_dag(
     project_id: str,
     user_id: str | None = None,
     configure: Callable[[Graph], None] | None = None,
+    parent_run_id: str | None = None,
+    parent_node_run_id: str | None = None,
 ) -> tuple[Graph, Any]:
     """Execute a registered DAG through the canonical durable Run path.
 
@@ -55,8 +57,11 @@ async def run_registered_dag(
     is not registered. ``configure`` runs against the *instantiated* Graph —
     after provenance is stamped — which is where per-request runtime inputs
     such as credentials belong; the registered template stays secret-free.
-    Returns the instantiated Graph (callers key node lookups on its stable
-    node names) together with the durable run record.
+    A caller that is itself executing canonical work passes its Run/NodeRun
+    identity via ``parent_run_id``/``parent_node_run_id`` so the launched
+    work is a child Run rather than a disconnected sibling. Returns the
+    instantiated Graph (callers key node lookups on its stable node names)
+    together with the durable run record.
     """
     descriptor = get_registry().get(dag_id)
     if descriptor is None:
@@ -70,5 +75,7 @@ async def run_registered_dag(
         store=InMemoryDurableRunStore(),
         node_resolver=_node_resolver,
         actor_principal_id=user_id,
+        parent_run_id=parent_run_id,
+        parent_node_run_id=parent_node_run_id,
     )
     return graph, record
