@@ -43,8 +43,7 @@ later regression.
 | pyright | ratchet | 24 | type errors mypy does not catch |
 | radon CC | identity ratchet | `quality/radon-baseline.json` | a new or regressed complexity hotspot |
 | xenon | count ratchet | 77 | per-function > B, per-module > B, project average > A |
-| vulture (count) | count ratchet | 1426, in `quality.yml` | dead code at confidence ≥ 60 |
-| vulture (identity) | identity ratchet | count + SHA-256 per rule, in `vulture-ratchet.yml` | the same finding set changing, including a same-count substitution |
+| vulture | identity ratchet | `quality/vulture-baseline.json`, in `quality.yml` + `vulture-ratchet.yml` | any change to the reviewed finding set, by name — a new finding, a fixed one left unbanked, or a same-count substitution |
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
 | coverage | floor | 88% line + branch, publish set | undertested code |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
@@ -58,10 +57,20 @@ later regression.
 | acceptance-criterion state | report only | `quality/ac-state.json` | nothing yet — see below |
 | Gherkin well-formedness | floor | zero parse failures | an acceptance-criteria block the Gherkin grammar rejects |
 
-Vulture is gated twice on purpose. `quality.yml` keeps a cheap total-count
-ceiling; `vulture-ratchet.yml` pins each rule's exact finding set by count and
-digest, which is what catches a same-count substitution — one finding fixed and
-a different one introduced under the same rule, invisible to a count alone.
+Vulture runs in two workflows but has one authority: the per-identity ledger
+in `quality/vulture-baseline.json`, which records every reviewed finding as an
+explicit `path::message` identity (line-number-independent, so unrelated code
+motion doesn't trip the gate). A new finding fails CI by name; an identity
+that no longer occurs also fails by name until pruned — the ledger can only
+shrink, so it cannot retain slack that a later regression could consume, and
+a same-count substitution is two named failures rather than an invisible swap.
+`vulture-ratchet.yml` covers PRs and trunk pushes; the `quality.yml` step
+extends the identical invocation to `feat/*` pushes. Bank a reviewed change
+with `scripts/check-vulture-baseline.py --update <scan args>` and review the
+JSON diff — never edit entries by hand to match a delta. (Until 2026-08 this
+was a total-count ceiling plus a per-rule count+SHA-256 digest; the digest
+caught substitutions but failures weren't legible per identity, and the count
+ceiling held slack.)
 
 ## Acceptance-criterion state
 
