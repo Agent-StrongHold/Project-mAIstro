@@ -73,3 +73,57 @@ async def test_the_workspace_is_the_one_asked_for() -> None:
     run = await run_store.get_run(task.run_id or "")
     assert run is not None
     assert run.workspace_id == "tenant-a"
+
+
+# ── PostgreSQL is selected when the deployment has one (#132) ─────
+
+
+async def test_with_a_pg_pool_the_spine_is_postgres(pg_pool) -> None:
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    scope_store, run_store, admitter = await wire_execution_spine(
+        None, workspace_id="wiring-pg", pg_pool=pg_pool
+    )
+
+    assert type(scope_store).__name__ == "PgProjectScopeStore"
+    assert type(run_store).__name__ == "PgRunStore"
+    assert admitter is not None
+
+
+async def test_a_pg_pool_wins_over_a_sqlite_connection(pg_pool) -> None:
+    """Both configured is a misconfiguration, but it must resolve the way
+    ADR-082226-5104 orders them rather than by argument order."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        _scope_store, run_store, _admitter = await wire_execution_spine(
+            conn, workspace_id="wiring-both", pg_pool=pg_pool
+        )
+
+        assert type(run_store).__name__ == "PgRunStore"
+    finally:
+        await conn.close()
+
+
+async def test_a_run_admitted_on_postgres_outlives_its_store(pg_pool) -> None:
+    """The claim #132 exists to make true: a fresh store object — standing in
+    for a restarted process — resolves a Run the previous one admitted."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    _scope_store, _run_store, admitter = await wire_execution_spine(
+        None, workspace_id="wiring-restart", pg_pool=pg_pool
+    )
+    queue = TaskQueue(admitter=admitter)
+    task = await queue.submit(TaskCreate(description="survive", task_type="code"))
+
+    _again_scope, again_runs, _again_admitter = await wire_execution_spine(
+        None, workspace_id="wiring-restart", pg_pool=pg_pool
+    )
+    run = await again_runs.get_run(task.run_id or "")
+
+    assert run is not None
+    assert run.workspace_id == "wiring-restart"
+    assert run.graph.materialize().nodes[0].parameters["to_agent"] == "artificer"

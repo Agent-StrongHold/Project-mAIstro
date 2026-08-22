@@ -24,19 +24,34 @@ async def wire_execution_spine(
     *,
     workspace_id: str,
     intents: IntentRegistry | None = None,
+    pg_pool: Any = None,
 ) -> tuple[ProjectScopeStore, RunStore, TaskRunAdmitter]:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
-    Durable when a SQLite connection is open, in-memory otherwise — the same
-    split every other store in this container follows. The Workspace's Root
-    Project is created eagerly rather than on first submission: a Run store
-    refuses to file a Graph in a Project that does not exist, so resolving it
-    lazily would turn a startup misconfiguration into a runtime failure on
-    somebody's first task.
+    PostgreSQL when the deployment has one, SQLite for a homelab, in-memory
+    otherwise — the same backend order every other store follows, and the order
+    ADR-082226-5104 requires: the spine is the one thing that must not be
+    ephemeral, because it is what an audit, a recovery, a retry and a resumed
+    HITL pause all read.
+
+    The Workspace's Root Project is created eagerly rather than on first
+    submission: a Run store refuses to file a Graph in a Project that does not
+    exist, so resolving it lazily would turn a startup misconfiguration into a
+    runtime failure on somebody's first task.
     """
     project_scope_store: ProjectScopeStore
     run_store: RunStore
-    if conn is not None:
+    if pg_pool is not None:
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.runs.pg_store import PgRunStore
+
+        # No ensure_schema: these tables come from `alembic/versions/010`, and
+        # the container's PostgreSQL preflight already refuses an unmigrated
+        # database by name. A store that quietly created its own tables would be
+        # a second schema owner and a second thing to keep in step.
+        project_scope_store = PgProjectScopeStore(pg_pool)
+        run_store = PgRunStore(pg_pool, project_store=project_scope_store)
+    elif conn is not None:
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.runs.sqlite_store import SqliteRunStore
 

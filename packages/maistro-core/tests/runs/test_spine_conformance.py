@@ -1,0 +1,437 @@
+"""One suite, three Run stores (#132).
+
+`InMemoryRunStore`, `SqliteRunStore` and `PgRunStore` all claim the `RunStore`
+protocol. Until now each had its own tests with its own assertions, which means
+"same protocol" was three separate beliefs rather than one checked fact — the
+shape that let `PgStrikeTracker` carry the same claim while being unsubstitutable
+(#134).
+
+The concurrency section is the part that only matters here. SQLite serialises
+writers at the database, so its integrity constraints never fire and a
+check-then-insert cannot race. PostgreSQL admits concurrent writers, so the same
+code *is* a race, and these are the cases that distinguish a store that holds
+from one that has merely never been asked.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import aiosqlite
+import pytest
+
+from maistro.graph import Graph, Node
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.store import (
+    ActiveAttemptExists,
+    AttemptNotFound,
+    InMemoryRunStore,
+    NodeRunNotFound,
+    RunIntegrityError,
+    RunNotFound,
+    StaleExecutionFence,
+)
+from maistro.testing.postgres import postgres_dsn
+
+WORKSPACE = "workspace-1"
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+    """A (run_store, project_id) pair on each backend, isolated per test."""
+    if request.param == "postgres":
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.runs.pg_store import PgRunStore
+
+        # A fresh Workspace per test: the tables are shared and durable, so
+        # isolating by scope is cheaper and truer than truncating between tests.
+        workspace = f"{WORKSPACE}-{request.node.name}"
+        projects = PgProjectScopeStore(pg_pool)
+        root = await projects.create_root(workspace)
+        project = await projects.create(
+            workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
+        )
+        yield PgRunStore(pg_pool, project_store=projects), workspace, project.project_id
+        return
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(WORKSPACE)
+    project = await projects.create(
+        workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Durable"
+    )
+    if request.param == "memory":
+        yield InMemoryRunStore(project_store=projects), WORKSPACE, project.project_id
+        return
+
+    from maistro.runs.sqlite_store import SqliteRunStore
+
+    conn = await aiosqlite.connect(":memory:")
+    store = SqliteRunStore(conn, project_store=projects)
+    await store.ensure_schema()
+    try:
+        yield store, WORKSPACE, project.project_id
+    finally:
+        await conn.close()
+
+
+def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("node-1",)) -> Graph:
+    return Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="Durable graph",
+        nodes=[Node(node_id=node_id, node_type="agent") for node_id in node_ids],
+    )
+
+
+async def _run(spine: Any) -> Any:
+    store, workspace, project_id = spine
+    return await store.create_run(_graph(workspace, project_id))
+
+
+async def _node_run(spine: Any) -> Any:
+    """A NodeRun under a fresh Run — what most of the Attempt tests need."""
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    return await store.create_node_run(run.run_id, node_id="node-1")
+
+
+# ── identity round-trips ──────────────────────────────────────────
+
+
+async def test_a_created_run_reloads_with_its_relationships(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await _run(spine)
+
+    reloaded = await store.get_run(run.run_id)
+
+    assert reloaded is not None
+    assert reloaded.run_id == run.run_id
+    assert reloaded.workspace_id == workspace
+    assert reloaded.project_id == project_id
+    assert reloaded.status is RunStatus.CREATED
+
+
+async def test_the_graph_snapshot_survives_the_round_trip(spine: Any) -> None:
+    """The snapshot is what a resume replays against; a Run whose graph came
+    back different would resume as different work."""
+    store, workspace, project_id = spine
+    graph = _graph(workspace, project_id, node_ids=("node-1", "node-2"))
+
+    run = await store.create_run(graph)
+    reloaded = await store.get_run(run.run_id)
+
+    assert reloaded is not None
+    materialized = reloaded.graph.materialize()
+    assert [node.node_id for node in materialized.nodes] == ["node-1", "node-2"]
+    assert reloaded.graph.content_hash == graph.content_hash
+
+
+async def test_provenance_and_actor_survive(spine: Any) -> None:
+    store, workspace, project_id = spine
+
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        actor_principal_id="user-1",
+        provenance={"admission_source": "task_queue", "task_id": "t-1"},
+    )
+    reloaded = await store.get_run(run.run_id)
+
+    assert reloaded is not None
+    assert reloaded.actor_principal_id == "user-1"
+    assert reloaded.provenance == {"admission_source": "task_queue", "task_id": "t-1"}
+
+
+async def test_an_unknown_run_is_none_not_an_error(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+
+    assert await store.get_run("no-such-run") is None
+    assert await store.get_node_run("no-such-node-run") is None
+    assert await store.get_attempt("no-such-attempt") is None
+
+
+# ── scope integrity ───────────────────────────────────────────────
+
+
+async def test_a_graph_in_an_unknown_project_is_refused(spine: Any) -> None:
+    store, workspace, _project_id = spine
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await store.create_run(_graph(workspace, "no-such-project"))
+
+
+async def test_a_node_id_outside_the_snapshot_is_refused(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+
+    with pytest.raises(RunIntegrityError, match="not present"):
+        await store.create_node_run(run.run_id, node_id="node-99")
+
+
+async def test_a_node_run_under_a_terminal_run_is_refused(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.CANCELLED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_node_run(run.run_id, node_id="node-1")
+
+
+async def test_a_child_run_cannot_cross_workspaces(spine: Any) -> None:
+    store, _workspace, project_id = spine
+    parent = await _run(spine)
+
+    with pytest.raises(RunIntegrityError, match="Workspace"):
+        await store.create_run(
+            _graph("some-other-workspace", project_id), parent_run_id=parent.run_id
+        )
+
+
+async def test_a_parent_node_run_requires_a_parent_run(spine: Any) -> None:
+    store, workspace, project_id = spine
+
+    with pytest.raises(RunIntegrityError, match="requires parent_run_id"):
+        await store.create_run(_graph(workspace, project_id), parent_node_run_id="nr-1")
+
+
+# ── lifecycle ─────────────────────────────────────────────────────
+
+
+async def test_a_run_advances_and_the_change_is_durable(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    reloaded = await store.get_run(run.run_id)
+
+    assert reloaded is not None
+    assert reloaded.status is RunStatus.RUNNING
+
+
+async def test_a_terminal_run_records_its_outcome(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    await store.transition_run(run.run_id, RunStatus.FAILED, error="it broke")
+    reloaded = await store.get_run(run.run_id)
+
+    assert reloaded is not None
+    assert reloaded.error == "it broke"
+    assert reloaded.finished_at is not None
+
+
+async def test_transitioning_an_unknown_run_raises(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(RunNotFound):
+        await store.transition_run("no-such-run", RunStatus.QUEUED)
+
+
+async def test_transitioning_an_unknown_node_run_raises(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(NodeRunNotFound):
+        await store.transition_node_run("no-such-node-run", RunStatus.QUEUED)
+
+
+async def test_transitioning_an_unknown_attempt_raises(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(AttemptNotFound):
+        await store.transition_attempt("no-such-attempt", AttemptStatus.RUNNING)
+
+
+# ── ordinals ──────────────────────────────────────────────────────
+
+
+async def test_node_run_ordinals_are_dense_and_ordered(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids=("node-1", "node-2", "node-3"))
+    )
+
+    for node_id in ("node-1", "node-2", "node-3"):
+        await store.create_node_run(run.run_id, node_id=node_id)
+
+    assert [nr.ordinal for nr in await store.list_node_runs(run.run_id)] == [1, 2, 3]
+
+
+async def test_attempt_ordinals_are_dense(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+
+    for _ in range(3):
+        attempt = await store.create_attempt(node_run.node_run_id)
+        await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+        await store.transition_attempt(attempt.attempt_id, AttemptStatus.FAILED, error="retry")
+
+    assert [a.ordinal for a in await store.list_attempts(node_run.node_run_id)] == [1, 2, 3]
+
+
+# ── one active Attempt ────────────────────────────────────────────
+
+
+async def test_a_second_attempt_while_one_is_active_is_refused(spine: Any) -> None:
+    """The constraint the whole retry model rests on."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.create_attempt(node_run.node_run_id)
+
+    with pytest.raises(ActiveAttemptExists):
+        await store.create_attempt(node_run.node_run_id)
+
+
+async def test_a_new_attempt_is_allowed_once_the_last_one_ended(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    first = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(first.attempt_id, AttemptStatus.RUNNING)
+    await store.transition_attempt(first.attempt_id, AttemptStatus.FAILED, error="retry")
+
+    second = await store.create_attempt(node_run.node_run_id)
+
+    assert second.ordinal == 2
+
+
+# ── execution fence ───────────────────────────────────────────────
+
+
+async def test_a_leased_attempt_rejects_an_unfenced_write(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
+
+    with pytest.raises(StaleExecutionFence):
+        await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+
+async def test_a_leased_attempt_rejects_the_wrong_token(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
+
+    with pytest.raises(StaleExecutionFence):
+        await store.transition_attempt(
+            attempt.attempt_id, AttemptStatus.RUNNING, fencing_token="worker-b-token"
+        )
+
+
+async def test_the_lease_holder_may_write(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
+    assert attempt.execution_lease is not None
+
+    updated = await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+
+    assert updated.status is AttemptStatus.RUNNING
+
+
+# ── concurrency: the part SQLite never had to answer ──────────────
+
+
+async def test_only_one_of_many_concurrent_workers_starts_an_attempt(spine: Any) -> None:
+    """Ten workers race to start the same node. Nine must lose.
+
+    Under SQLite the database serialises them and the application check is
+    enough; under PostgreSQL they run genuinely at once, and the difference
+    between a store that holds and one that has merely never been asked shows
+    up exactly here.
+    """
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+
+    results = await asyncio.gather(
+        *(store.create_attempt(node_run.node_run_id, lease_holder=f"w{i}") for i in range(10)),
+        return_exceptions=True,
+    )
+
+    started = [r for r in results if not isinstance(r, BaseException)]
+    refused = [r for r in results if isinstance(r, ActiveAttemptExists)]
+    unexpected = [
+        r
+        for r in results
+        if isinstance(r, BaseException) and not isinstance(r, ActiveAttemptExists)
+    ]
+
+    assert unexpected == [], f"losers must be refused cleanly, not crash: {unexpected}"
+    assert len(started) == 1
+    assert len(refused) == 9
+
+
+async def test_concurrent_workers_leave_exactly_one_active_attempt(spine: Any) -> None:
+    """The store's own view has to agree with what the race produced."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+
+    await asyncio.gather(
+        *(store.create_attempt(node_run.node_run_id) for _ in range(8)),
+        return_exceptions=True,
+    )
+
+    attempts = await store.list_attempts(node_run.node_run_id)
+    active = [a for a in attempts if a.status in (AttemptStatus.CREATED, AttemptStatus.RUNNING)]
+    assert len(active) == 1
+    assert [a.ordinal for a in attempts] == list(range(1, len(attempts) + 1))
+
+
+async def test_concurrent_node_runs_get_distinct_ordinals(spine: Any) -> None:
+    """`MAX(ordinal) + 1` read by two writers returns the same number twice."""
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids=("node-1", "node-2", "node-3", "node-4"))
+    )
+
+    results = await asyncio.gather(
+        *(
+            store.create_node_run(run.run_id, node_id=node_id)
+            for node_id in ("node-1", "node-2", "node-3", "node-4")
+        ),
+        return_exceptions=True,
+    )
+
+    created = [r for r in results if not isinstance(r, BaseException)]
+    assert len(created) == 4, f"none should have collided: {results}"
+    assert sorted(nr.ordinal for nr in created) == [1, 2, 3, 4]
+
+
+async def test_a_stale_worker_cannot_overwrite_a_newer_lease(spine: Any) -> None:
+    """The fence's whole job: a worker whose lease was superseded must not
+    write, even though it holds a token that was valid when it read it."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    first = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
+    assert first.execution_lease is not None
+    stale_token = first.execution_lease.fencing_token
+
+    await store.transition_attempt(
+        first.attempt_id, AttemptStatus.RUNNING, fencing_token=stale_token
+    )
+    await store.transition_attempt(
+        first.attempt_id, AttemptStatus.TIMED_OUT, fencing_token=stale_token
+    )
+    second = await store.create_attempt(node_run.node_run_id, lease_holder="worker-b")
+    assert second.execution_lease is not None
+
+    with pytest.raises(StaleExecutionFence):
+        await store.transition_attempt(
+            second.attempt_id, AttemptStatus.RUNNING, fencing_token=stale_token
+        )
+
+
+def test_postgres_is_covered_when_configured() -> None:
+    """Guards the guard: a suite that reports green because it silently ran two
+    backends instead of three is the failure this file exists to prevent."""
+    if not postgres_dsn():
+        pytest.skip("no PostgreSQL configured; the parametrized cases skip by design")
+    pytest.importorskip("asyncpg")

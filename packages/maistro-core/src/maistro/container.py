@@ -441,6 +441,7 @@ async def create_container(
         db_pool,
         workspace_id=config.workspace_id,
         intents=intent_registry,
+        pg_pool=pg_pool,
     )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,

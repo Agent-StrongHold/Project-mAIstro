@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -96,6 +97,23 @@ class SqliteRunStore:
     ) -> None:
         self._conn = conn
         self._project_store = project_store
+        # Every mutation serialises on this. The connection is one serial
+        # resource — aiosqlite drives a single thread — so the lock costs
+        # nothing real, and without it concurrent coroutines sharing this store
+        # broke in two ways the spine conformance suite (#132) caught:
+        #
+        #   - `create_attempt`'s `BEGIN IMMEDIATE` is a cross-*connection* lock,
+        #     not a cross-coroutine one. Two coroutines on this connection both
+        #     issued it, and the loser got `OperationalError: cannot start a
+        #     transaction within a transaction` — a raw driver error where the
+        #     caller expects `ActiveAttemptExists`, on the path the whole retry
+        #     model rests on.
+        #   - `create_node_run` had no transaction at all, so two callers read
+        #     the same `MAX(ordinal)` and the loser got a raw `IntegrityError`.
+        #
+        # The graph executor and the task runner both drive this store from
+        # concurrent coroutines, so "one caller at a time" was never true.
+        self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         await self._conn.executescript(_SCHEMA)
@@ -174,14 +192,21 @@ class SqliteRunStore:
         result: object | None = None,
         error: str | None = None,
     ) -> Run:
-        run = await self._require_run(run_id)
-        updated = transition_run(run, target, at=at, result=result, error=error)
-        await self._update_payload(
-            "canonical_runs", "run_id", run_id, updated.status.value, updated.model_dump_json()
-        )
+        # Read and write under one lock. Splitting them lets a second coroutine
+        # read the same prior state and write over this one's transition.
+        async with self._write_lock:
+            run = await self._require_run(run_id)
+            updated = transition_run(run, target, at=at, result=result, error=error)
+            await self._update_payload(
+                "canonical_runs", "run_id", run_id, updated.status.value, updated.model_dump_json()
+            )
         return updated
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+        async with self._write_lock:
+            return await self._create_node_run(run_id, node_id=node_id)
+
+    async def _create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = await self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError("cannot create NodeRun under a terminal Run")
@@ -238,30 +263,51 @@ class SqliteRunStore:
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
     ) -> NodeRun:
-        node_run = await self._require_node_run(node_run_id)
-        if accepted_outcome is not None:
-            if accepted_outcome.node_run_id != node_run_id:
-                raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
-            attempt = await self._require_attempt(accepted_outcome.attempt_result.attempt_id)
-            validate_accepted_outcome_against_attempt(accepted_outcome, attempt)
-        updated = transition_node_run(
-            node_run,
-            target,
-            at=at,
-            result=result,
-            error=error,
-            accepted_outcome=accepted_outcome,
-        )
-        await self._update_payload(
-            "canonical_node_runs",
-            "node_run_id",
-            node_run_id,
-            updated.status.value,
-            updated.model_dump_json(),
-        )
+        async with self._write_lock:
+            node_run = await self._require_node_run(node_run_id)
+            if accepted_outcome is not None:
+                if accepted_outcome.node_run_id != node_run_id:
+                    raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
+                attempt = await self._require_attempt(accepted_outcome.attempt_result.attempt_id)
+                validate_accepted_outcome_against_attempt(accepted_outcome, attempt)
+            updated = transition_node_run(
+                node_run,
+                target,
+                at=at,
+                result=result,
+                error=error,
+                accepted_outcome=accepted_outcome,
+            )
+            await self._update_payload(
+                "canonical_node_runs",
+                "node_run_id",
+                node_run_id,
+                updated.status.value,
+                updated.model_dump_json(),
+            )
         return updated
 
     async def create_attempt(
+        self,
+        node_run_id: str,
+        *,
+        runtime_id: str = "python",
+        executor_id: str = "",
+        deadline_at: datetime | None = None,
+        resume_checkpoint_id: str | None = None,
+        lease_holder: str | None = None,
+    ) -> Attempt:
+        async with self._write_lock:
+            return await self._create_attempt(
+                node_run_id,
+                runtime_id=runtime_id,
+                executor_id=executor_id,
+                deadline_at=deadline_at,
+                resume_checkpoint_id=resume_checkpoint_id,
+                lease_holder=lease_holder,
+            )
+
+    async def _create_attempt(
         self,
         node_run_id: str,
         *,
@@ -372,23 +418,26 @@ class SqliteRunStore:
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
     ) -> Attempt:
-        attempt = await self._require_attempt(attempt_id)
-        self._validate_fence(attempt, fencing_token)
-        updated = transition_attempt(
-            attempt,
-            target,
-            at=at,
-            result=result,
-            error=error,
-            metrics=metrics,
-        )
-        await self._update_payload(
-            "canonical_attempts",
-            "attempt_id",
-            attempt_id,
-            updated.status.value,
-            updated.model_dump_json(),
-        )
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            # Fence checked inside the lock: outside it, a stale worker could
+            # pass a check that was true when it ran and false when it wrote.
+            self._validate_fence(attempt, fencing_token)
+            updated = transition_attempt(
+                attempt,
+                target,
+                at=at,
+                result=result,
+                error=error,
+                metrics=metrics,
+            )
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                updated.status.value,
+                updated.model_dump_json(),
+            )
         return updated
 
     @staticmethod
