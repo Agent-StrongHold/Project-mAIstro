@@ -78,13 +78,14 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
 | Delivery gateway | `maistro.delivery` | Effect channel | its own send records | — | — |
-| Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` lockout state | none wired — `security.pg_strikes` has no production importer | itself (canonical) |
+| Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` lockout state | audit log durable via `persistence.pg_audit`; strike state still in-memory on every backend — `security.pg_strikes` is not Gate-compatible (#134) | itself (canonical) |
 | Authentication and identity | `maistro.auth`, `maistro.identity` | Principal | n/a | service-key store | itself (canonical) |
 | Authorization, privilege, governance | `maistro.privilege`, `maistro.policy`, `maistro.governance` | Authorization decision | n/a | — | itself (canonical, ADR-068 partly unbuilt) |
 | Secrets vault | `maistro.vault` | Secret material | n/a | age-encrypted file | OS file permissions |
-| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.sqlite_learnings`/`sqlite_outcomes` on a `sqlite:` URL; in-memory otherwise. Target owner is `pg_learnings`/`pg_outcomes` + pgvector (ADR-082226-5104); neither has a caller | `memory.scopes`, `memory.exposure` |
-| Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.sqlite_sessions` on a `sqlite:` URL; in-memory otherwise. Target owner is `pg_sessions` (ADR-082226-5104) | session trust floor |
-| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — but only the `sqlite_*` half is reachable, and ADR-082226-5104 makes the `pg_*` half canonical | — |
+| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.pg_learnings`/`pg_outcomes` on a `postgresql://` URL (ADR-082226-5104), `sqlite_*` on `sqlite:`, in-memory otherwise. pgvector embeddings on the memory tables are still owed | `memory.scopes`, `memory.exposure` |
+| Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.pg_sessions` on a `postgresql://` URL (ADR-082226-5104), `sqlite_sessions` on `sqlite:`, in-memory otherwise | session trust floor |
+| Archive tier | `maistro.archive` | Cold storage for records that are still authoritative | n/a (placement, not lifecycle) | object storage or a local directory; a tombstone row stays in PostgreSQL | inherits the scope of the record it stores |
+| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — the `pg_*` half is canonical per ADR-082226-5104 and now wired for a `postgresql://` URL; the `sqlite_*` half stays for homelab | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
@@ -143,7 +144,8 @@ currently holds belongs to `Run`/`Invocation`.
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
 | Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance, then move onto pgvector | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104 | a memory write that names its producing Run, with its embedding on the same row | #64, #122 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on a Run without owning lifecycle | #64 |
-| Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the canonical Postgres half has no caller | ADR-082226-5104, ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, and pgvector embeddings on the memory tables | #122, #33, #34 |
+| Archive tier | `maistro.container` when `archive_url` is set | `0/6` | KEEP — a storage tier, not a lifecycle | ADR-082226-f436, ADR-082226-5104 | one conformance suite passing against the filesystem and S3 backends; archive-eligibility policy still open | #133 |
+| Relational persistence | `maistro.container` (both backends), Alembic | `3/14` | CONNECT — prompts and two SQLite homelab stores remain unwired | ADR-082226-5104, ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL (done, #122), and pgvector embeddings on the memory tables | #122, #33, #34 |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |

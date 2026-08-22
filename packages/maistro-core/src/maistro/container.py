@@ -12,10 +12,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
+from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
@@ -127,7 +128,16 @@ class Container:
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
     conduit: Any = None
+    #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
+    #: Cold storage for archived records (ADR-082226-f436), or None when the
+    #: deployment configured no archive tier. None is the default and an
+    #: ordinary answer, not a degraded mode.
+    archive_store: Any = None
+    #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
+    #: because the two are different objects with different APIs, and code that
+    #: branches on "is a database configured" needs to know which.
+    pg_pool: Any = None
     # Agent-harness DAG node adapters (dispatch/poll/cancel), keyed by
     # harness_type (e.g. "rsi_cycle"). Empty by default -- see
     # _wire_harness_adapters for why this container never auto-populates
@@ -399,7 +409,12 @@ async def create_container(
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
+    # Two different handles, deliberately not one. `db_pool` is the SQLite
+    # connection the durable-event stores are written against; `pg_pool` is an
+    # asyncpg pool. Collapsing them into one `Any` was how the durable-event
+    # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
+    pg_pool: Any = None
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -408,6 +423,14 @@ async def create_container(
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
+    elif config.database_url.startswith(POSTGRES_SCHEMES):
+        (
+            pg_pool,
+            quota_tracker,
+            learning_store,
+            outcome_store,
+            session_store,
+        ) = await _wire_postgres_backend(config.database_url)
     else:
         quota_tracker = InMemoryQuotaTracker()
         learning_store = InMemoryLearningStore()
@@ -415,6 +438,7 @@ async def create_container(
         session_store = InMemorySessionStore()
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
+    archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
@@ -434,12 +458,9 @@ async def create_container(
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
 
-    strike_tracker: InMemoryStrikeTracker | None = None
-    if config.security.strike_tracking_enabled:
-        from maistro.security.strikes import InMemoryStrikeTracker
-
-        strike_tracker = InMemoryStrikeTracker()
-        logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
+    strike_tracker = _wire_strike_tracker(
+        enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
+    )
 
     gate = Gate(warden=warden, strike_tracker=strike_tracker)
 
@@ -447,11 +468,10 @@ async def create_container(
         build_permission_table,
         describe_permission_table,
     )
-    from maistro.security.sentinel.audit import InMemoryAuditLog
     from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
-    audit_log = InMemoryAuditLog()
+    audit_log = _wire_audit_log(pg_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -500,6 +520,17 @@ async def create_container(
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
+        if pg_pool is not None:
+            # The durable-event stores (ADR-086) have a SQLite implementation
+            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
+            # here even though it configured a durable database. Saying so is
+            # the whole point of #122: the operator learns it now rather than
+            # after a restart drops the event log, triggers and invocations.
+            logger.warning(
+                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
+                "triggers and invocations are lost on restart. No PostgreSQL implementation "
+                "exists yet (#135)."
+            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -594,7 +625,9 @@ async def create_container(
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
+        archive_store=archive_store,
         db_pool=db_pool,
+        pg_pool=pg_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
@@ -620,9 +653,178 @@ async def create_container(
         identity_linker=identity_linker,
     )
 
-    backend = "SQLite" if db_pool is not None else "InMemory"
+    if pg_pool is not None:
+        backend = "PostgreSQL"
+    elif db_pool is not None:
+        backend = "SQLite"
+    else:
+        backend = "InMemory"
     logger.info("Container wired (%s stores)", backend)
     return container
+
+
+def _wire_audit_log(pg_pool: Any) -> Any:
+    """Durable audit log on PostgreSQL, in-memory otherwise.
+
+    The audit log is the one store where losing history on restart is not an
+    inconvenience but a hole in the record the log exists to keep. `PgAuditLog`
+    is a true drop-in: same `log`/`get_entries` signatures, same `AuditEntry`
+    return type — checked, not assumed.
+    """
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    if pg_pool is None:
+        return InMemoryAuditLog()
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    return PgAuditLog(pg_pool)
+
+
+def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> InMemoryStrikeTracker | None:
+    """The strike ladder, which stays in-memory even on PostgreSQL — loudly.
+
+    `security.pg_strikes.PgStrikeTracker` looks like a drop-in and is not. Its
+    `get()` returns a dict where `Gate` does attribute access on a
+    `StrikeRecord`, and its `record_violation()` returns only
+    user_id/strike_count/escalated where `Gate` reads scrutiny_level,
+    locked_until and disabled as well. Wiring it would raise AttributeError on
+    the first security violation — the worst possible place to find out. Making
+    it usable needs an adapter, which is #134; until then the operator is told
+    that lockout state does not survive a restart rather than left to assume a
+    configured database means it does.
+    """
+    if not enabled:
+        return None
+    from maistro.security.strikes import InMemoryStrikeTracker
+
+    tracker = InMemoryStrikeTracker()
+    logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
+    if pg_pool is not None:
+        logger.warning(
+            "Strike ladder is in-memory despite a PostgreSQL backend: lockout state "
+            "resets on restart. PgStrikeTracker is not yet Gate-compatible (#134)."
+        )
+    return tracker
+
+
+#: URL schemes that select the PostgreSQL backend. `postgres://` is the legacy
+#: spelling libpq still accepts and operators still write; `+asyncpg` is what
+#: SQLAlchemy-shaped configuration produces.
+POSTGRES_SCHEMES: Final = ("postgresql://", "postgres://", "postgresql+asyncpg://")
+
+#: Oldest PostgreSQL this engine supports. 17 is the floor because it is the
+#: oldest release still receiving fixes for the whole of this project's support
+#: window, and because `docker-compose.yml` has always run `pgvector:pg17`.
+#: 18 is the recommended version; 19 is expected to work and is where
+#: ADR-082226-5104's SQL/PGQ interest points.
+MIN_POSTGRES_VERSION: Final = 17
+
+#: Tables the PostgreSQL stores read and write. Checked at startup rather than
+#: discovered on the first request — see `_require_postgres_schema`.
+_REQUIRED_PG_TABLES: Final = (
+    "learnings",
+    "outcomes",
+    "quota_usage",
+    "sessions",
+)
+
+
+def _asyncpg_dsn(database_url: str) -> str:
+    """asyncpg speaks libpq DSNs, not SQLAlchemy's `+driver` spelling."""
+    return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+async def _require_supported_postgres(conn: Any) -> None:
+    """Refuse a server too old for the SQL these stores rely on.
+
+    A version check at startup rather than a failure mid-request. The stores use
+    `ON CONFLICT ... DO UPDATE` with composite targets, partial unique indexes
+    and `JSONB` throughout — nothing exotic, but a server old enough to lack any
+    of it should say so once, at the point the operator can act on it.
+    """
+    version_num = int(await conn.fetchval("SHOW server_version_num"))
+    major = version_num // 10_000
+    if major < MIN_POSTGRES_VERSION:
+        version = await conn.fetchval("SHOW server_version")
+        msg = (
+            f"PostgreSQL {version} is older than the minimum supported major "
+            f"version {MIN_POSTGRES_VERSION}. Supported: {MIN_POSTGRES_VERSION}-19 "
+            f"(18 recommended)."
+        )
+        raise ConfigError(msg)
+
+
+async def _require_postgres_schema(conn: Any) -> None:
+    """Refuse a database that has not been migrated.
+
+    Without this the first request to touch a store raises `UndefinedTableError`
+    from somewhere deep in a handler, and the operator sees a 500 rather than
+    the one instruction that fixes it. The check is cheap and runs once.
+    """
+    missing = [
+        table
+        for table in _REQUIRED_PG_TABLES
+        if not await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+    ]
+    if missing:
+        msg = (
+            f"PostgreSQL is missing {len(missing)} table(s) the engine requires: "
+            f"{', '.join(missing)}. Run `alembic upgrade head` against this database."
+        )
+        raise ConfigError(msg)
+
+
+async def _wire_postgres_backend(
+    database_url: str,
+) -> tuple[
+    Any,
+    QuotaTracker,
+    LearningStore,
+    OutcomeStore,
+    SessionStore,
+]:
+    """Open an asyncpg pool and wire the durable PostgreSQL stores (#122).
+
+    ADR-082226-5104 makes PostgreSQL the durable system of record. Until this
+    existed, a `postgresql://` URL took the in-memory branch — learnings,
+    outcomes, sessions and quota all vanished on restart with nothing said.
+
+    Both preflight checks run against a real connection before any store is
+    built, because both failures are configuration errors an operator can fix in
+    a minute and neither is diagnosable from the exception it would otherwise
+    raise on some later request.
+    """
+    from maistro.persistence import get_pool
+    from maistro.persistence.pg_learnings import PgLearningStore
+    from maistro.persistence.pg_outcomes import PgOutcomeStore
+    from maistro.persistence.pg_quota import PgQuotaTracker
+    from maistro.persistence.pg_sessions import PgSessionStore
+
+    pool = await get_pool(_asyncpg_dsn(database_url))
+    try:
+        async with pool.acquire() as conn:
+            await _require_supported_postgres(conn)
+            await _require_postgres_schema(conn)
+    except BaseException:
+        # A failed preflight means no container, so the pool it opened has no
+        # owner. Leaving it holding connections to a database the operator is
+        # about to fix is how a retry finds the server still busy.
+        from maistro.persistence import close_pool
+
+        await close_pool()
+        raise
+
+    pg_learning_store = PgLearningStore(pool)
+    # The one store with an ensure_schema: an idempotent ALTER that adds the
+    # scope column its queries name. Harmless once the migration has run.
+    await pg_learning_store.ensure_schema()
+
+    quota_tracker: QuotaTracker = PgQuotaTracker(pool)
+    learning_store: LearningStore = pg_learning_store
+    outcome_store: OutcomeStore = PgOutcomeStore(pool)
+    session_store: SessionStore = PgSessionStore(pool)
+
+    return pool, quota_tracker, learning_store, outcome_store, session_store
 
 
 async def _wire_sqlite_backend(

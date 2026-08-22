@@ -52,7 +52,8 @@ class SqliteSessionStore:
     ) -> list[dict[str, str]]:
         """Retrieve conversation history, pruning expired messages."""
         max_msg = max_messages or self._max_messages
-        ttl = ttl_seconds or self._ttl_seconds
+        # `or` here would swallow an explicit 0; see purge_expired below.
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
         cutoff = time.time() - ttl
 
         cursor = await self._conn.execute(
@@ -117,7 +118,12 @@ class SqliteSessionStore:
         the expired window as part of normal operation rather than relying on
         an external sweeper that does not exist.
         """
-        ttl = ttl_seconds or self._ttl_seconds
+        # `ttl_seconds or self._ttl_seconds` treated an explicit 0 as "not
+        # supplied" and fell back to the default TTL, so the one call that means
+        # "purge everything" was the one call that purged nothing. Same shape as
+        # the `task.user_id and ...` scope bug: a falsy but meaningful value
+        # swallowed by `or`.
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
         cutoff = time.time() - ttl
         cursor = await self._conn.execute(
             "DELETE FROM sessions WHERE timestamp <= ?",
