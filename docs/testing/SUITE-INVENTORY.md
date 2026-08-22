@@ -95,12 +95,20 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+Seven maistro-server node IDs answer the Codex review on #151, one per finding:
+the admitted Graph naming the conductor rather than the intent table's default,
+a turn attributed to its authenticated principal, a blocked *streaming* turn
+getting the cancelled Run its non-streaming twin already got (and naming it),
+a streaming caller able to resolve its Run at all, a client that stops at the
+finish chunk still completing rather than failing, and a turn abandoned during
+admission being cancelled rather than left open.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
 | `packages/maistro-core/tests` | 6949 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
-| `packages/maistro-server/tests` | 216 | `ci.yml` |
+| `packages/maistro-server/tests` | 223 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |

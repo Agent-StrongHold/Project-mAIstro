@@ -23,6 +23,7 @@ seam rather than in the store.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.admission import (
@@ -96,6 +97,7 @@ class ChatRunAdmitter:
         request_id: str | None = None,
         user_id: str | None = None,
         persona_id: str | None = None,
+        on_created: Callable[[Run], None] | None = None,
     ) -> Run:
         """Admit one chat turn and return its canonical Run, already RUNNING.
 
@@ -110,6 +112,16 @@ class ChatRunAdmitter:
 
         Sweeping rides on this call, after the Run exists: retention is
         housekeeping and must never be the reason a chat turn was refused.
+
+        ``on_created`` is handed the Run the instant it is persisted, before the
+        two transitions below. Those are separate awaits against the store, so a
+        caller cancelled part-way through this method — a chat client that
+        disconnects during admission — would otherwise never receive the Run and
+        have nothing to close, leaving a CREATED or QUEUED record behind that a
+        recovery scan reads as work in flight. The hook gives the caller a
+        reference before the first point it can lose one. It is called
+        synchronously and must not raise; anything it does that can fail belongs
+        after this method returns.
         """
         work = resolve_direct_work(
             description=prompt,
@@ -140,6 +152,8 @@ class ChatRunAdmitter:
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )
+        if on_created is not None:
+            on_created(run)
         await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
         running = await self._runs.transition_run(run.run_id, RunStatus.RUNNING)
         await self._sweeper.maybe_sweep()

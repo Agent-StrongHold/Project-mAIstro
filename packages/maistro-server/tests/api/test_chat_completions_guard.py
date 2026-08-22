@@ -15,6 +15,8 @@ died.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -317,3 +319,155 @@ async def test_upstream_detail_is_still_not_echoed(
     assert response.status_code == 502
     assert leaked not in response.text
     assert "10.0.0.5" not in response.text
+
+
+# ── the Codex review on #151: six ways the record diverged from the work ──
+
+
+async def test_the_admitted_graph_names_the_agent_that_actually_runs(
+    wired, client: TestClient
+) -> None:
+    """The Graph is the replay contract. Left to the intent table's default it
+    named `artificer` (or `intake` in PM mode) while this endpoint calls the
+    conductor, so replaying the recorded Graph would have executed a different
+    agent than the turn it claims to record — canonical in shape only."""
+    _gate, _admitter, runs = wired
+
+    _post(client)
+
+    run = next(iter(runs._runs.values()))
+    nodes = run.graph.materialize().nodes
+    assert len(nodes) == 1
+    assert nodes[0].parameters["to_agent"] == chat_guard.CHAT_EXECUTOR_AGENT == "conductor"
+
+
+async def test_a_turn_is_attributed_to_its_authenticated_principal(
+    wired, client: TestClient
+) -> None:
+    """ADR-082226-c126 wants a turn traceable to who submitted it. The route had
+    the principal in hand and discarded it, so every Run was anonymous."""
+    _gate, _admitter, runs = wired
+
+    _post(client)
+
+    run = next(iter(runs._runs.values()))
+    # The test app authenticates as the dev principal; what matters is that
+    # *something* was recorded rather than the field being left empty.
+    assert run.actor_principal_id
+
+
+async def test_a_blocked_streaming_turn_still_has_a_cancelled_run(
+    wired, client: TestClient
+) -> None:
+    """The non-streaming refusal admitted and cancelled a Run; the streaming one
+    returned before admission, so policy-refused streaming requests were the one
+    class of traffic missing from the audit this endpoint exists to produce."""
+    _gate, admitter, runs = wired
+    chat_guard.configure_chat_guard(_BlockGate(), admitter)  # type: ignore[arg-type]
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "user", "content": "x"}], "stream": True},
+    ) as response:
+        "".join(response.iter_text())
+
+    statuses = [run.status for run in runs._runs.values()]
+    assert statuses == [RunStatus.CANCELLED]
+
+
+async def test_a_streaming_caller_can_name_its_run(wired, client: TestClient) -> None:
+    """`/runs` resolves by Run ID only, and the `chunk_id` a streaming client can
+    see is request provenance rather than an identity — so without this the Run
+    created for a streamed turn was unreachable by the caller it was created for."""
+    _gate, _admitter, runs = wired
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    run_ids = {
+        json.loads(line.removeprefix("data: "))["run_id"]
+        for line in body.splitlines()
+        if line.startswith("data: ") and not line.endswith("[DONE]")
+    }
+    run_ids.discard("")
+    assert run_ids == {next(iter(runs._runs.values())).run_id}
+
+
+async def test_a_blocked_stream_names_its_cancelled_run(wired, client: TestClient) -> None:
+    _gate, admitter, runs = wired
+    chat_guard.configure_chat_guard(_BlockGate(), admitter)  # type: ignore[arg-type]
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "user", "content": "x"}], "stream": True},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    refusal = json.loads(body.splitlines()[0].removeprefix("data: "))
+    assert refusal["run_id"] == next(iter(runs._runs.values())).run_id
+
+
+async def test_a_client_that_stops_at_the_finish_chunk_still_completes_its_run(
+    wired, client: TestClient
+) -> None:
+    """The Run was closed *after* the terminal chunk went out, so a client that
+    stopped reading on `finish_reason="stop"` closed the generator while it was
+    suspended at that yield. The close never ran and the cleanup then recorded a
+    turn the client had received in full as FAILED."""
+    _gate, _admitter, runs = wired
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    ) as response:
+        for line in response.iter_lines():
+            if '"finish_reason":"stop"' in line.replace(" ", ""):
+                break
+
+    statuses = [run.status for run in runs._runs.values()]
+    assert statuses == [RunStatus.COMPLETED], "the answer was delivered; the Run says so"
+
+
+async def test_a_turn_abandoned_during_admission_is_cancelled_not_left_open(
+    wired, client: TestClient
+) -> None:
+    """Admission is several separate store writes. A caller cancelled part-way
+    through never receives the Run, so without the `on_created` hook the cleanup
+    had no id to close and a CREATED or QUEUED record stayed open — which a
+    recovery scan reads as work still in flight. FAILED is not available from
+    those states (the lifecycle has no such edge), so CANCELLED is both the legal
+    and the truer answer: nothing ran."""
+    _gate, _admitter, runs = wired
+
+    seen: list[Any] = []
+    original = runs.transition_run
+
+    async def _die_during_admission(run_id: str, status: RunStatus, **kwargs: Any):
+        seen.append(status)
+        if status is RunStatus.RUNNING:
+            raise asyncio.CancelledError
+        return await original(run_id, status, **kwargs)
+
+    runs.transition_run = _die_during_admission  # type: ignore[method-assign]
+
+    with (
+        contextlib.suppress(asyncio.CancelledError, Exception),
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+        ) as response,
+    ):
+        "".join(response.iter_text())
+
+    runs.transition_run = original  # type: ignore[method-assign]
+    assert RunStatus.RUNNING in seen, "the cancellation landed where it was aimed"
+    statuses = [run.status for run in runs._runs.values()]
+    assert statuses == [RunStatus.CANCELLED]
