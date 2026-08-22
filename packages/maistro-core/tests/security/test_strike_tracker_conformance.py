@@ -28,15 +28,34 @@ from maistro.security.strikes import DISABLED, ELEVATED, LOCKED, InMemoryStrikeT
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
 
+def _require_postgres() -> str:
+    """The URL, or a skip — unless the caller declared a server is guaranteed.
+
+    `MAISTRO_REQUIRE_PG_LEGS` is set by the `strike-ladder` CI job, which owns a
+    postgres service container. There, "no URL" means the job is misconfigured,
+    and skipping would leave it green with the durable tracker never run — the
+    same silence that let `PgStrikeTracker` ship returning `dict`. Everywhere
+    else (a laptop, the plain `test` job) skipping is the right answer.
+    """
+    if DATABASE_URL:
+        return DATABASE_URL
+    if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+        msg = (
+            "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_DATABASE_URL is empty: "
+            "the PostgreSQL leg cannot run and must not be silently skipped"
+        )
+        raise RuntimeError(msg)
+    pytest.skip("MAISTRO_TEST_DATABASE_URL is unset; the PostgreSQL leg needs a real server")
+
+
 @pytest.fixture(params=["memory", "postgres"])
 async def tracker(request):
     if request.param == "memory":
         return InMemoryStrikeTracker()
-    if not DATABASE_URL:
-        pytest.skip("MAISTRO_TEST_DATABASE_URL is unset; the PostgreSQL leg needs a real server")
+    url = _require_postgres()
     from maistro.security.pg_strikes import PgStrikeTracker
 
-    pg = PgStrikeTracker(db_url=DATABASE_URL)
+    pg = PgStrikeTracker(db_url=url)
     pool = await pg._get_pool()
     # Truncate rather than drop: `_get_pool` creates the schema, and each test
     # needs an empty ladder without racing the CREATE TABLE IF NOT EXISTS.
