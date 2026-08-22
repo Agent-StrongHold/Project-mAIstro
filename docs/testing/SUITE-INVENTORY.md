@@ -95,26 +95,24 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
-Five maistro-core node IDs arrive with PII-evasion normalization (#70): one per
-acceptance criterion — canonical NFKD/zero-width folding, the homoglyph,
-percent and Base64 views, the false-positive controls that keep ordinary
-non-Latin prose and non-PII Base64 unredacted, and the product paths that
-actually call the filter — plus one holding the homoglyph map to being
-index-for-index, since the confusable view's hits are redacted at the canonical
-string's offsets.
+Fifteen maistro-core node IDs arrive with two security fixes on this branch.
+Sentinel argument limits (#68) contribute the larger share: a new
+`test_argument_limits.py` covering per-argument and total-payload caps.
+Warden's L3 judge (#71) contributes the rest, covering each way an inconclusive
+classifier result reaches the caller — provider error, timeout, empty body,
+malformed body, a partial answer that names no verdict, and the judge being
+unreachable altogether — since the point of the fix is that none of those may
+read as `safe`.
 
-Five more maistro-core node IDs answer the Codex review on #126, one per
-finding plus one guarding the fix. Each is a way an encoding still reached the
-caller: a Base64 SSN below the candidate floor, a percent-encoded connection
-string split on its literal slashes, a form-encoded phone whose `+` separators
-were never decoded as spaces, and an encoded candidate that overlapped a
-visible hit and was dropped whole — leaking the rest of its plaintext and
-breaking idempotence in the same discard. The fifth holds the line on
-absorption: containment merges, partial overlap still refuses.
+Ten more maistro-core node IDs arrive with PII-evasion normalization (#70): five
+for the acceptance and same-length homoglyph-offset invariants, then five from
+adversarial review covering Base64 SSNs, percent-encoded connection strings,
+form-encoded phones, encoded-span absorption/idempotence, and partial-overlap
+refusal.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6394 | `ci.yml` |
+| `packages/maistro-core/tests` | 6409 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |

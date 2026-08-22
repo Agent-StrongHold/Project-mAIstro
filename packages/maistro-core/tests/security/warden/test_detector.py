@@ -7,6 +7,8 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+import pytest
+
 from maistro.security.warden.detector import Warden, _pattern_search, _scan_reject_patterns
 
 
@@ -78,6 +80,7 @@ async def test_scan_layer2_5_semantic_tool_poisoning_flag() -> None:
     assert verdict.confidence == 0.7
 
 
+@pytest.mark.ac("SPEC-082126-5f6a/AC-5")
 async def test_scan_skips_llm_layer_when_no_llm_configured() -> None:
     warden = Warden(llm=None)
     verdict = await warden.scan("clean text", "tool_result")
@@ -95,7 +98,7 @@ async def test_scan_skips_llm_layer_for_user_input_boundary_even_with_llm() -> N
 async def test_scan_llm_layer_flags_suspicious_classification_for_tool_result() -> None:
     llm = _StubLLMClient(
         response={
-            "choices": [{"message": {"content": "this is suspicious"}}],
+            "choices": [{"message": {"content": "suspicious"}}],
             "usage": {"total_tokens": 12},
         }
     )
@@ -108,18 +111,75 @@ async def test_scan_llm_layer_flags_suspicious_classification_for_tool_result() 
     assert len(llm.calls) == 1
 
 
-async def test_scan_llm_layer_returns_clean_when_classification_is_safe() -> None:
-    llm = _StubLLMClient(response={"choices": [{"message": {"content": "looks safe"}}]})
+@pytest.mark.ac("SPEC-082126-5f6a/AC-1")
+async def test_scan_llm_layer_returns_clean_when_classification_is_exact_safe() -> None:
+    llm = _StubLLMClient(response={"choices": [{"message": {"content": "safe"}}]})
     warden = Warden(llm=llm, classifier_model="gpt")
     verdict = await warden.scan("clean tool output", "tool_result")
     assert verdict.clean is True
 
 
-async def test_scan_llm_layer_swallows_classification_exception_and_returns_clean() -> None:
+@pytest.mark.ac("SPEC-082126-5f6a/AC-2")
+async def test_scan_llm_layer_fails_closed_on_provider_failure() -> None:
     llm = _StubLLMClient(error=RuntimeError("llm backend down"))
     warden = Warden(llm=llm, classifier_model="gpt")
     verdict = await warden.scan("clean tool output", "tool_result")
-    assert verdict.clean is True
+    assert verdict.clean is False
+    assert any("llm_classification:suspicious" in flag for flag in verdict.flags)
+    assert verdict.reasoning_trace == "llm_judge_inconclusive:classification_failed"
+
+
+async def test_scan_llm_layer_fails_closed_on_timeout() -> None:
+    llm = _StubLLMClient(error=TimeoutError("judge timeout"))
+    warden = Warden(llm=llm, classifier_model="gpt")
+    verdict = await warden.scan("clean tool output", "tool_result")
+    assert verdict.clean is False
+    assert verdict.reasoning_trace == "llm_judge_inconclusive:classification_failed"
+
+
+@pytest.mark.ac("SPEC-082126-5f6a/AC-3")
+async def test_scan_llm_layer_fails_closed_on_malformed_response() -> None:
+    llm = _StubLLMClient(response={"choices": []})
+    warden = Warden(llm=llm, classifier_model="gpt")
+    verdict = await warden.scan("clean tool output", "tool_result")
+    assert verdict.clean is False
+    assert verdict.reasoning_trace == "llm_judge_inconclusive:malformed_response"
+
+
+@pytest.mark.ac("SPEC-082126-5f6a/AC-4")
+async def test_scan_llm_layer_fails_closed_on_partial_classification() -> None:
+    llm = _StubLLMClient(
+        response={"choices": [{"message": {"content": "safe, but I am not completely sure"}}]}
+    )
+    warden = Warden(llm=llm, classifier_model="gpt")
+    verdict = await warden.scan("clean tool output", "tool_result")
+    assert verdict.clean is False
+    assert verdict.reasoning_trace == "llm_judge_inconclusive:malformed_response"
+
+
+@pytest.mark.ac("SPEC-082126-5f6a/AC-6")
+async def test_scan_llm_layer_fails_closed_when_the_judge_cannot_be_consulted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`classify_tool_result` fails closed on everything it can see, so the
+    detector's own `except` is only reached when the judge could not be
+    consulted at all — an import failure, a shape it does not expect. An L3
+    client is configured either way, so reading that as clean would just move
+    the fail-open path one frame further out."""
+    import maistro.security.warden.llm_classifier as classifier
+
+    async def _explode(*args: object, **kwargs: object) -> dict[str, object]:
+        raise ImportError("classifier backend missing")
+
+    monkeypatch.setattr(classifier, "classify_tool_result", _explode)
+
+    llm = _StubLLMClient(response={"choices": [{"message": {"content": "safe"}}]})
+    warden = Warden(llm=llm, classifier_model="gpt")
+    verdict = await warden.scan("clean tool output", "tool_result")
+
+    assert verdict.clean is False
+    assert verdict.reasoning_trace == "llm_judge_inconclusive:classifier_unavailable"
+    assert any("mode=unavailable" in flag for flag in verdict.flags)
 
 
 async def test_scan_chunks_content_longer_than_window_size_and_finds_pattern() -> None:
@@ -178,8 +238,6 @@ async def test_scan_verdict_is_not_clean_when_a_pattern_fails(monkeypatch: Any) 
 
 
 def test_pattern_search_propagates_exception() -> None:
-    import pytest
-
     with pytest.raises(RuntimeError):
         _pattern_search(_ExplodingPattern(), "anything")  # type: ignore[arg-type]
 
