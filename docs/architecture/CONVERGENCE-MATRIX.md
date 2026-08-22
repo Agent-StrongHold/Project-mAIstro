@@ -84,6 +84,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Secrets vault | `maistro.vault` | Secret material | n/a | age-encrypted file | OS file permissions |
 | Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.pg_learnings`/`pg_outcomes` on a `postgresql://` URL (ADR-082226-5104), `sqlite_*` on `sqlite:`, in-memory otherwise. pgvector embeddings on the memory tables are still owed | `memory.scopes`, `memory.exposure` |
 | Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.pg_sessions` on a `postgresql://` URL (ADR-082226-5104), `sqlite_sessions` on `sqlite:`, in-memory otherwise | session trust floor |
+| Archive tier | `maistro.archive` | Cold storage for records that are still authoritative | n/a (placement, not lifecycle) | object storage or a local directory; a tombstone row stays in PostgreSQL | inherits the scope of the record it stores |
 | Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — the `pg_*` half is canonical per ADR-082226-5104 and now wired for a `postgresql://` URL; the `sqlite_*` half stays for homelab | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
@@ -117,7 +118,7 @@ currently holds belongs to `Run`/`Invocation`.
 <!-- matrix:disposition -->
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
-| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/18` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | one conformance suite passing against the in-memory, SQLite and PostgreSQL stores, plus `formal/` property tests | #42, #43, #45 |
+| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` |  `0/18` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | one conformance suite passing against the in-memory, SQLite and PostgreSQL stores, plus `formal/` property tests | #42, #43, #45 |
 | Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/60` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
 | Request front door and DI | `maistro.container.route_request` | `0/2` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/12` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
@@ -143,6 +144,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
 | Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance, then move onto pgvector | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104 | a memory write that names its producing Run, with its embedding on the same row | #64, #122 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on a Run without owning lifecycle | #64 |
+| Archive tier | `maistro.container` when `archive_url` is set | `0/6` | KEEP — a storage tier, not a lifecycle | ADR-082226-f436, ADR-082226-5104 | one conformance suite passing against the filesystem and S3 backends; archive-eligibility policy still open | #133 |
 | Relational persistence | `maistro.container` (both backends), Alembic | `3/14` | CONNECT — prompts and two SQLite homelab stores remain unwired | ADR-082226-5104, ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL (done, #122), and pgvector embeddings on the memory tables | #122, #33, #34 |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
@@ -157,9 +159,9 @@ currently holds belongs to `Run`/`Invocation`.
 | Core CLI | `maistro.cli` console script | `5/14` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API only | — |
 | Shared contracts and config | imported by every package | `1/45` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
-| maistro-server HTTP app | `maistro_server.main` | `0/19` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
-| Agent Conductor HTTP surface | `main` (uvicorn) | `4/69` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | `main` route registration + background loops | `15/62` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
+| maistro-server HTTP app | `maistro_server.main` |  `0/19` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
+| Agent Conductor HTTP surface | `main` (uvicorn) |  `4/67` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
+| Agent Conductor services | `main` route registration + background loops |  `15/60` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `8/17` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `1/18` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | a render effect recorded as an Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `7/61` | MIGRATE — a cycle is a Run, a battle is a NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |

@@ -743,6 +743,7 @@
         "packages/maistro-core/src/maistro/agents/work_items.py::unused function 'apply_clarifying_answers'",
         "packages/maistro-core/src/maistro/agents/work_items.py::unused function 'confirm_post_stub'",
         "packages/maistro-core/src/maistro/agents/work_items.py::unused function 'update_draft_fields'",
+        "packages/maistro-core/src/maistro/archive/__init__.py::unused function '__getattr__'",
         "packages/maistro-core/src/maistro/auth/__init__.py::unused function '__getattr__'",
         "packages/maistro-core/src/maistro/auth/checker.py::unused method 'is_service_request'",
         "packages/maistro-core/src/maistro/auth/middleware.py::unused attribute 'service_identity'",
