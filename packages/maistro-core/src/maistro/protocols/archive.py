@@ -65,10 +65,17 @@ class ArchivedRecord:
     def verify(self) -> None:
         """Raise if the payload does not match the digest it arrived with.
 
-        Called on every read. An object store that silently returned truncated
-        or wrong bytes would otherwise rehydrate a record that reads as
-        authoritative — which is worse than a failed read, because the caller
-        has no reason to doubt it.
+        Worth being precise about what "arrived with" buys, because a digest is
+        only evidence when it comes from somewhere other than the bytes it
+        judges. A store that computes the digest from what it just read and then
+        compares the two has written a check that cannot fail — and a check that
+        cannot fail is worse than none, because callers rely on it.
+
+        So the digest here is an *attestation*, and implementations rank them:
+        the `expected_digest` a caller passes down from its stub row is the
+        strongest, an object store's own write-time metadata is next, and a
+        digest computed on read is not one at all. `get` documents which it
+        used.
         """
         actual = content_digest(self.payload)
         if actual != self.digest:
@@ -141,12 +148,23 @@ class ArchiveStore(Protocol):
         """
         ...
 
-    async def get(self, key: str) -> ArchivedRecord:
-        """Read back one archived payload, digest-verified.
+    async def get(self, key: str, *, expected_digest: str | None = None) -> ArchivedRecord:
+        """Read back one archived payload, verified against `expected_digest`.
+
+        `expected_digest` is what `put` returned and the caller's stub row kept.
+        Pass it: it is the only attestation that did not travel with the bytes,
+        so it is the only one that catches a payload corrupted in place. Omit it
+        and an implementation falls back to whatever it can attest on its own —
+        object metadata for S3, nothing at all for a bare filesystem — and the
+        returned record's digest describes the bytes rather than vouching for
+        them.
 
         Raises:
-            ArchiveKeyNotFoundError: nothing is stored under `key`.
-            ArchiveDigestMismatchError: the bytes do not match their digest.
+            ArchiveKeyNotFoundError: nothing is stored under `key`. Never
+                raised for a store-level failure such as a missing bucket:
+                "the archive could not look" must not read as "the record is
+                not there".
+            ArchiveDigestMismatchError: the bytes do not match the attestation.
         """
         ...
 
@@ -159,7 +177,14 @@ class ArchiveStore(Protocol):
 
         An iterator rather than a list: an archive is the one tier expected to
         outgrow memory, and a `list_keys()` that materialises the whole bucket
-        is a gate that works until the day it matters.
+        is a gate that works until the day it matters. That applies to the
+        implementation as much as the signature — an async generator that
+        collects everything before its first `yield` satisfies the type and not
+        the reason for it.
+
+        Every key stored under a store's namespace, and no key outside it: a
+        prefix is a namespace boundary, not a string match, so a store rooted at
+        `archive` must not list `archive-old/...`.
         """
         ...
 
