@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from maistro.config.settings import Settings, get_settings
@@ -11,6 +12,7 @@ from maistro_server.api.health import ProbeResult
 from maistro_server.main import app
 
 
+@pytest.mark.ac("SPEC-082226-2a10/AC-6")
 def test_readiness_exposes_effective_resource_policy() -> None:
     settings = Settings(
         max_request_body_bytes=512_000,
