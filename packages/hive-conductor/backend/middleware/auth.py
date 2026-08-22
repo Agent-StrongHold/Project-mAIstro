@@ -97,7 +97,6 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/evolution": "rsi.execute",
         # Executes GitHub/GitLab tools with stored credentials against real
         # external trackers.
-        "/v1/pm-fleet/tools": "pm.execute",
         # Audit entries name an arbitrary `actor`: an unscoped writer is a
         # log-forgery primitive, and the app writes its own entries in-process,
         # not over HTTP — no product flow needs this route unelevated.
