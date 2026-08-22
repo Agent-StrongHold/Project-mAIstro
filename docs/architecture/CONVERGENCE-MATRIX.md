@@ -252,6 +252,10 @@ delivering against a premise that does not hold.
 ## Related
 
 - `quality/reachability-baseline.json` — the ratcheted unreachable set this matrix attributes.
+- `quality/reachability-dispositions.json` — CONNECT/LIBRARY/RETIRE per unreachable module,
+  grouped by the subsystem rows above and CI-checked against them (#33).
+- `quality/execution-lifecycles.json` — every work-state enum, classified CANONICAL / DOMAIN /
+  CONVERGE, CI-checked against the code (#36).
 - `KNOWN-GAPS.md` — capability-level gaps; this matrix is ownership-level.
 - `docs/quality-gates.md` — where this gate sits among the other ratchets.
 - `docs/adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md` —

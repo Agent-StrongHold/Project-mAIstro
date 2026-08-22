@@ -335,6 +335,14 @@ jobs:
           uv run pytest formal/ --timeout=120 -q
 
       # ----- Pillar 7: architecture fitness functions -----
+      # The convergence spine's central claim is that Run/NodeRun/Attempt is the
+      # one execution identity. A second one arrives as an enum, not as a
+      # decision — someone needs pending/running/failed and the repository
+      # quietly has another lifecycle. Every work-state enum is classified in
+      # quality/execution-lifecycles.json (#36).
+      - name: execution lifecycles (no unclassified second spine)
+        run: uv run python scripts/check-execution-lifecycles.py
+
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src
