@@ -60,6 +60,16 @@ class FakeStore:
         self.layers: dict[str, LayerRecord] = {}
         self.jobs: dict[str, GenerationJobRecord] = {}
         self.writes: list[str] = []
+        #: Set by the concurrency tests. Without it every awaited call here
+        #: returns without suspending — an `async def` with no `await` inside
+        #: never yields — so `asyncio.gather` runs the first `start_job` to
+        #: completion before the second one looks at the store, and the
+        #: interleaving those tests exist to exercise never happens.
+        self.interleave = False
+        #: `enter:{layer}` / `exit:{layer}` per start_job, in real order. A
+        #: per-layer lock lets two layers overlap; a global one cannot. Counting
+        #: outcomes alone cannot tell those apart, because both produce two jobs.
+        self.trace: list[str] = []
 
     async def get_canvas(self, canvas_id):
         return self.canvases.get(canvas_id)
@@ -91,9 +101,18 @@ class FakeStore:
         return job
 
     async def active_job_for_layer(self, layer_id):
-        return next(
+        self.trace.append(f"enter:{layer_id}")
+        active = next(
             (j for j in self.jobs.values() if j.layer_id == layer_id and j.is_active()), None
         )
+        if self.interleave:
+            # Yield *after* reading and *before* returning. Yielding first would
+            # let the other coroutine finish and be seen, so the second read
+            # would find the job and the test would pass with no lock at all —
+            # which is exactly the hole this replaces.
+            await asyncio.sleep(0)
+        self.trace.append(f"exit:{layer_id}")
+        return active
 
 
 class FakeImageClient:
@@ -310,10 +329,20 @@ class TestStartJobPreconditions:
         second = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
         assert second.id != first.id
 
-    async def test_concurrent_starts_on_one_layer_serialise_to_one_job(self, executor):
-        """The per-layer lock. Without it both coroutines read
-        `active_job_for_layer` as None before either wrote, and the layer ends
-        up with two live jobs racing to set `image_path`."""
+    async def test_concurrent_starts_on_one_layer_serialise_to_one_job(self, executor, store):
+        """The per-layer lock, with the two starts actually overlapping.
+
+        `store.interleave` is what makes this a test rather than a description.
+        The fakes have no suspension points, so without it `gather` runs the
+        first start through job creation before the second reads the store —
+        and the assertions below hold whether or not the lock exists. Verified:
+        with the lock replaced by `if True:`, this test passed.
+
+        With the yield in place and no lock, both coroutines read
+        `active_job_for_layer` as None and the layer ends up with two live jobs
+        racing to set `image_path`.
+        """
+        store.interleave = True
         results = await asyncio.gather(
             executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE),
             executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE),
@@ -321,16 +350,28 @@ class TestStartJobPreconditions:
         )
         created = [r for r in results if isinstance(r, GenerationJobRecord)]
         rejected = [r for r in results if isinstance(r, JobInProgressError)]
-        assert len(created) == 1
+        assert len(created) == 1, f"{len(created)} jobs on one layer: the lock did not serialise"
         assert len(rejected) == 1
 
-    async def test_different_layers_do_not_block_each_other(self, executor, store):
+    async def test_different_layers_overlap_rather_than_queueing(self, executor, store):
+        """Per-layer, not global — asserted on the interleaving, not the count.
+
+        Two jobs come back either way, so counting outcomes cannot tell a
+        per-layer lock from one global lock that happens to admit both. The
+        trace can: overlapping entries mean the second layer got inside while
+        the first was still there.
+        """
         store.layers["l2"] = LayerRecord(id="l2", canvas_id="c1", name="l2")
+        store.interleave = True
         results = await asyncio.gather(
             executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE),
             executor.start_job(canvas_id="c1", layer_id="l2", action=JobAction.GENERATE),
         )
         assert len({job.id for job in results}) == 2
+        assert store.trace == ["enter:l1", "enter:l2", "exit:l1", "exit:l2"], (
+            f"the two layers did not overlap: {store.trace} — a global lock would "
+            f"produce strictly nested enter/exit pairs"
+        )
 
     async def test_the_params_are_carried_onto_the_job(self, executor):
         job = await executor.start_job(
