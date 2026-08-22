@@ -105,7 +105,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
 | Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no work-state machine of its own | `evolve.serialize` | — |
 | RSI autorun | `maistro_rsi` | Run per improvement cycle | `rsi.coordinator` orchestrates; result records, no work-state machine | `rsi.spec_tracker`, quarantine ledger | `rsi.quarantine` gate |
-| Turing self-model | `maistro_turing`, `maistro-turing-backend` | Optional cognitive Providers | `turing.runtime` actor + chat session; no work-state machine | `turing.memory`, backend DB | backend `middleware.auth` |
+| Turing self-model | `maistro_turing`, `maistro-turing-backend` | Optional cognitive Providers | `turing.runtime` actor + chat session; no work-state machine | backend DB via `TuringMemoryBridge` | backend `middleware.auth` |
 | ADR/spec registry CLI | `maistro_registry` | Governance tooling | n/a | filesystem | — |
 | Bootstrap installer | `maistro_bootstrap` | Installer | n/a | filesystem | — |
 
@@ -164,7 +164,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Open Design integration | `routes.design`, `services.design_service` | `1/18` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | a render effect recorded as an Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `7/61` | MIGRATE — a cycle is a Run, a battle is a NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
 | RSI autorun | `maistro_rsi.cli`, `routes.rsi` | `4/34` | MIGRATE — cycles become Runs over an authorized work source | ADR-088 | every RSI cycle has Run provenance; BACKLOG.md read through an adapter | #50 |
-| Turing self-model | `maistro_turing.runtime`, turing backend `main` | `4/27` | MIGRATE — reachable paths only; cognition stays gated | ADR-081426-fb9f, ADR-070426-9f47 | reachable Turing execution carries Run/Invocation correlation | #54 |
+| Turing self-model | `maistro_turing.runtime`, turing backend `main` | `0/23` | MIGRATE — reachable paths only; cognition stays gated | ADR-081426-fb9f, ADR-070426-9f47 | reachable Turing execution carries Run/Invocation correlation | #54 |
 | ADR/spec registry CLI | `maistro_registry.cli` | `0/8` | KEEP | ADR-031, ADR-062026-9b30 | `registry.yml` front-matter validation is green | #30 |
 | Bootstrap installer | `maistro_bootstrap` console script | `0/20` | KEEP | ADR-020, ADR-033 | installer smoke tests | — |
 
@@ -210,7 +210,7 @@ currently holds belongs to `Run`/`Invocation`.
   product path calls it. The "one front door" claim is currently a design, not a fact.
 - **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
   largest self-contained retirement candidate.
-- **Reachability is not evenly distributed debt.** Of 207 unreachable modules, 68 — roughly a third — sit
+- **Reachability is not evenly distributed debt.** Of 203 unreachable modules, 68 — a third — sit
   in four subsystems (`maistro.agents` 26, `maistro.builders` 15, Conductor `services` 15,
   `maistro.skills`/`code_registry`/`repertoire` 12), which is why
   [#34](https://github.com/Agent-StrongHold/Project-mAIstro/issues/34) burns them down by
@@ -219,9 +219,16 @@ currently holds belongs to `Run`/`Invocation`.
   catalog registers its implementations with an eager `importlib.import_module` sweep, which an
   AST walk over `import` statements cannot see. Teaching `check-reachability.py` that idiom
   dropped the baseline from 232 to 207 with no code change and no fake imports — the gate was
-  reporting its own blind spot. Giving the remaining 207 an explicit
-  CONNECT/LIBRARY/RETIRE disposition each is
-  [#33](https://github.com/Agent-StrongHold/Project-mAIstro/issues/33).
+  reporting its own blind spot. Every remaining row now carries an explicit
+  CONNECT/LIBRARY/RETIRE disposition in `quality/reachability-dispositions.json`
+  ([#33](https://github.com/Agent-StrongHold/Project-mAIstro/issues/33)).
+- **The gate also could not see two modules at all.** `maistro_turing/runtime.py` and
+  `producers.py` each sat beside a same-named package directory, so Python resolved the import
+  to the package and the flat file could never run — both carried "DEAD CODE — superseded"
+  docstrings for months. Because modules are keyed by dotted name, one silently overwrote the
+  other and only one was ever analysed. `check-reachability.py` now refuses a flat module
+  shadowed by a package, and the six dead files are gone: 207 → 203 unreachable, 886 → 882
+  modules.
 
 ## Corrections to the issue that requested this
 

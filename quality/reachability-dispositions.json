@@ -565,19 +565,6 @@
       ]
     },
     {
-      "id": "turing-empty-scaffolding",
-      "subsystem": "Turing self-model",
-      "disposition": "RETIRE",
-      "rationale": "Four package directories containing nothing but a zero-byte __init__.py, present since the monorepo consolidation. There is no code to connect.",
-      "replaced_by": "nothing \u2014 empty placeholder packages",
-      "modules": [
-        "maistro_turing.memory",
-        "maistro_turing.providers",
-        "maistro_turing.schema",
-        "maistro_turing.tools"
-      ]
-    },
-    {
       "id": "security-auth-backends",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",

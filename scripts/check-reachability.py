@@ -114,6 +114,34 @@ def _validate_flat_apps(root: Path, flat_apps: tuple[FlatApp, ...]) -> None:
         )
 
 
+def _validate_no_shadowed_modules(root: Path) -> None:
+    """Refuse a flat module sitting beside a package directory of the same name.
+
+    `foo.py` next to `foo/__init__.py` is not a warning — Python resolves
+    `import pkg.foo` to the package, always, so the flat file can never run.
+    Two such files existed here for months carrying "DEAD CODE — superseded"
+    docstrings, and this gate could not have found them: `_collect_modules` keys
+    modules by dotted name, so one silently overwrote the other and only one was
+    ever analysed. A module the analyser cannot see is worse than a module it
+    reports as unreachable.
+    """
+    collisions: list[str] = []
+    for base in [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]:
+        for directory in base.rglob("*"):
+            if not directory.is_dir() or directory.name == "__pycache__":
+                continue
+            if not (directory / "__init__.py").exists():
+                continue  # not a regular package; it cannot shadow anything
+            flat = directory.parent / f"{directory.name}.py"
+            if flat.exists():
+                collisions.append(flat.relative_to(root).as_posix())
+    if collisions:
+        raise RuntimeError(
+            "module(s) shadowed by a same-named package and unreachable by construction — "
+            "delete the flat file or rename one of them: " + ", ".join(sorted(collisions))
+        )
+
+
 def _flat_key(app_name: str, module: str) -> str:
     return f"{_FLAT_PREFIX}{app_name}/{module}"
 
@@ -130,6 +158,7 @@ def _collect_modules(
 ) -> dict[str, Path]:
     """Return scoped module identity → file for every production module."""
     _validate_flat_apps(root, flat_apps)
+    _validate_no_shadowed_modules(root)
     mods: dict[str, Path] = {}
 
     def add_tree(base: Path, prefix: str, app_name: str | None = None) -> None:

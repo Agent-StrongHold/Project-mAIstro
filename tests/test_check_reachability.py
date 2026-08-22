@@ -186,6 +186,35 @@ def _load():
 """
         assert self._sweep(check, source) == set()
 
+    def test_a_flat_module_shadowed_by_a_package_is_refused(self, check, tmp_path):
+        """The blind spot this gate could not report on itself. `foo.py` beside
+        `foo/__init__.py` never runs — Python resolves the import to the package
+        — and because modules are keyed by dotted name, one silently overwrote
+        the other and only one was ever analysed."""
+        pkg = tmp_path / "packages" / "demo" / "src" / "demo"
+        (pkg / "shadowed").mkdir(parents=True)
+        (pkg / "shadowed" / "__init__.py").write_text("REAL = 1\n")
+        (pkg / "shadowed.py").write_text("DEAD = 1\n")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            check._validate_no_shadowed_modules(tmp_path)
+        assert "shadowed by a same-named package" in str(excinfo.value)
+        assert "shadowed.py" in str(excinfo.value)
+
+    def test_a_directory_without_an_init_does_not_shadow(self, check, tmp_path):
+        """A namespace directory loses to a real module, so it is not a
+        collision — `hive-conductor/backend/config/` holds only a TOML file
+        beside `config.py` and must not fail the build."""
+        pkg = tmp_path / "packages" / "demo" / "src" / "demo"
+        (pkg / "assets").mkdir(parents=True)
+        (pkg / "assets" / "models.toml").write_text("x = 1\n")
+        (pkg / "assets.py").write_text("REAL = 1\n")
+
+        check._validate_no_shadowed_modules(tmp_path)
+
+    def test_the_repository_has_no_shadowed_modules(self, check):
+        check._validate_no_shadowed_modules(ROOT)
+
     def test_a_binding_from_another_function_does_not_resolve_a_loop(self, check):
         """The scope leak this recogniser must not have. Hoisting one function's
         locals into module scope would resolve a loop that raises NameError at
