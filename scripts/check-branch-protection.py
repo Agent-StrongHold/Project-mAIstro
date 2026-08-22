@@ -34,6 +34,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -45,10 +46,15 @@ RULESET = ROOT / ".github" / "branch-protection.json"
 CONTRACT_GATE = ROOT / "scripts" / "check-required-checks.py"
 REPO = "Agent-StrongHold/Project-mAIstro"
 
-#: Keys compared against the live API. `restrictions` is excluded: the API
-#: returns a populated object where the request takes `null`, so a field-by-field
-#: comparison would report a difference that cannot be resolved by editing
-#: either side.
+#: Top-level booleans compared against the live API. The nested blocks
+#: (`required_status_checks`, `required_pull_request_reviews`) are compared
+#: field by field in `_diff_live` instead — an earlier version checked only the
+#: context set and the approving-review count, so `--verify` could print OK
+#: while up-to-date-with-base enforcement or stale-review dismissal was off.
+#:
+#: `restrictions` stays excluded: the API returns a populated object where the
+#: request takes `null`, so comparing it would report a difference that cannot
+#: be resolved by editing either side.
 VERIFIED_KEYS = (
     "enforce_admins",
     "required_linear_history",
@@ -80,7 +86,51 @@ def load_ruleset() -> dict[str, Any]:
     return json.loads(RULESET.read_text(encoding="utf-8"))
 
 
-def _audit_branch(branch: str, rule: dict, every_name: set, coupled_names: set) -> list[str]:
+#: `base `main`, `integration`` — the contract joins several branches with
+#: "`, `", so the capture has to span every quoted name rather than stop at the
+#: first closing backtick. It did stop there, and a two-branch filter parsed as
+#: one: the second branch would then be refused a check that does run on it.
+_BASE_LABEL_RE = re.compile(r"base(?:-ignore)? (`[^`]+`(?:, `[^`]+`)*)")
+
+
+def _named_branches(scope: str) -> set[str]:
+    """The branch names a `base ...` / `base-ignore ...` scope label carries."""
+    match = _BASE_LABEL_RE.search(scope)
+    return set(re.findall(r"`([^`]+)`", match.group(1))) if match else set()
+
+
+def _requirable_on(scope: str, branch: str, declared: dict[str, list[str]], check: str) -> bool:
+    """Whether a check with this trigger scope can ever report on a PR into `branch`.
+
+    Reading the scope string per row, rather than reducing every coupled check
+    to "assume main-only". That shortcut was wrong in both directions: a future
+    `paths:`-filtered check is in no coupled set, so it could be required while
+    never reporting; and a `branches-ignore: [main]` check would be treated as
+    valid on `main`, which is precisely the one branch it does not run on.
+    Either way the audit passes while branch protection waits on `Expected`
+    forever — the failure this file exists to prevent.
+    """
+    if "paths" in scope:
+        # Never reports on a PR that misses the filter, and branch protection
+        # cannot tell "did not run" from "not finished yet".
+        return False
+    if "base-ignore" in scope:
+        return branch not in _named_branches(scope)
+    if "base `" in scope:
+        return branch in _named_branches(scope)
+    if "base_ref" in scope:
+        # A job `if:` narrows on a GitHub expression the contract does not
+        # evaluate, so the target branch has to be declared rather than guessed.
+        return branch in declared.get(check, [])
+    return True
+
+
+def _audit_branch(
+    branch: str,
+    rule: dict,
+    scopes: dict[str, str],
+    declared: dict[str, list[str]],
+) -> list[str]:
     """Rules 1 and 2, for one branch."""
     problems: list[str] = []
     contexts = rule["required_status_checks"]["contexts"]
@@ -88,15 +138,16 @@ def _audit_branch(branch: str, rule: dict, every_name: set, coupled_names: set) 
     if duplicates:
         problems.append(f"{branch}: context listed twice: {', '.join(sorted(duplicates))}")
     for context in contexts:
-        if context not in every_name:
+        scope = scopes.get(context)
+        if scope is None:
             problems.append(
                 f"{branch}: required context {context!r} matches no job in "
                 f".github/workflows — a rename detached it from its job"
             )
-        elif context in coupled_names and branch != "main":
+        elif not _requirable_on(scope, branch, declared, context):
             problems.append(
-                f"{branch}: required context {context!r} is base-coupled to `main`, so it "
-                f"never reports on a {branch}-based PR and would wait on `Expected` forever"
+                f"{branch}: required context {context!r} has scope {scope!r}, so it never "
+                f"reports on a {branch}-based PR and would wait on `Expected` forever"
             )
     return problems
 
@@ -119,19 +170,24 @@ def _audit_coverage(every_name: set, required: set, advisory: dict) -> list[str]
     return problems
 
 
-def audit(ruleset: dict[str, Any], rows: list[tuple[str, str, str]], coupled: set) -> list[str]:
+def audit(ruleset: dict[str, Any], rows: list[tuple[str, str, str]]) -> list[str]:
     """The three offline rules. Returns one line per violation."""
-    every_name = {check for _, check, _ in rows}
-    # A base-coupled check is requirable only on the branch it is coupled to,
-    # and today every one of them is coupled to `main`.
-    coupled_names = {check for _, check in coupled}
+    scopes = {check: scope for _, check, scope in rows}
+    every_name = set(scopes)
+    declared = {
+        k: v for k, v in ruleset.get("base_coupled_to", {}).items() if not k.startswith("$")
+    }
     branches: dict[str, Any] = ruleset["branches"]
 
     problems: list[str] = []
     required: set[str] = set()
     for branch, rule in branches.items():
         required.update(rule["required_status_checks"]["contexts"])
-        problems.extend(_audit_branch(branch, rule, every_name, coupled_names))
+        problems.extend(_audit_branch(branch, rule, scopes, declared))
+
+    for name in sorted(declared):
+        if name not in every_name:
+            problems.append(f'"base_coupled_to" names {name!r}, which matches no PR check')
 
     advisory = {k: v for k, v in ruleset.get("advisory", {}).items() if not k.startswith("$")}
     problems.extend(_audit_coverage(every_name, required, advisory))
@@ -178,14 +234,31 @@ def _diff_live(branch: str, want: dict[str, Any], live: dict[str, Any]) -> list[
         for name in sorted(live_contexts - want_contexts)
     ]
 
-    want_reviews = want["required_pull_request_reviews"]["required_approving_review_count"]
-    live_reviews = live.get("required_pull_request_reviews", {}).get(
-        "required_approving_review_count", 0
-    )
-    if live_reviews != want_reviews:
+    # `strict` is up-to-date-with-base enforcement and lives *inside*
+    # required_status_checks, so a comparison that stops at `contexts` reports
+    # OK while two individually-green PRs can still merge into a broken branch.
+    want_strict = want["required_status_checks"].get("strict")
+    live_strict = live.get("required_status_checks", {}).get("strict")
+    if live_strict != want_strict:
         out.append(
-            f"FAIL: {branch}: {live_reviews} approving review(s) required, want {want_reviews}"
+            f"FAIL: {branch}: required_status_checks.strict is {live_strict!r}, want {want_strict!r}"
         )
+
+    # Every declared review setting, not just the count. `dismiss_stale_reviews`
+    # being off means an approval survives a force-push that replaces the diff
+    # it approved — and `--verify` printing OK over that is worse than not
+    # having run it.
+    want_reviews = want["required_pull_request_reviews"]
+    live_reviews = live.get("required_pull_request_reviews") or {}
+    for key, wanted in want_reviews.items():
+        if key.startswith("$"):
+            continue
+        actual = live_reviews.get(key)
+        if actual != wanted:
+            out.append(
+                f"FAIL: {branch}: required_pull_request_reviews.{key} is {actual!r}, "
+                f"want {wanted!r}"
+            )
 
     for key in VERIFIED_KEYS:
         if key not in want:
@@ -246,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
 
     contract = _contract()
     rows = contract.collect()
-    problems = audit(ruleset, rows, contract.base_coupled(rows))
+    problems = audit(ruleset, rows)
     if problems:
         print("FAIL: .github/branch-protection.json disagrees with .github/workflows/\n")
         for line in problems:
@@ -258,12 +331,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    develop = len(ruleset["branches"]["develop"]["required_status_checks"]["contexts"])
-    main_ = len(ruleset["branches"]["main"]["required_status_checks"]["contexts"])
+    counts = ", ".join(
+        f"{len(rule['required_status_checks']['contexts'])} on {branch}"
+        for branch, rule in ruleset["branches"].items()
+    )
     print(
-        f"OK: branch-protection ruleset agrees with the workflows "
-        f"({develop} required on develop, {main_} on main); every PR check is "
-        f"required or explicitly advisory"
+        f"OK: branch-protection ruleset agrees with the workflows ({counts}); "
+        f"every PR check is required or explicitly advisory"
     )
     if args.verify:
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")

@@ -3,21 +3,45 @@
     "Branch protection for this repository, in the exact request shape of",
     "PUT /repos/{owner}/{repo}/branches/{branch}/protection (#162).",
     "",
-    "Settings that live only in the GitHub UI are settings nobody can review,",
-    "diff, or restore. This file is the reviewable copy; scripts/check-branch-",
-    "protection.py checks it against docs/ci/REQUIRED-CHECKS.md on every PR, and",
-    "against the live API when given a token.",
+    "Every field here follows ADR-095's protection table, which is the accepted",
+    "decision and the source of truth. An earlier draft of this file diverged from",
+    "it in four places without saying so \u2014 the review caught all four. A governance",
+    "artifact that quietly contradicts the governing ADR is worse than none, because",
+    "it looks authoritative.",
     "",
-    "This file is not self-applying. Applying it needs admin scope:",
+    "Settings that live only in the GitHub UI are settings nobody can review, diff,",
+    "or restore. This file is the reviewable copy; scripts/check-branch-protection.py",
+    "checks it against docs/ci/REQUIRED-CHECKS.md on every PR, and against the live",
+    "API when given a token.",
+    "",
+    "Not self-applying. Applying it needs admin scope:",
     "  scripts/check-branch-protection.py --apply develop   (prints the call)"
   ],
-
+  "$adr": "docs/adr/ADR-095-four-tier-branch-model.md",
+  "base_coupled_to": {
+    "$comment": [
+      "Checks whose scope the contract can see is base-coupled, but whose target",
+      "branch it cannot read \u2014 a job `if:` narrows on a GitHub expression, and",
+      "evaluating that language is out of scope for the contract generator.",
+      "",
+      "Declared rather than guessed, for the same reason the advisory map is:",
+      "a check that is silently assumed main-only can be required on a branch",
+      "where it never reports, and branch protection then waits on `Expected`",
+      "forever. If a check gains a base_ref condition and is not listed here,",
+      "the audit refuses to let any branch require it."
+    ],
+    "Container scan + SBOM + cosign": [
+      "main"
+    ]
+  },
   "branches": {
     "develop": {
       "$comment": [
-        "The 15 checks that run on every PR regardless of base. CodeQL and the",
-        "container scan are excluded here because they do not run on a",
-        "develop-based PR at all — requiring a check that never reports leaves",
+        "ADR-095: PR-gated, 0 required approvals, linear history, no force-push,",
+        "no deletion. The 15 checks that run on every PR regardless of base.",
+        "",
+        "CodeQL and the container scan are absent because they do not run on a",
+        "develop-based PR at all \u2014 requiring a check that never reports leaves",
         "the PR waiting on an `Expected` status forever."
       ],
       "required_status_checks": {
@@ -35,20 +59,20 @@
           "formal-conformance",
           "Validate ADR/spec front-matter",
           "exact-debt-ledger",
-          "Quality gate (Pillars 1–4, 7, 8)",
+          "Quality gate (Pillars 1\u20134, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)",
           "Supply chain (pip-audit)"
         ]
       },
       "enforce_admins": false,
       "required_pull_request_reviews": {
-        "required_approving_review_count": 1,
+        "required_approving_review_count": 0,
         "dismiss_stale_reviews": true,
         "require_code_owner_reviews": false,
         "require_last_push_approval": false
       },
       "restrictions": null,
-      "required_linear_history": false,
+      "required_linear_history": true,
       "allow_force_pushes": false,
       "allow_deletions": false,
       "required_conversation_resolution": true,
@@ -56,17 +80,14 @@
       "lock_branch": false,
       "allow_fork_syncing": false
     },
-
-    "main": {
+    "integration": {
       "$comment": [
-        "Everything develop requires, plus the four checks that only run on a",
-        "main-based PR: CodeQL's three matrix legs and the container scan,",
-        "whose job `if:` tests github.base_ref == 'main'. On main they report,",
-        "so on main they are required.",
+        "ADR-095's stabilization tier: develop -> integration -> main. Same",
+        "protection as develop, and the same 15 checks for the same reason.",
         "",
-        "enforce_admins is true here and not on develop: main is the published",
-        "branch, and an admin bypassing the gate set on it is the one case",
-        "where the audit trail matters more than the convenience."
+        "Omitting it left the promotion path open \u2014 a change could reach",
+        "integration directly, or red, and then be promoted to main through a",
+        "gate that only ever inspected the integration->main hop."
       ],
       "required_status_checks": {
         "strict": true,
@@ -83,7 +104,59 @@
           "formal-conformance",
           "Validate ADR/spec front-matter",
           "exact-debt-ledger",
-          "Quality gate (Pillars 1–4, 7, 8)",
+          "Quality gate (Pillars 1\u20134, 7, 8)",
+          "SAST (bandit + semgrep + gitleaks)",
+          "Supply chain (pip-audit)"
+        ]
+      },
+      "enforce_admins": false,
+      "required_pull_request_reviews": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews": true,
+        "require_code_owner_reviews": false,
+        "require_last_push_approval": false
+      },
+      "restrictions": null,
+      "required_linear_history": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false,
+      "required_conversation_resolution": true,
+      "block_creations": false,
+      "lock_branch": false,
+      "allow_fork_syncing": false
+    },
+    "main": {
+      "$comment": [
+        "ADR-095: 1 required approval on the release tier, and only here.",
+        "CI cannot tell whether a test proves its criterion or merely restates",
+        "it, and a tautological test passes every gate in the chain.",
+        "",
+        "Nineteen checks: the fifteen above plus the four that only run on a",
+        "main-based PR \u2014 CodeQL's three matrix legs, and the container scan",
+        "whose job `if:` tests base_ref == 'main'. On main they report, so on",
+        "main they are required.",
+        "",
+        "enforce_admins stays false here, per ADR-095: 'a solo maintainer/agent",
+        "isn't deadlocked'. It is also load-bearing for the cage guard, whose",
+        "own failure message says an admin may merge a legitimate cage/eval",
+        "change manually \u2014 true only while admins can bypass a required check."
+      ],
+      "required_status_checks": {
+        "strict": true,
+        "contexts": [
+          "docker-build",
+          "hive-conductor-e2e",
+          "hive-conductor-e2e-ui",
+          "lint-and-type-check",
+          "security",
+          "test",
+          "wheel-imports",
+          "workflow-lint",
+          "block",
+          "formal-conformance",
+          "Validate ADR/spec front-matter",
+          "exact-debt-ledger",
+          "Quality gate (Pillars 1\u20134, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)",
           "Supply chain (pip-audit)",
           "Container scan + SBOM + cosign",
@@ -92,7 +165,7 @@
           "Analyze (python)"
         ]
       },
-      "enforce_admins": true,
+      "enforce_admins": false,
       "required_pull_request_reviews": {
         "required_approving_review_count": 1,
         "dismiss_stale_reviews": true,
@@ -100,7 +173,7 @@
         "require_last_push_approval": false
       },
       "restrictions": null,
-      "required_linear_history": false,
+      "required_linear_history": true,
       "allow_force_pushes": false,
       "allow_deletions": false,
       "required_conversation_resolution": true,
@@ -109,25 +182,26 @@
       "allow_fork_syncing": false
     }
   },
-
   "advisory": {
     "$comment": [
       "Checks that run on PRs and are deliberately NOT required, each with the",
       "reason. check-branch-protection.py fails when a PR check is in neither",
-      "this map nor a branch's contexts — so adding a gate to CI forces a",
+      "this map nor a branch's contexts \u2014 so adding a gate to CI forces a",
       "decision about whether it is part of the merge contract, rather than",
       "letting it default to advisory by being forgotten."
     ]
   },
-
   "repository": {
     "allow_auto_merge": true,
     "delete_branch_on_merge": true,
     "$comment": [
       "Auto-merge is safe only once the contexts above are required: GitHub's",
-      "auto-merge waits for *required* checks, so arming it with none",
-      "configured merges immediately. That ordering is the whole reason #162",
-      "is blocked by #161 — the names have to exist and be stable first."
+      "auto-merge waits for *required* checks, so arming it with none configured",
+      "merges immediately. That ordering is the whole reason #162 is blocked by",
+      "#161 \u2014 the names have to exist and be stable first.",
+      "",
+      "Linear history is required on all three branches (ADR-095), so merges are",
+      "squash or rebase, never merge commits."
     ]
   }
 }
