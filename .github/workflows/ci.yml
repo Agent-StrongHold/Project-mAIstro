@@ -132,6 +132,54 @@ jobs:
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
+  durable-events:
+    # The PostgreSQL legs of the durable-event suites (#135) skip without a
+    # server, and a skipped leg is untested rather than passing — which is how
+    # "durable events" stayed in-memory on PostgreSQL unnoticed in the first
+    # place. This job is what makes those legs actually run.
+    #
+    # Plain postgres:17, not pgvector/pgvector:pg17: nothing here needs the
+    # `vector` extension, because the schema-agreement test renders revision
+    # 004 on its own rather than walking the chain from 001.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
+      # Turns "no server, skip" into a failure. Without it a
+      # misconfigured service container would leave this job green with
+      # every PostgreSQL leg skipped — reporting the absence of the gap
+      # rather than its closure.
+      MAISTRO_REQUIRE_PG_LEGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Durable event stores conform across memory, SQLite and PostgreSQL
+        run: uv run pytest packages/maistro-core/tests/events -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      - name: Migration 004 and ensure_event_schema describe the same tables
+        run: uv run pytest tests/migrations -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
   hive-conductor-e2e-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 20
