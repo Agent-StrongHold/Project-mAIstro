@@ -13,10 +13,12 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.admission import DelegationRunAdmitter
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
+from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.graph.templates import GraphTemplateStore
@@ -140,6 +142,10 @@ class Container:
     conduit: Any = None
     #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
+    #: Cold storage for archived records (ADR-082226-f436), or None when the
+    #: deployment configured no archive tier. None is the default and an
+    #: ordinary answer, not a degraded mode.
+    archive_store: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -449,12 +455,14 @@ async def create_container(
             session_store,
         ) = await _wire_postgres_backend(config.database_url)
     else:
+        _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
         learning_store = InMemoryLearningStore()
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
+    archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
@@ -643,6 +651,7 @@ async def create_container(
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
+        archive_store=archive_store,
         db_pool=db_pool,
         pg_pool=pg_pool,
         resilience_policies=resilience_policies,
@@ -854,6 +863,79 @@ async def _wire_postgres_backend(
     return pool, quota_tracker, learning_store, outcome_store, session_store
 
 
+#: Schemes that deliberately select ephemeral in-memory stores.
+_EPHEMERAL_SCHEMES: Final = ("memory://",)
+
+
+def _redact_url(database_url: str) -> str:
+    """Drop userinfo from a URL before it goes anywhere it might be read.
+
+    A rejected `database_url` lands in an uncaught startup `ConfigError`, which
+    means process logs and whatever collects them. PostgreSQL URLs carry
+    `user:password@` as a matter of course, so interpolating the raw value put
+    credentials in the logs of every deployment that hit this error — while
+    fixing a different silent-failure bug.
+
+    Scheme, host, port and path survive, because those are what makes the error
+    diagnosable. An unparseable value is reported as its scheme alone rather than
+    echoed: a string urlsplit cannot read is a string this cannot promise to
+    redact.
+    """
+    try:
+        parts = urlsplit(database_url)
+    except ValueError:
+        return f"{database_url.split(':', 1)[0]}:<unparseable>"
+    if not parts.netloc:
+        return database_url
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    userinfo = "***:***@" if (parts.username or parts.password) else ""
+    return urlunsplit((parts.scheme, f"{userinfo}{host}", parts.path, "", ""))
+
+
+def _require_ephemeral_is_deliberate(database_url: str) -> None:
+    """Refuse a configured database this container cannot actually wire (#122).
+
+    Reached only after the durable schemes have been tried: ``sqlite:`` and the
+    PostgreSQL schemes each have a backend above, so anything arriving here named
+    a database with no wiring behind it. Before #122 such a value fell through to
+    in-memory stores, so a deployment set to ``postgres:/typo`` got learnings,
+    outcomes, sessions and quota that vanish on restart — with no error, no
+    warning, and nothing in the log saying the configured database had been
+    ignored. A misconfigured model gives visibly wrong answers; a misconfigured
+    database gives correct answers that quietly disappear, which is the worse
+    failure and the one `graph_runner.StubLLMNotAllowedError` exists to prevent
+    elsewhere.
+
+    Three cases, deliberately distinguished:
+
+    - **unset** — no database was asked for, so in-memory is the honest answer.
+      Logged at warning so an operator who *meant* to configure one can see it.
+    - **``memory://``** — ephemeral on purpose. Silent, because it was chosen.
+    - **anything else** — a database was configured and cannot be honoured.
+      That is a configuration error, not a degraded mode to paper over.
+    """
+    if not database_url.strip():
+        logger.warning(
+            "No database_url configured; using in-memory stores. Learnings, outcomes, "
+            "sessions and quota will not survive a restart. Set database_url to a "
+            "postgresql:// or sqlite:///path/to/file.db URL for durability, or "
+            "memory:// to select this deliberately."
+        )
+        return
+    if database_url.startswith(_EPHEMERAL_SCHEMES):
+        return
+    msg = (
+        f"database_url {_redact_url(database_url)!r} names a backend this build "
+        "cannot wire. Supported: postgresql://user@host/db (durable), "
+        "sqlite:///path/to/file.db (durable), sqlite:// (in-memory) and "
+        "memory:// (explicitly ephemeral). Falling back to in-memory would "
+        "discard the data you configured a database to keep -- see issue #122."
+    )
+    raise ConfigError(msg)
+
+
 async def _wire_sqlite_backend(
     database_url: str,
 ) -> tuple[
@@ -877,6 +959,20 @@ async def _wire_sqlite_backend(
     from maistro.persistence.sqlite_sessions import SqliteSessionStore
 
     path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ":memory:"
+    if path == ":memory:":
+        # A pathless `sqlite://` is a real SQLite backend and a legitimate dev
+        # choice, so it is allowed — but warned, unlike `memory://`. `memory://`
+        # is silent because its name announces what it does; this one announces
+        # the opposite, and an operator reading "sqlite" reasonably expects a
+        # file. The warning lives here rather than in the scheme guard because
+        # this line is what makes it true.
+        logger.warning(
+            "database_url %r has no file path, so SQLite runs in-memory: learnings, "
+            "outcomes, sessions and quota will not survive a restart. Use "
+            "sqlite:///path/to/file.db for durability, or memory:// to select "
+            "ephemeral storage deliberately.",
+            database_url,
+        )
     conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)

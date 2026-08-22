@@ -95,9 +95,32 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+Merging `develop` into the canonical-Run branch moves three rows at once, and
+the net is `+0` — which is why the paragraph matters more than the number. The
+canonical-Run work adds nineteen maistro-core node IDs (Run retention, the
+non-finite evidence codec, chat/schedule/delegation admission, graph
+templates). Retiring the PM-demo surface removes eighteen Hive backend node IDs
+and one e2e case along with the routes and services they covered. A reader who
+only checked the total would see no change at all.
+
+Merging the canonical-Run base back into this branch moves maistro-core by +432
+and maistro-server by +1. Almost none of it is new work here: it is the
+arithmetic of a stack whose lower PRs kept landing after this inventory was
+last refreshed — the durable PostgreSQL spine and its conformance suites, the
+strike-tracker protocol, durable events, the chat-turn Run seam, task execution
+through NodeRun and Attempt, schedule and delegation admission, the graph
+template store, and the retention sweep. The base contributes the PostgreSQL
+container backend, the S3 archive tier, and four CI fixes that add no tests.
+
+A stale inventory in the middle of a stack is worth naming rather than quietly
+refreshing. Only Registry CI and Formal Conformance run on a pull request based
+on another branch, so this tree had never been seen by `check-suite-inventory`
+at all — and that number is precisely what would otherwise absorb a suite
+silently dropping out of collection.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6949 | `ci.yml` |
+| `packages/maistro-core/tests` | 7055 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 202 | `ci.yml` |
@@ -108,8 +131,8 @@ a duplicate approval or Invocation. Other suite counts are unchanged.
 | `packages/maistro-turing/backend/tests` | 26 | `ci.yml` (own invocation) |
 | `tests/` (root) | 801 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
-| `packages/hive-conductor/backend/tests` | 1241 | `ci.yml` (bare python) |
-| `packages/hive-conductor/tests/e2e` | 24 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
+| `packages/hive-conductor/backend/tests` | 1223 | `ci.yml` (bare python) |
+| `packages/hive-conductor/tests/e2e` | 23 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
 
 ## `packages/hive-conductor/tests/e2e` — read before "wiring it in"
 
