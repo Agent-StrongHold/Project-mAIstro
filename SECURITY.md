@@ -89,7 +89,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing when the name cannot be resolved at all. Wired into `tools/browser/client.py`, `skills/marketplace.py` and `skills/import_pipeline.py`. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — the guard is sound but reaches three call sites. `skills/connectors.py`, the `graph/nodes` pollers, `orchestrator/hierarchy.py` and `agents/pm_llm_call.py` all make outbound calls without it (#155) |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing when the name cannot be resolved at all. Wired into `tools/browser/client.py`, `skills/marketplace.py` and `skills/import_pipeline.py`. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — the guard is sound but reaches **3 of the 25** modules that issue outbound requests. The other twenty-two are unguarded, including `tasks/progress_webhook` and `agents/strategies/tool_http`, whose destinations are the most likely to be caller-influenced (#155) |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -123,13 +123,21 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    `metadata.google.internal`) to the address they denote. A host that cannot be resolved is
    refused rather than allowed.
 
-   The real gap is **reach**. `skills/connectors.py`, the `graph/nodes` pollers
-   (`jira_poll`, `airtable_poll`, `jira_wait_for_subtasks`, `llm_summarize`),
-   `orchestrator/hierarchy.py`, `agents/pm_llm_call.py` and `agents/strategies/tool_http.py`
-   make outbound calls with no guard. They all route through `maistro.http.shared_client`, so
-   there is one seam that would reach them — but the engine also legitimately calls internal
-   LLM gateways through it, so switching it on needs a policy for those rather than a blanket
-   refusal. Tracked as #155.
+   The real gap is **reach**: **3 of 25**. Counting modules in `maistro-core` that issue an
+   outbound HTTP request, twenty-two have no guard at all — `a2a/guest_peers`,
+   `agents/conductor`, `agents/pm_llm_call`, `agents/strategies/tool_http`, `auth/client`,
+   `auth/oauth`, `events/handlers`, `events/processing`, the four `graph/nodes` pollers,
+   `integrations/{coinswarm,home_assistant,ntfy,turing}`, `orchestrator/hierarchy`,
+   `quota/verifiers/{mistral,openrouter}`, `quota/verify`, `tasks/progress_webhook` and
+   `tools/atlassian/client`.
+
+   Two of those deserve naming separately, because their destination is the most likely to be
+   attacker-influenced rather than configured: `tasks/progress_webhook` posts to a webhook URL,
+   and `agents/strategies/tool_http` fetches whatever a tool call names.
+
+   Nearly all of them route through `maistro.http.shared_client`, so there is one seam that
+   would reach them — but the engine also legitimately calls internal LLM gateways through it,
+   so switching it on needs a policy for those rather than a blanket refusal. Tracked as #155.
 
    Two further limits, stated rather than implied: the guard resolves the name and the HTTP
    client resolves it again when it connects, so a name that answers differently between those
