@@ -247,9 +247,6 @@ def create_app() -> FastAPI:
     app.include_router(setup.router, prefix="/v1/setup")
     app.include_router(setup_checklist.router, prefix="/v1/setup-checklist")
     app.include_router(widgets.router, prefix="/v1/widgets")
-    from routes import daily_report_v2
-
-    app.include_router(daily_report_v2.router, prefix="/v1/daily-report")
     app.include_router(dags.router, prefix="/v1/dags")
     app.include_router(dashboard_layout.router)
     app.include_router(dag_runs.router, prefix="/v1/dag-runs")
@@ -278,7 +275,6 @@ def create_app() -> FastAPI:
     # disappear without an actionable startup log.
     _include_optional_router(app, "routes.design", prefix="/v1")
     _include_optional_router(app, "routes.canvas")
-    _include_optional_router(app, "routes.pm_fleet_v2")
     _include_optional_router(app, "routes.evolution", prefix="/v1/evolution")
     _include_optional_router(app, "routes.rsi", prefix="/v1/rsi")
 

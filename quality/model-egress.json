@@ -22,7 +22,6 @@
     "services.eval_bootstrap",
     "services.evolution",
     "services.graph_runner",
-    "services.pm_fleet_v2",
     "services.skill_optimizer",
     "services.tool_executor",
     "services.ui_auto_climb",
