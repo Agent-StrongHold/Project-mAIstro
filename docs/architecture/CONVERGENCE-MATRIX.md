@@ -200,6 +200,14 @@ currently holds belongs to `Run`/`Invocation`.
   own hard-coded set, `daily_report_v2`'s raw clients, and `routes/mcp.py`, which discovers
   tools but cannot execute one — while `maistro.capabilities` implements the accepted
   Capability → Provider → Binding → Invocation path and is reached by none of them.
+- **There is no approved model egress for anything to be outside of.** `maistro.providers` is a
+  registry — catalog, router, protocols, errors — and holds no HTTP client, so it performs no
+  calls. Twenty-six modules each call a completions endpoint themselves. #56's premise, "no
+  legacy harness or direct-provider escape outside approved Provider code", presumes approved
+  Provider code that does not exist yet; building it is the work, and until then
+  `quality/model-egress.json` freezes the caller set so it can only shrink. This is the same
+  shape as the tool finding: the general surface is half-built and unrouted while the specific
+  ones are live and duplicated.
 - **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
   were first derived from what each package is *for*; re-deriving them from what each module's
   own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's

@@ -343,6 +343,13 @@ jobs:
       - name: execution lifecycles (no unclassified second spine)
         run: uv run python scripts/check-execution-lifecycles.py
 
+      # Invariant 2 of #36 cannot be enforced as written yet: maistro.providers
+      # is a registry with no HTTP client, so there is no approved Provider
+      # implementation for a caller to be outside of. #56 builds it. What is
+      # enforceable meanwhile is that the set of direct callers cannot grow.
+      - name: model egress (the direct-caller set may only shrink)
+        run: uv run python scripts/check-model-egress.py
+
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src

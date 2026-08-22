@@ -57,6 +57,7 @@ later regression.
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
 | execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state enum nobody classified, or an entry left behind after its enum was deleted |
+| model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
 | Hypothesis conformance | floor | zero falsifying examples | a property violation in `formal/` |
 | acceptance-criterion state | count ratchet | `quality/ac-state-ceilings.json` (7 counters) | a completion claim outrunning its evidence — and an unbanked improvement, so the ceiling holds no slack |
 | Gherkin well-formedness | floor | zero parse failures | an acceptance-criteria block the Gherkin grammar rejects |
@@ -211,6 +212,7 @@ uv run python scripts/check-convergence-matrix.py
 uv run python scripts/check-reachability-dispositions.py
 uv run python scripts/check-backlog-consistency.py
 uv run python scripts/check-execution-lifecycles.py
+uv run python scripts/check-model-egress.py
 uv run python scripts/check-suite-inventory.py
 uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check
