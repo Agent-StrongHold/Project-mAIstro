@@ -20,8 +20,9 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
+from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
-from maistro.tasks.queue import get_task_queue
+from maistro.tasks.queue import configure_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro_server.api import (
@@ -104,7 +105,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     get_engine()
 
-    queue = get_task_queue()
+    # Canonical execution identity (#41): every task submitted through /tasks
+    # gets a Run over a one-node Graph, and the response carries its run_id.
+    # In-process store: this app talks to Postgres, and no Postgres Run store
+    # exists yet (#122), so Runs do not survive a restart here. Said out loud
+    # rather than left to be discovered, because a run_id that silently stops
+    # resolving is worse than one that was never promised.
+    _scope_store, _run_store, admitter = await wire_execution_spine(
+        None, workspace_id=settings.workspace_id
+    )
+    await logger.awarning(
+        "run_store_in_process_only",
+        workspace_id=settings.workspace_id,
+        detail="Runs admitted by /tasks are lost on restart until a durable store is wired (#122)",
+    )
+    queue = configure_task_queue(admitter=admitter)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog

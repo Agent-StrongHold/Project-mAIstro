@@ -109,7 +109,6 @@
     "maistro.portability.export",
     "maistro.portability.skills",
     "maistro.projects.authorization",
-    "maistro.projects.sqlite_scope_store",
     "maistro.prompts.diff",
     "maistro.quota.ambient",
     "maistro.quota.reconciliation",

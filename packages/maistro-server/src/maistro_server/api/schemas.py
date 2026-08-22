@@ -27,6 +27,10 @@ class TaskCreatedResponse(BaseModel):
 
     task_id: str
     status: str
+    # Canonical execution identity (#41). Surfaced beside task_id because it is
+    # what a caller polls the Run spine with; None only where this build admits
+    # tasks without a Run.
+    run_id: str | None = None
     task: TaskResponse
 
 

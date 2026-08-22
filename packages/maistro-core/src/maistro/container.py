@@ -23,13 +23,17 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+from maistro.projects.scope_store import ProjectScopeStore
 from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.store import RunStore
+from maistro.runs.wiring import wire_execution_spine
 from maistro.security.gate import Gate
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
+from maistro.tasks.admission import TaskRunAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
 
@@ -113,6 +117,12 @@ class Container:
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
     project_store: ProjectStore = None  # type: ignore[assignment]  # wired in create_container
+    # Canonical execution spine (#41): the Project scope tree work is filed in,
+    # the Run store that holds its execution identity, and the seam that turns a
+    # directly-submitted task into a Run over a one-node Graph.
+    project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
+    run_store: RunStore = None  # type: ignore[assignment]
+    task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -405,6 +415,10 @@ async def create_container(
         session_store = InMemorySessionStore()
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
+    project_scope_store, run_store, task_admitter = await wire_execution_spine(
+        db_pool,
+        workspace_id=config.workspace_id,
+    )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
@@ -570,6 +584,9 @@ async def create_container(
         capabilities=capabilities,
         episodic_store=episodic_store,
         project_store=project_store,
+        project_scope_store=project_scope_store,
+        run_store=run_store,
+        task_admitter=task_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,

@@ -381,3 +381,22 @@ def get_task_queue() -> TaskQueue:
     if _queue is None:
         _queue = TaskQueue()
     return _queue
+
+
+def configure_task_queue(*, admitter: TaskAdmitter | None) -> TaskQueue:
+    """Install the process singleton with a Run admitter wired (#41).
+
+    Call once at startup, before anything resolves `get_task_queue`. FastAPI
+    routes depend on the singleton, so the admitter has to reach it here rather
+    than at each call site — and it has to be installed before the first
+    submission, because a task admitted without a Run cannot be given one
+    afterwards without inventing its execution history.
+    """
+    global _queue
+    if _queue is not None and _queue._tasks:
+        raise RuntimeError(
+            "configure_task_queue() called after tasks were submitted; the "
+            "already-queued tasks have no Run and cannot be given one"
+        )
+    _queue = TaskQueue(admitter=admitter)
+    return _queue

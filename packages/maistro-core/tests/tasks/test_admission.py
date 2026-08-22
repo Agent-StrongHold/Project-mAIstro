@@ -24,7 +24,7 @@ from maistro.tasks.admission import (
     TaskRunAdmitter,
 )
 from maistro.tasks.models import TaskCreate
-from maistro.tasks.queue import TaskQueue
+from maistro.tasks.queue import TaskQueue, configure_task_queue, get_task_queue
 
 
 @pytest.fixture
@@ -195,3 +195,38 @@ def test_an_admitter_needs_a_way_to_find_a_project() -> None:
         TaskRunAdmitter(
             InMemoryRunStore(project_store=InMemoryProjectScopeStore()), workspace_id="w1"
         )
+
+
+async def test_configure_task_queue_installs_the_admitter(scoped) -> None:
+    """FastAPI routes resolve the singleton, so the admitter has to reach it here."""
+    from maistro.tasks import queue as queue_module
+
+    _projects, runs, _root, project = scoped
+    previous = queue_module._queue
+    queue_module._queue = None
+    try:
+        installed = configure_task_queue(
+            admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+        )
+
+        assert get_task_queue() is installed
+        task = await installed.submit(TaskCreate(description="one"))
+        assert task.run_id
+    finally:
+        queue_module._queue = previous
+
+
+async def test_configure_task_queue_refuses_after_tasks_were_submitted() -> None:
+    """A task admitted without a Run cannot be given one afterwards without
+    inventing the execution history it never had."""
+    from maistro.tasks import queue as queue_module
+
+    previous = queue_module._queue
+    queue_module._queue = None
+    try:
+        await get_task_queue().submit(TaskCreate(description="one"))
+
+        with pytest.raises(RuntimeError, match="cannot be given one"):
+            configure_task_queue(admitter=None)
+    finally:
+        queue_module._queue = previous

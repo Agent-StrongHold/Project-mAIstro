@@ -117,7 +117,7 @@ currently holds belongs to `Run`/`Invocation`.
 <!-- matrix:disposition -->
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
-| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/12` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45 |
+| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/13` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45 |
 | Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/57` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
 | Request front door and DI | `maistro.container.route_request` | `0/2` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/11` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
@@ -125,7 +125,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Recurrence / schedules | `services.scheduler` background loop | `0/5` | KEEP — converged: a firing produces a canonical Run | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` fires through `run_registered_dag`; core scheduling suites | #46, #62 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `3/10` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | ADR-071, ADR-052 | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
 | Builders pipeline | none | `15/15` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090, ADR-099 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
-| Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `5/11` | CONNECT — correct model, incomplete wiring | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
+| Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `4/11` | CONNECT — correct model, incomplete wiring | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
 | Agents | `maistro.container` factory; `services.agent_materialization` | `26/60` | MIGRATE — agents become Node implementations behind Providers | ADR-004, ADR-035 | agent invocation creates an Invocation record; per-agent event emission retired | #55, #56, #34 |
 | Capability / Provider / Binding / Invocation | `services.capabilities_wiring`, `routes.capabilities` | `2/31` | KEEP — canonical effect path, incompletely adopted | ADR-081226-6b46 | every shipped model/tool effect has an Invocation row | #55, #56, #57 |
 | Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no direct SDK calls outside this package | #56 |

@@ -145,6 +145,11 @@ class AgentConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     model_groups: dict[str, dict[str, object]] = Field(default_factory=dict)
     database_url: str = ""
+    # The Workspace this instance admits work into (#41). Core keeps the soft
+    # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one
+    # Workspace — hard tenancy is Stronghold's, which supplies its own value per
+    # tenant rather than inheriting this default.
+    workspace_id: str = "default"
     redis_url: str = ""
     agents_dir: str = ""
     provider_config_path: str = ""

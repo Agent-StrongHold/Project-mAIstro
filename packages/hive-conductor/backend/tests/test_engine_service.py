@@ -194,7 +194,8 @@ async def test_start_in_demo_mode_uses_local_backend(
 
     # Stub out TaskQueue/TaskRunner so .start doesn't try to spawn real ones
     class _Q:
-        pass
+        def __init__(self, *, admitter: Any = None) -> None:
+            self.admitter = admitter
 
     class _R:
         def __init__(self, q: Any, executor: Any) -> None:

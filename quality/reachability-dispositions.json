@@ -519,7 +519,6 @@
       "root": "the canonical Run store's scope enforcement (#37, #38)",
       "modules": [
         "maistro.projects.authorization",
-        "maistro.projects.sqlite_scope_store",
         "maistro.workspaces",
         "maistro.workspaces.model",
         "maistro.workspaces.store"

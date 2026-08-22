@@ -178,6 +178,10 @@ class Settings(BaseSettings):
 
     app_name: str = "maistro-engine"
     debug: bool = False
+    # The Workspace this instance admits work into (#41), mirroring
+    # AgentConfig.workspace_id. One instance is one Workspace; hard tenancy is
+    # Stronghold's (ADR-019/ADR-068).
+    workspace_id: str = "default"
     # Default to loopback so a careless dev-server start doesn't expose the
     # API on every interface. Container deployments override this via the
     # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).
