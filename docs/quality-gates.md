@@ -48,7 +48,7 @@ later regression.
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
 | backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
-| coverage (aggregate) | floor | 88% line + branch, publish set + `maistro-server` | the repository as a whole rotting |
+| coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
 | coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
 | suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
@@ -99,9 +99,17 @@ ceiling held slack.)
 
 They answer different questions, and neither subsumes the other. Both run.
 
-**Aggregate (88%)** — the whole publish set. Catches the repository rotting under
+**Aggregate (86%)** — the whole publish set. Catches the repository rotting under
 a stream of small, individually-fine PRs. Cannot see a change: a new 400-line
 module landing at 0% moves a 42,000-statement total by a fraction of a point.
+
+It moved from 88 to 86 when `include_namespace_packages` was turned on, and that
+is a widened measurement rather than a regression: 41,469 statements at 89%
+became 42,290 at 87.43%, the +821 being `maistro_canvas/canvas/` modules that
+are wholly uncovered and always were, and were invisible to this gate because
+the directory has no `__init__.py`. 86 keeps the headroom the previous choice
+had. The debt itself is [#171](https://github.com/Agent-StrongHold/Project-mAIstro/issues/171),
+not an omit pattern; raise the floor back as that lands.
 
 **Diff, per file (90% lines / 80% branch arcs)** — `scripts/check-diff-coverage.py`
 over the lines the PR touched, measured against the merge base.

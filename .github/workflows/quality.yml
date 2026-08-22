@@ -306,12 +306,26 @@ jobs:
 
           # The publish-set floor is evaluated HERE, before any non-publish-set
           # data joins the database. `coverage report` scopes by --include/--omit
-          # only, so appending maistro-server first would have put it under the
-          # 88% floor no matter what the comment said — the doc and the arithmetic
+          # only, so appending maistro-server first would have put it under this
+          # floor no matter what the comment said — the doc and the arithmetic
           # would have disagreed, silently, in the direction of a stricter gate
           # than anyone signed up for.
-          uv run coverage report --fail-under=88 || \
-            (echo "::error::publish-set coverage below the 88% floor" && exit 1)
+          #
+          # 88 -> 86 on 2026-08-22, and this is a widened MEASUREMENT rather than
+          # a regression. `include_namespace_packages` (added in this change) let
+          # coverage discover never-imported files under
+          # `maistro_canvas/canvas/`, a directory with no `__init__.py` whose
+          # four modules had been invisible to this gate entirely. The publish
+          # set went from 41,469 statements at 89% to 42,290 at 87.43%: the +821
+          # are 100% uncovered and always were. Nothing got worse — the number
+          # stopped being flattering, which is the entire point of the flag.
+          #
+          # 86 keeps roughly the 1.5 points of headroom the 88-under-89.63 choice
+          # had. The newly-visible debt is #171, NOT an omit pattern here:
+          # re-hiding it is the one response that would make discovering it
+          # pointless. Raise this floor back as #171 lands.
+          uv run coverage report --fail-under=86 || \
+            (echo "::error::publish-set coverage below the 86% floor" && exit 1)
 
           # Now widen for the DIFF gate only. maistro-server is outside the
           # publish set, but "the file you touched" is well defined even where
