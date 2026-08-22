@@ -723,6 +723,14 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # The canonical spine (migration 010). Listed because the preflight is what
+    # a deployment migrated only to revision 009 hits first — without these,
+    # startup got past this check and failed later with a raw
+    # `UndefinedTableError` from the first spine query.
+    "canonical_projects",
+    "canonical_runs",
+    "canonical_node_runs",
+    "canonical_attempts",
 )
 
 

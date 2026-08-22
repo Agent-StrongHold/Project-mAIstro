@@ -68,6 +68,13 @@ async def wire_execution_spine(
         project_scope_store = InMemoryProjectScopeStore()
         run_store = InMemoryRunStore(project_store=project_scope_store)
 
+    # The Project store refuses to delete a Project that owns Runs, and only
+    # the Run store can answer that. PostgreSQL has a foreign key for it; this
+    # is how the in-memory and SQLite stores learn the same rule.
+    register = getattr(project_scope_store, "set_run_owner", None)
+    if register is not None:
+        register(run_store.has_runs_in_project)
+
     root = await project_scope_store.create_root(workspace_id)
     # The caller's registry, not a fresh default. `IntentRegistry()` builds the
     # engineering table unconditionally, so a PM-mode deployment admitted
