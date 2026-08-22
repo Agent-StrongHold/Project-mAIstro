@@ -124,6 +124,25 @@ def _build_classification_prompt(text: str) -> list[dict[str, str]]:
     return messages
 
 
+def _fail_closed_result(model: str, *, tokens: int, error: str) -> dict[str, Any]:
+    """Project an inconclusive judge outcome onto the suspicious enforcement path.
+
+    Warden only lets the optional L3 judge clear a tool result when the judge
+    returns the exact token ``safe``. Timeouts, provider errors, missing choices,
+    prose/partial labels, and any other malformed response therefore become a
+    suspicious-equivalent result. ``error`` and ``reasoning_trace`` retain the
+    distinction so operators can tell classifier failure from a genuine
+    suspicious classification.
+    """
+    return {
+        "label": "suspicious",
+        "model": model,
+        "tokens": tokens,
+        "error": error,
+        "reasoning_trace": f"llm_judge_inconclusive:{error}",
+    }
+
+
 async def classify_tool_result(
     text: str,
     llm: LLMClient,
@@ -139,17 +158,17 @@ async def classify_tool_result(
         usage = response.get("usage", {})
         tokens = usage.get("total_tokens", 0)
 
-        label = "suspicious" if "suspicious" in content else "safe"
-
-        if label == "suspicious":
+        if content == "safe":
+            return {"label": "safe", "model": model, "tokens": tokens}
+        if content == "suspicious":
             logger.info("L3 classified tool result as suspicious (model=%s)", model)
+            return {"label": "suspicious", "model": model, "tokens": tokens}
 
-        return {"label": label, "model": model, "tokens": tokens}
+        logger.warning(
+            "L3 classification returned malformed/ambiguous output; failing closed (model=%s)",
+            model,
+        )
+        return _fail_closed_result(model, tokens=tokens, error="malformed_response")
     except Exception:
-        logger.warning("L3 classification failed, defaulting to inconclusive", exc_info=True)
-        return {
-            "label": "inconclusive",
-            "model": model,
-            "tokens": 0,
-            "error": "classification_failed",
-        }
+        logger.warning("L3 classification failed; failing closed", exc_info=True)
+        return _fail_closed_result(model, tokens=0, error="classification_failed")

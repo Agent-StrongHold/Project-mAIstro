@@ -183,11 +183,15 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    unknown key formats an earlier revision of this section wrongly said it lacked; that fallback
    does not extend to the PII filter. **Redaction covers the log pipelines only** — a secret placed
    in an HTTP response body or written directly to a file is not scrubbed.
-6. **Warden's LLM-judge tier is fail-open by design intent, not yet verified in code.** ADR-073
-   specifies the escalation tier scores risk on ambiguity only; the fail-open behavior on judge
-   error (matching Stronghold's documented L3 fail-open pattern) was not independently confirmed
-   against `security/warden/llm_classifier.py` during this audit — flagged for follow-up, not
-   asserted either way.
+6. **Warden's configured LLM-judge tier fails closed on uncertainty.** When L3 is invoked, only an
+   exact `safe` response clears the judge. Provider errors, timeouts, empty/malformed responses,
+   and partial/prose classifications are projected onto the suspicious/non-clean path and carry an
+   `llm_judge_inconclusive:*` reasoning trace so classifier failure is observable rather than
+   silently treated as safe. A judge that cannot be consulted at all fails closed the same way
+   (`llm_judge_inconclusive:classifier_unavailable`) — with an L3 client configured, an
+   unreachable classifier is uncertainty, not absence. If no L3 client is configured, Warden
+   continues to rely on its deterministic layers. See `SPEC-082126-5f6a` and
+   `packages/maistro-core/tests/security/warden/test_detector.py`.
 7. **No content-safety / toxicity filtering.** Warden's scope is threat detection (injection,
    exfiltration, dangerous commands), not hate-speech or general content moderation.
 8. **Sandbox microVM backend is not yet the default everywhere.** ADR-093 mandates a microVM
