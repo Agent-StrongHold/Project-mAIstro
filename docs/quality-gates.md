@@ -48,7 +48,8 @@ later regression.
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
 | backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
-| coverage | floor | 88% line + branch, publish set | undertested code |
+| coverage (aggregate) | floor | 88% line + branch, publish set + `maistro-server` | the repository as a whole rotting |
+| coverage (diff) | floor | 90% line + branch, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
 | suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
 | enumeration coverage | identity ratchet | `scripts/check_enumerations.py` | a derived control list drifting from its source enum |
@@ -93,6 +94,63 @@ JSON diff — never edit entries by hand to match a delta. (Until 2026-08 this
 was a total-count ceiling plus a per-rule count+SHA-256 digest; the digest
 caught substitutions but failures weren't legible per identity, and the count
 ceiling held slack.)
+
+## The two coverage gates
+
+They answer different questions, and neither subsumes the other. Both run.
+
+**Aggregate (88%)** — the whole measured scope. Catches the repository rotting
+under a stream of small, individually-fine PRs. Cannot see a change: a new
+400-line module landing at 0% moves a 42,000-statement total by a fraction of a
+point and passes. So "coverage passed" meant "the repository is still above
+88%", while a reader reasonably took it as "this change is exercised".
+
+**Diff (90%)** — the lines this PR added or modified, measured against the merge
+base with `diff-cover`. That is the second reading, made true.
+
+### Where the 90 came from
+
+Measured, then given headroom — not chosen.
+
+Diff coverage over every PR merged into `develop` since `15abb9d` (#124, #125,
+#128, #123, #126): **180 changed lines, 6 uncovered, 96%**. Worst single file
+94.9%.
+
+The threshold sits at 90 rather than 96 for the same reason the aggregate sits
+at 88 under a measured 89.63: a gate pinned to its own measurement fails the
+first PR that has one legitimately awkward branch. The margin here is wider — 6
+points against 1.6 — because the sample is 180 lines across five PRs in a
+repository two days old, and a threshold drawn from a thin sample should be
+loose enough to survive the next draw.
+
+**Raise it as the sample grows.** That is the ratchet, and the numbers above are
+the baseline to raise from.
+
+### What is in scope, and why there is no exemption list
+
+Scope is the `--source` arguments of the coverage run, and nothing else.
+`diff-cover` only reports on files present in the coverage report, so migrations,
+workflows, docs and the packages outside the measured set are excluded by
+construction rather than by a list somebody has to maintain. One place defines
+the scope, and it is already reviewed on every change to it.
+
+`maistro-server` was added to the measured scope for this gate. It is not in the
+PyPI publish set, so it sits outside the aggregate floor — but "the file you
+touched" is well defined even where "the package's aggregate" is not yet
+governed. Measured 2026-08-22: including it leaves the aggregate at 89%.
+
+`hive-conductor` is still outside. Its suite runs under bare `python`, never
+`uv run`, because its conftest re-inserts the backend directory at `sys.path[0]`
+to escape the monorepo's `services/` package — folding that into the combined
+coverage run is its own change, not a footnote to this one.
+
+### The one thing it cannot catch
+
+A file that no test imports **and** that sits outside every `--source` path is
+invisible: coverage never records it, so `diff-cover` has nothing to compare.
+Inside the measured scope the case is covered — `coverage run --source=` reports
+a never-imported module at 0%, verified against a probe file that failed the
+gate at 0% before being removed.
 
 ## Acceptance-criterion state
 
