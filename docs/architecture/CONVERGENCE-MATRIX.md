@@ -195,7 +195,11 @@ currently holds belongs to `Run`/`Invocation`.
   the React `DailyReport.tsx` calls `/v1/daily-report` and an e2e test asserts on it — so
   removing its bespoke client means routing it through `jira.poll`/`airtable.poll`, not deleting
   the endpoint. That is #55/#57 work: an integration call becomes a governed Invocation rather
-  than a per-route client.
+  than a per-route client. ADR-082226-4478 generalises the finding: tool execution happens in
+  four unrelated places — `pm_fleet_v2`'s prefix-string dispatch, `services/tool_executor`'s
+  own hard-coded set, `daily_report_v2`'s raw clients, and `routes/mcp.py`, which discovers
+  tools but cannot execute one — while `maistro.capabilities` implements the accepted
+  Capability → Provider → Binding → Invocation path and is reached by none of them.
 - **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
   were first derived from what each package is *for*; re-deriving them from what each module's
   own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's
@@ -274,4 +278,6 @@ delivering against a premise that does not hold.
 - `docs/quality-gates.md` — where this gate sits among the other ratchets.
 - `docs/adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md` —
   what the durable and working stores are, and why.
+- `docs/adr/ADR-082226-4478-retire-single-purpose-endpoints-for-one-governed-tool-surface.md` —
+  why the demo-era per-integration endpoints retire onto one seam.
 - `docs/adr/ADR-INDEX.md` — decision status of everything cited above.
