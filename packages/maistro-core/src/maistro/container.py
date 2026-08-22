@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
+from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
@@ -129,6 +130,10 @@ class Container:
     conduit: Any = None
     #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
+    #: Cold storage for archived records (ADR-082226-f436), or None when the
+    #: deployment configured no archive tier. None is the default and an
+    #: ordinary answer, not a degraded mode.
+    archive_store: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -433,6 +438,7 @@ async def create_container(
         session_store = InMemorySessionStore()
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
+    archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
@@ -619,6 +625,7 @@ async def create_container(
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
+        archive_store=archive_store,
         db_pool=db_pool,
         pg_pool=pg_pool,
         resilience_policies=resilience_policies,

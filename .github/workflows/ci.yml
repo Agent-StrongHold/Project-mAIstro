@@ -107,6 +107,44 @@ jobs:
       - name: Container wires the PostgreSQL backend
         run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short
 
+  object-storage:
+    # MinIO, not moto. The default `test` job already runs the archive suite
+    # against an in-process moto server, which is a real HTTP S3 implementation
+    # and enough to catch our own mistakes. MinIO is what people actually run,
+    # so it is what catches the difference between "S3-compatible" and
+    # "compatible with the parts moto implements" (ADR-082226-f436 decision 3).
+    name: object storage (MinIO)
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: maistro
+          MINIO_ROOT_PASSWORD: maistro-secret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: maistro
+      AWS_SECRET_ACCESS_KEY: maistro-secret
+      AWS_DEFAULT_REGION: us-east-1
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev --extra s3
+      - name: Archive conformance against MinIO
+        run: uv run pytest packages/maistro-core/tests/archive -v --tb=short
+
   test:
     runs-on: ubuntu-latest
     steps:

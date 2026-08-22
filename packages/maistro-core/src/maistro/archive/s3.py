@@ -1,0 +1,135 @@
+"""S3-compatible object storage as the archive tier (ADR-082226-f436).
+
+Not an AWS assumption. `endpoint_url` is a first-class parameter, so MinIO,
+Cloudflare R2, Backblaze B2, Ceph and Wasabi are all supported the same way —
+hard-coding AWS would make the homelab deployment buy a cloud account to use its
+own NAS, which is the opposite of what a storage tier is for.
+
+boto3 is imported **inside the constructor**, not at module scope. ADR decision
+4 makes that a rule rather than a style: `maistro-core` is a library other
+products import (ADR-019), and a transitive boto3 is a large, opinionated
+dependency to inflict on a consumer that wanted a router. A deployment that does
+not archive to S3 never imports it, and `maistro.archive` imports cleanly with
+the extra absent.
+
+The calls are synchronous boto3 run in a worker thread rather than aioboto3.
+That is a deliberate trade: aioboto3 would be a second, less-used dependency for
+an operation whose defining property is that it happens rarely, and the thread
+hop is irrelevant next to the network round trip.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from maistro.archive.filesystem import verify
+from maistro.archive.types import ArchivedRecordNotFound, ArchiveError, ArchiveKey
+
+#: Install hint used when the extra is missing. Named here so the message is the
+#: same wherever it surfaces.
+S3_EXTRA_HINT = "install the 's3' extra: pip install 'maistro-core[s3]'"
+
+
+class S3ArchiveStore:
+    """Content-addressed objects in an S3-compatible bucket."""
+
+    def __init__(
+        self,
+        bucket: str,
+        *,
+        endpoint_url: str | None = None,
+        region_name: str | None = None,
+        aws_access_key_id: str | None = None,
+        aws_secret_access_key: str | None = None,
+        client: Any = None,
+    ) -> None:
+        """Bind to a bucket.
+
+        Credentials are parameters rather than environment reads because they
+        come from the vault (ADR decision 8, SPEC-011), not from ambient config.
+        Passing none of them falls back to boto3's own resolution chain, which is
+        correct on an instance with a role attached.
+
+        `client` is for tests and for a caller that has already built a
+        configured client; supplying it skips the boto3 import entirely.
+        """
+        if not bucket.strip():
+            raise ArchiveError("bucket must be a non-empty string")
+        self._bucket = bucket
+        if client is not None:
+            self._client = client
+            return
+        try:
+            import boto3
+        except ImportError as exc:  # pragma: no cover - exercised by the absence test
+            raise ArchiveError(f"S3ArchiveStore needs boto3; {S3_EXTRA_HINT}") from exc
+        self._client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            region_name=region_name,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+
+    def _is_missing(self, exc: Exception) -> bool:
+        """Whether a botocore error means "no such object".
+
+        Matched on the error code rather than the exception class: botocore
+        generates its exception types per client, so `client.exceptions.NoSuchKey`
+        is not importable and is not the same object across clients. head_object
+        answers 404 where get_object answers NoSuchKey, and both must count.
+        """
+        response = getattr(exc, "response", None)
+        if not isinstance(response, dict):
+            return False
+        error = response.get("Error", {})
+        return str(error.get("Code", "")) in {"NoSuchKey", "404", "NotFound"}
+
+    async def put(self, payload: bytes, *, scope: str) -> ArchiveKey:
+        key = ArchiveKey.for_payload(payload, scope=scope)
+        await asyncio.to_thread(
+            self._client.put_object, Bucket=self._bucket, Key=str(key), Body=payload
+        )
+        return key
+
+    async def get(self, key: ArchiveKey) -> bytes:
+        payload = await asyncio.to_thread(self._get_bytes, key)
+        verify(key, payload)
+        return payload
+
+    def _get_bytes(self, key: ArchiveKey) -> bytes:
+        try:
+            response = self._client.get_object(Bucket=self._bucket, Key=str(key))
+        except Exception as exc:
+            if self._is_missing(exc):
+                raise ArchivedRecordNotFound(str(key)) from exc
+            raise
+        body = response["Body"]
+        try:
+            data = body.read()
+        finally:
+            close = getattr(body, "close", None)
+            if close is not None:
+                close()
+        return bytes(data)
+
+    async def exists(self, key: ArchiveKey) -> bool:
+        return await asyncio.to_thread(self._head, key)
+
+    def _head(self, key: ArchiveKey) -> bool:
+        try:
+            self._client.head_object(Bucket=self._bucket, Key=str(key))
+        except Exception as exc:
+            if self._is_missing(exc):
+                return False
+            raise
+        return True
+
+    async def delete(self, key: ArchiveKey) -> None:
+        # S3 delete is already idempotent — deleting an absent key succeeds —
+        # which matches the protocol's contract without special-casing.
+        await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=str(key))
+
+
+__all__ = ["S3_EXTRA_HINT", "S3ArchiveStore"]
