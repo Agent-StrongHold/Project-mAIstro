@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime
+from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.graph.definitions import Graph
@@ -175,32 +176,36 @@ class InMemoryRunStore:
         self._attempts: dict[str, Attempt] = {}
 
     def _prune_terminal_runs(self) -> None:
-        """Evict the oldest terminal Runs, and everything hanging off them.
-
-        The NodeRuns and Attempts go with the Run. Leaving them would keep the
-        larger half of the memory while removing the index into it — a leak that
-        is also unreachable.
-        """
+        """Evict the oldest terminal Runs once the store exceeds its bound."""
         if len(self._runs) <= self._max_runs:
             return
-        removable = [
+        terminal = (
             run_id for run_id, run in self._runs.items() if run.status in TERMINAL_RUN_STATUSES
-        ][: len(self._runs) - self._prune_target]
-        for run_id in removable:
-            del self._runs[run_id]
-            node_run_ids = {
-                node_run_id
-                for node_run_id, node_run in self._node_runs.items()
-                if node_run.run_id == run_id
-            }
-            for node_run_id in node_run_ids:
-                del self._node_runs[node_run_id]
-            for attempt_id in [
-                attempt_id
-                for attempt_id, attempt in self._attempts.items()
-                if attempt.node_run_id in node_run_ids
-            ]:
-                del self._attempts[attempt_id]
+        )
+        for run_id in list(islice(terminal, len(self._runs) - self._prune_target)):
+            self._forget_run(run_id)
+
+    def _forget_run(self, run_id: str) -> None:
+        """Drop a Run and everything hanging off it.
+
+        The NodeRuns and Attempts go with it. Leaving them would keep the larger
+        half of the memory while removing the index into it — a leak that is
+        also unreachable.
+        """
+        del self._runs[run_id]
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id == run_id
+        }
+        for node_run_id in node_run_ids:
+            del self._node_runs[node_run_id]
+        for attempt_id in [
+            attempt_id
+            for attempt_id, attempt in self._attempts.items()
+            if attempt.node_run_id in node_run_ids
+        ]:
+            del self._attempts[attempt_id]
 
     async def create_run(
         self,
