@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 from maistro.agents.intents import IntentRegistry
+from maistro.graph.templates import GraphTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat import ChatRunAdmitter
 from maistro.runs.retention import RetentionPolicy
@@ -28,6 +29,12 @@ class ExecutionSpine(NamedTuple):
     run_store: RunStore
     task_admitter: TaskRunAdmitter
     chat_admitter: ChatRunAdmitter
+    #: Where a Graph definition comes from when a Run is not trivial work
+    #: (#145). Wired here rather than separately because a Run's Graph and the
+    #: template it was instantiated from must live in the same database — a
+    #: registry pointing at one and a spine at another is how a Run ends up
+    #: citing a template version nothing can resolve.
+    template_store: GraphTemplateStore
 
 
 async def wire_execution_spine(
@@ -53,16 +60,19 @@ async def wire_execution_spine(
     """
     project_scope_store: ProjectScopeStore
     run_store: RunStore
+    template_store: GraphTemplateStore
     if pg_pool is not None:
-        from maistro.projects.pg_scope_store import PgProjectScopeStore
-        from maistro.runs.pg_store import PgRunStore
-
         # No ensure_schema: these tables come from `alembic/versions/010`, and
         # the container's PostgreSQL preflight already refuses an unmigrated
         # database by name. A store that quietly created its own tables would be
         # a second schema owner and a second thing to keep in step.
+        from maistro.graph.pg_templates import PgGraphTemplateStore
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.runs.pg_store import PgRunStore
+
         project_scope_store = PgProjectScopeStore(pg_pool)
         run_store = PgRunStore(pg_pool, project_store=project_scope_store)
+        template_store = PgGraphTemplateStore(pg_pool)
     elif conn is not None:
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.runs.sqlite_store import SqliteRunStore
@@ -71,14 +81,21 @@ async def wire_execution_spine(
         await sqlite_scope_store.ensure_schema()
         sqlite_run_store = SqliteRunStore(conn, project_store=sqlite_scope_store)
         await sqlite_run_store.ensure_schema()
+        from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
+
+        sqlite_template_store = SqliteGraphTemplateStore(conn)
+        await sqlite_template_store.ensure_schema()
         project_scope_store = sqlite_scope_store
         run_store = sqlite_run_store
+        template_store = sqlite_template_store
     else:
+        from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
         from maistro.runs.store import InMemoryRunStore
 
         project_scope_store = InMemoryProjectScopeStore()
         run_store = InMemoryRunStore(project_store=project_scope_store)
+        template_store = InMemoryGraphTemplateStore()
 
     root = await project_scope_store.create_root(workspace_id)
     # The caller's registry, not a fresh default. `IntentRegistry()` builds the
@@ -101,4 +118,4 @@ async def wire_execution_spine(
         intents=intents,
         retention=chat_retention,
     )
-    return ExecutionSpine(project_scope_store, run_store, admitter, chat_admitter)
+    return ExecutionSpine(project_scope_store, run_store, admitter, chat_admitter, template_store)

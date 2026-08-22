@@ -40,12 +40,18 @@ async def run_durable_graph(
     runtime: ExecutionRuntime | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
     ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
     the Run (and NodeRun) that produced it — delegation and sub-graph work
     say "work is happening" as a child Run, not a second lifecycle.
+
+    ``provenance`` records how this launch entered the system. This is the
+    exported ``run_durable_graph`` — `durable_runs/__init__` re-exports *this*
+    one, not `traversal`'s — so a parameter added only to the other is a
+    parameter no caller can reach (#145).
     """
     run = traversal._new_run(
         graph,
@@ -53,6 +59,7 @@ async def run_durable_graph(
         actor_principal_id=actor_principal_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     state = GraphExecutionState(
         run_id=run.run_id,

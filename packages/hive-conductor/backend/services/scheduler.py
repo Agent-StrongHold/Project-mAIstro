@@ -17,7 +17,14 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from maistro.runs.admission import ADMISSION_SOURCE
 from maistro.scheduling import OverlapPolicy, Schedule, evaluate
+from maistro.scheduling.admission import (
+    CATCHUP_KEY,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULED_FOR_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,12 +169,22 @@ class _ScheduleRunner:
         for fire in decision.fires:
             self._in_flight.add(sid)
             try:
-                await self._fire_schedule(sid, schedule, scheduled_for=fire.scheduled_for)
+                await self._fire_schedule(
+                    sid,
+                    schedule,
+                    scheduled_for=fire.scheduled_for,
+                    catchup=fire.catchup,
+                )
             finally:
                 self._in_flight.discard(sid)
 
     async def _fire_schedule(
-        self, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+        self,
+        sid: str,
+        schedule: Any,
+        *,
+        scheduled_for: datetime | None = None,
+        catchup: bool = False,
     ) -> None:
         import stores
 
@@ -201,6 +218,23 @@ class _ScheduleRunner:
         from services.dag_agents import get_registry, run_registered_dag
 
         if get_registry().get(str(template_id)) is None:
+            # `DagRegistry` is in-process, so after a restart a schedule whose
+            # DAG has not been re-registered lands here — and `last_run` was
+            # stamped above, so from the outside the fire looks like it
+            # happened. Say so rather than returning silently; the durable
+            # registry that removes this case is #145's scope item 1.
+            logger.warning(
+                "Schedule %s names DAG %s, which is not registered in this process; "
+                "no Run was created",
+                sid,
+                template_id,
+            )
+            log_audit(
+                "schedule_run",
+                "system",
+                target=sid,
+                detail={"dag_id": str(template_id), "error": "template_not_registered"},
+            )
             return
 
         scope_id = f"hive:schedule:{sid}"
@@ -211,6 +245,16 @@ class _ScheduleRunner:
                 workspace_id=scope_id,
                 project_id=scope_id,
                 user_id=user_id,
+                # On the Run, not only in the audit line beside it (#145). A
+                # scheduled Run that cannot say which occurrence it belongs to
+                # is attributable only by correlating timestamps, and a Run
+                # that started late correlates to the wrong one.
+                provenance={
+                    ADMISSION_SOURCE: SCHEDULE_SOURCE,
+                    SCHEDULE_ID_KEY: sid,
+                    SCHEDULED_FOR_KEY: (scheduled_for or t).isoformat(),
+                    CATCHUP_KEY: catchup,
+                },
             )
         except Exception as exc:
             logger.warning("Schedule %s run failed: %s", sid, exc)
