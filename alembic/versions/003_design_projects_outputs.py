@@ -44,19 +44,37 @@ def upgrade() -> None:
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
-        sa.ForeignKeyConstraint(["org_id"], ["orgs.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="SET NULL"),
+        # No foreign keys on org_id/team_id. They referenced `orgs.id` and
+        # `teams.id`, which no migration creates and no model defines — so this
+        # migration could not apply to any database, and because alembic runs
+        # the chain under transactional DDL it took 001 and 002 down with it:
+        # `alembic upgrade head` on an empty database left *zero* tables (#177).
+        #
+        # Plain scoped columns is also what the architecture calls for, not just
+        # what makes this run. Every sibling table — learnings, outcomes,
+        # episodic_memories, asset_definitions, books, child_profiles — already
+        # models org_id/team_id this way. Per CLAUDE.md decision 7 and ADR-019,
+        # maistro-core carries the *soft* scope axes (global -> org -> team ->
+        # user -> agent -> session) and only the *hard* tenant boundary is
+        # Stronghold's. A scope axis is a label, not a foreign key into a
+        # tenancy table core owns, which is why there is no `orgs` table to
+        # point at. The indexes below are what these columns are for.
     )
 
     # Indexes for design_projects
     op.create_index("idx_design_projects_org_id", "design_projects", ["org_id"])
     op.create_index("idx_design_projects_org_skill", "design_projects", ["org_id", "skill_slug"])
     op.create_index("idx_design_projects_skill_slug", "design_projects", ["skill_slug"])
+    # `sa.text("created_at DESC")`, not `postgresql_order_by=` — that argument
+    # does not exist, and SQLAlchemy raises ArgumentError rather than ignoring
+    # it. Unreachable until the dangling foreign keys above were fixed, because
+    # the migration failed three statements earlier (#177). The descending
+    # order is kept rather than dropped: these indexes exist for "most recent
+    # first" reads.
     op.create_index(
         "idx_design_projects_created_at",
         "design_projects",
-        ["created_at"],
-        postgresql_order_by="created_at DESC",
+        [sa.text("created_at DESC")],
     )
 
     # ── design_outputs (DesignOutput) ──────────────────────────────
@@ -83,11 +101,16 @@ def upgrade() -> None:
     # Indexes for design_outputs
     op.create_index("idx_design_outputs_project_id", "design_outputs", ["project_id"])
     op.create_index("idx_design_outputs_format", "design_outputs", ["format"])
+    # `sa.text("created_at DESC")`, not `postgresql_order_by=` — that argument
+    # does not exist, and SQLAlchemy raises ArgumentError rather than ignoring
+    # it. Unreachable until the dangling foreign keys above were fixed, because
+    # the migration failed three statements earlier (#177). The descending
+    # order is kept rather than dropped: these indexes exist for "most recent
+    # first" reads.
     op.create_index(
         "idx_design_outputs_created_at",
         "design_outputs",
-        ["created_at"],
-        postgresql_order_by="created_at DESC",
+        [sa.text("created_at DESC")],
     )
 
 

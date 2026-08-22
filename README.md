@@ -61,9 +61,16 @@ The line between shared runtime and product-specific code is defined in [`ADR-01
 uv sync                               # install every package in the workspace
 uv sync --extra bootstrap             # optional: maistro-install TUI / answers-file planner
 uv run pytest                         # run the test suite
-uv run alembic upgrade head           # apply DB migrations (needs Postgres)
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
+uv run alembic upgrade head           # apply DB migrations (needs the Postgres above)
 ```
+
+`alembic` reads `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`, not
+`DATABASE_URL` — the two are separate configuration paths today, which is
+[#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122). The
+migration step is ordered after `docker compose up` because it needs a server to
+connect to; run it before, and it fails on connection rather than on anything
+about the schema.
 
 The repo is a `uv` workspace: **nine Python packages**, plus the **`packages/hive-conductor`** reference app (frontend + backend + Docker).
 

@@ -248,3 +248,47 @@ jobs:
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
         run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin
+
+  # The alembic chain, applied to a real PostgreSQL server (#177).
+  #
+  # No workflow had a `postgres` service before this, which is why a migration
+  # chain that could not apply to an empty database had never failed a build:
+  # `alembic upgrade head` died at 003 on a foreign key to `orgs.id`, a table
+  # nothing creates, and transactional DDL rolled 001 and 002 back with it —
+  # leaving zero tables at the first command of every documented Postgres setup
+  # path. Nothing ran it, so nothing caught it.
+  #
+  # pg 17 matches the `pgvector/pgvector:pg17` image docker-compose.yml already
+  # runs, so this tests the version the project actually deploys rather than
+  # whatever `postgres:latest` happens to be. (Verified locally against 18.6 as
+  # well; the chain uses nothing version-specific.)
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        # Without this the job races the server: `alembic upgrade` would fail
+        # with a connection error that reads exactly like the bug this job
+        # exists to catch.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Migration chain applies to an empty database
+        env:
+          MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
+        run: uv run pytest tests/migrations -v --tb=short

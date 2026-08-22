@@ -74,6 +74,18 @@ dev = [
     # existed, ran, and proved nothing. Consumers still opt in via
     # `maistro-core[re2]`; this only guarantees *our* CI exercises both engines.
     "google-re2>=1.1",
+    # `alembic upgrade head` — the command README gives for setting up the
+    # database — imports psycopg2 through SQLAlchemy's default PostgreSQL
+    # dialect. It was declared nowhere, in any pyproject or requirements file,
+    # so that command failed with ModuleNotFoundError on every clean install
+    # before it could reach the schema itself. That is why the migration chain
+    # could be broken for as long as it was (#177): the first error hid the
+    # second, and nothing in CI ran either.
+    #
+    # asyncpg (a runtime dependency above) serves the *application* path;
+    # alembic's is synchronous and separate. -binary ships wheels, so this adds
+    # no build toolchain requirement to a dev install.
+    "psycopg2-binary>=2.9",
 ]
 browser = ["playwright>=1.49"]
 # NOTE: the on-demand /code-health and /security-scan toolchains are NOT project
@@ -104,6 +116,18 @@ dev = [
     "hypothesis>=6.0",
     "cosmic-ray>=8.0.0",
     "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
+    # `alembic upgrade head` — the command README gives for setting up the
+    # database — imports psycopg2 through SQLAlchemy's default PostgreSQL
+    # dialect. It was declared nowhere, in any pyproject or requirements file,
+    # so that command failed with ModuleNotFoundError on every clean install
+    # before it could reach the schema itself. That is why the migration chain
+    # could be broken for as long as it was (#177): the first error hid the
+    # second, and nothing in CI ran either.
+    #
+    # asyncpg (a runtime dependency above) serves the *application* path;
+    # alembic's is synchronous and separate. -binary ships wheels, so this adds
+    # no build toolchain requirement to a dev install.
+    "psycopg2-binary>=2.9",
 ]
 
 [project.scripts]
