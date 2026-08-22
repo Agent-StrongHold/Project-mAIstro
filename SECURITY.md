@@ -114,7 +114,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **SSRF protection exists, and reaches three of eleven outbound surfaces.** This entry
+1. **SSRF protection exists, and reaches 3 of 25 outbound surfaces.** This entry
    previously said no URL-based SSRF guard existed and named `skills/marketplace.py`,
    `skills/import_pipeline.py` and `tools/browser/client.py` as unprotected. Those are the three
    that *are* protected. `security/ssrf.py` refuses anything that is not http(s) with a

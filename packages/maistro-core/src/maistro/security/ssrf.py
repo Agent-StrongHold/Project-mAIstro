@@ -24,8 +24,17 @@ Two stages, and the order matters:
    `[::ffff:169.254.169.254]` and `metadata.google.internal` all arrive here as
    the address they denote.
 
-A prefix blocklist runs before both as a fast path for the common literals. It
-is belt-and-braces, not the guarantee — stage 2 catches everything it catches.
+Stage 1 also refuses a host that *names* an internal endpoint — `localhost`,
+`metadata.google.internal`, in-cluster Kubernetes DNS — because whether those
+resolve at all is environment-dependent, and refusing them by name is clearer
+than relying on the unresolvable-host rule to refuse them by accident. It is
+belt-and-braces: stage 2 catches every one of them wherever they do resolve.
+
+Both stage-1 rules read the **parsed** hostname. An earlier version matched
+`url.startswith("https://kubernetes.")` and friends against the raw string,
+which refused `https://kubernetes.io/docs/` and read the userinfo field of
+`http://localhost@example.com/` as if it were the host. A guard that refuses
+real public URLs teaches its callers to route around it.
 
 **Refusing is the default.** A host that cannot be resolved is refused rather
 than allowed: the previous behaviour returned "not blocked" on `gaierror` with
@@ -52,75 +61,43 @@ from maistro.types.errors import ToolError
 #: scheme nobody listed is a scheme nobody reasoned about.
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 
-# Covers full RFC1918, loopback, link-local, metadata, IPv6 private ranges,
-# plus dangerous non-HTTP schemes.
-_BLOCKED_URL_PREFIXES = (
-    # HTTP variants
-    "http://localhost",
-    "http://127.",  # Full 127.0.0.0/8
-    "http://0.",
-    "http://0.0.0.0",
-    "http://[::1]",  # IPv6 loopback
-    "http://[fe80:",  # IPv6 link-local
-    "http://[fc",  # IPv6 unique local (fc00::/7)
-    "http://[fd",  # IPv6 unique local (fc00::/7)
-    "http://169.254.",  # AWS/cloud metadata
-    "http://metadata.",
-    "http://kubernetes.",
-    "http://10.",  # RFC1918 10.0.0.0/8
-    "http://172.16.",
-    "http://172.17.",
-    "http://172.18.",
-    "http://172.19.",
-    "http://172.20.",
-    "http://172.21.",
-    "http://172.22.",
-    "http://172.23.",
-    "http://172.24.",
-    "http://172.25.",
-    "http://172.26.",
-    "http://172.27.",
-    "http://172.28.",
-    "http://172.29.",
-    "http://172.30.",
-    "http://172.31.",
-    "http://192.168.",  # RFC1918 192.168.0.0/16
-    # HTTPS variants — redirects from public HTTPS to private IPs
-    "https://localhost",
-    "https://127.",
-    "https://0.",
-    "https://0.0.0.0",
-    "https://[::1]",
-    "https://[fe80:",
-    "https://[fc",
-    "https://[fd",
-    "https://169.254.",
-    "https://metadata.",
-    "https://kubernetes.",
-    "https://10.",
-    "https://172.16.",
-    "https://172.17.",
-    "https://172.18.",
-    "https://172.19.",
-    "https://172.20.",
-    "https://172.21.",
-    "https://172.22.",
-    "https://172.23.",
-    "https://172.24.",
-    "https://172.25.",
-    "https://172.26.",
-    "https://172.27.",
-    "https://172.28.",
-    "https://172.29.",
-    "https://172.30.",
-    "https://172.31.",
-    "https://192.168.",
-    # Dangerous schemes
-    "file://",
-    "gopher://",
-    "ftp://",
-    "dict://",
-    "ldap://",
+#: Hostnames that name an internal endpoint by name rather than by address.
+#:
+#: Matched against the **parsed hostname**, never against the raw URL. The
+#: previous version compared `url.startswith("https://kubernetes.")` and friends,
+#: which refused `https://kubernetes.io/docs/` — a public documentation site —
+#: along with `https://10.example.com/` and `http://localhost@example.com/`,
+#: where the userinfo field is not the host at all. A guard that refuses real
+#: public URLs teaches its callers to route around it, which costs more than the
+#: obfuscation the prefix list was reaching for.
+#:
+#: The *address* half of the old list is gone entirely rather than rewritten:
+#: `getaddrinfo` returns a literal IP unchanged, so `_offending_address` already
+#: catches every RFC1918, loopback, link-local and unspecified literal — and it
+#: catches the obfuscations (`2852039166`, `0x7f000001`, `127.1`) that no string
+#: prefix ever could, because resolution normalises every spelling to the address
+#: it denotes. What remains here is belt-and-braces for names whose *resolution*
+#: is environment-dependent: outside a cloud VM `metadata.google.internal` does
+#: not resolve, and this refuses it by name instead of relying on the
+#: unresolvable-host rule to do it by accident.
+_BLOCKED_HOSTNAMES = frozenset(
+    {
+        "localhost",
+        "metadata.goog",  # GCP metadata, short form
+        "instance-data",  # EC2 metadata, short form
+        "kubernetes.default",  # in-cluster API server
+    }
+)
+
+#: Suffixes of the same kind. `.internal` covers `metadata.google.internal`,
+#: `.svc` and `.local` cover Kubernetes in-cluster DNS
+#: (`kubernetes.default.svc`, `…svc.cluster.local`) and mDNS. None of the four
+#: is a public gTLD, so none of them can match a name on the public internet.
+_BLOCKED_HOSTNAME_SUFFIXES = (
+    ".localhost",
+    ".internal",
+    ".local",
+    ".svc",
 )
 
 
@@ -165,13 +142,25 @@ def _offending_address(addresses: list[str]) -> str | None:
     return None
 
 
-def _check_shape(url: str) -> str:
-    """Refuse anything that is not a well-formed http(s) URL. Returns the host."""
-    lowered = url.strip().lower()
-    for prefix in _BLOCKED_URL_PREFIXES:
-        if lowered.startswith(prefix):
-            raise SSRFBlockedError(f"Outbound URL blocked (internal target): {url!r}")
+def _blocked_hostname(hostname: str) -> bool:
+    """Whether `hostname` names an internal endpoint by name.
 
+    The trailing dot of a fully-qualified name is stripped first: `localhost.`
+    and `localhost` denote the same host, and an exact-match set that sees only
+    one of them is a bypass rather than a check.
+    """
+    host = hostname.strip().rstrip(".").lower()
+    return host in _BLOCKED_HOSTNAMES or host.endswith(_BLOCKED_HOSTNAME_SUFFIXES)
+
+
+def _check_shape(url: str) -> str:
+    """Refuse anything that is not a well-formed http(s) URL. Returns the host.
+
+    Parsing comes first, and every rule below is applied to what parsing
+    produced. Deciding anything from the raw string means deciding it about
+    text that may not be the host — which is how `http://localhost@example.com/`
+    was refused for a hostname it does not have.
+    """
     try:
         parsed = urlsplit(url.strip())
     except ValueError as exc:
@@ -188,6 +177,8 @@ def _check_shape(url: str) -> str:
     hostname = parsed.hostname
     if not hostname:
         raise SSRFBlockedError(f"Outbound URL blocked (no host): {url!r}")
+    if _blocked_hostname(hostname):
+        raise SSRFBlockedError(f"Outbound URL blocked (internal target): {url!r}")
     return hostname
 
 

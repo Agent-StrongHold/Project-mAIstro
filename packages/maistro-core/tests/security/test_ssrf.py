@@ -34,7 +34,16 @@ def _addrinfo_entry(ip: str) -> tuple[object, ...]:
     return (family, socket.SOCK_STREAM, 0, "", (ip, 0))
 
 
-class TestPrefixBlocklist:
+class TestInternalTargets:
+    """Internal endpoints, by address and by name.
+
+    Named for what it checks rather than how: the address half is carried by
+    resolution (`getaddrinfo` returns a literal IP unchanged, so every RFC1918
+    and loopback literal reaches `_offending_address`), and the name half by an
+    exact/suffix match on the parsed hostname. Neither is a prefix match on the
+    raw URL any more — see `TestPublicHostsThatResembleInternalOnes`.
+    """
+
     def test_blocks_loopback(self) -> None:
         with pytest.raises(SSRFBlockedError):
             validate_outbound_url("http://127.0.0.1:8080/x")
@@ -274,8 +283,8 @@ class TestShapeIsAWhitelist:
 
 class TestObfuscatedAddresses:
     """Every spelling of an internal address arrives at the resolution stage as
-    the address it denotes, which is why that stage rather than the prefix list
-    carries the guarantee."""
+    the address it denotes, which is why that stage carries the guarantee and no
+    string match ever could."""
 
     @pytest.mark.parametrize(
         ("url", "what"),
@@ -319,3 +328,88 @@ class TestAsyncFormAgrees:
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
         await avalidate_outbound_url("http://example.com/x")
+
+
+class TestPublicHostsThatResembleInternalOnes:
+    """Public hostnames that a raw-URL prefix match refused.
+
+    Each of these was blocked before the check moved onto the parsed hostname,
+    and each is a real address on the public internet. Resolution is
+    monkeypatched so these assert the *shape* rule and not whatever DNS happens
+    to say about the example domains today.
+    """
+
+    @pytest.fixture
+    def public_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "maistro.security.ssrf.socket.getaddrinfo",
+            lambda *a, **k: [_addrinfo_entry("93.184.216.34")],
+        )
+
+    @pytest.mark.parametrize(
+        ("url", "was_matched_by"),
+        [
+            ("https://kubernetes.io/docs/", "https://kubernetes."),
+            ("https://10.example.com/skill.md", "https://10."),
+            ("https://172.16.example.com/y", "https://172.16."),
+            ("https://metadata.example.com/x", "https://metadata."),
+            ("http://localhost@example.com/", "http://localhost"),
+        ],
+    )
+    def test_allowed(self, public_dns: None, url: str, was_matched_by: str) -> None:
+        validate_outbound_url(url)
+
+    def test_userinfo_is_not_the_host(self, public_dns: None) -> None:
+        """`http://localhost@example.com/` has hostname `example.com`.
+
+        The userinfo field is the clearest case for parsing before deciding: the
+        text that looked like the host was never the host, so the old check was
+        not merely over-broad, it was reading the wrong field.
+        """
+        from urllib.parse import urlsplit
+
+        assert urlsplit("http://localhost@example.com/").hostname == "example.com"
+        validate_outbound_url("http://localhost@example.com/")
+
+
+class TestFullyQualifiedInternalNames:
+    def test_a_trailing_dot_does_not_evade_the_name_check(self) -> None:
+        """`localhost.` and `localhost` denote the same host.
+
+        An exact-match set that sees only one of the two spellings is a bypass,
+        not a check — which is why the hostname is stripped of its root label
+        before it is compared.
+        """
+        with pytest.raises(SSRFBlockedError, match="internal target"):
+            validate_outbound_url("http://localhost./x")
+
+    def test_uppercase_internal_name_is_still_matched(self) -> None:
+        with pytest.raises(SSRFBlockedError, match="internal target"):
+            validate_outbound_url("http://Metadata.Google.Internal/x")
+
+
+class TestMovedImportPath:
+    """`maistro.tools.net_guard` is where this guard used to live.
+
+    maistro-core is imported by downstream products, so the old path stays
+    importable. It re-exports rather than reimplements — a shim with its own
+    copy of the logic would recreate the duplication #154 deleted.
+    """
+
+    def test_the_old_path_re_exports_the_same_objects(self) -> None:
+        from maistro.tools import net_guard
+
+        assert net_guard.validate_outbound_url is validate_outbound_url
+        assert net_guard.SSRFBlockedError is SSRFBlockedError
+        assert net_guard.avalidate_outbound_url is avalidate_outbound_url
+
+    def test_importing_the_old_path_warns(self) -> None:
+        import importlib
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            importlib.reload(importlib.import_module("maistro.tools.net_guard"))
+
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        assert any("maistro.security.ssrf" in str(w.message) for w in caught)
