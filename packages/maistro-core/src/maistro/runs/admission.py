@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.nodes import list_kinds
+from maistro.runs.model import RunStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.model import Run
@@ -90,6 +91,7 @@ async def admit_direct_work(
     actor_principal_id: str | None = None,
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
+    initial_status: RunStatus = RunStatus.CREATED,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -116,6 +118,9 @@ async def admit_direct_work(
         # webhook or request path it never touched — which is the one field an
         # audit correlates on.
         provenance={**(provenance or {}), ADMISSION_SOURCE: source},
+        # One commit. An entry point that already knows the work is queued says
+        # so here rather than transitioning immediately afterwards.
+        initial_status=initial_status,
     )
 
 

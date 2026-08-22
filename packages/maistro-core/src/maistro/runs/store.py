@@ -78,6 +78,7 @@ class RunStore(Protocol):
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
@@ -135,6 +136,31 @@ class RunStore(Protocol):
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
     ) -> Attempt: ...
+
+
+#: States a Run may be created directly in — the entry states a caller can
+#: honestly know at admission. Anything terminal is excluded: work that has not
+#: started cannot have ended.
+_ADMISSIBLE_INITIAL_STATUSES = frozenset({RunStatus.CREATED, RunStatus.QUEUED})
+
+
+def admit_in_state(run: Run, initial_status: RunStatus) -> Run:
+    """Apply the state a Run is created in, before it is written anywhere.
+
+    A Run whose caller already knows it is queued used to be inserted as
+    CREATED and transitioned immediately afterwards — two commits on a durable
+    store, with a window where a process death left a CREATED Run whose
+    provenance named a receipt that was never queued, and which no recovery
+    scan looks for. Deciding the state before the single insert closes it.
+    """
+    if initial_status is RunStatus.CREATED:
+        return run
+    if initial_status not in _ADMISSIBLE_INITIAL_STATUSES:
+        raise RunIntegrityError(
+            f"a Run cannot be created in state {initial_status.value!r}; admissible: "
+            f"{', '.join(sorted(item.value for item in _ADMISSIBLE_INITIAL_STATUSES))}"
+        )
+    return transition_run(run, initial_status)
 
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
@@ -217,6 +243,7 @@ class InMemoryRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -244,6 +271,7 @@ class InMemoryRunStore:
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
         )
+        run = admit_in_state(run, initial_status)
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
@@ -251,6 +279,15 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def has_runs_in_project(self, project_id: str) -> bool:
+        """Whether any Run is filed in this Project.
+
+        Consulted by `InMemoryProjectScopeStore.delete()` so a Project cannot
+        be deleted out from under its Run history. PostgreSQL enforces the same
+        rule with a foreign key; this is the reference store's equivalent.
+        """
+        return any(run.project_id == project_id for run in self._runs.values())
 
     async def transition_run(
         self,

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -28,6 +29,7 @@ from maistro.runs.store import (
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
+    admit_in_state,
     validate_accepted_outcome_against_attempt,
 )
 
@@ -129,6 +131,7 @@ class SqliteRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -158,6 +161,9 @@ class SqliteRunStore:
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
         )
+        # Before the insert, not after it: one commit, so there is no window in
+        # which a process death leaves a CREATED Run whose receipt was queued.
+        run = admit_in_state(run, initial_status)
         await self._conn.execute(
             """INSERT INTO canonical_runs
                (run_id, workspace_id, project_id, parent_run_id,
@@ -170,7 +176,7 @@ class SqliteRunStore:
                 run.parent_run_id,
                 run.parent_node_run_id,
                 run.status.value,
-                run.model_dump_json(),
+                json_of(run),
             ),
         )
         await self._conn.commit()
@@ -181,7 +187,19 @@ class SqliteRunStore:
             "SELECT payload FROM canonical_runs WHERE run_id = ?",
             (run_id,),
         )
-        return Run.model_validate_json(row[0]) if row is not None else None
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def has_runs_in_project(self, project_id: str) -> bool:
+        """Whether any Run is filed in this Project.
+
+        Consulted by `SqliteProjectScopeStore.delete()` so a Project cannot be
+        deleted out from under its Run history.
+        """
+        row = await self._fetchone(
+            "SELECT 1 FROM canonical_runs WHERE project_id = ? LIMIT 1",
+            (project_id,),
+        )
+        return row is not None
 
     async def transition_run(
         self,
@@ -198,7 +216,7 @@ class SqliteRunStore:
             run = await self._require_run(run_id)
             updated = transition_run(run, target, at=at, result=result, error=error)
             await self._update_payload(
-                "canonical_runs", "run_id", run_id, updated.status.value, updated.model_dump_json()
+                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
             )
         return updated
 
@@ -231,7 +249,7 @@ class SqliteRunStore:
                 node_run.node_id,
                 node_run.ordinal,
                 node_run.status.value,
-                node_run.model_dump_json(),
+                json_of(node_run),
             ),
         )
         await self._conn.commit()
@@ -242,7 +260,7 @@ class SqliteRunStore:
             "SELECT payload FROM canonical_node_runs WHERE node_run_id = ?",
             (node_run_id,),
         )
-        return NodeRun.model_validate_json(row[0]) if row is not None else None
+        return model_of_json(NodeRun, row[0]) if row is not None else None
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         await self._require_run(run_id)
@@ -251,7 +269,7 @@ class SqliteRunStore:
             (run_id,),
         )
         rows = await cursor.fetchall()
-        return [NodeRun.model_validate_json(row[0]) for row in rows]
+        return [model_of_json(NodeRun, row[0]) for row in rows]
 
     async def transition_node_run(
         self,
@@ -283,7 +301,7 @@ class SqliteRunStore:
                 "node_run_id",
                 node_run_id,
                 updated.status.value,
-                updated.model_dump_json(),
+                json_of(updated),
             )
         return updated
 
@@ -365,7 +383,7 @@ class SqliteRunStore:
                     attempt.node_run_id,
                     attempt.ordinal,
                     attempt.status.value,
-                    attempt.model_dump_json(),
+                    json_of(attempt),
                 ),
             )
             await self._conn.commit()
@@ -395,7 +413,7 @@ class SqliteRunStore:
             "SELECT payload FROM canonical_attempts WHERE attempt_id = ?",
             (attempt_id,),
         )
-        return Attempt.model_validate_json(row[0]) if row is not None else None
+        return model_of_json(Attempt, row[0]) if row is not None else None
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         await self._require_node_run(node_run_id)
@@ -405,7 +423,7 @@ class SqliteRunStore:
             (node_run_id,),
         )
         rows = await cursor.fetchall()
-        return [Attempt.model_validate_json(row[0]) for row in rows]
+        return [model_of_json(Attempt, row[0]) for row in rows]
 
     async def transition_attempt(
         self,
@@ -436,7 +454,7 @@ class SqliteRunStore:
                 "attempt_id",
                 attempt_id,
                 updated.status.value,
-                updated.model_dump_json(),
+                json_of(updated),
             )
         return updated
 

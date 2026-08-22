@@ -112,6 +112,13 @@ def upgrade() -> None:
         sa.Column("status", sa.Text, nullable=False),
         sa.Column("payload", postgresql.JSONB, nullable=False),
         sa.ForeignKeyConstraint(["parent_run_id"], ["canonical_runs.run_id"]),
+        # A Run belongs to a Project, and deleting the Project out from under it
+        # would leave durable execution history pointing at nothing. RESTRICT
+        # rather than CASCADE: Run history is the audit record, so the Project
+        # deletion is the operation that must fail.
+        sa.ForeignKeyConstraint(
+            ["project_id"], ["canonical_projects.project_id"], ondelete="RESTRICT"
+        ),
     )
     op.create_index(
         "ix_canonical_runs_workspace_project", "canonical_runs", ["workspace_id", "project_id"]

@@ -16,12 +16,14 @@ from one that has merely never been asked.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 import aiosqlite
 import pytest
 
 from maistro.graph import Graph, Node
+from maistro.projects.scope import ProjectNotEmpty
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import (
@@ -435,3 +437,140 @@ def test_postgres_is_covered_when_configured() -> None:
     if not postgres_dsn():
         pytest.skip("no PostgreSQL configured; the parametrized cases skip by design")
     pytest.importorskip("asyncpg")
+
+
+# ── non-finite evidence survives every backend (#132 review) ──────
+
+
+@pytest.mark.parametrize(
+    ("value", "check"),
+    [
+        (float("nan"), lambda item: isinstance(item, float) and math.isnan(item)),
+        (float("inf"), lambda item: item == float("inf")),
+        (float("-inf"), lambda item: item == float("-inf")),
+    ],
+)
+async def test_a_non_finite_result_reloads_unchanged(spine: Any, value: Any, check: Any) -> None:
+    """The durable stores serialise to JSON, and pydantic's default turns NaN
+    and the infinities into `null` on the way out. So a NaN result came back as
+    `None` — not an error, not a stranded NodeRun, a silently different number,
+    and only on the two backends that are the system of record."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="probe")
+    lease = attempt.execution_lease
+    token = lease.fencing_token if lease is not None else None
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result=value, fencing_token=token
+    )
+
+    reloaded = await store.get_attempt(attempt.attempt_id)
+
+    assert reloaded is not None
+    assert check(reloaded.result)
+
+
+async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
+    """Results are `Any`: the non-finite value is as likely to be nested in the
+    dict an executor returned as to be the whole result."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="probe")
+    lease = attempt.execution_lease
+    token = lease.fencing_token if lease is not None else None
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.COMPLETED,
+        result={"scores": [1.0, float("nan")], "ratio": float("inf")},
+        fencing_token=token,
+    )
+
+    reloaded = await store.get_attempt(attempt.attempt_id)
+
+    assert reloaded is not None
+    assert math.isnan(reloaded.result["scores"][1])
+    assert reloaded.result["scores"][0] == 1.0
+    assert reloaded.result["ratio"] == float("inf")
+
+
+async def test_a_finite_result_is_not_disturbed_by_the_codec(spine: Any) -> None:
+    """The encoding must be invisible to everything that is already JSON —
+    including a dict that happens to have one key."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="probe")
+    lease = attempt.execution_lease
+    token = lease.fencing_token if lease is not None else None
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    payload = {"only": "one key"}
+    await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result=payload, fencing_token=token
+    )
+
+    reloaded = await store.get_attempt(attempt.attempt_id)
+
+    assert reloaded is not None
+    assert reloaded.result == payload
+
+
+# ── a Run is created in one commit, in the state its caller knows ──
+
+
+async def test_a_run_can_be_created_already_queued(spine: Any) -> None:
+    """One commit. Creating CREATED and transitioning immediately afterwards
+    was two, and a process death between them left a CREATED Run whose
+    provenance named a receipt that was never queued — with nothing scanning
+    for it."""
+    store, workspace, project_id = spine
+
+    run = await store.create_run(_graph(workspace, project_id), initial_status=RunStatus.QUEUED)
+
+    assert run.status is RunStatus.QUEUED
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.status is RunStatus.QUEUED
+
+
+async def test_the_default_creation_state_is_unchanged(spine: Any) -> None:
+    store, workspace, project_id = spine
+
+    run = await store.create_run(_graph(workspace, project_id))
+
+    assert run.status is RunStatus.CREATED
+
+
+@pytest.mark.parametrize(
+    "status",
+    [RunStatus.RUNNING, RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED],
+)
+async def test_a_run_cannot_be_created_in_a_state_it_never_reached(
+    spine: Any, status: RunStatus
+) -> None:
+    """Work that has not started cannot have ended, and `create_run` is not a
+    way to fabricate a Run that already finished."""
+    store, workspace, project_id = spine
+
+    with pytest.raises(RunIntegrityError):
+        await store.create_run(_graph(workspace, project_id), initial_status=status)
+
+
+# ── a Project cannot be deleted out from under its Runs ────────────
+
+
+async def test_a_project_with_runs_cannot_be_deleted(spine: Any) -> None:
+    """PostgreSQL enforces this with a foreign key and the in-memory store with
+    a registered predicate. Either way, deleting the Project would leave Run
+    history pointing at a Project that no longer exists."""
+    store, workspace, project_id = spine
+    projects = store._project_store
+    register = getattr(projects, "set_run_owner", None)
+    if register is not None:
+        register(store.has_runs_in_project)
+    await store.create_run(_graph(workspace, project_id))
+
+    with pytest.raises(ProjectNotEmpty):
+        await projects.delete(project_id)
+
+    assert await projects.get(project_id) is not None

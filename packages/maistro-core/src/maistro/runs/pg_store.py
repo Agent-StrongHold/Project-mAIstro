@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.evidence_json import decode_evidence, model_of, payload_of
 from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -55,6 +56,7 @@ from maistro.runs.store import (
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
+    admit_in_state,
     validate_accepted_outcome_against_attempt,
 )
 
@@ -95,6 +97,7 @@ class PgRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -124,6 +127,9 @@ class PgRunStore:
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
         )
+        # Before the insert, not after it: one commit, so there is no window in
+        # which a process death leaves a CREATED Run whose receipt was queued.
+        run = admit_in_state(run, initial_status)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO canonical_runs
@@ -136,7 +142,7 @@ class PgRunStore:
                 run.parent_run_id,
                 run.parent_node_run_id,
                 run.status.value,
-                run.model_dump(mode="json"),
+                payload_of(run),
             )
         return run
 
@@ -145,6 +151,19 @@ class PgRunStore:
             "SELECT payload FROM canonical_runs WHERE run_id = $1", run_id
         )
         return Run.model_validate(payload) if payload is not None else None
+
+    async def has_runs_in_project(self, project_id: str) -> bool:
+        """Whether any Run is filed in this Project.
+
+        Not what stops the deletion — the foreign key does — but what lets
+        `PgProjectScopeStore.delete()` say *which* rule refused instead of
+        surfacing a raw constraint name.
+        """
+        async with self._pool.acquire() as conn:
+            found = await conn.fetchval(
+                "SELECT 1 FROM canonical_runs WHERE project_id = $1 LIMIT 1", project_id
+            )
+        return found is not None
 
     async def transition_run(
         self,
@@ -192,7 +211,7 @@ class PgRunStore:
                 node_run.node_id,
                 node_run.ordinal,
                 node_run.status.value,
-                node_run.model_dump(mode="json"),
+                payload_of(node_run),
             )
         return node_run
 
@@ -209,7 +228,7 @@ class PgRunStore:
                 "SELECT payload FROM canonical_node_runs WHERE run_id = $1 ORDER BY ordinal",
                 run_id,
             )
-        return [NodeRun.model_validate(row["payload"]) for row in rows]
+        return [model_of(NodeRun, row["payload"]) for row in rows]
 
     async def transition_node_run(
         self,
@@ -306,9 +325,9 @@ class PgRunStore:
                     attempt.node_run_id,
                     attempt.ordinal,
                     attempt.status.value,
-                    attempt.model_dump(mode="json"),
+                    payload_of(attempt),
                 )
-            except Exception as exc:
+            except _integrity_errors() as exc:
                 raise _integrity_failure(exc, node_run_id) from exc
         return attempt
 
@@ -326,7 +345,7 @@ class PgRunStore:
                    WHERE node_run_id = $1 ORDER BY ordinal""",
                 node_run_id,
             )
-        return [Attempt.model_validate(row["payload"]) for row in rows]
+        return [model_of(Attempt, row["payload"]) for row in rows]
 
     async def transition_attempt(
         self,
@@ -393,7 +412,7 @@ class PgRunStore:
         )
         if payload is None:
             raise _NOT_FOUND[table](identity)
-        return payload
+        return decode_evidence(payload)
 
     @staticmethod
     async def _write(conn: Any, table: str, column: str, identity: str, model: Any) -> None:
@@ -402,7 +421,7 @@ class PgRunStore:
         await conn.execute(
             f"UPDATE {table} SET status = $1, payload = $2 WHERE {column} = $3",  # nosec B608
             model.status.value,
-            model.model_dump(mode="json"),
+            payload_of(model),
             identity,
         )
 
@@ -432,14 +451,15 @@ class PgRunStore:
             payload = await conn.fetchval(
                 "SELECT payload FROM canonical_attempts WHERE attempt_id = $1", attempt_id
             )
-            attempt = Attempt.model_validate(payload) if payload is not None else None
+            attempt = model_of(Attempt, payload) if payload is not None else None
         if attempt is None:
             raise AttemptNotFound(attempt_id)
         return attempt
 
     async def _payload(self, sql: str, *params: Any) -> Any | None:
         async with self._pool.acquire() as conn:
-            return await conn.fetchval(sql, *params)
+            payload = await conn.fetchval(sql, *params)
+        return decode_evidence(payload) if payload is not None else None
 
 
 _NOT_FOUND: dict[str, type[Exception]] = {
@@ -447,6 +467,21 @@ _NOT_FOUND: dict[str, type[Exception]] = {
     "canonical_node_runs": NodeRunNotFound,
     "canonical_attempts": AttemptNotFound,
 }
+
+
+def _integrity_errors() -> tuple[type[Exception], ...]:
+    """The asyncpg exceptions that mean a constraint refused this write.
+
+    Catching bare `Exception` here swallowed command timeouts, connection
+    resets and every other transient database failure into a generic
+    `RunIntegrityError`, so a caller could not tell a retryable outage from a
+    permanent domain refusal — while every other operation on this store let
+    the driver error through. Narrow, and resolved lazily because asyncpg is an
+    optional dependency of this package.
+    """
+    import asyncpg
+
+    return (asyncpg.exceptions.IntegrityConstraintViolationError,)
 
 
 def _integrity_failure(exc: Exception, node_run_id: str) -> Exception:
