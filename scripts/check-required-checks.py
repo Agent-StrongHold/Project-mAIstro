@@ -69,6 +69,31 @@ def _scope(pull_request: dict) -> str:
     return "every PR"
 
 
+def _job_scope(job: dict, trigger_scope: str) -> str:
+    """Narrow a trigger scope by the job's own `if:`.
+
+    Reading only the trigger is not enough, and `security.yml` is the proof:
+
+        Container scan + SBOM + cosign
+          if: (github.event_name == 'pull_request' && github.base_ref == 'main') ...
+
+    Its workflow triggers on every PR, so a trigger-only reading calls it
+    "every PR" — while the job reports `skipped` on every PR not based on
+    `main`. That is the same base-branch coupling #161 removed from the
+    triggers, hiding one level down, and a contract that missed it would
+    under-report exactly the thing it exists to surface.
+
+    Only `base_ref` is looked for. A job condition can narrow on anything, and
+    chasing the general case means evaluating GitHub's expression language;
+    `base_ref` is the one that makes a check mean different things on different
+    PRs, which is the property under contract here.
+    """
+    condition = str((job or {}).get("if", ""))
+    if "base_ref" not in condition:
+        return trigger_scope
+    return f"{trigger_scope}, job `if:` on base_ref"
+
+
 def collect() -> list[tuple[str, str, str]]:
     """(workflow, check name, scope) for every job reachable from a PR."""
     rows: list[tuple[str, str, str]] = []
@@ -78,10 +103,21 @@ def collect() -> list[tuple[str, str, str]]:
         if pull_request is None:
             continue
         workflow = doc.get("name", path.name)
-        scope = _scope(pull_request)
+        trigger_scope = _scope(pull_request)
         for job_id, job in (doc.get("jobs") or {}).items():
-            rows.append((workflow, (job or {}).get("name", job_id), scope))
+            job = job or {}
+            rows.append((workflow, job.get("name", job_id), _job_scope(job, trigger_scope)))
     return sorted(rows)
+
+
+def base_coupled(rows: list[tuple[str, str, str]]) -> set[tuple[str, str]]:
+    """The checks whose meaning depends on what a PR is based on.
+
+    By trigger or by job condition — the two are the same defect wearing
+    different clothes, so #161's acceptance is asserted against this rather than
+    against the trigger alone.
+    """
+    return {(wf, check) for wf, check, scope in rows if "base" in scope}
 
 
 def render(rows: list[tuple[str, str, str]]) -> str:

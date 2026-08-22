@@ -31,8 +31,27 @@ point of [#161](https://github.com/Agent-StrongHold/Project-mAIstro/issues/161):
 - **base `<branch>`** — a `branches:` filter on `pull_request`, which matches the
   PR's **base**. A check scoped this way means something different depending on
   what the PR is stacked on. Every one of these was removed in #161 except the
-  single deliberate exclusion named below; do not add another without recording
-  why here.
+  deliberate exclusions named below; do not add another without recording why
+  here.
+- **`job if:` on base_ref** — the same coupling one level down. The workflow
+  triggers on every PR, and the *job* declines to run unless the base matches:
+
+  ```yaml
+  if: (github.event_name == 'pull_request' && github.base_ref == 'main') || …
+  ```
+
+  `security.yml`'s container scan does exactly this, which is why the gate reads
+  job conditions and not only triggers. A contract that stopped at the trigger
+  would have called that check "every PR" while it reported `skipped` on every
+  PR not based on `main`.
+
+### Caveat for #162: a check that reports `skipped`
+
+A job that declines to run still produces a check run, with conclusion
+`skipped`. Whether branch protection accepts that as satisfying a required check
+depends on configuration, so **a check that can report `skipped` must not be
+added to the required set without deciding that explicitly**. Today that is
+`Container scan + SBOM + cosign`, observed skipping on PR #167.
 
 ### Caveat for #162: paths-filtered checks and "Expected"
 
@@ -63,7 +82,7 @@ which ones carry the hazard.
 | Registry CI | `Validate ADR/spec front-matter` | paths |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
-| security | `Container scan + SBOM + cosign` | every PR |
+| security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
 | security | `Supply chain (pip-audit)` | every PR |
 
@@ -74,6 +93,7 @@ which ones carry the hazard.
 | Workflow | Why it is not on every PR |
 |---|---|
 | CodeQL Advanced | Deep dataflow analysis on `main` and a schedule. PRs are covered by `security.yml`'s SAST job (bandit + semgrep + gitleaks), which runs on every PR and is fast enough to gate on. Running CodeQL per-push on a stack costs far more than it finds there. |
+| security → `Container scan + SBOM + cosign` | Builds and scans the container image; gated to `main`-based PRs and the schedule by a job `if:`. Image-layer CVEs move with the base image, not with a feature branch, so per-PR scanning on a stack re-reports the same findings at 30 minutes a run. |
 | Mutation | Long-running and sampled; it is a trend instrument, not a merge gate. |
 | Formal Conformance (nightly) | The per-PR `Formal Conformance` job is the gate; the nightly is a deeper sweep. |
 

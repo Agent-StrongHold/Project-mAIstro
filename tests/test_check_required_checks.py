@@ -73,6 +73,37 @@ class TestTriggerParsing:
         assert gate._scope({"branches": ["main"], "paths": ["x"]}).startswith("base")
 
 
+class TestJobLevelConditions:
+    """A job `if:` can undo what the trigger promises (#161).
+
+    Found on PR #167 itself: `security.yml`'s container scan triggers on every
+    PR and then declines to run unless the base is `main`, so a trigger-only
+    reading reported "every PR" for a check that reports `skipped` on most of
+    them.
+    """
+
+    def test_a_base_ref_condition_narrows_the_reported_scope(self, gate) -> None:
+        job = {"if": "github.event_name == 'pull_request' && github.base_ref == 'main'"}
+        assert gate._job_scope(job, "every PR") == "every PR, job `if:` on base_ref"
+
+    def test_a_condition_that_does_not_mention_base_ref_is_left_alone(self, gate) -> None:
+        """Narrowing on anything else does not make the check's meaning depend
+        on what the PR is stacked on, which is the property under contract."""
+        assert gate._job_scope({"if": "always()"}, "every PR") == "every PR"
+
+    def test_a_job_with_no_condition_keeps_its_trigger_scope(self, gate) -> None:
+        assert gate._job_scope({}, "every PR") == "every PR"
+
+    def test_base_coupled_reports_both_spellings(self, gate) -> None:
+        rows = [
+            ("A", "by-trigger", "base `main`"),
+            ("B", "by-job-if", "every PR, job `if:` on base_ref"),
+            ("C", "clean", "every PR"),
+            ("D", "paths", "paths"),
+        ]
+        assert gate.base_coupled(rows) == {("A", "by-trigger"), ("B", "by-job-if")}
+
+
 class TestRendering:
     def test_a_job_without_a_name_is_listed_by_its_id(self, gate) -> None:
         """GitHub falls back to the job id, so the contract must too — otherwise
@@ -85,19 +116,19 @@ class TestAgainstTheRealWorkflows:
     def test_the_shipped_table_matches_the_workflows(self, gate) -> None:
         assert gate.main() == 0
 
-    def test_no_pr_check_is_scoped_to_a_base_branch_except_codeql(self, gate) -> None:
+    def test_only_the_documented_exclusions_depend_on_the_base_branch(self, gate) -> None:
         """#161's acceptance, asserted rather than described.
 
-        CodeQL is the one deliberate exclusion and is named in the doc's
-        "Deliberate exclusions" table. Anything else appearing here is a check
-        that means different things depending on what a PR is stacked on.
+        Both spellings count — a `branches:` filter on the trigger and a
+        `base_ref` test in the job's `if:` are the same coupling at different
+        depths, and the second is the one that hides. Two checks are allowed
+        here and both are named in the doc's "Deliberate exclusions" table;
+        anything else means a PR's tick depends on what it is stacked on.
         """
-        scoped = {
-            (workflow, check)
-            for workflow, check, scope in gate.collect()
-            if scope.startswith("base")
+        assert gate.base_coupled(gate.collect()) == {
+            ("CodeQL Advanced", "Analyze (${{ matrix.language }})"),
+            ("security", "Container scan + SBOM + cosign"),
         }
-        assert scoped == {("CodeQL Advanced", "Analyze (${{ matrix.language }})")}
 
     def test_every_unfiltered_pr_workflow_cancels_superseded_runs(self, gate) -> None:
         """The cost answer #161 gives instead of skipping jobs on drafts.
