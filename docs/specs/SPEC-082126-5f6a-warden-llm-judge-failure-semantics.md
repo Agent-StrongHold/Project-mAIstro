@@ -26,20 +26,11 @@ tests:
   - packages/maistro-core/tests/security/warden/test_detector.py
   - packages/maistro-core/tests/security/test_llm_classifier.py
 ac-modules:
-  AC-1:
-    - maistro.security.warden.detector
-    - maistro.security.warden.llm_classifier
-  AC-2:
-    - maistro.security.warden.detector
-    - maistro.security.warden.llm_classifier
-  AC-3:
-    - maistro.security.warden.detector
-    - maistro.security.warden.llm_classifier
-  AC-4:
-    - maistro.security.warden.detector
-    - maistro.security.warden.llm_classifier
-  AC-5:
-    - maistro.security.warden.detector
+  AC-1: maistro.security.warden.detector
+  AC-2: maistro.security.warden.detector
+  AC-3: maistro.security.warden.detector
+  AC-4: maistro.security.warden.detector
+  AC-5: maistro.security.warden.detector
 source:
   - SECURITY.md
 layer: Governance
