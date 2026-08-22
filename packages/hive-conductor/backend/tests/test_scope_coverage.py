@@ -32,7 +32,6 @@ CASES = [
     ("put", "/v1/credentials/jira", "credentials.write"),
     ("delete", "/v1/credentials/jira", "credentials.write"),
     ("post", "/v1/evolution/cycle", "rsi.execute"),
-    ("post", "/v1/pm-fleet/tools/execute", "pm.execute"),
     ("post", "/v1/audit", "audit.write"),
     ("post", "/v1/mcp/discover", "mcp.write"),
     ("patch", "/v1/skills/some-skill/toggle", "skills.write"),

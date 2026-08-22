@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountBanner } from "../components/AccountBanner";
 import { AgentFleetCard, type FleetAgent } from "../components/AgentFleetCard";
-import { DailyReport } from "../components/DailyReport";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { WorkItemDraftModal } from "../components/WorkItemDraftModal";
 import { apiGet, apiPost } from "../lib/api";
@@ -248,7 +247,6 @@ export default function Fleet() {
 
       <AccountBanner />
       <SetupChecklist />
-      <DailyReport />
 
       {loading ? (
         <LoadingSpinner />

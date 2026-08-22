@@ -38,9 +38,7 @@ hand. Auditing the unreachable-module ledger (#33) surfaced how far that pattern
 
 | Where | How it dispatches | Covers |
 |---|---|---|
-| `routes/pm_fleet_v2.py::POST /v1/pm-fleet/tools/execute` | `if req.tool.startswith("github_") … elif "gitlab_"`, else `{"error": …}` | two vendors, hard-coded |
 | `services/tool_executor.py` | a different hard-coded set | `web_search`, `browse_url`, `clarify` |
-| `routes/daily_report_v2.py` | raw `httpx` per vendor | Jira, Airtable |
 | `routes/mcp.py` | — | registers, scans and discovers MCP tools, but **has no execute endpoint** |
 
 Meanwhile `maistro.capabilities` already implements the accepted
@@ -53,9 +51,16 @@ So the generalised surface is *half-built and unrouted*, while the demo surface 
 duplicated per vendor*. Adding the next integration under the current shape means a fifth
 bespoke client, or a new `elif` on a string prefix.
 
-Two of these have already been removed as unreachable: `routes/chat_complete.py` and
-`routes/daily_report.py` (commit 490f5fa). The rest are live and need a replacement before they
-can go.
+**Open question 1 is now answered.** The maintainer's decision: the Daily Report and PM Fleet
+demos are not needed — "these are all replaced by the workspace personas". So four of the
+original surfaces are gone rather than awaiting a replacement: `routes/chat_complete.py` and
+`routes/daily_report.py` as unreachable (commit 490f5fa), then `routes/daily_report_v2.py` with
+its component and e2e assertion, and `routes/pm_fleet_v2.py` with its prefix-string dispatch
+(PR #125). The remaining scope of that retirement — POC mode, the persona-path fold, the
+`KNOWN_DOMAINS` decision, and the `daily-status` seed's sequencing — is tracked in #129.
+
+**Two tool-execution paths remain**, and they are the ones this ADR still argues about:
+`services/tool_executor.py`'s hard-coded set, and `routes/mcp.py`, which still cannot execute.
 
 ## Decision
 
@@ -70,9 +75,10 @@ can go.
    Prefix-string dispatch (`tool.startswith("github_")`) is not a routing strategy; it is an
    `elif` chain that fails open on an unknown name.
 
-3. **Single-purpose endpoints retire onto it.** `/v1/pm-fleet/tools/execute`,
-   `/v1/daily-report`, and the remaining PM-demo routes are demo artefacts. Each retires when
-   the general path can serve its use case — not before, because two of them back live UI.
+3. **Single-purpose endpoints retire onto it, or are dropped outright.** `/v1/pm-fleet/tools/execute`
+   and `/v1/daily-report` were demo artefacts whose features are not wanted, so they were deleted
+   rather than migrated (PR #125, #129). An endpoint whose feature *is* wanted retires only when
+   the general path can serve it — not before, because some back live UI.
 
 4. **A retirement removes the whole feature, not just the backend.** `/v1/daily-report` is
    called by `frontend/src/components/DailyReport.tsx` and asserted by
@@ -115,8 +121,8 @@ can go.
 
 ## Open questions
 
-1. **Which demo features survive at all?** Daily Report, PM Fleet and topK testing each need a
-   keep-or-drop call before their retirement path matters.
+1. ~~**Which demo features survive at all?**~~ **Answered:** none of them. Daily Report, PM Fleet
+   and topK testing are replaced by workspace personas; retirement is tracked in #129.
 2. **MCP or node kinds for a given integration?** Jira has both today —
    `maistro.tools.atlassian`'s MCP client and the `jira.poll` node kind. One should be the
    default and the other the exception.
