@@ -275,7 +275,6 @@ def create_app() -> FastAPI:
     # disappear without an actionable startup log.
     _include_optional_router(app, "routes.design", prefix="/v1")
     _include_optional_router(app, "routes.canvas")
-    _include_optional_router(app, "routes.pm_fleet_v2")
     _include_optional_router(app, "routes.evolution", prefix="/v1/evolution")
     _include_optional_router(app, "routes.rsi", prefix="/v1/rsi")
 
