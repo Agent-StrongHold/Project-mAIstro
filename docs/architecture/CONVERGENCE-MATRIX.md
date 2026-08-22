@@ -78,13 +78,13 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
 | Delivery gateway | `maistro.delivery` | Effect channel | its own send records | — | — |
-| Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` lockout state | `security.pg_strikes` | itself (canonical) |
+| Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` lockout state | none wired — `security.pg_strikes` has no production importer | itself (canonical) |
 | Authentication and identity | `maistro.auth`, `maistro.identity` | Principal | n/a | service-key store | itself (canonical) |
 | Authorization, privilege, governance | `maistro.privilege`, `maistro.policy`, `maistro.governance` | Authorization decision | n/a | — | itself (canonical, ADR-068 partly unbuilt) |
 | Secrets vault | `maistro.vault` | Secret material | n/a | age-encrypted file | OS file permissions |
-| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.pg_learnings`/`pg_outcomes` + SQLite twins | `memory.scopes`, `memory.exposure` |
-| Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.pg_sessions` | session trust floor |
-| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself (canonical for its domains) | — |
+| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.sqlite_learnings`/`sqlite_outcomes` on a `sqlite:` URL; in-memory otherwise — the `pg_*` twins have no production importer | `memory.scopes`, `memory.exposure` |
+| Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.sqlite_sessions` on a `sqlite:` URL; in-memory otherwise | session trust floor |
+| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself, but only the `sqlite_*` half is reachable | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
@@ -93,19 +93,19 @@ currently holds belongs to `Run`/`Invocation`.
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
 | Collaboration | `maistro.collaboration` | Multi-actor editing | its own session records | — | — |
 | Reactor loop | `maistro.reactor` | Trigger evaluation loop | n/a | — | — |
-| Prompts and personas | `maistro.prompts`, `maistro.personas` | Node/agent configuration | n/a | `persistence.pg_prompts` | — |
+| Prompts and personas | `maistro.prompts`, `maistro.personas` | Node/agent configuration | n/a | none wired — `persistence.pg_prompts` has no production importer | — |
 | Codebase analysis | `maistro.codebase` | Tool implementation | n/a | — | — |
 | Core CLI | `maistro.cli` | Client of the Conductor API | n/a (remote) | — | server-side |
 | Shared contracts and config | `maistro`, `maistro.types`, `maistro.protocols`, `maistro.constants`, `maistro.config`, `maistro.http` | Types and protocols | n/a | — | — |
 | Test scaffolding | `maistro.testing` | Test doubles | n/a | — | — |
 | maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` | inherited | `maistro.auth` + rate limiter |
 | Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` |
-| Agent Conductor services | `services` | Product services | `services.dag_run_store` (fifth universal lifecycle), `services.graph_runner` | `services.pg_store` | per-route |
+| Agent Conductor services | `services` | Product services | `services.dag_run_store` — a parallel run identity, event-derived, authoritative for the UI | `services.pg_store` | per-route |
 | Canvas ability | `maistro_canvas` | Graph of canvas Nodes | `canvas.executor` pipeline | `canvas.store` (PostgreSQL) | `maistro_canvas.auth` (standalone API key) |
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
-| Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` + `evolve.tournament` (sixth universal lifecycle) | `evolve.serialize` | — |
-| RSI autorun | `maistro_rsi` | Run per improvement cycle | `rsi.coordinator` + `rsi.autorun` (seventh universal lifecycle) | `rsi.spec_tracker`, quarantine ledger | `rsi.quarantine` gate |
-| Turing self-model | `maistro_turing`, `maistro-turing-backend` | Optional cognitive Providers | `turing.runtime` actor | `turing.memory`, backend DB | backend `middleware.auth` |
+| Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no work-state machine of its own | `evolve.serialize` | — |
+| RSI autorun | `maistro_rsi` | Run per improvement cycle | `rsi.coordinator` orchestrates; result records, no work-state machine | `rsi.spec_tracker`, quarantine ledger | `rsi.quarantine` gate |
+| Turing self-model | `maistro_turing`, `maistro-turing-backend` | Optional cognitive Providers | `turing.runtime` actor + chat session; no work-state machine | `turing.memory`, backend DB | backend `middleware.auth` |
 | ADR/spec registry CLI | `maistro_registry` | Governance tooling | n/a | filesystem | — |
 | Bootstrap installer | `maistro_bootstrap` | Installer | n/a | filesystem | — |
 
@@ -143,7 +143,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
 | Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance only | ADR-034, ADR-011, ADR-091, ADR-057 | a memory write that names its producing Run | #64 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on a Run without owning lifecycle | #64 |
-| Relational persistence | `maistro.container`, Alembic | `7/14` | KEEP | ADR-087, ADR-012 | migrations apply; store contract tests pass on both backends | — |
+| Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the Postgres half has no caller | ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, or their removal | #33, #34 |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
@@ -170,16 +170,40 @@ currently holds belongs to `Run`/`Invocation`.
 
 ## What this matrix already establishes
 
-- **Seven duplicate universal lifecycle owners** exist today besides `maistro.runs`:
-  `maistro.tasks.queue`, `maistro.a2a.lifecycle`, `maistro.builders.runtime`,
-  `services.dag_run_store`, `maistro_evolve.cycle`, `maistro_rsi.coordinator`, and
-  `maistro_turing.runtime`. Each is a `MIGRATE` row above, and each has a
-  parity-before-deletion dependency on [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
+- **Three subsystems own a competing work-state machine** besides `maistro.runs`, each
+  verified by reading the code rather than inferred from the package's role:
+  `maistro.tasks.queue` with `tasks.status` (an explicit transition table),
+  `maistro.a2a.lifecycle` (`queued → assigned → running → completed/failed` plus a worker
+  pool), and `maistro.builders.runtime` with `builders.graph_executor` (a `RunStatus` enum
+  and free-text `run.status` assignments). A fourth, `services.dag_run_store`, owns a
+  *parallel run identity* rather than a state machine — its node states are folded from
+  events — but it is what the Conductor UI reads as authoritative, so it competes with
+  `Run` for the same job. All four are `MIGRATE` rows with a parity-before-deletion
+  dependency on [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
+- **Evolve, RSI and Turing are *not* duplicate lifecycle owners**, though their executions
+  still belong in canonical Runs (#51, #50, #54). `maistro_evolve.cycle` and
+  `maistro_rsi.coordinator` are domain orchestrators holding results, not work states;
+  `maistro_turing/runtime.py` is documented dead code shadowed by the same-named package.
+  An earlier draft of this matrix called all three lifecycle owners on the strength of what
+  their packages do rather than what their code holds — the correction is recorded here
+  because a planning surface that overstates the problem misdirects the work as surely as
+  one that understates it.
+- **The PostgreSQL persistence layer has no caller, and a Postgres URL silently degrades.**
+  `maistro.container` wires the `sqlite_*` stores when `database_url` starts with `sqlite:`
+  and otherwise falls through to `InMemoryQuotaTracker`/`InMemoryLearningStore`/
+  `InMemoryOutcomeStore`/`InMemorySessionStore`. No production module imports
+  `persistence.pg_learnings`, `pg_outcomes`, `pg_sessions`, `pg_prompts`, `pg_audit` or
+  `security.pg_strikes` — only `pg_agents` has a caller, in `agents/factory.py`. So a
+  deployment configured with `postgresql://…` gets in-memory stores and loses everything on
+  restart, with no warning. That is the failure mode `graph_runner.StubLLMNotAllowedError`
+  was introduced to end elsewhere in this repo ("loud degraded modes"), and it contradicts
+  the root `CLAUDE.md` subsystem table, which advertises `maistro.persistence` as
+  "PostgreSQL stores". Filed as its own issue rather than fixed here.
 - **`maistro.conduit` is constructed but unrouted.** `maistro.container` builds it; no shipped
   product path calls it. The "one front door" claim is currently a design, not a fact.
 - **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
   largest self-contained retirement candidate.
-- **Reachability is not evenly distributed debt.** Of 207 unreachable modules, over a third sit
+- **Reachability is not evenly distributed debt.** Of 207 unreachable modules, 68 — roughly a third — sit
   in four subsystems (`maistro.agents` 26, `maistro.builders` 15, Conductor `services` 15,
   `maistro.skills`/`code_registry`/`repertoire` 12), which is why
   [#34](https://github.com/Agent-StrongHold/Project-mAIstro/issues/34) burns them down by

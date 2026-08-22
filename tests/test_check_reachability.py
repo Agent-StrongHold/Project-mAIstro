@@ -186,6 +186,36 @@ def _load():
 """
         assert self._sweep(check, source) == set()
 
+    def test_a_binding_from_another_function_does_not_resolve_a_loop(self, check):
+        """The scope leak this recogniser must not have. Hoisting one function's
+        locals into module scope would resolve a loop that raises NameError at
+        run time — claiming a module reachable on code that cannot execute."""
+        source = """
+import importlib
+
+def unrelated():
+    names = ("ghost",)
+
+def _load():
+    for name in names:
+        importlib.import_module(f"{__name__}.{name}")
+"""
+        assert self._sweep(check, source) == set()
+
+    def test_a_module_level_binding_read_inside_a_function_still_resolves(self, check):
+        """Closing the leak must not break the legitimate direction: a function
+        may read a module-level tuple, and that is ordinary Python scoping."""
+        source = """
+import importlib
+
+MODULES = ("alpha",)
+
+def _load():
+    for name in MODULES:
+        importlib.import_module(f"{__name__}.{name}")
+"""
+        assert self._sweep(check, source) == {"pkg.alpha"}
+
     def test_the_node_catalog_is_reachable_through_its_sweep(self, check):
         """The regression this recogniser exists for: every node module the
         catalog imports must be reachable, since the catalog itself is."""

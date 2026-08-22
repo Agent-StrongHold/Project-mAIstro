@@ -195,9 +195,18 @@ def _eager_sweep(tree: ast.AST, selfmod: str) -> set[str]:
 
 
 def _string_sequences(scope: ast.AST) -> dict[str, tuple[str, ...]]:
-    """Local names bound to a literal tuple/list of strings."""
+    """Names bound to a literal tuple/list of strings *in this scope's own body*.
+
+    Deliberately not an ``ast.walk``: walking would hoist every function's
+    locals into the module scope, so a tuple bound in one function could resolve
+    a loop in another that would ``NameError`` at run time — the recogniser
+    would claim a module reachable on the strength of code that cannot run.
+    A module-level binding read inside a function still resolves, because the
+    module-scope pass walks down to find that loop; only the leak in the other
+    direction is closed.
+    """
     bound: dict[str, tuple[str, ...]] = {}
-    for node in ast.walk(scope):
+    for node in getattr(scope, "body", ()):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         target = node.targets[0]
