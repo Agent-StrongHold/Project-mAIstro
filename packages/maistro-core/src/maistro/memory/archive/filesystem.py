@@ -57,12 +57,6 @@ def _validate_key(key: str) -> str:
     one of them comes from a request body. `..` in a key would write outside the
     archive root, and on a read would return a file the caller was never
     entitled to.
-
-    Leading dots are refused for a second reason: this backend stages writes
-    under dot-prefixed names, and `list_keys` skips them. Without this rule a
-    caller could store a key that `put`, `get` and `exists` all honour while
-    `list_keys` silently omits it — a listing that is quietly not a listing.
-    Reserving the namespace in the validator is what makes the filter safe.
     """
     if not key or key != key.strip():
         msg = f"archive key must be non-empty and unpadded, got {key!r}"
@@ -70,6 +64,20 @@ def _validate_key(key: str) -> str:
     if key.startswith("/") or "\\" in key:
         msg = f"archive key must be relative and use forward slashes, got {key!r}"
         raise ArchiveKeyError(msg)
+    _reject_unsafe_segments(key)
+    return key
+
+
+def _reject_unsafe_segments(key: str) -> None:
+    """The per-segment half of `_validate_key`, split out to keep either half
+    readable — and under the complexity ratchet, which caught the fifth rule.
+
+    Leading dots are refused for a reason the others do not share: this backend
+    stages writes under dot-prefixed names, and `list_keys` skips them. Without
+    this rule a caller could store a key that `put`, `get` and `exists` all
+    honour while `list_keys` silently omits it — a listing that is quietly not a
+    listing. Reserving the namespace here is what makes that filter safe.
+    """
     segments = key.split("/")
     if any(seg in ("", ".", "..") for seg in segments):
         msg = f"archive key must not contain empty or traversal segments, got {key!r}"
@@ -80,7 +88,6 @@ def _validate_key(key: str) -> str:
     if any("\x00" in seg for seg in segments):
         msg = f"archive key must not contain NUL, got {key!r}"
         raise ArchiveKeyError(msg)
-    return key
 
 
 def _mkdir_private(directory: Path) -> None:
