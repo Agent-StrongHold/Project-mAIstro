@@ -171,8 +171,7 @@ class Warden:
             # which is the defect this whole check exists to remove.
             logger.warning("L3 LLM classification unavailable; failing closed", exc_info=True)
             flags.append(
-                f"llm_classification:suspicious (model={self._classifier_model}, "
-                "mode=unavailable)"
+                f"llm_classification:suspicious (model={self._classifier_model}, mode=unavailable)"
             )
             return WardenVerdict(
                 clean=False,
