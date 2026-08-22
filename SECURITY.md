@@ -66,8 +66,8 @@ Real numeric caps found in the engine (grepped, not asserted from memory — eac
 | Limit | Value | File:constant | Purpose |
 |---|---|---|---|
 | Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py:81-82` (`window_size = 50 * 1024`, `overlap = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
-| Warden pattern-match timeout | 0.5 s | `security/warden/detector.py:27` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
-| Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py:32` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
+| Warden pattern-match timeout | 0.5 s | `security/warden/detector.py:32` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
+| Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py:34` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
 | Skill body size | 50,000 chars | `skills/parser.py:25` (`MAX_SKILL_BODY_LENGTH`) | Context-window-stuffing protection, enforced at both parse (`parser.py:116`) and import (`import_pipeline.py:210`) |
 | Learning store cap | 10,000 entries | `memory/learnings/store.py:15` (`MAX_LEARNINGS`) | OOM protection (FIFO-style bound on the in-memory store) |
 | `find_relevant` result cap | 10 results (default) | `memory/learnings/store.py:66` (`max_results: int = 10`) | Context-overflow protection |
