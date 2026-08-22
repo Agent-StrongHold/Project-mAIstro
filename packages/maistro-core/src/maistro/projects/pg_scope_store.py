@@ -113,7 +113,16 @@ class PgProjectScopeStore:
         return Project.model_validate(payload) if payload is not None else None
 
     async def lineage(self, project_id: str) -> list[Project]:
-        current = await self._require(project_id)
+        return await self._lineage(project_id)
+
+    async def _lineage(self, project_id: str, *, conn: Any = None) -> list[Project]:
+        """Root-first ancestry, optionally inside a caller's transaction.
+
+        `move_project` walks this while holding a lock it must not release, so
+        the walk has to be able to run on the caller's connection rather than
+        checking a row back out of the pool.
+        """
+        current = await self._require(project_id, conn=conn)
         workspace_id = current.workspace_id
         lineage: list[Project] = []
         seen: set[str] = set()
@@ -129,7 +138,7 @@ class PgProjectScopeStore:
                 break
             if current.parent_project_id is None:
                 raise ProjectIntegrityError("non-root Project lost its parent")
-            current = await self._require(current.parent_project_id)
+            current = await self._require(current.parent_project_id, conn=conn)
 
         lineage.reverse()
         return lineage
@@ -158,17 +167,30 @@ class PgProjectScopeStore:
             raise ProjectIntegrityError("Project cannot move across Workspaces")
         if parent.project_id == project.project_id:
             raise ProjectIntegrityError("Project cannot be its own parent")
-        ancestor_ids = {item.project_id for item in await self.lineage(parent_project_id)}
-        if project.project_id in ancestor_ids:
-            raise ProjectIntegrityError("Project move would create a cycle")
-
-        updated = project.model_copy(
-            update={
-                "parent_project_id": parent_project_id,
-                "updated_at": datetime.now(UTC),
+        # Check and write under one lock on the Workspace's Projects. Two
+        # callers concurrently moving A under B and B under A both observed the
+        # original tree, both passed, and both wrote — leaving a cycle that
+        # makes `lineage()` and every resolution built on it raise for good.
+        # Locking the whole Workspace serialises moves rather than trying to
+        # lock the particular rows a lineage walk will visit, which is not
+        # knowable before the walk.
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT project_id FROM canonical_projects WHERE workspace_id = $1 FOR UPDATE",
+                project.workspace_id,
+            )
+            ancestor_ids = {
+                item.project_id for item in await self._lineage(parent_project_id, conn=conn)
             }
-        )
-        await self._update_project(updated)
+            if project.project_id in ancestor_ids:
+                raise ProjectIntegrityError("Project move would create a cycle")
+            updated = project.model_copy(
+                update={
+                    "parent_project_id": parent_project_id,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._update_project(updated, conn=conn)
         return updated
 
     async def update_defaults(
@@ -201,6 +223,14 @@ class PgProjectScopeStore:
             (
                 "SELECT 1 FROM canonical_project_memberships WHERE project_id = $1 LIMIT 1",
                 "Project has ProjectMembership records",
+            ),
+            # Migration 010's foreign key is what actually stops this; the check
+            # is here so the caller gets the rule that refused rather than a
+            # constraint name. Without either, deleting a Project left durable
+            # Run history pointing at a Project that no longer existed.
+            (
+                "SELECT 1 FROM canonical_runs WHERE project_id = $1 LIMIT 1",
+                "Project has canonical Runs",
             ),
         )
         async with self._pool.acquire() as conn, conn.transaction():
@@ -270,11 +300,16 @@ class PgProjectScopeStore:
         project = await self._require(resource.project_id)
         if project.workspace_id != resource.workspace_id:
             raise ProjectIntegrityError("resource Workspace does not match Project")
-        existing = await self._resource_or_none(resource.resource_id)
-        if existing is not None and existing.workspace_id != resource.workspace_id:
-            raise ProjectIntegrityError("resource identity cannot cross Workspaces")
+        # The Workspace guard is in the conflict clause, not only in a check
+        # before it. Two Workspaces racing on one `resource_id` both saw no
+        # existing row here, and the unconditional DO UPDATE then let the loser
+        # replace the winner's workspace, project and payload — both calls
+        # reporting success while one Workspace's resource was silently moved.
+        # `RETURNING` distinguishes "written" from "refused": the predicate
+        # makes the update a no-op for a foreign Workspace, and no row comes
+        # back.
         async with self._pool.acquire() as conn:
-            await conn.execute(
+            written = await conn.fetchval(
                 """INSERT INTO canonical_project_resources
                    (resource_id, workspace_id, project_id, resource_type, payload)
                    VALUES ($1, $2, $3, $4, $5)
@@ -282,13 +317,17 @@ class PgProjectScopeStore:
                      workspace_id = EXCLUDED.workspace_id,
                      project_id = EXCLUDED.project_id,
                      resource_type = EXCLUDED.resource_type,
-                     payload = EXCLUDED.payload""",
+                     payload = EXCLUDED.payload
+                   WHERE canonical_project_resources.workspace_id = EXCLUDED.workspace_id
+                   RETURNING resource_id""",
                 resource.resource_id,
                 resource.workspace_id,
                 resource.project_id,
                 resource.resource_type,
                 resource.model_dump(mode="json"),
             )
+        if written is None:
+            raise ProjectIntegrityError("resource identity cannot cross Workspaces")
         return resource
 
     async def visible_resources(
@@ -329,16 +368,16 @@ class PgProjectScopeStore:
 
     # ── internals ─────────────────────────────────────────────────
 
-    async def _update_project(self, project: Project) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE canonical_projects
-                   SET parent_project_id = $1, payload = $2
-                   WHERE project_id = $3""",
-                project.parent_project_id,
-                project.model_dump(mode="json"),
-                project.project_id,
-            )
+    async def _update_project(self, project: Project, *, conn: Any = None) -> None:
+        sql = """UPDATE canonical_projects
+                 SET parent_project_id = $1, payload = $2
+                 WHERE project_id = $3"""
+        params = (project.parent_project_id, project.model_dump(mode="json"), project.project_id)
+        if conn is not None:
+            await conn.execute(sql, *params)
+            return
+        async with self._pool.acquire() as acquired:
+            await acquired.execute(sql, *params)
 
     async def _root_or_none(self, workspace_id: str) -> Project | None:
         payload = await self._payload(
@@ -361,15 +400,21 @@ class PgProjectScopeStore:
         )
         return ProjectScopedResource.model_validate(payload) if payload is not None else None
 
-    async def _require(self, project_id: str) -> Project:
-        project = await self.get(project_id)
-        if project is None:
+    async def _require(self, project_id: str, *, conn: Any = None) -> Project:
+        payload = await self._payload(
+            "SELECT payload FROM canonical_projects WHERE project_id = $1",
+            project_id,
+            conn=conn,
+        )
+        if payload is None:
             raise ProjectNotFound(project_id)
-        return project
+        return Project.model_validate(payload)
 
-    async def _payload(self, sql: str, *params: Any) -> Any | None:
-        async with self._pool.acquire() as conn:
+    async def _payload(self, sql: str, *params: Any, conn: Any = None) -> Any | None:
+        if conn is not None:
             return await conn.fetchval(sql, *params)
+        async with self._pool.acquire() as acquired:
+            return await acquired.fetchval(sql, *params)
 
 
 __all__ = ["PgProjectScopeStore"]
