@@ -111,6 +111,12 @@ jobs:
       # and an in-memory store cannot fail (#132).
       - name: Execution-spine conformance
         run: uv run pytest packages/maistro-core/tests/runs -v --tb=short
+      - name: Security and durable-event conformance
+        run: >-
+          uv run pytest
+          packages/maistro-core/tests/security
+          packages/maistro-core/tests/events
+          -v --tb=short
 
   test:
     runs-on: ubuntu-latest
