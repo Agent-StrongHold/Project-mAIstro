@@ -304,25 +304,61 @@ jobs:
             -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
           uv run coverage report -m --skip-covered
 
-      - name: Coverage gate (publish-set floor, 88%)
-        env:
-          PYTHONPATH: packages/maistro-core/src
-        run: |
-          # Re-floored for C2/#287: extending the measured scope from
-          # maistro-core alone (97%) to the full 5-package publish set drops the
-          # combined number, because canvas/evolve/rsi/bootstrap don't carry
-          # core's coverage discipline yet — measured 2026-07-29: 89.63%
-          # (3,152 missed of 35,656 statements + branches). 88 is a deliberate
-          # floor below that, not the measured value, leaving headroom for
-          # in-flight work while still catching a real regression — same
-          # philosophy as the previous core-only 95-vs-97 gap. Raise as the
-          # newer packages' coverage improves.
+          # The publish-set floor is evaluated HERE, before any non-publish-set
+          # data joins the database. `coverage report` scopes by --include/--omit
+          # only, so appending maistro-server first would have put it under this
+          # floor no matter what the comment said — the doc and the arithmetic
+          # would have disagreed, silently, in the direction of a stricter gate
+          # than anyone signed up for.
           #
-          # TODO(touched-files): implement per-file enforcement with diff-cover
-          # against origin/${{ github.base_ref }}; until then this project-wide
-          # floor is the only coverage gate.
-          uv run coverage report --fail-under=88 || \
-            (echo "::error::publish-set coverage below the 88% floor" && exit 1)
+          # 88 -> 86 on 2026-08-22, and this is a widened MEASUREMENT rather than
+          # a regression. `include_namespace_packages` (added in this change) let
+          # coverage discover never-imported files under
+          # `maistro_canvas/canvas/`, a directory with no `__init__.py` whose
+          # four modules had been invisible to this gate entirely. The publish
+          # set went from 41,469 statements at 89% to 42,290 at 87.43%: the +821
+          # are 100% uncovered and always were. Nothing got worse — the number
+          # stopped being flattering, which is the entire point of the flag.
+          #
+          # 86 keeps roughly the 1.5 points of headroom the 88-under-89.63 choice
+          # had. The newly-visible debt is #171, NOT an omit pattern here:
+          # re-hiding it is the one response that would make discovering it
+          # pointless. Raise this floor back as #171 lands.
+          uv run coverage report --fail-under=86 || \
+            (echo "::error::publish-set coverage below the 86% floor" && exit 1)
+
+          # Now widen for the DIFF gate only. maistro-server is outside the
+          # publish set, but "the file you touched" is well defined even where
+          # "the package's aggregate" is not yet governed.
+          uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
+            -m pytest packages/maistro-server/tests --timeout=30 -q
+          uv run coverage xml -o coverage.xml
+
+      # ----- Pillar 1b: diff coverage (the lines this PR added) -----
+      #
+      # The aggregate above cannot see a change: a new 400-line module landing
+      # at 0% moves a 42,000-statement total by a fraction of a point.
+      #
+      # PER FILE, and branch arcs included — both learned from review of the
+      # first version, which wrapped `diff-cover`. That tool pools every changed
+      # line before applying its threshold, so five uncovered lines in a new file
+      # plus ninety-five covered elsewhere passed at 95% — the aggregate defect
+      # again, one scope smaller. It also scores line hits only, so `--branch`
+      # collected arc data that nothing read.
+      #
+      # THRESHOLDS, measured over every PR merged into `develop` since 15abb9d
+      # (#124, #125, #128, #123, #126), per file: worst line coverage 94.9%,
+      # worst branch coverage 85.7%. Floors of 90 and 80 sit under each measured
+      # worst — separate numbers because the distributions differ, and a single
+      # shared floor would have to be the lower of the two, which would stop
+      # enforcing anything on lines. Raise as the sample grows.
+      - name: Diff coverage gate (per file, lines 90% / branches 80%)
+        # A push has no base_ref, so there is no "lines this PR touched" to
+        # measure. The aggregate floor is what governs a push.
+        if: github.event_name == 'pull_request'
+        run: |
+          uv run python scripts/check-diff-coverage.py coverage.xml \
+            --base "origin/${{ github.base_ref }}"
 
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml
