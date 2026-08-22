@@ -21,12 +21,15 @@ class PgOutcomeStore:
         """Record an outcome. Returns outcome ID."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
+                # org_id is written, not omitted: every read path on this
+                # store filters by it, so an outcome recorded without one is
+                # invisible to the queries that exist to find it.
                 """INSERT INTO outcomes
                    (request_id, task_type, model_used, provider,
                     tool_calls, success, error_type, response_time_ms,
-                    team_id, user_id, agent_id,
+                    org_id, team_id, user_id, agent_id,
                     input_tokens, output_tokens, charged_microchips, pricing_version)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
@@ -36,6 +39,7 @@ class PgOutcomeStore:
                 outcome.success,
                 outcome.error_type,
                 outcome.response_time_ms,
+                outcome.org_id,
                 outcome.team_id,
                 outcome.user_id,
                 outcome.agent_id or "",

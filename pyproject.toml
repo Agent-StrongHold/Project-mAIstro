@@ -18,6 +18,9 @@ dependencies = [
     "asyncpg>=0.30",
     "pgvector>=0.3",
     "alembic>=1.14",
+    # Sync driver for Alembic. asyncpg cannot serve SQLAlchemy's sync engine,
+    # and bare postgresql:// resolves to psycopg2, which was never declared.
+    "psycopg[binary]>=3.2",
     # Utilities
     "pydantic-settings>=2.7",
     "structlog>=24.4",

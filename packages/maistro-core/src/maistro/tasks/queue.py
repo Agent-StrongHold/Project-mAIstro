@@ -36,13 +36,6 @@ from maistro.tasks.status import can_transition
 logger = structlog.get_logger()
 
 
-def _naive(value: datetime | None) -> datetime | None:
-    """TaskRecord columns are timezone-naive; store UTC wall-clock values."""
-    if value is None:
-        return None
-    return value.astimezone(UTC).replace(tzinfo=None)
-
-
 def _record_values(task: TaskResponse) -> dict[str, Any]:
     """Snapshot the TaskRecord column values for one task, taken synchronously
     so the fire-and-forget write cannot race later in-memory mutation."""
@@ -56,8 +49,8 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
         "result": task.result.model_dump(mode="json") if task.result else None,
-        "started_at": _naive(task.started_at),
-        "completed_at": _naive(task.completed_at),
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
     }
 
 

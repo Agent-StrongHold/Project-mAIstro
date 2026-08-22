@@ -337,14 +337,10 @@
       "id": "persistence-postgres",
       "subsystem": "Relational persistence",
       "disposition": "CONNECT",
-      "rationale": "The PostgreSQL half of the persistence layer. ADR-082226-5104 makes PostgreSQL the durable system of record, so these are the canonical stores and the container simply does not wire them \u2014 see #122, which also covers the silent in-memory fallback.",
-      "root": "maistro.container, for a postgresql:// database_url (#122, ADR-082226-5104)",
+      "rationale": "The PostgreSQL half of the persistence layer. #122 wired the four the container selects for a postgresql:// database_url \u2014 learnings, outcomes, sessions and audit \u2014 so only the prompt manager is left. It stays CONNECT rather than RETIRE because ADR-082226-5104 makes PostgreSQL the durable system of record and prompts belong there for the same reasons the rest do; nothing has replaced it, the container simply has no prompt-manager wiring on either backend (sqlite_prompts is unwired too, in the persistence-sqlite-homelab group).",
+      "root": "maistro.container prompt-manager wiring, for a postgresql:// database_url",
       "modules": [
-        "maistro.persistence.pg_audit",
-        "maistro.persistence.pg_learnings",
-        "maistro.persistence.pg_outcomes",
-        "maistro.persistence.pg_prompts",
-        "maistro.persistence.pg_sessions"
+        "maistro.persistence.pg_prompts"
       ]
     },
     {

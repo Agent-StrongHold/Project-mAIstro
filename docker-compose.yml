@@ -54,7 +54,11 @@ services:
       retries: 3
 
   postgres:
-    image: pgvector/pgvector:pg17
+    # Supported majors are 17-19; 18 is the default here and what CI matrixes
+    # against (alongside 17). Override to pin a different one — note that a
+    # major upgrade over an existing `pgdata` volume needs pg_upgrade, so
+    # changing this on a live deployment is not just an image swap.
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18}
     container_name: maistro-postgres
     environment:
       POSTGRES_USER: maistro

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import asyncpg
@@ -22,6 +23,31 @@ DEFAULT_DB_POOL_MAX_SIZE = 50
 DEFAULT_DB_COMMAND_TIMEOUT_S = 30
 
 _pool: asyncpg.Pool | None = None
+
+
+async def _register_json_codecs(conn: asyncpg.Connection) -> None:
+    """Teach a connection to pass Python values through `json`/`jsonb` columns.
+
+    asyncpg has no default codec for either type: it hands `jsonb` back as a raw
+    string and refuses a Python list or dict on the way in —
+
+        asyncpg.exceptions.DataError: invalid input for query argument $2:
+        ['deploy', 'rollback'] (expected str, got list)
+
+    which is what `PgLearningStore.store` hit on `trigger_keys`, a JSONB column
+    it passes a list to. Registering the codec once per connection is the fix
+    asyncpg documents, and it belongs here rather than in each store: the
+    alternative is every call site remembering to `json.dumps` on write and
+    `json.loads` on read, and the read half is the one that gets forgotten,
+    because a JSON string is truthy and iterable and fails much later.
+    """
+    for type_name in ("json", "jsonb"):
+        await conn.set_type_codec(
+            type_name,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
 
 
 async def get_pool(
@@ -45,6 +71,7 @@ async def get_pool(
             min_size=min_size,
             max_size=max_size,
             command_timeout=command_timeout,
+            init=_register_json_codecs,
         )
         logger.info(
             "PostgreSQL pool created: %s (min_size=%d, max_size=%d)",

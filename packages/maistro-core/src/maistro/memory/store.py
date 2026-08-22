@@ -86,9 +86,9 @@ class TaskRecord(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     constraints: Mapped[list[Any] | None] = mapped_column(JSONB)
     branch: Mapped[str | None] = mapped_column(String(200))
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MemoryEntry(Base):
@@ -101,7 +101,7 @@ class MemoryEntry(Base):
     layer: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Vector embedding — 1536 dims (OpenAI ada-002 compatible)
     # Will be None if pgvector is not installed
@@ -121,6 +121,6 @@ class KnowledgeNode(Base):
     file_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     depends_on: Mapped[list[Any] | None] = mapped_column(JSONB)  # list of node names
     metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (Index("ix_knowledge_workspace_type", "workspace", "node_type"),)
