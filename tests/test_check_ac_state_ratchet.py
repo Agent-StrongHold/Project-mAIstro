@@ -26,7 +26,24 @@ TOTALS = {
     "criteria_claimed_but_unproven": 0,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
+    "specs_implementing_nothing": 76,
+    "adrs_without_implementing_spec": 35,
+    "specs_declaring_no_criteria": 7,
 }
+
+
+def test_the_fixture_covers_every_ratcheted_counter(gate):
+    """A missing key here surfaces as a `KeyError` inside the gate.
+
+    `_bank` and `_compare` both index `totals[name]` for every ratcheted
+    counter, so a fixture that has fallen behind fails five tests at once with a
+    traceback that points at the gate rather than at the fixture. Naming the
+    drift directly is the difference between a five-minute fix and a confusing
+    one — which is the same argument the gate itself makes about ceilings.
+    """
+    assert set(gate.RATCHETED) == set(TOTALS), "TOTALS is missing: " + ", ".join(
+        sorted(set(gate.RATCHETED) - set(TOTALS))
+    )
 
 
 @pytest.fixture(scope="module")

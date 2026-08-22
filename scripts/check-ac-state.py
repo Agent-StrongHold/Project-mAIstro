@@ -85,6 +85,24 @@ ID_RE = re.compile(r"^id:\s*(\S+)", re.MULTILINE)
 STATUS_RE = re.compile(r"^status:\s*(.+?)\s*$", re.MULTILINE)
 LAYER_RE = re.compile(r"^layer:\s*(.+?)\s*$", re.MULTILINE)
 IMPLEMENTS_RE = re.compile(r"^implements:\s*(.*)$((?:\n  - .*)*)", re.MULTILINE)
+
+#: How a spec says "this document has no acceptance criteria, on purpose".
+#:
+#: A body marker rather than a front-matter field: the registry schema is
+#: `extra = forbid`, so a new field is a schema change every consumer inherits,
+#: and this needs to be visible in the diff far more than it needs to be
+#: queryable. The reason is mandatory — an escape hatch that does not have to
+#: justify itself is just a way to make the counter go down.
+NON_MEASURABLE_RE = re.compile(
+    r"<!--\s*ac-state:\s*non-measurable\s*[-\u2014:]\s*(?P<reason>\S.*?)-->",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: ADR statuses that mean the decision is taken, so implementation is owed.
+#: `Proposed` is excluded by definition — a decision not yet made cannot be
+#: owed an implementation, and counting it would make writing down an idea look
+#: like incurring debt.
+DECISION_TAKEN = ("Accepted", "Implemented")
 AC_MODULES_RE = re.compile(r"^ac[-_]modules:\s*$((?:\n  \S+:\s*\S+)*)", re.MULTILINE)
 
 
@@ -417,6 +435,7 @@ def collect_specs(
                 "layer": (LAYER_RE.search(fm) or [None, "?"])[1],
                 "declared_status": (STATUS_RE.search(fm) or [None, "?"])[1],
                 "implements": _list_field(fm, IMPLEMENTS_RE),
+                "declares_non_measurable": bool(NON_MEASURABLE_RE.search(text)),
                 "has_ac_heading": bool(AC_HEADING_RE.search(text)),
                 "criteria_total": len(criteria),
                 "annotated": sum(1 for c in criteria if c.module),
@@ -521,6 +540,10 @@ RATCHETED = (
     "criteria_claimed_but_unproven",
     "scenarios_without_ac_tag",
     "gherkin_parse_errors",
+    # The chain checked for absence rather than breakage (#164).
+    "specs_implementing_nothing",
+    "adrs_without_implementing_spec",
+    "specs_declaring_no_criteria",
 )
 
 
@@ -688,6 +711,40 @@ def main(argv: list[str]) -> int:
     contradicted = [_row(d, kinds[id(d)]) for d in claiming if d["tier"] in RUNGS[:-1]]
     unverifiable = [_row(d, kinds[id(d)]) for d in claiming if d["tier"] in ("none", "unmeasured")]
 
+    # ---- the chain checked in the *absent* direction (#164) --------------
+    #
+    # The registry refuses a reference that does not resolve, so every link that
+    # exists is real. Nothing asked whether the link exists at all: `implements:
+    # []` is valid front matter, so a spec could name no ADR and an ADR could be
+    # implemented by nothing, and both were clean. That makes "specs map to
+    # ADRs" mean "specs do not *mis*-map to ADRs" — a much weaker claim than the
+    # one a green build is read as supporting.
+    orphan_specs = [{"id": s["id"], "file": s["file"]} for s in specs if not s["implements"]]
+
+    # An ADR is owed an implementation once the decision is taken. Carrying its
+    # own criteria counts: ADR-063..066 hold 147 scenarios written before the
+    # spec split, and calling those uncovered would report measured work as
+    # missing.
+    implemented_adrs = {ref.split("#")[-1] for s in specs for ref in s["implements"]}
+    uncovered_adrs = [
+        {"id": a["id"], "file": a["file"], "declared_status": a["declared_status"]}
+        for a in adrs
+        if a["declared_status"] in DECISION_TAKEN
+        and a["id"] not in implemented_adrs
+        and not a["own_criteria"]
+    ]
+
+    # Split out of `specs_awaiting_retrofit` deliberately. That counter holds
+    # documents with an acceptance heading and no ids yet — "criteria not
+    # written". These have no heading and no criteria at all, which is a
+    # different statement, and merging the two let "there are none" hide inside
+    # "there are none *yet*".
+    silent_specs = [
+        {"id": s["id"], "file": s["file"]}
+        for s in specs
+        if not s["criteria_total"] and not s["has_ac_heading"] and not s["declares_non_measurable"]
+    ]
+
     payload = {
         "generated_by": "scripts/check-ac-state.py",
         "measured": passing is not None,
@@ -712,11 +769,17 @@ def main(argv: list[str]) -> int:
             "gherkin_parse_errors": sum(len(d["gherkin_parse_errors"]) for d in (*specs, *adrs)),
             "completion_claims_contradicted": len(contradicted),
             "completion_claims_unverifiable": len(unverifiable),
+            "specs_implementing_nothing": len(orphan_specs),
+            "adrs_without_implementing_spec": len(uncovered_adrs),
+            "specs_declaring_no_criteria": len(silent_specs),
         },
         "markers_without_criterion": orphans,
         "criteria_claimed_but_unproven": false_claims,
         "completion_claims_contradicted": contradicted,
         "completion_claims_unverifiable": unverifiable,
+        "specs_implementing_nothing": orphan_specs,
+        "adrs_without_implementing_spec": uncovered_adrs,
+        "specs_declaring_no_criteria": silent_specs,
         "specs": specs,
         "adrs": adrs,
     }
@@ -742,6 +805,9 @@ def main(argv: list[str]) -> int:
     print(f"  gherkin blocks that fail parse: {t['gherkin_parse_errors']}")
     print(f"  'Implemented', contradicted  : {t['completion_claims_contradicted']}")
     print(f"  'Implemented', unverifiable  : {t['completion_claims_unverifiable']}")
+    print(f"  specs implementing no ADR    : {t['specs_implementing_nothing']}")
+    print(f"  taken ADRs with no spec      : {t['adrs_without_implementing_spec']}")
+    print(f"  specs with no criteria at all: {t['specs_declaring_no_criteria']}")
     for rung in RUNGS:
         n = sum(1 for s in specs if s["criteria_total"] and s["tier"] == rung)
         print(f"  specs at tier {rung:<10}: {n}")

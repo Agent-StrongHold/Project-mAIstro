@@ -209,3 +209,68 @@ class TestGherkin:
         adrs = check.collect_adrs(specs, {}, set(), None)
         bad = [d["id"] for d in (*specs, *adrs) if d["gherkin_parse_errors"]]
         assert bad == []
+
+
+class TestNonMeasurableMarker:
+    """The escape hatch for a spec that legitimately has no criteria (#164).
+
+    An opt-out that costs nothing is a way to make a counter fall without doing
+    anything, so the marker is only honoured when it carries a reason.
+    """
+
+    def test_a_marker_with_a_reason_is_recognised(self, check):
+        m = check.NON_MEASURABLE_RE.search(
+            "<!-- ac-state: non-measurable - a glossary, nothing to assert -->"
+        )
+        assert m and m.group("reason").strip() == "a glossary, nothing to assert"
+
+    def test_an_em_dash_reads_the_same_as_a_hyphen(self, check):
+        """Markdown tooling and humans both produce the em dash; rejecting it
+        would make the hatch depend on which one somebody typed."""
+        assert check.NON_MEASURABLE_RE.search("<!-- ac-state: non-measurable — because -->")
+
+    def test_the_marker_is_case_insensitive(self, check):
+        assert check.NON_MEASURABLE_RE.search("<!-- AC-State: Non-Measurable: because -->")
+
+    def test_a_marker_with_no_reason_does_not_count(self, check):
+        """The whole point of the hatch is that it justifies itself."""
+        assert check.NON_MEASURABLE_RE.search("<!-- ac-state: non-measurable -->") is None
+        assert check.NON_MEASURABLE_RE.search("<!-- ac-state: non-measurable -  -->") is None
+
+    def test_prose_mentioning_the_words_does_not_count(self, check):
+        assert check.NON_MEASURABLE_RE.search("This spec is non-measurable, sadly.") is None
+
+
+class TestDecisionTaken:
+    def test_proposed_is_not_owed_an_implementation(self, check):
+        """Counting `Proposed` would make writing an idea down look like
+        incurring debt, which would teach people not to write ideas down."""
+        assert "Proposed" not in check.DECISION_TAKEN
+
+    def test_both_taken_statuses_are_owed(self, check):
+        assert set(check.DECISION_TAKEN) == {"Accepted", "Implemented"}
+
+
+class TestAbsenceCountersAreRatcheted:
+    def test_all_three_may_only_fall(self, check):
+        """A counter that is measured but not ratcheted is a dashboard, not a
+        gate — it would report the chain breaking and let the PR through."""
+        for name in (
+            "specs_implementing_nothing",
+            "adrs_without_implementing_spec",
+            "specs_declaring_no_criteria",
+        ):
+            assert name in check.RATCHETED
+
+    def test_the_reverse_index_is_derived_from_spec_front_matter(self, check):
+        """Not from a checked-in file.
+
+        A recorded ADR->spec index is a file somebody has to regenerate, and the
+        one nobody regenerates is exactly how a stale entry absorbs a later
+        regression. Deriving it from `implements:` at run time also means two
+        concurrent PRs adding specs under one ADR cannot collide.
+        """
+        import inspect
+
+        source = inspect.getsource(check.collect_adrs)
+        assert 'spec["implements"]' in source
