@@ -104,9 +104,15 @@ malformed body, a partial answer that names no verdict, and the judge being
 unreachable altogether — since the point of the fix is that none of those may
 read as `safe`.
 
+Ten more maistro-core node IDs arrive with PII-evasion normalization (#70): five
+for the acceptance and same-length homoglyph-offset invariants, then five from
+adversarial review covering Base64 SSNs, percent-encoded connection strings,
+form-encoded phones, encoded-span absorption/idempotence, and partial-overlap
+refusal.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6399 | `ci.yml` |
+| `packages/maistro-core/tests` | 6409 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |
