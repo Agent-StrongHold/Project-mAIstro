@@ -93,9 +93,7 @@ class EngineService:
                 # so the `except` handler further down referenced it before this
                 # line had run and raised `UnboundLocalError` — masking whatever
                 # had actually gone wrong with the TaskBackend.
-                logger.warning(
-                    "maistro-core bridge failed (%s) — falling back to stub", exc
-                )
+                logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
                 self._agent_port = StubAgentPort()
         else:
             self._agent_port = StubAgentPort()
