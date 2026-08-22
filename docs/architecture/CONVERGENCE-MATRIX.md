@@ -118,7 +118,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
 | Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/10` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45 |
-| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `21/57` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
+| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/57` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
 | Request front door and DI | `maistro.container.route_request` | `0/2` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/10` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `0/5` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
@@ -137,7 +137,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on the Invocation, not a side ledger | #56, #63 |
 | External integrations | `maistro.integrations` exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from a product route | #34 |
 | Delivery gateway | none | `5/5` | CONNECT | ADR-047 | a delivery effect recorded as an Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `18/51` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/51` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
@@ -179,10 +179,18 @@ currently holds belongs to `Run`/`Invocation`.
   product path calls it. The "one front door" claim is currently a design, not a fact.
 - **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
   largest self-contained retirement candidate.
-- **Reachability is not evenly distributed debt.** Of 232 unreachable modules, roughly half sit
-  in four subsystems (`maistro.agents` 26, `maistro.graph` 21, `maistro.security` 18,
-  `maistro.builders` 15), which is why [#34](https://github.com/Agent-StrongHold/Project-mAIstro/issues/34)
-  burns them down by subsystem rather than by file.
+- **Reachability is not evenly distributed debt.** Of 207 unreachable modules, over a third sit
+  in four subsystems (`maistro.agents` 26, `maistro.builders` 15, Conductor `services` 15,
+  `maistro.skills`/`code_registry`/`repertoire` 12), which is why
+  [#34](https://github.com/Agent-StrongHold/Project-mAIstro/issues/34) burns them down by
+  subsystem rather than by file.
+- **Twenty-five of the modules previously counted as unreachable were never dead.** The node
+  catalog registers its implementations with an eager `importlib.import_module` sweep, which an
+  AST walk over `import` statements cannot see. Teaching `check-reachability.py` that idiom
+  dropped the baseline from 232 to 207 with no code change and no fake imports — the gate was
+  reporting its own blind spot. Giving the remaining 207 an explicit
+  CONNECT/LIBRARY/RETIRE disposition each is
+  [#33](https://github.com/Agent-StrongHold/Project-mAIstro/issues/33).
 
 ## Corrections to the issue that requested this
 

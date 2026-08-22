@@ -100,3 +100,95 @@ def test_module_becoming_reachable_fails_until_the_baseline_is_pruned(
     out = capsys.readouterr().out
     assert "maistro.nonexistent_module" in out
     assert "must shrink" in out
+
+
+class TestEagerImportSweep:
+    """A package that registers its plugins with ``importlib.import_module``.
+
+    The node catalog does this: a literal tuple of sibling module names, imported
+    in a loop at package-import time so every kind self-registers. Those imports
+    are real — the modules run whenever the package is imported — but an AST walk
+    over `import` statements cannot see them, so an honest catalog looked like
+    eighteen dead modules. The recogniser must be narrow enough that a wrong
+    "reachable" verdict stays impossible, since that is the failure the whole
+    gate exists to prevent.
+    """
+
+    @staticmethod
+    def _sweep(check, source: str) -> set[str]:
+        import ast
+
+        return check._eager_sweep(ast.parse(source), "pkg")
+
+    def test_a_name_bound_tuple_swept_in_a_loop_is_followed(self, check):
+        source = """
+import importlib
+
+def _load():
+    module_names = ("alpha", "beta")
+    for name in module_names:
+        importlib.import_module(f"{__name__}.{name}")
+"""
+        assert self._sweep(check, source) == {"pkg.alpha", "pkg.beta"}
+
+    def test_an_inline_literal_sequence_is_followed(self, check):
+        source = """
+from importlib import import_module
+
+def _load():
+    for name in ["alpha"]:
+        import_module(f"{__name__}.{name}")
+"""
+        assert self._sweep(check, source) == {"pkg.alpha"}
+
+    def test_a_non_literal_iterable_is_not_guessed_at(self, check):
+        """Names computed at run time stay unresolved. Reporting them reachable
+        would be a guess, and a wrong one is invisible."""
+        source = """
+import importlib
+
+def _load():
+    for name in discover_plugins():
+        importlib.import_module(f"{__name__}.{name}")
+"""
+        assert self._sweep(check, source) == set()
+
+    def test_a_loop_over_strings_without_the_import_is_not_a_sweep(self, check):
+        """Any function may loop over a tuple of strings. Only the one that
+        imports them counts."""
+        source = """
+def _labels():
+    for name in ("alpha", "beta"):
+        print(name)
+"""
+        assert self._sweep(check, source) == set()
+
+    def test_a_differently_shaped_interpolation_is_not_matched(self, check):
+        """Only ``f"{__name__}.{loop_variable}"`` resolves. A nested or
+        prefixed target would name a different module than the one computed."""
+        source = """
+import importlib
+
+def _load():
+    for name in ("alpha",):
+        importlib.import_module(f"{__name__}.backends.{name}")
+        importlib.import_module(f"other.{name}")
+"""
+        assert self._sweep(check, source) == set()
+
+    def test_the_loop_variable_must_be_the_one_interpolated(self, check):
+        source = """
+import importlib
+
+def _load():
+    for name in ("alpha",):
+        importlib.import_module(f"{__name__}.{other}")
+"""
+        assert self._sweep(check, source) == set()
+
+    def test_the_node_catalog_is_reachable_through_its_sweep(self, check):
+        """The regression this recogniser exists for: every node module the
+        catalog imports must be reachable, since the catalog itself is."""
+        unreachable, _ = check.unreachable_modules()
+        swept = [module for module in unreachable if module.startswith("maistro.graph.nodes.")]
+        assert swept == []

@@ -155,12 +155,104 @@ def _collect_modules(
     return mods
 
 
+def _eager_sweep(tree: ast.AST, selfmod: str) -> set[str]:
+    """Sibling modules a package imports by name in an eager-import sweep.
+
+    A node/plugin catalog registers its implementations by importing them at
+    package-import time::
+
+        module_names = ("jira_poll", "llm_summarize", ...)
+        for name in module_names:
+            importlib.import_module(f"{__name__}.{name}")
+
+    Those imports are real — the modules run on every import of the package —
+    but they are invisible to an AST walk that only reads `import` statements,
+    so an honest catalog looked like eighteen dead modules. Recognising the
+    idiom is the difference between the gate reporting dead code and reporting
+    its own blind spot.
+
+    Deliberately narrow: the loop's iterable must be a literal tuple/list of
+    strings (or a name bound to one in the same scope), and the interpolation
+    must be exactly ``f"{__name__}.{loop_variable}"``. Anything else is left
+    unresolved rather than guessed at, because a wrong "reachable" verdict is
+    the failure this gate exists to prevent.
+    """
+    out: set[str] = set()
+    for scope in ast.walk(tree):
+        if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Module):
+            continue
+        literals = _string_sequences(scope)
+        for loop in ast.walk(scope):
+            if not isinstance(loop, ast.For) or not isinstance(loop.target, ast.Name):
+                continue
+            names = _sequence_strings(loop.iter, literals)
+            if not names:
+                continue
+            if not any(_is_sibling_import(call, loop.target.id) for call in ast.walk(loop)):
+                continue
+            out.update(f"{selfmod}.{name}" for name in names)
+    return out
+
+
+def _string_sequences(scope: ast.AST) -> dict[str, tuple[str, ...]]:
+    """Local names bound to a literal tuple/list of strings."""
+    bound: dict[str, tuple[str, ...]] = {}
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and (values := _literal_strings(node.value)):
+            bound[target.id] = values
+    return bound
+
+
+def _literal_strings(node: ast.expr) -> tuple[str, ...]:
+    if not isinstance(node, ast.Tuple | ast.List):
+        return ()
+    values = [
+        element.value
+        for element in node.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    ]
+    return tuple(values) if len(values) == len(node.elts) else ()
+
+
+def _sequence_strings(node: ast.expr, bound: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return bound.get(node.id, ())
+    return _literal_strings(node)
+
+
+def _is_sibling_import(node: ast.AST, loop_variable: str) -> bool:
+    """True for ``importlib.import_module(f"{__name__}.{loop_variable}")``."""
+    if not isinstance(node, ast.Call) or len(node.args) != 1:
+        return False
+    callee = node.func
+    name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
+    if name != "import_module":
+        return False
+    template = node.args[0]
+    if not isinstance(template, ast.JoinedStr) or len(template.values) != 3:
+        return False
+    head, dot, tail = template.values
+    return (
+        isinstance(head, ast.FormattedValue)
+        and isinstance(head.value, ast.Name)
+        and head.value.id == "__name__"
+        and isinstance(dot, ast.Constant)
+        and dot.value == "."
+        and isinstance(tail, ast.FormattedValue)
+        and isinstance(tail.value, ast.Name)
+        and tail.value.id == loop_variable
+    )
+
+
 def _imports(path: Path, selfmod: str) -> set[str]:
     try:
         tree = ast.parse(path.read_text(errors="replace"))
     except SyntaxError:
         return set()
-    out: set[str] = set()
+    out: set[str] = _eager_sweep(tree, selfmod)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             out.update(alias.name for alias in node.names)
