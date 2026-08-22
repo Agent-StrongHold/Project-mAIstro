@@ -160,9 +160,14 @@ class TestTierRouting:
         attributes only, because the lock's repr carries a memory address that
         differs between instances for reasons that are not leaks.
         """
-        control = {"canary": CANARY, "control": "a-different-value-entirely"}
+        # The control is empty, sharing nothing with the left side — not even
+        # the canary. An earlier version put CANARY in both, which meant a
+        # regression persisting a *transformed* canary (base64, truncated) left
+        # the two states equal, while the literal-canary test below searches
+        # only for the untransformed text. Encoded leaks were uncovered by a
+        # pair that claimed to cover them.
         assert await self._secret_state({"canary": CANARY, **payload}) == await self._secret_state(
-            control
+            {}
         ), "SECRET-tier state varied with the payload"
 
     #: Store attributes that cannot carry payload bytes: two injected callables
@@ -172,8 +177,17 @@ class TestTierRouting:
     _INERT_ATTRS = frozenset({"_encryptor", "_decryptor", "_lock"})
     _STATE_ATTRS = ("_audit", "_events", "_sealed")
 
-    async def _secret_state(self, payload: dict[str, Any]) -> str:
-        """Everything a SECRET-tier record leaves behind, with the hash masked."""
+    async def _secret_state(
+        self, payload: dict[str, Any], tier: SensitivityTier = SensitivityTier.SECRET
+    ) -> str:
+        """Everything a record of `tier` leaves behind, with the hash masked.
+
+        `tier` is a parameter so the anti-vacuity control below can run through
+        *this* helper rather than reimplementing it. A control that builds its
+        own representation still passes if this one is changed to return a
+        constant — and then the property test it is meant to protect has gone
+        vacuous with nothing to say so.
+        """
         store = InMemoryRecordStore()
         args = {"data": payload}
         event = ReplayEvent(
@@ -183,12 +197,13 @@ class TestTierRouting:
             kind="tool",
             request_hash=canonical_request_hash(args),
             payload={"request": args, "response": {"output": payload}},
-            tier=SensitivityTier.SECRET,
+            tier=tier,
         )
         await store.record(event)
 
-        [stored] = await store.events_for_trace("t")
-        assert stored.payload is None
+        if tier is SensitivityTier.SECRET:
+            [stored] = await store.events_for_trace("t")
+            assert stored.payload is None
 
         unclassified = set(store.__dict__) - self._INERT_ATTRS - set(self._STATE_ATTRS)
         assert not unclassified, (
@@ -204,28 +219,19 @@ class TestTierRouting:
     async def test_the_property_check_would_catch_a_payload_that_reached_the_store(self) -> None:
         """The property above passes if `_secret_state` compares nothing.
 
-        Recording at NORMAL tier keeps the payload, so two different payloads
-        must produce different state. If this ever passes, the comparison has
-        stopped being sensitive to payload content and the property test above
-        has become vacuous.
+        So this drives the **same helper**, at NORMAL tier, where the payload is
+        kept: two different payloads must produce different state. Route it
+        through a hand-built copy of the extraction instead and a
+        constant-returning `_secret_state` passes everything — the property, the
+        canary check, and this control — which is the failure this exists to
+        make impossible.
         """
-        seen = set()
-        for payload in ({"canary": CANARY, "x": "one"}, {"canary": CANARY, "x": "two"}):
-            store = InMemoryRecordStore()
-            args = {"data": payload}
-            await store.record(
-                ReplayEvent(
-                    trace_id="t",
-                    span_id="s",
-                    seq=0,
-                    kind="tool",
-                    request_hash=canonical_request_hash(args),
-                    payload={"request": args},
-                    tier=SensitivityTier.NORMAL,
-                )
-            )
-            seen.add(repr({name: store.__dict__[name] for name in self._STATE_ATTRS}))
-        assert len(seen) == 2, "the state comparison cannot see payload content at all"
+        first = await self._secret_state({"x": "one"}, tier=SensitivityTier.NORMAL)
+        second = await self._secret_state({"x": "two"}, tier=SensitivityTier.NORMAL)
+        assert first != second, (
+            "_secret_state() cannot see payload content at all, so the property "
+            "test above is comparing nothing"
+        )
 
     @pytest.mark.ac("SPEC-070226-2b70/AC-6")
     async def test_the_literal_canary_never_appears_in_the_stored_state(self) -> None:
