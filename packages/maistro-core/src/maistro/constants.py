@@ -25,3 +25,8 @@ PERMISSION_TTL = 3600
 
 # Max task description length for prompt-stuffing prevention
 PERMISSION_MAX_INPUT = 50_000
+
+# Sentinel tool-argument resource floors. Deployments may tighten these freely;
+# raising them requires an explicit security configuration override.
+TOOL_ARGUMENT_MAX_BYTES = 100 * 1024
+TOOL_ARGUMENT_MAX_DEPTH = 32
