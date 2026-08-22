@@ -95,9 +95,17 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+Five maistro-core node IDs arrive with PII-evasion normalization (#70): one per
+acceptance criterion — canonical NFKD/zero-width folding, the homoglyph,
+percent and Base64 views, the false-positive controls that keep ordinary
+non-Latin prose and non-PII Base64 unredacted, and the product paths that
+actually call the filter — plus one holding the homoglyph map to being
+index-for-index, since the confusable view's hits are redacted at the canonical
+string's offsets.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6384 | `ci.yml` |
+| `packages/maistro-core/tests` | 6389 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |

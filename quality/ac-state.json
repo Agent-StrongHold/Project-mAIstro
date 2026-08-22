@@ -9,16 +9,16 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 174,
-    "specs_with_ac_heading": 166,
-    "specs_with_ac_ids": 28,
+    "specs": 175,
+    "specs_with_ac_heading": 167,
+    "specs_with_ac_ids": 29,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 462,
-    "criteria_annotated": 191,
-    "markers_found": 180,
+    "criteria_declared": 466,
+    "criteria_annotated": 195,
+    "markers_found": 184,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 215,
+    "gherkin_criteria": 219,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 9,
@@ -4306,6 +4306,82 @@
             "Persona cannot manufacture authorization"
           ],
           "rung": "declared"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082126-3c9d",
+      "file": "docs/specs/SPEC-082126-3c9d-pii-evasion-normalization.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-073"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 4,
+      "annotated": 4,
+      "gherkin_criteria": 4,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 4
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082126-3c9d/AC-1",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Canonical Unicode normalization defeats compatibility and invisible evasions"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-2",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Common representation evasions do not hide real PII"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-3",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Detection views do not create generic encoding or non-Latin false positives"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-4",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Applicable runtime output paths use the hardened filter"
+          ],
+          "rung": "reachable"
         }
       ]
     },
@@ -10074,13 +10150,15 @@
       "id": "ADR-073",
       "file": "docs/adr/ADR-073-warden-sentinel.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
+      "specs": [
+        "SPEC-082126-3c9d"
+      ],
+      "measurable_specs": 1,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-073126-c4e1",
@@ -10387,6 +10465,18 @@
       "id": "ADR-082126-f69c",
       "file": "docs/adr/ADR-082126-f69c-recurrence-produces-runs.md",
       "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082226-4478",
+      "file": "docs/adr/ADR-082226-4478-retire-single-purpose-endpoints-for-one-governed-tool-surface.md",
+      "declared_status": "Proposed",
       "specs": [],
       "measurable_specs": 0,
       "own_criteria": 0,

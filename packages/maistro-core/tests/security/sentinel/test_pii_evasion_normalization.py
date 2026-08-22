@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003 — confusable Unicode literals are test fixtures
+# ruff: noqa: RUF001 — confusable Unicode literals are test fixtures
 
 """Acceptance coverage for normalized PII/secret detection on product paths."""
 
@@ -62,7 +62,9 @@ def test_detection_views_preserve_false_positive_controls_and_deterministic_reda
     assert scan_for_pii(ordinary_non_latin) == []
     assert scan_for_pii(harmless_encoded) == []
     assert scan_for_pii(luhn_invalid) == []
-    assert scan_and_redact(ordinary_non_latin)[0] == unicodedata.normalize("NFKD", ordinary_non_latin)
+    assert scan_and_redact(ordinary_non_latin)[0] == unicodedata.normalize(
+        "NFKD", ordinary_non_latin
+    )
 
     secret = base64.urlsafe_b64encode(b"AKIAIOSFODNN7EXAMPLE").decode().rstrip("=")
     once, _ = scan_and_redact(f"payload={secret}")
@@ -100,3 +102,21 @@ async def test_normalized_filter_is_used_on_direct_react_and_sentinel_post_call_
     )
     assert "АKIAIOSFODNN7EXAMPLE" not in post_call_result
     assert "[REDACTED:aws_key]" in post_call_result
+
+
+def test_the_homoglyph_fold_is_index_for_index_with_its_input() -> None:
+    """The confusable view is scanned but never returned. A hit found in it is
+    redacted out of the canonical string at the *same* offsets, so the fold has
+    to preserve length — a single entry mapping to two characters would shift
+    every span after it and leak the tail of a secret. `str.translate` allows
+    multi-character targets, so this is a property of the map, not of the call."""
+    from maistro.security.normalize import _HOMOGLYPHS, fold_homoglyphs
+
+    assert _HOMOGLYPHS, "an empty map would make this test vacuous"
+    for source, target in _HOMOGLYPHS.items():
+        assert isinstance(target, str) and len(target) == 1, (
+            f"U+{source:04X} folds to {target!r}, which is not one character"
+        )
+
+    sample = "".join(chr(c) for c in _HOMOGLYPHS)
+    assert len(fold_homoglyphs(sample)) == len(sample)

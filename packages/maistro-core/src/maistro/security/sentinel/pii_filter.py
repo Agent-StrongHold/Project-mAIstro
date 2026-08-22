@@ -77,6 +77,8 @@ def _ssn_ok(candidate: str) -> bool:
     return group != "00" and serial != "0000"
 
 
+# (type, pattern, validator). A validator narrows a shape-match to a real hit;
+# None means the pattern alone is specific enough.
 _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] = [
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}"), None),
     ("github_token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}"), None),
@@ -116,6 +118,9 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
         ),
         None,
     ),
+    # `[A-Za-z]`, not `[A-Z|a-z]`: the pipe is not alternation inside a
+    # character class, it is a literal `|`, so the old class matched TLDs
+    # containing a pipe character.
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), None),
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"), None),
     (
@@ -126,10 +131,14 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
         ),
         None,
     ),
+    # Personal data. These sit after the secret detectors so an overlapping
+    # span is claimed by the more specific credential type first.
     ("payment_card", re.compile(r"\b\d(?:[ -]?\d){12,18}\b"), _luhn_ok),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), _ssn_ok),
     (
         "phone",
+        # E.164 international form only: leading +, 8-15 digits with common
+        # separators. Bare local numbers are left alone on purpose (FP rate).
         re.compile(r"\+\d{1,3}[ -]?\(?\d{1,4}\)?(?:[ -]?\d{2,4}){2,4}"),
         lambda s: 8 <= sum(c.isdigit() for c in s) <= 15,
     ),
@@ -139,10 +148,10 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
 # for looking encoded. They are redacted only when decoded plaintext satisfies
 # one of the real PII validators above. Percent candidates exclude assignment
 # delimiters so ``value=someone%40example.com`` redacts only the encoded value.
-_PERCENT_TOKEN = re.compile(r"(?<![A-Za-z0-9._~%+\-])[A-Za-z0-9._~%+\-]*%[0-9A-Fa-f]{2}[A-Za-z0-9._~%+\-]*(?![A-Za-z0-9._~%+\-])")
-_BASE64_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{16,}={0,2}(?![A-Za-z0-9+/_=\-])"
+_PERCENT_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9._~%+\-])[A-Za-z0-9._~%+\-]*%[0-9A-Fa-f]{2}[A-Za-z0-9._~%+\-]*(?![A-Za-z0-9._~%+\-])"
 )
+_BASE64_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{16,}={0,2}(?![A-Za-z0-9+/_=\-])")
 
 
 def normalize_for_scan(text: str) -> str:
@@ -272,6 +281,10 @@ def scan_for_pii(text: str) -> list[PIIMatch]:
             end=end,
         )
 
+    # `fold_homoglyphs` is a `str.translate` over single-character targets, so
+    # the folded view is index-for-index with `canonical`. That is what lets a
+    # hit found here be redacted from `canonical` without recomputing offsets;
+    # `test_pii_evasion_normalization.py` holds the map to it.
     folded = fold_homoglyphs(canonical)
     if folded != canonical:
         for pii_type, start, end in _plain_hits(folded):
