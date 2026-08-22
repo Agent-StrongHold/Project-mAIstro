@@ -15,6 +15,26 @@ python3 scripts/check-suite-inventory.py            # check (what CI runs)
 python3 scripts/check-suite-inventory.py --update   # rewrite the counts below
 ```
 
+## Resolving a merge conflict here
+
+This file conflicts between any two branches that both add tests, because both
+edit the same counts. **Regenerate; do not hand-merge.** Taking either side
+gives a number that matches neither branch, and hand-adding the two deltas is
+guesswork that happens to be right until it is not:
+
+```bash
+git checkout --theirs docs/testing/SUITE-INVENTORY.md   # placeholder, either side
+python3 scripts/check-suite-inventory.py --update       # the real answer
+```
+
+Then rewrite the paragraph above the table so it explains the merged number
+rather than one branch's half of it. The count is the alarm, not the record —
+its whole value is that a suite silently dropping out of collection changes it,
+and a hand-merged number is one that was never measured.
+
+`quality/ac-state.json` conflicts the same way and for the same reason;
+regenerate it with `python3 scripts/check-ac-state.py --run-tests --ratchet`.
+
 The gate compares **counts, not node-ID sets** — a checked-in manifest of ~9,500
 node IDs would churn on every `@parametrize` tweak, and the rename case it would
 catch is already covered by the suites actually *running* in CI. What counts
