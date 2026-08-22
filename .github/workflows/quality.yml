@@ -236,29 +236,30 @@ jobs:
       # debt counters, each may only go down, and an unbanked improvement fails
       # too so the ceiling cannot hold slack a later regression would spend.
       # --run-tests runs only the ~180 @pytest.mark.ac tests, not the suite.
-      - name: acceptance-state ratchet (claims cannot outrun their evidence)
-        run: uv run python scripts/check-ac-state.py --run-tests --ratchet
-
-      # ----- Pillar 3b: the mandate, as distinct from the ratchet -----
+      # One invocation, both checks. `--run-tests` executes the ~180 AC-marked
+      # tests, and the script performs that run once before dispatching either
+      # check — so splitting these across two steps re-collected the corpus and
+      # re-ran every AC test a second time, doubling this gate's slowest part
+      # and its flake exposure inside a 20-minute cap. Two questions, one
+      # measurement.
       #
-      # The step above says "the repository did not get worse". It never says
-      # "this change proved what it claimed", and the difference is not
-      # academic: a PR could add a spec, tick a criterion `Implemented`, add no
-      # marker, and pass — because the counter it lands in already permits 68 of
-      # them. The ceiling absorbs the new debt, silently.
+      # THE RATCHET says the repository did not get worse: ten debt counters
+      # against quality/ac-state-ceilings.json, each may only go down, and an
+      # unbanked improvement fails too so the ceiling cannot hold slack a later
+      # regression would spend.
       #
-      # So the criteria a PR *creates or newly claims* get zero tolerance, while
-      # legacy criteria stay on the ceilings and fall over time. A criterion may
-      # be declared unproven with a reason, in the document, where a reviewer
-      # sees it — an escape hatch nobody can see is an unstated one.
-      #
-      # PR-only: `github.base_ref` is empty on a push, and there is no "criteria
-      # this change touched" without one. The ratchet governs a push.
-      - name: acceptance mandate (a PR proves the criteria it declares)
-        if: github.event_name == 'pull_request'
+      # THE MANDATE says this change proved what it claimed. Zero tolerance on
+      # criteria the PR creates or newly claims; legacy stays on the ceilings.
+      # `--mandate` needs a base to diff against, and `github.base_ref` is empty
+      # on a push, so a push gets the ratchet alone.
+      - name: acceptance-state ratchet + mandate
         run: |
-          uv run python scripts/check-ac-state.py \
-            --run-tests --mandate "origin/${{ github.base_ref }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            uv run python scripts/check-ac-state.py \
+              --run-tests --ratchet --mandate "origin/${{ github.base_ref }}"
+          else
+            uv run python scripts/check-ac-state.py --run-tests --ratchet
+          fi
 
       # ----- Pillar 4: types -----
       - name: mypy --strict

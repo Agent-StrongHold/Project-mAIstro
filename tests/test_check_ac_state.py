@@ -464,3 +464,52 @@ class TestMandateCannotBankItself:
         the whole corpus be retrofitted in one PR — and a gate that fires on
         everything gets turned off."""
         assert check.snapshot_at("definitely-not-a-rev") is None
+
+
+class TestAdrsAreFirstClassInTheMandate:
+    """Three of the mandate's review findings were the same root cause: specs
+    keep criteria under `criteria` and ADRs under `own_detail`, so every place
+    that had to remember which was a place one could be forgotten."""
+
+    def test_one_accessor_serves_both_shapes(self, check):
+        assert check._criteria_of({"criteria": [{"id": "a"}]}) == [{"id": "a"}]
+        assert check._criteria_of({"own_detail": [{"id": "b"}]}) == [{"id": "b"}]
+        assert check._criteria_of({}) == []
+
+    def test_an_adr_criterion_carries_its_claim_state(self, check):
+        """Hard-coding this to False meant flipping an ADR criterion to `[x]`
+        was invisible to `touched_since`, so the mandate passed without asking
+        for evidence — on the documents that carry the most weight."""
+        adrs = check.collect_adrs(specs=[], markers={}, unreachable=set(), passing=None)
+        for adr in adrs:
+            for criterion in adr["own_detail"]:
+                assert "claimed" in criterion
+
+    def test_an_adr_can_declare_a_criterion_unproven(self, check):
+        """Without this the documented escape hatch did not exist for ADRs: an
+        unproven criterion added to one blocked the PR with no way out."""
+        adrs = check.collect_adrs(specs=[], markers={}, unreachable=set(), passing=None)
+        assert all("declared_unproven" in a for a in adrs)
+
+
+class TestSpecCorpusMatchesTheRegistry:
+    def test_nested_specs_are_collected(self, check, tmp_path, monkeypatch):
+        """`maistro_registry` walks `docs/specs/**/*.md`. A non-recursive glob
+        accepted a nested spec at the registry gate while omitting every
+        criterion in it here — the mandate would report success over a document
+        it never opened."""
+        nested = tmp_path / "subsystem"
+        nested.mkdir()
+        (nested / "SPEC-999-nested.md").write_text("---\nid: SPEC-999\nkind: spec\n---\n")
+        (tmp_path / "SPEC-998-flat.md").write_text("---\nid: SPEC-998\nkind: spec\n---\n")
+        monkeypatch.setattr(check, "SPEC_DIR", tmp_path)
+        found = {p.name for p in check._spec_files()}
+        assert found == {"SPEC-999-nested.md", "SPEC-998-flat.md"}
+
+    def test_a_non_spec_markdown_file_is_not_collected(self, check, tmp_path, monkeypatch):
+        """Filtering on `kind: spec` rather than the filename is what makes the
+        two corpora the same set — a README under docs/specs is not a spec."""
+        (tmp_path / "README.md").write_text("# not a spec\n")
+        (tmp_path / "SPEC-1.md").write_text("---\nid: SPEC-1\nkind: spec\n---\n")
+        monkeypatch.setattr(check, "SPEC_DIR", tmp_path)
+        assert {p.name for p in check._spec_files()} == {"SPEC-1.md"}

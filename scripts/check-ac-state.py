@@ -85,6 +85,7 @@ ID_RE = re.compile(r"^id:\s*(\S+)", re.MULTILINE)
 STATUS_RE = re.compile(r"^status:\s*(.+?)\s*$", re.MULTILINE)
 LAYER_RE = re.compile(r"^layer:\s*(.+?)\s*$", re.MULTILINE)
 IMPLEMENTS_RE = re.compile(r"^implements:\s*(.*)$((?:\n  - .*)*)", re.MULTILINE)
+KIND_RE = re.compile(r"^kind:\s*spec\s*$", re.MULTILINE)
 
 #: How a spec says "this document has no acceptance criteria, on purpose".
 #:
@@ -428,13 +429,30 @@ def tier_of(rungs: list[str]) -> str:
     return min(rungs, key=RUNGS.index)
 
 
+def _spec_files() -> list[Path]:
+    """Every spec document, matching the corpus the registry validates.
+
+    `maistro_registry`'s walk is `docs/specs/**/*.md` — recursive, and not
+    keyed on the filename. A non-recursive `glob("SPEC-*.md")` accepted a
+    nested `docs/specs/subsystem/SPEC-*.md` as valid at the registry gate while
+    omitting every criterion in it here, so the mandate would report success
+    over a document it never opened. Filtering on `kind: spec` rather than the
+    filename is what makes the two corpora the same set.
+    """
+    files = []
+    for path in sorted(SPEC_DIR.rglob("*.md")):
+        if KIND_RE.search(_frontmatter(path.read_text(encoding="utf-8"))):
+            files.append(path)
+    return files
+
+
 def collect_specs(
     markers: dict[str, list[str]],
     unreachable: set[str],
     passing: set[str] | None,
 ) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
-    for path in sorted(SPEC_DIR.glob("SPEC-*.md")):
+    for path in _spec_files():
         text = path.read_text(encoding="utf-8")
         fm = _frontmatter(text)
         spec_id = (ID_RE.search(fm) or [None, path.stem])[1]
@@ -543,8 +561,16 @@ def collect_adrs(
         # no implementing spec — as carrying none, so it landed in
         # `adrs_without_implementing_spec` against that counter's own stated
         # exemption, and banked a debt figure that was too high.
-        own_bullets = [f"AC-{n}" for n in AC_ID_RE.findall(_ac_section(text))]
+        own_section = _ac_section(text)
+        own_bullets = [f"AC-{n}" for n in AC_ID_RE.findall(own_section)]
         own = list(dict.fromkeys(list(own) + own_bullets))
+        # The tick is the claim, on an ADR exactly as on a spec. Hard-coding
+        # this to False meant flipping an ADR criterion to [x] was invisible to
+        # `touched_since`, so the mandate passed without ever asking for the
+        # evidence — on the documents that carry the most weight.
+        own_boxes = {
+            f"AC-{n}": state.lower() == "x" for state, n in CHECKBOX_RE.findall(own_section)
+        }
         # The ADR's own ac-modules map, same as a spec's. Without it every
         # ADR-owned criterion has module=None and silently caps at `passing` —
         # the ladder would tell an ADR its work can never be proven reachable,
@@ -573,6 +599,7 @@ def collect_adrs(
                 "own_detail": [
                     {
                         "id": c.ac_id,
+                        "claimed": own_boxes.get(c.ac_id.split("/")[-1], False),
                         "module": c.module,
                         "covered_by": c.covered_by,
                         "rung": c.rung(unreachable),
@@ -581,6 +608,7 @@ def collect_adrs(
                 ],
                 "scenarios_without_ac_tag": own_untagged,
                 "gherkin_parse_errors": own_errors,
+                "declared_unproven": sorted(declared_unproven(text)),
                 "tier": tier_of(inputs) if inputs else "unmeasured",
             }
         )
@@ -700,6 +728,16 @@ def touched_since(base: dict[str, bool], head: dict[str, bool]) -> set[str]:
     return added | newly_claimed
 
 
+def _criteria_of(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """A spec's `criteria` or an ADR's `own_detail`, under one name.
+
+    The two shapes are the reason three of the mandate's four review findings
+    existed: every place that had to remember which key a document uses was a
+    place one of them could be forgotten.
+    """
+    return document.get("criteria") or document.get("own_detail") or []
+
+
 def mandate_violations(
     documents: list[dict[str, Any]],
     touched: set[str],
@@ -709,7 +747,7 @@ def mandate_violations(
     violations = []
     for doc in documents:
         allowed = exempt.get(doc["id"], set())
-        for criterion in doc.get("criteria", []) or doc.get("own_detail", []):
+        for criterion in _criteria_of(doc):
             ac_id = criterion["id"]
             if ac_id not in touched or ac_id.split("/")[-1].upper() in allowed:
                 continue
@@ -1057,11 +1095,10 @@ def run_mandate(base_rev: str, specs: list[dict[str, Any]], adrs: list[dict[str,
         )
         return 1
 
-    head = {c["id"]: c["claimed"] for s in specs for c in s["criteria"]}
-    head.update({c["id"]: False for a in adrs for c in a["own_detail"]})
+    head = {c["id"]: c["claimed"] for d in (*specs, *adrs) for c in _criteria_of(d)}
     touched = touched_since(base, head)
 
-    exempt = {d["id"]: set(d.get("declared_unproven") or []) for d in specs}
+    exempt = {d["id"]: set(d.get("declared_unproven") or []) for d in (*specs, *adrs)}
     violations = mandate_violations([*specs, *adrs], touched, exempt)
 
     print(f"acceptance mandate (criteria touched since {base_rev}):")
