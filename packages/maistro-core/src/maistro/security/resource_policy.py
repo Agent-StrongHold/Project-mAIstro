@@ -8,6 +8,7 @@ by changing what looks like an ordinary tuning knob.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 
 BASELINE_MAX_REQUEST_BODY_BYTES = 1_048_576
@@ -53,6 +54,19 @@ class _Floor:
     zero_is_meaningful: bool = False
 
     def incoherent(self, value: int | float) -> bool:
+        """Whether `value` is not a usable setting at all, in any mode.
+
+        Non-finite is checked first and separately from sign, because `nan`
+        fails *every* comparison — including the floor checks below, which is
+        how `CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S=nan` was accepted without the
+        unsafe override. It then poisons the runtime the same way: the breaker's
+        `elapsed >= recovery_timeout` is permanently False, so a circuit that
+        opens never becomes half-open and the provider is never retried. A
+        value that silently disables a control is worse than one that refuses
+        to start.
+        """
+        if not math.isfinite(value):
+            return True
         return value < 0 if self.zero_is_meaningful else value <= 0
 
     def weakens(self, value: int | float) -> bool:
@@ -77,7 +91,13 @@ def _effective_burst(policy: EffectiveResourcePolicy) -> int:
     """
     if policy.rate_limit_burst == 0:
         return policy.rate_limit_per_minute
-    return policy.rate_limit_burst
+    # Capped by the per-minute limit even when set higher. The limiter checks
+    # the minute window first and returns before the burst window is consulted,
+    # so `rpm=2, burst=50` admits two requests a second, not fifty. Comparing
+    # the literal 50 against a baseline of 10 refused a configuration strictly
+    # tighter than the shipped 60/10 — a false refusal, and the kind that
+    # teaches an operator the override is routine.
+    return min(policy.rate_limit_burst, policy.rate_limit_per_minute)
 
 
 #: Every protected limit, in the order an error message should list them. The
@@ -107,7 +127,9 @@ def validate_resource_policy(policy: EffectiveResourcePolicy) -> EffectiveResour
         name for name, floor in _FLOOR_BY_NAME.items() if floor.incoherent(configured[name])
     )
     if invalid:
-        raise ValueError(f"resource/security limits must be positive: {', '.join(invalid)}")
+        raise ValueError(
+            f"resource/security limits must be finite and positive: {', '.join(invalid)}"
+        )
 
     # Checked after the coherence rule, deliberately: the override licenses a
     # weaker deployment, not an incoherent one. A rate limit of zero is a

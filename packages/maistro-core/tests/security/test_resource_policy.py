@@ -15,6 +15,7 @@ from maistro.security.resource_policy import (
     BASELINE_RATE_LIMIT_BURST,
     BASELINE_RATE_LIMIT_PER_MINUTE,
     EffectiveResourcePolicy,
+    _effective_burst,
 )
 
 #: The env vars this policy reads. The suite's own `conftest.py` sets three of
@@ -101,7 +102,7 @@ def test_explicit_unsafe_override_allows_weaker_dev_policy() -> None:
 
 def test_nonsensical_values_are_rejected_even_in_unsafe_mode() -> None:
     """The override licenses a weaker deployment, not an incoherent one."""
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="must be finite and positive"):
         Settings(
             allow_unsafe_resource_overrides=True,
             rate_limit_per_minute=0,
@@ -124,7 +125,7 @@ def test_zero_burst_is_the_limiters_disable_sentinel_not_a_typo() -> None:
 
 
 def test_a_negative_burst_is_still_incoherent() -> None:
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="must be finite and positive"):
         Settings(allow_unsafe_resource_overrides=True, rate_limit_burst=-1)
 
 
@@ -171,3 +172,45 @@ def test_every_protected_field_has_a_declared_floor() -> None:
         f"ungoverned: {sorted(declared - governed)}; "
         f"floors with no field: {sorted(governed - declared)}"
     )
+
+
+# ── the Codex review on #127 ──
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_limit_is_refused_in_every_mode(value: float) -> None:
+    """`nan` fails every comparison, including the floor checks — which is how
+    it was accepted without the override. It then disables the control it was
+    set on: the breaker's `elapsed >= recovery_timeout` is permanently False, so
+    a circuit that opens never becomes half-open and the provider is never
+    retried. A value that silently disables a control is worse than one that
+    refuses to start, so this holds even under the unsafe override."""
+    with pytest.raises(ValueError, match="finite"):
+        Settings(circuit_breaker_recovery_timeout_s=value)
+    with pytest.raises(ValueError, match="finite"):
+        Settings(allow_unsafe_resource_overrides=True, circuit_breaker_recovery_timeout_s=value)
+
+
+def test_nan_would_have_wedged_the_breaker_open() -> None:
+    """The reason the check above is worth its line, stated as an assertion
+    rather than left in prose."""
+    assert not (float("nan") <= 100.0), "any elapsed time fails this comparison"
+
+
+def test_a_burst_above_the_per_minute_limit_is_capped_not_refused() -> None:
+    """The limiter checks the minute window first and returns before the burst
+    window is consulted, so `rpm=2, burst=50` admits two requests a second, not
+    fifty. Comparing the literal 50 against a baseline of 10 refused a
+    configuration strictly tighter than the shipped 60/10 — a false refusal, and
+    the kind that teaches an operator the override is routine."""
+    settings = Settings(rate_limit_per_minute=2, rate_limit_burst=50)
+
+    assert settings.rate_limit_burst == 50, "stored as configured"
+    assert _effective_burst(settings.effective_resource_policy()) == 2, "enforced as capped"
+
+
+def test_capping_does_not_admit_a_genuinely_looser_burst() -> None:
+    """The cap is `min`, not "ignore the burst": with the per-minute limit at
+    its baseline, a burst above the baseline is still weaker and still refused."""
+    with pytest.raises(ValueError, match="rate_limit_burst>10"):
+        Settings(rate_limit_per_minute=60, rate_limit_burst=50)

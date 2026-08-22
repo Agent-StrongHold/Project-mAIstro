@@ -111,9 +111,18 @@ incoherent in every mode.
 The maistro-server node ID covers the readiness diagnostic reporting the
 effective values.
 
+Six more maistro-core node IDs answer the Codex review on #127. Three cover
+non-finite limits — `nan`, `+inf`, `-inf` — refused in every mode including
+under the unsafe override, plus one asserting *why*: `100.0 >= nan` is False, so
+a breaker with a `nan` recovery timeout opens and never becomes half-open. The
+remaining two cover the burst cap: a nonzero burst above the per-minute limit is
+capped rather than refused, because the limiter never consults the burst window
+when the minute check already returned — and the cap is `min`, not "ignore the
+burst", so a genuinely looser burst is still refused.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6399 | `ci.yml` |
+| `packages/maistro-core/tests` | 6405 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 189 | `ci.yml` |

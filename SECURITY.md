@@ -105,9 +105,16 @@ to a failing provider sooner, so *larger* is the safer direction.
 
 `RATE_LIMIT_BURST=0` is the limiter's "no separate burst check" sentinel, not a
 limit of zero — the burst window is skipped and the per-minute limit is the only
-bound. The floor check compares it that way, so `RATE_LIMIT_PER_MINUTE=2` with
-no burst throttle is accepted (2 is tighter than 10) while 6,000 with no burst
-throttle is refused.
+bound. A *nonzero* burst above the per-minute limit is capped by it for the same
+reason: the limiter checks the minute window first and returns before the burst
+window is consulted. The floor compares what the limiter enforces either way, so
+`RATE_LIMIT_PER_MINUTE=2` is accepted with a burst of 0 or 50 (both admit two a
+second, tighter than 10) while 6,000 with no burst throttle is refused.
+
+Non-finite values are refused in every mode, override included. `nan` fails
+every comparison, so it passed the floor checks and then disabled the control it
+was set on — a circuit breaker with a `nan` recovery timeout opens and never
+becomes half-open.
 
 `ALLOW_UNSAFE_RESOURCE_OVERRIDES=true` is the only way to configure a value below
 its floor, and it exists for development and deliberate unsafe deployments.
