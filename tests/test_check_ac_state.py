@@ -351,3 +351,165 @@ class TestAbsenceCountersAreRatcheted:
 
         source = inspect.getsource(check.collect_adrs)
         assert 'spec["implements"]' in source
+
+
+class TestUnprovenMarker:
+    """The per-criterion escape hatch (#165).
+
+    Same shape as the non-measurable marker and for the same reasons: the
+    reason is mandatory, and the body cannot reach a closing delimiter — the
+    earlier version of that pattern let a reasonless marker borrow a later
+    comment's `-->`, which is exactly the bug this one is written to avoid
+    repeating.
+    """
+
+    def test_a_marker_with_a_reason_exempts_that_criterion(self, check):
+        assert check.declared_unproven(
+            "<!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->"
+        ) == {"AC-3"}
+
+    def test_a_marker_with_no_reason_exempts_nothing(self, check):
+        assert check.declared_unproven("<!-- ac-state: unproven AC-3 -->") == set()
+
+    def test_a_reasonless_marker_cannot_borrow_a_later_comment(self, check):
+        document = "<!-- ac-state: unproven AC-3 -->\n\nprose\n\n<!-- unrelated -->\n"
+        assert check.declared_unproven(document) == set()
+
+    def test_it_exempts_only_the_criterion_it_names(self, check):
+        assert check.declared_unproven("<!-- ac-state: unproven AC-3 - why -->") == {"AC-3"}
+
+    def test_several_markers_accumulate(self, check):
+        document = "<!-- ac-state: unproven AC-1 - a -->\n<!-- ac-state: unproven AC-2 - b -->\n"
+        assert check.declared_unproven(document) == {"AC-1", "AC-2"}
+
+
+class TestTouchedSince:
+    def test_a_new_criterion_is_touched(self, check):
+        assert check.touched_since({}, {"S/AC-1": False}) == {"S/AC-1"}
+
+    def test_ticking_an_existing_box_is_touching_it(self, check):
+        """Ticking a box *is* the claim, so it is precisely the moment to
+        demand the evidence — even when the criterion's text did not move."""
+        assert check.touched_since({"S/AC-1": False}, {"S/AC-1": True}) == {"S/AC-1"}
+
+    def test_an_unchanged_criterion_is_not_touched(self, check):
+        assert check.touched_since({"S/AC-1": True}, {"S/AC-1": True}) == set()
+
+    def test_untouched_legacy_debt_stays_out_of_the_mandate(self, check):
+        """The whole point of the split: 68 unverifiable claims exist, and this
+        gate must not demand they all be fixed by whoever next edits a spec."""
+        base = {f"S/AC-{n}": False for n in range(50)}
+        assert check.touched_since(base, base) == set()
+
+    def test_removing_a_criterion_is_not_a_violation(self, check):
+        """A deletion cannot be 'unproven'; it has nothing to prove."""
+        assert check.touched_since({"S/AC-1": True}, {}) == set()
+
+
+class TestMandateViolations:
+    def _doc(self, rung, **extra):
+        return {
+            "id": "SPEC-1",
+            "file": "docs/specs/SPEC-1.md",
+            "criteria": [
+                {
+                    "id": "SPEC-1/AC-1",
+                    "claimed": True,
+                    "module": None,
+                    "covered_by": [],
+                    "rung": rung,
+                }
+            ],
+            **extra,
+        }
+
+    def test_a_touched_criterion_short_of_reachable_fails(self, check):
+        found = check.mandate_violations([self._doc("declared")], {"SPEC-1/AC-1"}, {})
+        assert [v["id"] for v in found] == ["SPEC-1/AC-1"]
+
+    def test_covered_is_not_enough(self, check):
+        """`covered` means a test names it, not that the test passed."""
+        found = check.mandate_violations([self._doc("covered")], {"SPEC-1/AC-1"}, {})
+        assert len(found) == 1
+
+    def test_reachable_passes(self, check):
+        assert check.mandate_violations([self._doc("reachable")], {"SPEC-1/AC-1"}, {}) == []
+
+    def test_an_untouched_criterion_is_ignored_however_weak(self, check):
+        assert check.mandate_violations([self._doc("declared")], set(), {}) == []
+
+    def test_a_declared_exemption_clears_it(self, check):
+        found = check.mandate_violations(
+            [self._doc("declared")], {"SPEC-1/AC-1"}, {"SPEC-1": {"AC-1"}}
+        )
+        assert found == []
+
+    def test_an_exemption_for_another_criterion_does_not_clear_it(self, check):
+        found = check.mandate_violations(
+            [self._doc("declared")], {"SPEC-1/AC-1"}, {"SPEC-1": {"AC-2"}}
+        )
+        assert len(found) == 1
+
+
+class TestMandateCannotBankItself:
+    def test_the_mandate_is_not_a_ratcheted_counter(self, check):
+        """A new criterion must never bank itself into the grandfathered
+        population — that would make the escape hatch silent and the ratchet
+        meaningless. It cannot, by construction: the mandate is a pass/fail over
+        a computed set, not a number `--bank` writes down."""
+        assert not any("mandate" in name or "touched" in name for name in check.RATCHETED)
+
+    def test_an_unreadable_base_refuses_rather_than_failing_everything(self, check):
+        """An unreadable base makes every criterion look new, which would demand
+        the whole corpus be retrofitted in one PR — and a gate that fires on
+        everything gets turned off."""
+        assert check.snapshot_at("definitely-not-a-rev") is None
+
+
+class TestAdrsAreFirstClassInTheMandate:
+    """Three of the mandate's review findings were the same root cause: specs
+    keep criteria under `criteria` and ADRs under `own_detail`, so every place
+    that had to remember which was a place one could be forgotten."""
+
+    def test_one_accessor_serves_both_shapes(self, check):
+        assert check._criteria_of({"criteria": [{"id": "a"}]}) == [{"id": "a"}]
+        assert check._criteria_of({"own_detail": [{"id": "b"}]}) == [{"id": "b"}]
+        assert check._criteria_of({}) == []
+
+    def test_an_adr_criterion_carries_its_claim_state(self, check):
+        """Hard-coding this to False meant flipping an ADR criterion to `[x]`
+        was invisible to `touched_since`, so the mandate passed without asking
+        for evidence — on the documents that carry the most weight."""
+        adrs = check.collect_adrs(specs=[], markers={}, unreachable=set(), passing=None)
+        for adr in adrs:
+            for criterion in adr["own_detail"]:
+                assert "claimed" in criterion
+
+    def test_an_adr_can_declare_a_criterion_unproven(self, check):
+        """Without this the documented escape hatch did not exist for ADRs: an
+        unproven criterion added to one blocked the PR with no way out."""
+        adrs = check.collect_adrs(specs=[], markers={}, unreachable=set(), passing=None)
+        assert all("declared_unproven" in a for a in adrs)
+
+
+class TestSpecCorpusMatchesTheRegistry:
+    def test_nested_specs_are_collected(self, check, tmp_path, monkeypatch):
+        """`maistro_registry` walks `docs/specs/**/*.md`. A non-recursive glob
+        accepted a nested spec at the registry gate while omitting every
+        criterion in it here — the mandate would report success over a document
+        it never opened."""
+        nested = tmp_path / "subsystem"
+        nested.mkdir()
+        (nested / "SPEC-999-nested.md").write_text("---\nid: SPEC-999\nkind: spec\n---\n")
+        (tmp_path / "SPEC-998-flat.md").write_text("---\nid: SPEC-998\nkind: spec\n---\n")
+        monkeypatch.setattr(check, "SPEC_DIR", tmp_path)
+        found = {p.name for p in check._spec_files()}
+        assert found == {"SPEC-999-nested.md", "SPEC-998-flat.md"}
+
+    def test_a_non_spec_markdown_file_is_not_collected(self, check, tmp_path, monkeypatch):
+        """Filtering on `kind: spec` rather than the filename is what makes the
+        two corpora the same set — a README under docs/specs is not a spec."""
+        (tmp_path / "README.md").write_text("# not a spec\n")
+        (tmp_path / "SPEC-1.md").write_text("---\nid: SPEC-1\nkind: spec\n---\n")
+        monkeypatch.setattr(check, "SPEC_DIR", tmp_path)
+        assert {p.name for p in check._spec_files()} == {"SPEC-1.md"}

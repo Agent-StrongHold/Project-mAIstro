@@ -94,6 +94,48 @@ was a total-count ceiling plus a per-rule count+SHA-256 digest; the digest
 caught substitutions but failures weren't legible per identity, and the count
 ceiling held slack.)
 
+## The ratchet and the mandate
+
+Two rules over one corpus, and the split is the point.
+
+**The ratchet** (`--ratchet`) compares ten debt counters against
+`quality/ac-state-ceilings.json`. It says *the repository did not get worse*.
+It has never said *this change proved what it claimed* — a PR could add a spec,
+tick a criterion `Implemented`, add no marker and pass, because the counter it
+lands in already permits 68 of them. The ceiling absorbs the new debt silently.
+
+**The mandate** (`--mandate <base>`) is zero tolerance on the criteria a change
+**creates or newly claims**. Legacy criteria stay grandfathered on the ceilings
+and fall over time; these are not legacy.
+
+Ticking a box counts as touching a criterion even when its text did not move.
+The tick *is* the claim, so it is exactly the moment to demand the evidence.
+
+### Declaring one unproven
+
+```markdown
+<!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->
+```
+
+Per-criterion, reason mandatory, in the document body so it appears in the diff.
+An escape hatch a reviewer cannot see is an unstated one.
+
+### Two refusals worth knowing about
+
+- **`--mandate` without `--run-tests` refuses.** Without a measured run nothing
+  reaches `reachable`, so every touched criterion would look unproven. Failing a
+  PR for a question that was never asked is worse than stopping.
+- **An unreadable base refuses.** On a shallow clone every criterion looks new,
+  which would demand the whole corpus be retrofitted in one PR — and a gate that
+  fires on everything gets turned off. CI checks out with `fetch-depth: 0`.
+
+### Why a new criterion cannot bank itself
+
+`--bank` writes the `RATCHETED` counters. The mandate is not one of them: it is
+a pass/fail over a computed set, not a number. So there is no path by which
+today's unproven criterion becomes tomorrow's grandfathered debt — which, if it
+existed, would make the escape hatch silent and the ratchet meaningless.
+
 ## Acceptance-criterion state
 
 `scripts/check-ac-state.py` measures what the other gates cannot: whether a

@@ -236,8 +236,30 @@ jobs:
       # debt counters, each may only go down, and an unbanked improvement fails
       # too so the ceiling cannot hold slack a later regression would spend.
       # --run-tests runs only the ~180 @pytest.mark.ac tests, not the suite.
-      - name: acceptance-state ratchet (claims cannot outrun their evidence)
-        run: uv run python scripts/check-ac-state.py --run-tests --ratchet
+      # One invocation, both checks. `--run-tests` executes the ~180 AC-marked
+      # tests, and the script performs that run once before dispatching either
+      # check — so splitting these across two steps re-collected the corpus and
+      # re-ran every AC test a second time, doubling this gate's slowest part
+      # and its flake exposure inside a 20-minute cap. Two questions, one
+      # measurement.
+      #
+      # THE RATCHET says the repository did not get worse: ten debt counters
+      # against quality/ac-state-ceilings.json, each may only go down, and an
+      # unbanked improvement fails too so the ceiling cannot hold slack a later
+      # regression would spend.
+      #
+      # THE MANDATE says this change proved what it claimed. Zero tolerance on
+      # criteria the PR creates or newly claims; legacy stays on the ceilings.
+      # `--mandate` needs a base to diff against, and `github.base_ref` is empty
+      # on a push, so a push gets the ratchet alone.
+      - name: acceptance-state ratchet + mandate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            uv run python scripts/check-ac-state.py \
+              --run-tests --ratchet --mandate "origin/${{ github.base_ref }}"
+          else
+            uv run python scripts/check-ac-state.py --run-tests --ratchet
+          fi
 
       # ----- Pillar 4: types -----
       - name: mypy --strict
