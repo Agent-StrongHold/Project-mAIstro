@@ -18,7 +18,8 @@ find someone else's.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3
 from botocore.exceptions import ClientError
@@ -64,6 +65,19 @@ class S3ArchiveStore:
             self._client_kwargs["aws_access_key_id"] = access_key_id
             self._client_kwargs["aws_secret_access_key"] = secret_access_key
 
+    def _client(self) -> AbstractAsyncContextManager[Any]:
+        """One typed seam over the SDK's untyped client factory.
+
+        `aioboto3` ships no `py.typed` marker, so `Session.client(...)` is
+        opaque and every `async with` over it is an error pyright cannot check —
+        twelve of them across six call sites. Casting once, here, is honest
+        about exactly where the type information stops, and leaves the call
+        sites readable. Scattering twelve `# pyright: ignore` comments would
+        record the same fact twelve times and suppress any *real* context-manager
+        mistake at those lines along with it.
+        """
+        return cast(AbstractAsyncContextManager[Any], self._session.client(**self._client_kwargs))
+
     def _object_key(self, key: str) -> str:
         return f"{self._prefix}/{key}" if self._prefix else key
 
@@ -72,7 +86,7 @@ class S3ArchiveStore:
 
     async def put(self, key: str, payload: bytes) -> str:
         digest = content_digest(payload)
-        async with self._session.client(**self._client_kwargs) as s3:
+        async with self._client() as s3:
             # Idempotent by digest rather than by overwrite. S3 PUT is already
             # idempotent in effect, but re-uploading a 50MB object on every
             # retry of an interrupted sweep is a real cost, and a HEAD is one
@@ -96,7 +110,7 @@ class S3ArchiveStore:
         return digest
 
     async def get(self, key: str) -> ArchivedRecord:
-        async with self._session.client(**self._client_kwargs) as s3:
+        async with self._client() as s3:
             try:
                 response = await s3.get_object(Bucket=self._bucket, Key=self._object_key(key))
             except ClientError as exc:
@@ -115,7 +129,7 @@ class S3ArchiveStore:
         return record
 
     async def exists(self, key: str) -> bool:
-        async with self._session.client(**self._client_kwargs) as s3:
+        async with self._client() as s3:
             try:
                 await s3.head_object(Bucket=self._bucket, Key=self._object_key(key))
             except ClientError as exc:
@@ -125,7 +139,7 @@ class S3ArchiveStore:
             return True
 
     async def list_keys(self, prefix: str = "") -> AsyncIterator[str]:
-        async with self._session.client(**self._client_kwargs) as s3:
+        async with self._client() as s3:
             paginator = s3.get_paginator("list_objects_v2")
             # Paginated rather than a single list_objects_v2 call, which caps at
             # 1000 keys and reports no error when it truncates. An archive is
@@ -138,7 +152,7 @@ class S3ArchiveStore:
 
     async def delete(self, key: str) -> bool:
         existed = await self.exists(key)
-        async with self._session.client(**self._client_kwargs) as s3:
+        async with self._client() as s3:
             # S3 DELETE is unconditionally successful, so the HEAD above is what
             # makes the "was it there" answer real rather than always True.
             await s3.delete_object(Bucket=self._bucket, Key=self._object_key(key))
@@ -146,7 +160,7 @@ class S3ArchiveStore:
 
     async def ensure_bucket(self) -> None:
         """Create the bucket if absent. For tests and first-run setup."""
-        async with self._session.client(**self._client_kwargs) as s3:
+        async with self._client() as s3:
             try:
                 await s3.head_bucket(Bucket=self._bucket)
             except ClientError:
