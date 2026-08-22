@@ -25,6 +25,21 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/security/sentinel/test_argument_limits.py
+ac-modules:
+  AC-1:
+    - maistro.security.sentinel.policy
+    - maistro.security.sentinel.argument_limits
+  AC-2:
+    - maistro.security.sentinel.policy
+    - maistro.security.sentinel.argument_limits
+  AC-3:
+    - maistro.security.sentinel.argument_limits
+  AC-4:
+    - maistro.security.sentinel.argument_limits
+  AC-5:
+    - maistro.security.sentinel.argument_limits
+  AC-6:
+    - maistro.security.sentinel.argument_limits
 source:
   - SECURITY.md
 layer: Governance
