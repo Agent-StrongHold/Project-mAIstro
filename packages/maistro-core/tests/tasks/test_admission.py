@@ -23,7 +23,7 @@ from maistro.tasks.admission import (
     TASK_QUEUE_SOURCE,
     TaskRunAdmitter,
 )
-from maistro.tasks.models import TaskCreate
+from maistro.tasks.models import TaskCreate, TaskStatus
 from maistro.tasks.queue import TaskQueue, configure_task_queue, get_task_queue
 
 
@@ -48,7 +48,7 @@ async def test_submission_creates_a_run_and_returns_its_id(scoped) -> None:
     assert task.run_id
     run = await runs.get_run(task.run_id)
     assert run is not None
-    assert run.status is RunStatus.CREATED
+    assert run.status is RunStatus.QUEUED
     assert run.workspace_id == "w1"
     assert run.project_id == project.project_id
 
@@ -230,3 +230,84 @@ async def test_configure_task_queue_refuses_after_tasks_were_submitted() -> None
             configure_task_queue(admitter=None)
     finally:
         queue_module._queue = previous
+
+
+async def test_the_run_advances_with_the_task(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    task = await queue.submit(TaskCreate(description="one"))
+
+    await queue.update_status(task.task_id, TaskStatus.PLANNING)
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.RUNNING
+
+
+async def test_task_phases_are_one_running_run(scoped) -> None:
+    """planning/coding/reviewing/testing are phases of one execution, not four."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    task = await queue.submit(TaskCreate(description="one"))
+
+    for status in (
+        TaskStatus.PLANNING,
+        TaskStatus.CODING,
+        TaskStatus.REVIEWING,
+        TaskStatus.TESTING,
+    ):
+        assert await queue.update_status(task.task_id, status) is True
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ((TaskStatus.PLANNING, TaskStatus.CODING, TaskStatus.COMPLETED), RunStatus.COMPLETED),
+        ((TaskStatus.PLANNING, TaskStatus.FAILED), RunStatus.FAILED),
+        ((TaskStatus.CANCELLED,), RunStatus.CANCELLED),
+    ],
+)
+async def test_terminal_task_states_are_terminal_run_states(scoped, path, expected) -> None:
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    task = await queue.submit(TaskCreate(description="one"))
+
+    for status in path:
+        assert await queue.update_status(task.task_id, status) is True
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.status is expected
+
+
+async def test_a_run_that_refuses_refuses_the_task_too(scoped) -> None:
+    """The point of "the Run is authoritative": the receipt cannot record a
+    state the execution identity rejected."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    task = await queue.submit(TaskCreate(description="one"))
+    # Cancel the Run out from under the receipt, which the task machine knows
+    # nothing about — nothing else can then advance it.
+    await runs.transition_run(task.run_id or "", RunStatus.CANCELLED)
+
+    assert await queue.update_status(task.task_id, TaskStatus.PLANNING) is False
+    assert queue.get(task.task_id).status is TaskStatus.QUEUED  # type: ignore[union-attr]
+
+
+async def test_an_unwired_queue_transitions_as_before() -> None:
+    queue = TaskQueue()
+    task = await queue.submit(TaskCreate(description="one"))
+
+    assert await queue.update_status(task.task_id, TaskStatus.PLANNING) is True

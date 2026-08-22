@@ -251,6 +251,23 @@ class TaskQueue:
                 )
                 return False
 
+            # The Run moves first, and refusing there refuses here (#41). The
+            # receipt must never record a state the execution identity rejected,
+            # or the two tell different stories about the same work.
+            if (
+                self._admitter is not None
+                and task.run_id
+                and not await self._admitter.record_transition(task.run_id, status)
+            ):
+                logger.warning(
+                    "run_refused_task_transition",
+                    task_id=task_id,
+                    run_id=task.run_id,
+                    current=task.status.value,
+                    requested=status.value,
+                )
+                return False
+
             task.status = status
             task.phase = status.value
 

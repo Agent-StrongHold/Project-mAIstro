@@ -21,13 +21,35 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.runs.admission import admit_direct_work
+from maistro.runs.lifecycle import InvalidLifecycleTransition
+from maistro.runs.model import RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
+from maistro.tasks.models import TaskStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.intents import IntentRegistry
     from maistro.projects.scope_store import ProjectScopeStore
     from maistro.runs.store import RunStore
     from maistro.tasks.models import TaskResponse
+
+#: How a task's state machine reads on the canonical Run.
+#:
+#: The task machine is finer-grained than the Run's on purpose — planning,
+#: coding, reviewing and testing are phases of one execution, not four. They all
+#: read as RUNNING, and a transition between them is a no-op on the Run rather
+#: than an illegal one. The Run's own lifecycle already refuses RUNNING ->
+#: RUNNING, so collapsing them here is what keeps the receipt's extra detail
+#: from looking like a lifecycle disagreement.
+RUN_STATUS_BY_TASK_STATUS: dict[TaskStatus, RunStatus] = {
+    TaskStatus.QUEUED: RunStatus.QUEUED,
+    TaskStatus.PLANNING: RunStatus.RUNNING,
+    TaskStatus.CODING: RunStatus.RUNNING,
+    TaskStatus.REVIEWING: RunStatus.RUNNING,
+    TaskStatus.TESTING: RunStatus.RUNNING,
+    TaskStatus.COMPLETED: RunStatus.COMPLETED,
+    TaskStatus.FAILED: RunStatus.FAILED,
+    TaskStatus.CANCELLED: RunStatus.CANCELLED,
+}
 
 #: `admission_source` value for work that entered through the task queue.
 TASK_QUEUE_SOURCE = "task_queue"
@@ -42,6 +64,10 @@ class TaskAdmitter(Protocol):
 
     async def admit(self, task: TaskResponse) -> str:
         """Admit one queued task and return its canonical ``run_id``."""
+        ...
+
+    async def record_transition(self, run_id: str, status: TaskStatus) -> bool:
+        """Advance the Run to match a task transition. False if it refused."""
         ...
 
 
@@ -107,10 +133,36 @@ class TaskRunAdmitter:
             actor_principal_id=task.user_id or None,
             provenance=provenance,
         )
+        # The receipt is born QUEUED, so the Run is too. Leaving it CREATED
+        # would mean the two disagreed from the first instant about a task that
+        # is, by then, genuinely queued.
+        await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
         return run.run_id
+
+    async def record_transition(self, run_id: str, status: TaskStatus) -> bool:
+        """Advance the Run to match one task transition.
+
+        Returns False when the Run refuses, and the caller must then refuse the
+        task transition too. That is what "the Run is authoritative" buys: the
+        receipt cannot record a state the execution identity rejected, so the
+        two can never tell different stories about the same work.
+
+        A transition the Run is already in is not a refusal — it is the finer
+        task machine moving between phases of one execution.
+        """
+        target = RUN_STATUS_BY_TASK_STATUS[status]
+        run = await self._runs.get_run(run_id)
+        if run is None or run.status is target:
+            return True
+        try:
+            await self._runs.transition_run(run_id, target)
+        except InvalidLifecycleTransition:
+            return False
+        return True
 
 
 __all__ = [
+    "RUN_STATUS_BY_TASK_STATUS",
     "SESSION_ID_KEY",
     "TASK_ID_KEY",
     "TASK_QUEUE_SOURCE",
