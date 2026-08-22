@@ -613,17 +613,6 @@
       "modules": [
         "maistro_canvas.canvas.runner"
       ]
-    },
-    {
-      "id": "hive-bespoke-integration-routes",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "RETIRE",
-      "rationale": "Neither Jira nor Airtable needs an independent integration. Canonical node kinds already exist and are registered: jira.poll queries by JQL across both Atlassian backends, airtable.poll reads base/table records, and maistro.tools.atlassian.AtlassianMCPClient is a reachable MCP client. routes/daily_report.py is a fourth implementation \u2014 raw httpx against api.atlassian.com and api.airtable.com \u2014 and it is registered nowhere, so its GET /jira/projects endpoint is not served by the application. An earlier disposition kept it on the strength of that endpoint; treating unregistered code as live API surface was the error. Deleting it also clears one entry from the use_secret(..., lambda s: s) refactor allowlist in tests/test_credential_security_audit.py, which must be pruned with it. routes/chat_complete.py is five lines re-exporting services.chat_completion.run_chat_completion with no importer; hive-conductor is an application, not a published library, so no external consumer needs the shim.",
-      "replaced_by": "maistro.graph.nodes.jira_poll / airtable_poll and maistro.tools.atlassian for the integrations; services.chat_completion.run_chat_completion for the shim",
-      "modules": [
-        "routes.chat_complete",
-        "routes.daily_report"
-      ]
     }
   ]
 }

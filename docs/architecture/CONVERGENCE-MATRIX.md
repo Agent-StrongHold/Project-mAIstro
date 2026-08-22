@@ -158,7 +158,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Shared contracts and config | imported by every package | `1/44` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `3/3` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/17` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
-| Agent Conductor HTTP surface | `main` (uvicorn) | `6/71` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
+| Agent Conductor HTTP surface | `main` (uvicorn) | `4/69` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
 | Agent Conductor services | `main` route registration + background loops | `15/62` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `8/17` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `1/18` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | a render effect recorded as an Invocation | #52, #55 |
@@ -191,9 +191,11 @@ currently holds belongs to `Run`/`Invocation`.
   `agents/pm_runner.py` reaches. Against those, `routes/daily_report.py` and
   `routes/daily_report_v2.py` each call `api.atlassian.com` and `api.airtable.com` over raw
   `httpx`. v2's docstring says it "uses same path as chat tools", but that describes how it
-  resolves credentials, not how it performs the effect. v1 is registered nowhere and is a
-  `RETIRE` row; v2 is live and carries the same debt, which #55/#57 resolve by making an
-  integration call a governed Invocation rather than a bespoke client per route.
+  resolves credentials, not how it performs the effect. v1 has been deleted. **v2 is live** —
+  the React `DailyReport.tsx` calls `/v1/daily-report` and an e2e test asserts on it — so
+  removing its bespoke client means routing it through `jira.poll`/`airtable.poll`, not deleting
+  the endpoint. That is #55/#57 work: an integration call becomes a governed Invocation rather
+  than a per-route client.
 - **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
   were first derived from what each package is *for*; re-deriving them from what each module's
   own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's
@@ -232,7 +234,7 @@ currently holds belongs to `Run`/`Invocation`.
   values. The rest is domain logic ADR-090/ADR-099 keep: `dag.py` implements SPEC-070226-82ea
   under ADR-099, and `orchestrator.py` states the convergence rule in its own docstring ("Core
   owns workflow state. Builders runtime only returns results.").
-- **Reachability is not evenly distributed debt.** Of 203 unreachable modules, 68 — a third — sit
+- **Reachability is not evenly distributed debt.** Of 201 unreachable modules, 66 — a third — sit
   in four subsystems (`maistro.agents` 26, `maistro.builders` 15, Conductor `services` 15,
   `maistro.skills`/`code_registry`/`repertoire` 12), which is why
   [#34](https://github.com/Agent-StrongHold/Project-mAIstro/issues/34) burns them down by

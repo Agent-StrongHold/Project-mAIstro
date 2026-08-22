@@ -211,7 +211,6 @@ def test_no_new_lambda_s_s_in_critical_callsites() -> None:
     # Allowlist — files known to use the pattern; tracked for refactor.
     # Paths are relative to repo_root = parents[3] (the `packages/` dir).
     ALLOWLIST = {
-        "hive-conductor/backend/routes/daily_report.py:55",
         "hive-conductor/backend/services/mcp_client.py:51",
         # Centralised secret helpers — one lambda per file (refactored from inline callsites)
         "hive-conductor/backend/routes/daily_report_v2.py:19",
