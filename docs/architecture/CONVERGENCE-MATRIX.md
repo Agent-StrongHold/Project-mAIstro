@@ -88,7 +88,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
-| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.durable_log`, `events.outbox` | — |
+| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` on a `postgresql://` URL (ADR-082226-5104), the `Sqlite*` stores on `sqlite:`, in-memory otherwise; plus `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
 | Collaboration | `maistro.collaboration` | Multi-actor editing | its own session records | — | — |
@@ -147,7 +147,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/11` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/12` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence; one conformance suite passing against all three backends, including concurrent-worker idempotency | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `0/8` | KEEP | ADR-037, ADR-082, ADR-055 | one trace spanning request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `3/9` | KEEP | ADR-038, ADR-066 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `3/3` | CONNECT | ADR-070426-3a1f | a collaborative edit correlated to a Run | #34 |

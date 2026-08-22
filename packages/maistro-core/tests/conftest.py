@@ -117,6 +117,9 @@ _PG_SCRATCH_TABLES = (
     "security_violations",
     "security_strikes",
     "security_rate_limits",
+    "handler_invocations",
+    "trigger_definitions",
+    "event_log",
 )
 
 

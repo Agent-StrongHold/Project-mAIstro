@@ -514,21 +514,19 @@ async def create_container(
             trigger_store,
             invocation_store,
         ) = await _wire_sqlite_durable_events(db_pool)
+    elif pg_pool is not None:
+        from maistro.events.pg_stores import PgEventLog, PgInvocationStore, PgTriggerStore
+
+        # Tables come from `alembic/versions/011`; the PostgreSQL preflight
+        # already refuses an unmigrated database by name, so there is no
+        # ensure_schema here and no second schema owner.
+        durable_event_log = PgEventLog(pg_pool)
+        trigger_store = PgTriggerStore(pg_pool)
+        invocation_store = PgInvocationStore(pg_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
