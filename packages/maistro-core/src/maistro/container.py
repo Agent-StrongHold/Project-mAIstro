@@ -18,6 +18,7 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+from maistro.graph.templates import GraphTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -128,6 +129,10 @@ class Container:
     # the spine is: a Container built directly, without `create_container`, still
     # routes requests — it just does not admit Runs for them.
     chat_admitter: ChatRunAdmitter | None = None
+    # Where a Graph definition comes from when a Run is not trivial work — a
+    # schedule firing, or anything else that instantiates a drawn topology
+    # rather than a one-node stand-in (#145).
+    template_store: GraphTemplateStore | None = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -626,6 +631,7 @@ async def create_container(
         run_store=spine.run_store,
         task_admitter=spine.task_admitter,
         chat_admitter=spine.chat_admitter,
+        template_store=spine.template_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
