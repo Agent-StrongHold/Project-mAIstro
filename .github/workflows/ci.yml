@@ -248,3 +248,44 @@ jobs:
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
         run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin
+
+  # The Archive tier against a real S3-compatible server (#133, ADR-082226-d3dd).
+  #
+  # MinIO rather than a mocked client: a mocked object store proves the call was
+  # made with the arguments the test already knew, which is not the property
+  # worth checking about storage. The same conformance suite runs over
+  # FilesystemArchiveStore and S3ArchiveStore, so the two implementations cannot
+  # drift into behaving differently under one protocol.
+  #
+  # `--extra dev --extra s3` installs the optional SDK for the S3 leg. The
+  # *absence* case is covered by test_optional_dependency.py, which hides
+  # aioboto3 from the import system rather than uninstalling it — so both halves
+  # are checked in one environment.
+  archive:
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev --extra s3
+      - name: Archive conformance against MinIO
+        env:
+          MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          MAISTRO_TEST_S3_ACCESS_KEY: minioadmin
+          MAISTRO_TEST_S3_SECRET_KEY: minioadmin
+        run: uv run pytest packages/maistro-core/tests/memory/archive -v --tb=short
