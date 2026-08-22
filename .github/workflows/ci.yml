@@ -261,23 +261,39 @@ jobs:
   # *absence* case is covered by test_optional_dependency.py, which hides
   # aioboto3 from the import system rather than uninstalling it — so both halves
   # are checked in one environment.
+  #
+  # Started as a step rather than under `services:`, for two reasons found the
+  # hard way. The official `minio/minio` image needs `server /data` as a
+  # command, and a `services:` block has no `command:` key at all — only
+  # `image`, `env`, `ports`, `options` and `credentials`. And the first version
+  # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
+  # retired their public tags, so every run died on `manifest unknown` before
+  # reaching a single test. An image name is not verified by being plausible.
   archive:
     runs-on: ubuntu-latest
-    services:
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "mc ready local"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      - name: Start MinIO
+        run: |
+          set -euo pipefail
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          # Poll the health endpoint rather than sleeping a fixed amount: a
+          # fixed sleep is either slower than it needs to be or racy, and the
+          # race surfaces as a connection error that reads exactly like the
+          # storage bug this job exists to catch.
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "MinIO ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::MinIO did not become ready within 60s"
+          docker logs minio
+          exit 1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
