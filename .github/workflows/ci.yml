@@ -258,15 +258,23 @@ jobs:
   # leaving zero tables at the first command of every documented Postgres setup
   # path. Nothing ran it, so nothing caught it.
   #
-  # pg 17 matches the `pgvector/pgvector:pg17` image docker-compose.yml already
-  # runs, so this tests the version the project actually deploys rather than
-  # whatever `postgres:latest` happens to be. (Verified locally against 18.6 as
-  # well; the chain uses nothing version-specific.)
+  # `pgvector/pgvector:pg17`, the exact image docker-compose.yml runs — not
+  # plain `postgres:17`. Migration 001 opens with
+  # `CREATE EXTENSION IF NOT EXISTS vector`, which the stock image cannot
+  # satisfy: `extension "vector" is not available`. The stock image was this
+  # job's first red run, and the catch is the point — a job that tests a
+  # different server from the one the project deploys is a job that can go
+  # green over a deployment that would not start.
+  #
+  # It is also why "verified locally" was not enough: this container's
+  # PostgreSQL 18 happens to ship `vector.control`, so the chain passed here
+  # while depending on an extension CI did not have. The local pass proved the
+  # migrations were right, not that the environment was.
   migrations:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
