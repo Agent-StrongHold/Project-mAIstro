@@ -302,73 +302,49 @@ jobs:
             -m pytest packages/maistro-rsi/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
             -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
-          # maistro-server is not in the PyPI publish set, so it sits outside
-          # the aggregate floor's scope — but "the file you touched" is well
-          # defined even where "the package's aggregate" is not yet governed,
-          # and the diff gate below needs it measured to say anything about a
-          # change there. Measured 2026-08-22: including it leaves the
-          # aggregate at 89%, unchanged to the whole point.
-          uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
-            -m pytest packages/maistro-server/tests --timeout=30 -q
           uv run coverage report -m --skip-covered
-          uv run coverage xml -o coverage.xml
 
-      - name: Coverage gate (publish-set floor, 88%)
-        env:
-          PYTHONPATH: packages/maistro-core/src
-        run: |
-          # Re-floored for C2/#287: extending the measured scope from
-          # maistro-core alone (97%) to the full 5-package publish set drops the
-          # combined number, because canvas/evolve/rsi/bootstrap don't carry
-          # core's coverage discipline yet — measured 2026-07-29: 89.63%
-          # (3,152 missed of 35,656 statements + branches). 88 is a deliberate
-          # floor below that, not the measured value, leaving headroom for
-          # in-flight work while still catching a real regression — same
-          # philosophy as the previous core-only 95-vs-97 gap. Raise as the
-          # newer packages' coverage improves.
-          #
-          # Kept alongside the diff gate below, not replaced by it. The two
-          # answer different questions and neither subsumes the other: diff
-          # coverage cannot notice the repository rotting under a stream of
-          # small, well-covered PRs, and an aggregate cannot notice a single
-          # uncovered file.
+          # The publish-set floor is evaluated HERE, before any non-publish-set
+          # data joins the database. `coverage report` scopes by --include/--omit
+          # only, so appending maistro-server first would have put it under the
+          # 88% floor no matter what the comment said — the doc and the arithmetic
+          # would have disagreed, silently, in the direction of a stricter gate
+          # than anyone signed up for.
           uv run coverage report --fail-under=88 || \
             (echo "::error::publish-set coverage below the 88% floor" && exit 1)
 
+          # Now widen for the DIFF gate only. maistro-server is outside the
+          # publish set, but "the file you touched" is well defined even where
+          # "the package's aggregate" is not yet governed.
+          uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
+            -m pytest packages/maistro-server/tests --timeout=30 -q
+          uv run coverage xml -o coverage.xml
+
       # ----- Pillar 1b: diff coverage (the lines this PR added) -----
       #
-      # The aggregate above cannot see a change. A new 400-line module landing
-      # at 0% moves a 42,000-statement total by a fraction of a point and
-      # passes, so "coverage passed" has meant "the repository as a whole is
-      # still above 88%" — which a reader reasonably takes as "this change is
-      # exercised". This step is what makes the second reading true.
+      # The aggregate above cannot see a change: a new 400-line module landing
+      # at 0% moves a 42,000-statement total by a fraction of a point.
       #
-      # THRESHOLD, and how it was chosen. Measured over every PR merged into
-      # `develop` since 15abb9d (#124, #125, #128, #123, #126): 180 changed
-      # lines, 6 uncovered, **96%**; worst single file 94.9%. Set at 90 rather
-      # than at the measured value, for the same reason the 88 above sits under
-      # a measured 89.63: a gate pinned to its own measurement fails the first
-      # PR with one legitimately awkward branch. The margin here is wider (6
-      # points, not 1.6) because the sample is 180 lines across 5 PRs in a
-      # two-day-old repository, and a threshold set from a thin sample should
-      # be loose enough to survive the next one. Raise it as the sample grows —
-      # that is the ratchet, and this comment is the baseline to raise from.
+      # PER FILE, and branch arcs included — both learned from review of the
+      # first version, which wrapped `diff-cover`. That tool pools every changed
+      # line before applying its threshold, so five uncovered lines in a new file
+      # plus ninety-five covered elsewhere passed at 95% — the aggregate defect
+      # again, one scope smaller. It also scores line hits only, so `--branch`
+      # collected arc data that nothing read.
       #
-      # Branch coverage counts: the run above is already `--branch`, and a diff
-      # gate that ignored it would be weaker than what is already measured.
-      - name: Diff coverage gate (lines this PR touched, 90%)
+      # THRESHOLDS, measured over every PR merged into `develop` since 15abb9d
+      # (#124, #125, #128, #123, #126), per file: worst line coverage 94.9%,
+      # worst branch coverage 85.7%. Floors of 90 and 80 sit under each measured
+      # worst — separate numbers because the distributions differ, and a single
+      # shared floor would have to be the lower of the two, which would stop
+      # enforcing anything on lines. Raise as the sample grows.
+      - name: Diff coverage gate (per file, lines 90% / branches 80%)
         # A push has no base_ref, so there is no "lines this PR touched" to
-        # measure — `origin/` would be a broken revision, not an empty diff.
-        # The aggregate floor is what governs a push.
+        # measure. The aggregate floor is what governs a push.
         if: github.event_name == 'pull_request'
         run: |
-          # No --show-uncovered: it dumps coloured source for every uncovered
-          # line on *passing* runs too. The default output already names the
-          # file, its percentage and the missing line numbers, which is what a
-          # failure needs. Verified on diff-cover 9.7.2 and 10.5.1 (locked).
-          uv run diff-cover coverage.xml \
-            --compare-branch="origin/${{ github.base_ref }}" \
-            --fail-under=90
+          uv run python scripts/check-diff-coverage.py coverage.xml \
+            --base "origin/${{ github.base_ref }}"
 
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml
