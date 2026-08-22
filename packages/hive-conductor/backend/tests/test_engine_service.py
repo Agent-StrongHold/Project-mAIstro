@@ -198,7 +198,9 @@ async def test_start_in_demo_mode_uses_local_backend(
             self.admitter = admitter
 
     class _R:
-        def __init__(self, q: Any, executor: Any) -> None:
+        # `run_store` since #143: the runner routes execution through the
+        # canonical NodeRun/Attempt when the Container has a spine.
+        def __init__(self, q: Any, executor: Any, run_store: Any = None) -> None:
             pass
 
         async def start(self) -> None:
