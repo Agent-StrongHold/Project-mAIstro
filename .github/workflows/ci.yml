@@ -132,6 +132,49 @@ jobs:
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
+  durable-stores:
+    # `quota_usage` and `sessions` had no migration at all (#182), so the two
+    # durable stores that query them could not start. Proving that needs a real
+    # server: a test that re-states the DDL and diffs the catalogue would have
+    # passed on the day this was broken, because what was missing was the table,
+    # and only a store actually running notices that.
+    #
+    # Plain postgres:17 — this revision needs nothing 001-003 create, so the
+    # test stamps 003 and applies 004 alone rather than requiring pgvector.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
+      # Turns "no server, skip" into a failure, in this job only. A skipped leg
+      # is untested rather than passing, which is how a store with no table
+      # stayed unnoticed in the first place.
+      MAISTRO_REQUIRE_PG_LEGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Quota and session stores run against their migration
+        run: uv run pytest tests/migrations/test_quota_and_session_stores.py -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+
   hive-conductor-e2e-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 20
