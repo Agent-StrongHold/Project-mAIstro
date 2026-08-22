@@ -58,6 +58,23 @@ later regression.
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
 | execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state enum nobody classified, or an entry left behind after its enum was deleted |
 | model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
+
+The six architecture-fitness invariants of
+[#36](https://github.com/Agent-StrongHold/Project-mAIstro/issues/36) are not all gates, and two
+of them deliberately are not:
+
+| Invariant | Enforced by |
+|---|---|
+| 1. No new universal execution lifecycle | `check-execution-lifecycles.py` |
+| 2. No direct model/tool/effect provider bypass | `check-model-egress.py` (frozen set; the boundary itself is #56) |
+| 3. No second durable Workspace/Event-sequence authority | **the type, not a gate** — `EventEnvelope.__post_init__` refuses a Workspace event that also defines a `stream_scope`, and the store refuses a caller-supplied sequence; both are covered in `tests/events/test_envelope.py` |
+| 4. No unscoped durable project-owned objects | **the type, not a gate** — `Run` and `NodeRun` require a non-empty `project_id`, and `Run` rejects a graph snapshot whose `project_id` disagrees |
+| 5. No outward core dependency-direction violations | `tests/fitness/test_import_boundaries.py` |
+| 6. Compatibility owners not presented as canonical | convention: a compat alias carries the "Backwards compat aliases" banner |
+
+Invariants 3 and 4 fail closed at construction, which is stronger than a CI sweep — the object
+cannot exist in the wrong shape, so there is nothing for a gate to catch later. Adding one would
+be a check with no signal, and a gate that never fires teaches people to ignore the ones that do.
 | Hypothesis conformance | floor | zero falsifying examples | a property violation in `formal/` |
 | acceptance-criterion state | count ratchet | `quality/ac-state-ceilings.json` (7 counters) | a completion claim outrunning its evidence — and an unbanked improvement, so the ceiling holds no slack |
 | Gherkin well-formedness | floor | zero parse failures | an acceptance-criteria block the Gherkin grammar rejects |
