@@ -33,7 +33,7 @@ import binascii
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from urllib.parse import unquote
+from urllib.parse import unquote, unquote_plus
 
 from maistro.security.normalize import fold_homoglyphs, normalize_for_redaction
 
@@ -146,12 +146,34 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
 
 # Candidate encodings are deliberately broad, but never become findings merely
 # for looking encoded. They are redacted only when decoded plaintext satisfies
-# one of the real PII validators above. Percent candidates exclude assignment
-# delimiters so ``value=someone%40example.com`` redacts only the encoded value.
+# one of the real PII validators above — which is what lets the candidate
+# classes be generous without generating false positives.
+#
+# The percent class spans URI structure (`:`, `/`, `@`, `?`, `#`) as well as the
+# unreserved set. `urllib.parse.quote` leaves `/` literal by default, so a
+# class that stopped at it split `postgres%3A//u%3Ap%40localhost/db` into
+# fragments, none of which could satisfy the connection-string detector — and
+# the whole credential passed through. `=` and `&` stay excluded so
+# ``value=someone%40example.com`` still redacts the value and not the key.
 _PERCENT_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9._~%+\-])[A-Za-z0-9._~%+\-]*%[0-9A-Fa-f]{2}[A-Za-z0-9._~%+\-]*(?![A-Za-z0-9._~%+\-])"
+    r"(?<![A-Za-z0-9._~%+:/@?#\-])[A-Za-z0-9._~%+:/@?#\-]*%[0-9A-Fa-f]{2}"
+    r"[A-Za-z0-9._~%+:/@?#\-]*(?![A-Za-z0-9._~%+:/@?#\-])"
 )
-_BASE64_TOKEN = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{16,}={0,2}(?![A-Za-z0-9+/_=\-])")
+
+#: Minimum Base64 candidate length, in characters before padding.
+#:
+#: Not arbitrary: it is set by the shortest PII this module detects. A US SSN is
+#: eleven characters, which Base64-encodes to fifteen before padding — so a
+#: sixteen-character floor excluded every encoded SSN, and `219-09-9999` went
+#: through untouched. Twelve characters decodes to nine bytes, which leaves
+#: headroom under that. Lowering it costs only decode attempts on more
+#: candidates; it cannot produce a false positive, because a decoded candidate
+#: still has to satisfy a real detector and its validator.
+_MIN_BASE64_CHARS = 12
+
+_BASE64_TOKEN = re.compile(
+    rf"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{{{_MIN_BASE64_CHARS},}}={{0,2}}(?![A-Za-z0-9+/_=\-])"
+)
 
 
 def normalize_for_scan(text: str) -> str:
@@ -183,6 +205,41 @@ def _decoded_pii_type(text: str) -> str | None:
     return None
 
 
+def _absorbable(
+    seen_ranges: list[tuple[int, int]], start: int, end: int, may_absorb: bool
+) -> set[tuple[int, int]] | None:
+    """Spans `(start, end)` may replace, or None if it must be dropped.
+
+    An empty set means no conflict. A populated set means the new span strictly
+    contains those existing ones and should take their place.
+
+    ``may_absorb`` is for encoded candidates, whose span is the whole encoded
+    token and so can legitimately contain hits the plain view already found.
+    Discarding such a candidate wholesale left the *rest* of its plaintext
+    unredacted: scanning `AKIAIOSFODNN7EXAMPLE%2B1%20415%20555%202671` once
+    redacted only the key, and scanning that output again then redacted the
+    phone — a leak and a breach of the idempotence contract in the same bug.
+
+    Partial overlap is refused either way. Two spans that cross without
+    containment have no correct merge: widening to their union would redact
+    text neither detector claimed, and picking one silently drops the other.
+    """
+    overlapping = {
+        (existing_start, existing_end)
+        for existing_start, existing_end in seen_ranges
+        if not (end <= existing_start or start >= existing_end)
+    }
+    if not overlapping:
+        return set()
+    if not may_absorb:
+        return None
+    contains_all = all(
+        start <= existing_start and end >= existing_end
+        for existing_start, existing_end in overlapping
+    )
+    return overlapping if contains_all else None
+
+
 def _append_match(
     matches: list[PIIMatch],
     seen_ranges: list[tuple[int, int]],
@@ -191,13 +248,16 @@ def _append_match(
     canonical: str,
     start: int,
     end: int,
+    may_absorb: bool = False,
 ) -> None:
-    overlaps = any(
-        not (end <= existing_start or start >= existing_end)
-        for existing_start, existing_end in seen_ranges
-    )
-    if overlaps:
+    """Record a hit, unless an earlier one already claims that span."""
+    absorbed = _absorbable(seen_ranges, start, end, may_absorb)
+    if absorbed is None:
         return
+    if absorbed:
+        matches[:] = [match for match in matches if (match.start, match.end) not in absorbed]
+        seen_ranges[:] = [span for span in seen_ranges if span not in absorbed]
+
     matches.append(
         PIIMatch(
             pii_type=pii_type,
@@ -216,13 +276,26 @@ def _scan_percent_encoded(
 ) -> None:
     for candidate in _PERCENT_TOKEN.finditer(canonical):
         raw = candidate.group()
-        try:
-            decoded = unquote(raw, encoding="utf-8", errors="strict")
-        except UnicodeDecodeError:
+        # Both decodings, because `+` is ambiguous and the encoder does not say
+        # which it meant. In `application/x-www-form-urlencoded` a `+` is a
+        # space; elsewhere it is a literal `+`. `quote_plus("+1 415 555 2671")`
+        # produces `%2B1+415+555+2671`, which plain `unquote` turns into
+        # `+1+415+555+2671` — separators the phone detector does not accept, so
+        # the number survived. Trying both costs one extra decode and removes
+        # the guess.
+        decodings = []
+        for decoder in (unquote, unquote_plus):
+            try:
+                decoded = decoder(raw, encoding="utf-8", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            if decoded != raw and decoded not in decodings:
+                decodings.append(decoded)
+        if not decodings:
             continue
-        if decoded == raw:
-            continue
-        pii_type = _decoded_pii_type(decoded)
+        pii_type = next(
+            (found for found in map(_decoded_pii_type, decodings) if found is not None), None
+        )
         if pii_type is not None:
             _append_match(
                 matches,
@@ -231,6 +304,7 @@ def _scan_percent_encoded(
                 canonical=canonical,
                 start=candidate.start(),
                 end=candidate.end(),
+                may_absorb=True,
             )
 
 
@@ -261,6 +335,7 @@ def _scan_base64_encoded(
                 canonical=canonical,
                 start=candidate.start(),
                 end=candidate.end(),
+                may_absorb=True,
             )
 
 

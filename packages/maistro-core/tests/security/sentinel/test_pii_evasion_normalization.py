@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import unicodedata
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -120,3 +121,88 @@ def test_the_homoglyph_fold_is_index_for_index_with_its_input() -> None:
 
     sample = "".join(chr(c) for c in _HOMOGLYPHS)
     assert len(fold_homoglyphs(sample)) == len(sample)
+
+
+# ── the Codex review on #126: four ways an encoding still got through ──
+
+
+@pytest.mark.ac("SPEC-082126-3c9d/AC-2")
+def test_a_base64_encoded_ssn_is_short_enough_to_have_been_excluded() -> None:
+    """The candidate floor was sixteen characters. An SSN is eleven, which
+    Base64-encodes to fifteen before padding — so *every* encoded SSN sat below
+    the threshold, in a filter whose stated purpose was catching encoded PII."""
+    encoded = base64.b64encode(b"219-09-9999").decode()
+    assert len(encoded.rstrip("=")) == 15, "the length that used to be excluded"
+
+    redacted, matches = scan_and_redact(f"note {encoded}")
+
+    assert [match.pii_type for match in matches] == ["ssn"]
+    assert encoded not in redacted
+
+
+@pytest.mark.ac("SPEC-082126-3c9d/AC-2")
+def test_a_percent_encoded_connection_string_is_not_split_into_fragments() -> None:
+    """`quote` leaves `/` literal by default. A candidate class that stopped at
+    it cut the value into pieces, none of which could satisfy the
+    connection-string detector — so the whole credential passed through."""
+    encoded = quote("postgres://u:p@localhost/db")
+    assert "/" in encoded and "%3A" in encoded, "the shape that used to split"
+
+    redacted, matches = scan_and_redact(encoded)
+
+    assert [match.pii_type for match in matches] == ["connection_string"]
+    assert "localhost" not in redacted
+
+
+@pytest.mark.ac("SPEC-082126-3c9d/AC-2")
+def test_form_encoded_plus_signs_are_decoded_as_spaces() -> None:
+    """`+` is ambiguous and the encoder does not say which it meant. Decoding it
+    only as a literal turned `%2B1+415+555+2671` into `+1+415+555+2671`, whose
+    separators the phone detector rejects."""
+    encoded = quote_plus("+1 415 555 2671")
+    assert encoded == "%2B1+415+555+2671"
+
+    redacted, matches = scan_and_redact(encoded)
+
+    assert [match.pii_type for match in matches] == ["phone"]
+    assert "415" not in redacted
+
+
+@pytest.mark.ac("SPEC-082126-3c9d/AC-3")
+def test_an_encoded_candidate_overlapping_a_hit_absorbs_it_rather_than_vanishing() -> None:
+    """One bug, two symptoms. The encoded candidate spanned both the visible AWS
+    key and an encoded phone; overlapping the key's span, it was dropped whole,
+    so the phone stayed in the output — and a second pass then redacted it,
+    breaking idempotence. Both are the same discard."""
+    text = "AKIAIOSFODNN7EXAMPLE%2B1%20415%20555%202671"
+
+    once, matches = scan_and_redact(text)
+    twice, _ = scan_and_redact(once)
+
+    assert "415" not in once, "the phone must not survive the first pass"
+    assert "AKIAIOSFODNN7EXAMPLE" not in once
+    assert twice == once, "a second pass must find nothing left to do"
+    assert len(matches) == 1, "the wider span replaces the one it contains"
+
+
+def test_partial_overlap_is_still_refused() -> None:
+    """Absorption is only for containment. Two spans that cross without one
+    containing the other have no correct merge — widening to their union would
+    redact text neither detector claimed — so the later one is still dropped."""
+    from maistro.security.sentinel.pii_filter import _append_match
+
+    matches: list = []
+    seen: list[tuple[int, int]] = []
+    canonical = "x" * 40
+    _append_match(matches, seen, pii_type="aws_key", canonical=canonical, start=0, end=20)
+    _append_match(
+        matches,
+        seen,
+        pii_type="phone",
+        canonical=canonical,
+        start=10,
+        end=30,
+        may_absorb=True,
+    )
+
+    assert [(m.start, m.end) for m in matches] == [(0, 20)]

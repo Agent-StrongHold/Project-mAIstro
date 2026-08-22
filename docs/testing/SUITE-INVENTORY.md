@@ -103,9 +103,18 @@ actually call the filter — plus one holding the homoglyph map to being
 index-for-index, since the confusable view's hits are redacted at the canonical
 string's offsets.
 
+Five more maistro-core node IDs answer the Codex review on #126, one per
+finding plus one guarding the fix. Each is a way an encoding still reached the
+caller: a Base64 SSN below the candidate floor, a percent-encoded connection
+string split on its literal slashes, a form-encoded phone whose `+` separators
+were never decoded as spaces, and an encoded candidate that overlapped a
+visible hit and was dropped whole — leaking the rest of its plaintext and
+breaking idempotence in the same discard. The fifth holds the line on
+absorption: containment merges, partial overlap still refuses.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6389 | `ci.yml` |
+| `packages/maistro-core/tests` | 6394 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |
