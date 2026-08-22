@@ -82,9 +82,9 @@ currently holds belongs to `Run`/`Invocation`.
 | Authentication and identity | `maistro.auth`, `maistro.identity` | Principal | n/a | service-key store | itself (canonical) |
 | Authorization, privilege, governance | `maistro.privilege`, `maistro.policy`, `maistro.governance` | Authorization decision | n/a | — | itself (canonical, ADR-068 partly unbuilt) |
 | Secrets vault | `maistro.vault` | Secret material | n/a | age-encrypted file | OS file permissions |
-| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.sqlite_learnings`/`sqlite_outcomes` on a `sqlite:` URL; in-memory otherwise — the `pg_*` twins have no production importer | `memory.scopes`, `memory.exposure` |
-| Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.sqlite_sessions` on a `sqlite:` URL; in-memory otherwise | session trust floor |
-| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself, but only the `sqlite_*` half is reachable | — |
+| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.sqlite_learnings`/`sqlite_outcomes` on a `sqlite:` URL; in-memory otherwise. Target owner is `pg_learnings`/`pg_outcomes` + pgvector (ADR-082226-5104); neither has a caller | `memory.scopes`, `memory.exposure` |
+| Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.sqlite_sessions` on a `sqlite:` URL; in-memory otherwise. Target owner is `pg_sessions` (ADR-082226-5104) | session trust floor |
+| Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — but only the `sqlite_*` half is reachable, and ADR-082226-5104 makes the `pg_*` half canonical | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
@@ -141,9 +141,9 @@ currently holds belongs to `Run`/`Invocation`.
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
-| Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance only | ADR-034, ADR-011, ADR-091, ADR-057 | a memory write that names its producing Run | #64 |
+| Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance, then move onto pgvector | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104 | a memory write that names its producing Run, with its embedding on the same row | #64, #122 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on a Run without owning lifecycle | #64 |
-| Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the Postgres half has no caller | ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, or their removal | #122, #33, #34 |
+| Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the canonical Postgres half has no caller | ADR-082226-5104, ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, and pgvector embeddings on the memory tables | #122, #33, #34 |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
@@ -188,7 +188,8 @@ currently holds belongs to `Run`/`Invocation`.
   their packages do rather than what their code holds — the correction is recorded here
   because a planning surface that overstates the problem misdirects the work as surely as
   one that understates it.
-- **The PostgreSQL persistence layer has no caller, and a Postgres URL silently degrades.**
+- **The PostgreSQL persistence layer has no caller, and a Postgres URL silently degrades —
+  against a decision that names PostgreSQL the durable system of record.**
   `maistro.container` wires the `sqlite_*` stores when `database_url` starts with `sqlite:`
   and otherwise falls through to `InMemoryQuotaTracker`/`InMemoryLearningStore`/
   `InMemoryOutcomeStore`/`InMemorySessionStore`. No production module imports
@@ -198,9 +199,11 @@ currently holds belongs to `Run`/`Invocation`.
   restart, with no warning. That is the failure mode `graph_runner.StubLLMNotAllowedError`
   was introduced to end elsewhere in this repo ("loud degraded modes"), and it contradicts
   the root `CLAUDE.md` subsystem table, which advertises `maistro.persistence` as
-  "PostgreSQL stores". Filed as
-  [#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122) rather than fixed
-  here.
+  "PostgreSQL stores". ADR-082226-5104 settles the direction: PostgreSQL *is* the durable system
+  of record, pgvector carries embeddings, and SQLite is not a canonical datastore — so these are
+  `CONNECT` rows (wiring owed) rather than the `RETIRE` rows an earlier reading of the code
+  suggested. Filed as
+  [#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122) rather than fixed here.
 - **`maistro.conduit` is constructed but unrouted.** `maistro.container` builds it; no shipped
   product path calls it. The "one front door" claim is currently a design, not a fact.
 - **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
@@ -233,4 +236,6 @@ delivering against a premise that does not hold.
 - `quality/reachability-baseline.json` — the ratcheted unreachable set this matrix attributes.
 - `KNOWN-GAPS.md` — capability-level gaps; this matrix is ownership-level.
 - `docs/quality-gates.md` — where this gate sits among the other ratchets.
+- `docs/adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md` —
+  what the durable and working stores are, and why.
 - `docs/adr/ADR-INDEX.md` — decision status of everything cited above.
