@@ -73,15 +73,40 @@ async def test_an_unknown_run_is_404(wired, client: TestClient) -> None:
     assert client.get("/runs/no-such-run").status_code == 404
 
 
-async def test_node_runs_are_empty_and_say_so(wired, client: TestClient) -> None:
-    """Honest about the gap: physical execution still runs around the graph
-    rather than through it (#42), so there are no NodeRuns yet."""
+async def test_a_queued_run_has_no_node_runs_yet(wired, client: TestClient) -> None:
+    """Empty because nothing has executed it — this fixture wires the queue but
+    no runner. Before #143 it was empty because execution went around the spine
+    entirely; the test below is what tells those two apart."""
     created = _submit(client)
 
     response = client.get(f"/runs/{created['run_id']}/node-runs")
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+async def test_an_executed_run_reports_its_node_run(wired, client: TestClient) -> None:
+    """The endpoint stops being correct-and-always-empty (#143)."""
+    from maistro.agents.types import CodeOutput, ConductorOutput
+    from maistro.tasks.queue import get_task_queue
+    from maistro.tasks.runner import TaskRunner
+
+    created = _submit(client)
+
+    async def _executor(_request):
+        return ConductorOutput(
+            success=True,
+            final_answer="done",
+            code=CodeOutput(files_changed=["a.py"], description="done"),
+        )
+
+    runner = TaskRunner(get_task_queue(), executor=_executor, run_store=wired)
+    await runner._execute_task(created["task_id"])
+
+    response = client.get(f"/runs/{created['run_id']}/node-runs")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
 
 
 async def test_node_runs_for_an_unknown_run_are_404(wired, client: TestClient) -> None:
