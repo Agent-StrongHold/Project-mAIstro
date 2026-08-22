@@ -18,6 +18,7 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+from maistro.graph.templates import GraphTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -29,6 +30,7 @@ from maistro.protocols import StrikeTracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.chat import ChatRunAdmitter
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.security.gate import Gate
@@ -123,6 +125,14 @@ class Container:
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
+    # Chat's half of the same seam (#131). Optional in the same way the rest of
+    # the spine is: a Container built directly, without `create_container`, still
+    # routes requests — it just does not admit Runs for them.
+    chat_admitter: ChatRunAdmitter | None = None
+    # Where a Graph definition comes from when a Run is not trivial work — a
+    # schedule firing, or anything else that instantiates a drawn topology
+    # rather than a one-node stand-in (#145).
+    template_store: GraphTemplateStore | None = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -204,6 +214,7 @@ class Container:
         auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         # An armed security control that cannot run is worse than an unarmed
         # one: the operator believes it is enforcing. Both controls this
@@ -239,6 +250,7 @@ class Container:
             auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
+            request_id=request_id,
         )
         return result
 
@@ -440,7 +452,7 @@ async def create_container(
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
     intent_registry = build_intent_registry()
-    project_scope_store, run_store, task_admitter = await wire_execution_spine(
+    spine = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
         intents=intent_registry,
@@ -514,21 +526,19 @@ async def create_container(
             trigger_store,
             invocation_store,
         ) = await _wire_sqlite_durable_events(db_pool)
+    elif pg_pool is not None:
+        from maistro.events.pg_stores import PgEventLog, PgInvocationStore, PgTriggerStore
+
+        # Tables come from `alembic/versions/011`; the PostgreSQL preflight
+        # already refuses an unmigrated database by name, so there is no
+        # ensure_schema here and no second schema owner.
+        durable_event_log = PgEventLog(pg_pool)
+        trigger_store = PgTriggerStore(pg_pool)
+        invocation_store = PgInvocationStore(pg_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -617,9 +627,11 @@ async def create_container(
         capabilities=capabilities,
         episodic_store=episodic_store,
         project_store=project_store,
-        project_scope_store=project_scope_store,
-        run_store=run_store,
-        task_admitter=task_admitter,
+        project_scope_store=spine.project_store,
+        run_store=spine.run_store,
+        task_admitter=spine.task_admitter,
+        chat_admitter=spine.chat_admitter,
+        template_store=spine.template_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,

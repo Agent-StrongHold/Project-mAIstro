@@ -98,6 +98,7 @@ def _new_run(
     actor_principal_id: str | None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> Run:
     """Create the canonical Run and initial GraphExecutionState for a graph launch."""
     values: dict[str, object] = {
@@ -107,7 +108,11 @@ def _new_run(
         "actor_principal_id": actor_principal_id,
         "parent_run_id": parent_run_id,
         "parent_node_run_id": parent_node_run_id,
-        "provenance": {"executor": "durable_graph"},
+        # `executor` last, deliberately — the same rule `runs.admission` applies
+        # to `admission_source`. A caller passing its own `executor` key would
+        # otherwise make the Run claim it ran through something it did not,
+        # which is the one field a recovery scan keys on.
+        "provenance": {**(provenance or {}), "executor": "durable_graph"},
     }
     if run_id is not None:
         values["run_id"] = run_id
@@ -126,12 +131,18 @@ async def run_durable_graph(
     run_id: str | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start and execute a durable graph from its canonical entry frontier.
 
     ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
     the Run (and NodeRun) that produced it — delegation and sub-graph work
     say "work is happening" as a child Run, not a second lifecycle.
+
+    ``provenance`` records how this launch entered the system. Without it every
+    durable graph Run said only ``executor=durable_graph``, so a Run started by
+    a schedule was indistinguishable from one started by hand — the linkage
+    lived in an audit line beside the Run rather than on it (#145).
     """
     run = _new_run(
         graph,
@@ -139,6 +150,7 @@ async def run_durable_graph(
         actor_principal_id=actor_principal_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     state = GraphExecutionState(
         run_id=run.run_id,

@@ -88,7 +88,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
-| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.durable_log`, `events.outbox` | — |
+| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` on a `postgresql://` URL (ADR-082226-5104), the `Sqlite*` stores on `sqlite:`, in-memory otherwise; plus `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
 | Collaboration | `maistro.collaboration` | Multi-actor editing | its own session records | — | — |
@@ -117,12 +117,12 @@ currently holds belongs to `Run`/`Invocation`.
 <!-- matrix:disposition -->
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
-| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/15` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | one conformance suite passing against the in-memory, SQLite and PostgreSQL stores, plus `formal/` property tests | #42, #43, #45 |
-| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/57` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
+| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/18` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-2026-08-16 | one conformance suite passing against the in-memory, SQLite and PostgreSQL stores, plus `formal/` property tests | #42, #43, #45 |
+| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/60` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
 | Request front door and DI | `maistro.container.route_request` | `0/2` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
-| Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/11` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
+| Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/12` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `0/5` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
-| Recurrence / schedules | `services.scheduler` background loop | `0/5` | KEEP — converged: a firing produces a canonical Run | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` fires through `run_registered_dag`; core scheduling suites | #46, #62 |
+| Recurrence / schedules | `services.scheduler` background loop | `0/6` | KEEP — converged: a firing produces a canonical Run | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` fires through `run_registered_dag` and the Run carries `admission_source=schedule` with its nominal fire time; core scheduling suites. `max_runs` is still unreachable through the product surface (#145) | #46, #62, #145 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `3/10` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | ADR-071, ADR-052 | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
 | Builders pipeline | none | `15/15` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090, ADR-099 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
 | Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `4/12` | CONNECT — correct model, incomplete wiring | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
@@ -147,7 +147,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/11` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/12` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence; one conformance suite passing against all three backends, including concurrent-worker idempotency | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `0/8` | KEEP | ADR-037, ADR-082, ADR-055 | one trace spanning request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `3/9` | KEEP | ADR-038, ADR-066 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `3/3` | CONNECT | ADR-070426-3a1f | a collaborative edit correlated to a Run | #34 |

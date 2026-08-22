@@ -63,6 +63,7 @@ async def run_registered_dag(
     configure: Callable[[Graph], None] | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> tuple[Graph, Any]:
     """Execute a registered DAG through the canonical durable Run path.
 
@@ -90,5 +91,6 @@ async def run_registered_dag(
         actor_principal_id=user_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     return graph, record
