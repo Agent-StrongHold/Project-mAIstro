@@ -185,6 +185,15 @@ currently holds belongs to `Run`/`Invocation`.
   its contract, and two suites cover it under contention. All five are `MIGRATE` rows with a
   parity-before-deletion dependency on
   [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
+- **Jira and Airtable have four independent implementations between them.** The canonical ones
+  are registered node kinds — `jira.poll` queries by JQL across both Atlassian backends,
+  `airtable.poll` reads base/table records — plus `maistro.tools.atlassian`'s MCP client, which
+  `agents/pm_runner.py` reaches. Against those, `routes/daily_report.py` and
+  `routes/daily_report_v2.py` each call `api.atlassian.com` and `api.airtable.com` over raw
+  `httpx`. v2's docstring says it "uses same path as chat tools", but that describes how it
+  resolves credentials, not how it performs the effect. v1 is registered nowhere and is a
+  `RETIRE` row; v2 is live and carries the same debt, which #55/#57 resolve by making an
+  integration call a governed Invocation rather than a bespoke client per route.
 - **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
   were first derived from what each package is *for*; re-deriving them from what each module's
   own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's

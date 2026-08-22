@@ -615,22 +615,13 @@
       ]
     },
     {
-      "id": "hive-compat-shim",
+      "id": "hive-bespoke-integration-routes",
       "subsystem": "Agent Conductor HTTP surface",
       "disposition": "RETIRE",
-      "rationale": "routes/chat_complete.py is five lines re-exporting services.chat_completion.run_chat_completion for backward compatibility. Nothing imports it \u2014 the two test_chat_complete_* tests exercise the endpoint, not this module \u2014 and hive-conductor is an application, not a published library, so there is no external importer the shim could still be serving.",
-      "replaced_by": "services.chat_completion.run_chat_completion",
+      "rationale": "Neither Jira nor Airtable needs an independent integration. Canonical node kinds already exist and are registered: jira.poll queries by JQL across both Atlassian backends, airtable.poll reads base/table records, and maistro.tools.atlassian.AtlassianMCPClient is a reachable MCP client. routes/daily_report.py is a fourth implementation \u2014 raw httpx against api.atlassian.com and api.airtable.com \u2014 and it is registered nowhere, so its GET /jira/projects endpoint is not served by the application. An earlier disposition kept it on the strength of that endpoint; treating unregistered code as live API surface was the error. Deleting it also clears one entry from the use_secret(..., lambda s: s) refactor allowlist in tests/test_credential_security_audit.py, which must be pruned with it. routes/chat_complete.py is five lines re-exporting services.chat_completion.run_chat_completion with no importer; hive-conductor is an application, not a published library, so no external consumer needs the shim.",
+      "replaced_by": "maistro.graph.nodes.jira_poll / airtable_poll and maistro.tools.atlassian for the integrations; services.chat_completion.run_chat_completion for the shim",
       "modules": [
-        "routes.chat_complete"
-      ]
-    },
-    {
-      "id": "hive-daily-report-v1",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "CONNECT",
-      "rationale": "routes/daily_report.py is unregistered while daily_report_v2 is mounted at /v1/daily-report under the same tag, so v2 holds the root path. But v2 does not replace v1: v1 has two endpoints and v2 has one \u2014 GET /jira/projects exists only in v1 \u2014 and v1's 455 lines carry richer Jira and Airtable sections with no_pat deep links, against v2's self-described 'simple'. An earlier disposition called it superseded and marked it RETIRE on the shared path alone. Either port what is wanted into v2 and then retire this, or register the missing endpoint; both are decisions, not sweeps.",
-      "root": "main.py route registration, or a port of /jira/projects into daily_report_v2",
-      "modules": [
+        "routes.chat_complete",
         "routes.daily_report"
       ]
     }
