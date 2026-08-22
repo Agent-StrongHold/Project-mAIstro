@@ -3,7 +3,8 @@ id: ADR-082226-5104
 title: "Storage architecture: PostgreSQL as durable system of record, LadybugDB as per-Workspace working memory"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
+accepted: 2026-08-22
 created: 2026-08-22
 substrate:
   - maistro-engine#ADR-019
