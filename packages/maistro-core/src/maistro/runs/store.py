@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -135,14 +136,71 @@ class RunStore(Protocol):
     ) -> Attempt: ...
 
 
-class InMemoryRunStore:
-    """Reference lifecycle store for canonical Run -> NodeRun -> Attempt state."""
+#: Retention bound for the in-memory store. Not a tuning knob so much as an
+#: admission that this store is used by long-lived processes: maistro-server
+#: creates one Run per submitted task, and nothing else evicts them. `TaskQueue`
+#: met the smaller version of this problem and answered it the same way, with
+#: the same two numbers — prune terminal entries down to a target rather than
+#: trimming one at a time, so the cost is amortised.
+MAX_IN_MEMORY_RUNS = 10_000
+RUN_PRUNE_TARGET = 8_000
 
-    def __init__(self, *, project_store: ProjectScopeStore) -> None:
+
+class InMemoryRunStore:
+    """Reference lifecycle store for canonical Run -> NodeRun -> Attempt state.
+
+    Bounded: terminal Runs are evicted oldest-first once the store exceeds
+    :data:`MAX_IN_MEMORY_RUNS`. Only terminal ones — evicting a live Run would
+    delete the execution identity of work still running, which is worse than the
+    memory it reclaims. A store that is entirely live at the limit therefore
+    keeps growing, and that is the correct failure: it means the process has ten
+    thousand unfinished Runs, which is a different problem and should look like
+    one.
+    """
+
+    def __init__(
+        self,
+        *,
+        project_store: ProjectScopeStore,
+        max_runs: int = MAX_IN_MEMORY_RUNS,
+        prune_target: int = RUN_PRUNE_TARGET,
+    ) -> None:
+        if prune_target > max_runs:
+            raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
-        self._runs: dict[str, Run] = {}
+        self._max_runs = max_runs
+        self._prune_target = prune_target
+        self._runs: OrderedDict[str, Run] = OrderedDict()
         self._node_runs: dict[str, NodeRun] = {}
         self._attempts: dict[str, Attempt] = {}
+
+    def _prune_terminal_runs(self) -> None:
+        """Evict the oldest terminal Runs, and everything hanging off them.
+
+        The NodeRuns and Attempts go with the Run. Leaving them would keep the
+        larger half of the memory while removing the index into it — a leak that
+        is also unreachable.
+        """
+        if len(self._runs) <= self._max_runs:
+            return
+        removable = [
+            run_id for run_id, run in self._runs.items() if run.status in TERMINAL_RUN_STATUSES
+        ][: len(self._runs) - self._prune_target]
+        for run_id in removable:
+            del self._runs[run_id]
+            node_run_ids = {
+                node_run_id
+                for node_run_id, node_run in self._node_runs.items()
+                if node_run.run_id == run_id
+            }
+            for node_run_id in node_run_ids:
+                del self._node_runs[node_run_id]
+            for attempt_id in [
+                attempt_id
+                for attempt_id, attempt in self._attempts.items()
+                if attempt.node_run_id in node_run_ids
+            ]:
+                del self._attempts[attempt_id]
 
     async def create_run(
         self,
@@ -182,6 +240,7 @@ class InMemoryRunStore:
             provenance=dict(provenance or {}),
         )
         self._runs[run.run_id] = run
+        self._prune_terminal_runs()
         return run.model_copy(deep=True)
 
     async def get_run(self, run_id: str) -> Run | None:

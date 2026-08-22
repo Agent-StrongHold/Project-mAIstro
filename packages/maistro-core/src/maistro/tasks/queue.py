@@ -234,7 +234,21 @@ class TaskQueue:
             return None
         return task
 
-    async def update_status(self, task_id: str, status: TaskStatus) -> bool:
+    async def update_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        *,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> bool:
+        """Advance the task, and the Run behind it, together.
+
+        ``result``/``error`` are the terminal outcome. They go to the Run rather
+        than the receipt — `set_result` still owns the receipt's own copy — so a
+        caller following the canonical run_id learns *how* the work ended and not
+        merely that it did.
+        """
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -257,7 +271,9 @@ class TaskQueue:
             if (
                 self._admitter is not None
                 and task.run_id
-                and not await self._admitter.record_transition(task.run_id, status)
+                and not await self._admitter.record_transition(
+                    task.run_id, status, result=result, error=error
+                )
             ):
                 logger.warning(
                     "run_refused_task_transition",
@@ -398,6 +414,20 @@ def get_task_queue() -> TaskQueue:
     if _queue is None:
         _queue = TaskQueue()
     return _queue
+
+
+def reset_task_queue() -> None:
+    """Drop the process singleton, so a later lifespan can install a fresh one.
+
+    Startup refuses to replace a queue that already accepted tasks, which is
+    right — a queued task cannot be given a Run after the fact. But shutdown
+    never cleared it, so any interpreter that ran the FastAPI lifespan twice
+    after serving traffic (an embedded server, a TestClient reused across
+    modules) could not start again. Teardown clearing the singleton is what
+    makes the startup check a guard rather than a one-shot latch.
+    """
+    global _queue
+    _queue = None
 
 
 def configure_task_queue(*, admitter: TaskAdmitter | None) -> TaskQueue:

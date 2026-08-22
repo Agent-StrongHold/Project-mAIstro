@@ -415,9 +415,14 @@ async def create_container(
         session_store = InMemorySessionStore()
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
+    # Built here rather than below, because the admission seam routes on it: a
+    # separately-constructed default registry would disagree with the one the
+    # rest of the container uses (POC mode, or any custom table).
+    intent_registry = build_intent_registry()
     project_scope_store, run_store, task_admitter = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
+        intents=intent_registry,
     )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
@@ -428,7 +433,6 @@ async def create_container(
     router = RouterEngine(quota_tracker)
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
-    intent_registry = build_intent_registry()
 
     strike_tracker: InMemoryStrikeTracker | None = None
     if config.security.strike_tracking_enabled:

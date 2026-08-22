@@ -311,3 +311,77 @@ async def test_an_unwired_queue_transitions_as_before() -> None:
     task = await queue.submit(TaskCreate(description="one"))
 
     assert await queue.update_status(task.task_id, TaskStatus.PLANNING) is True
+
+
+# ── the Run carries the outcome, not just the status ──────────────
+
+
+async def test_a_completed_run_carries_its_result(scoped) -> None:
+    """A caller who follows the run_id must learn how the work ended, not only
+    that it did. Passing the outcome to `set_result` alone left every terminal
+    Run reporting result=None forever."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    task = await queue.submit(TaskCreate(description="one"))
+    await queue.update_status(task.task_id, TaskStatus.PLANNING)
+    await queue.update_status(task.task_id, TaskStatus.CODING)
+
+    await queue.update_status(
+        task.task_id, TaskStatus.COMPLETED, result={"files_changed": ["a.py"]}
+    )
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.result == {"files_changed": ["a.py"]}
+
+
+async def test_a_failed_run_carries_its_error(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    task = await queue.submit(TaskCreate(description="one"))
+    await queue.update_status(task.task_id, TaskStatus.PLANNING)
+
+    await queue.update_status(task.task_id, TaskStatus.FAILED, error="the tool exploded")
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.error == "the tool exploded"
+
+
+async def test_a_receipt_whose_run_vanished_cannot_advance(scoped) -> None:
+    """An orphaned identity. Treating a missing Run as success made "no Run"
+    indistinguishable from "already in that state", which is the divergence this
+    seam exists to prevent."""
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter)
+    task = await queue.submit(TaskCreate(description="one"))
+
+    assert await admitter.record_transition("no-such-run", TaskStatus.PLANNING) is False
+    assert await queue.update_status(task.task_id, TaskStatus.PLANNING) is True
+
+
+async def test_the_admitter_uses_the_registry_it_was_given(scoped) -> None:
+    """A separately-built default registry disagreed with the container's, so a
+    PM-mode deployment recorded an engineering agent in the canonical Graph."""
+    from maistro.agents.intents import IntentRegistry
+
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(
+            runs,
+            workspace_id="w1",
+            project_id=project.project_id,
+            intents=IntentRegistry({"delivery": "delivery"}),
+        )
+    )
+
+    task = await queue.submit(TaskCreate(description="ship it", task_type="delivery"))
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.graph.materialize().nodes[0].parameters["to_agent"] == "delivery"

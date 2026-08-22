@@ -22,7 +22,7 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
-from maistro.tasks.queue import configure_task_queue
+from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro_server.api import (
@@ -32,6 +32,7 @@ from maistro_server.api import (
     health,
     metrics,
     models,
+    runs,
     tasks,
     webhooks,
     ws,
@@ -111,7 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # exists yet (#122), so Runs do not survive a restart here. Said out loud
     # rather than left to be discovered, because a run_id that silently stops
     # resolving is worse than one that was never promised.
-    _scope_store, _run_store, admitter = await wire_execution_spine(
+    _scope_store, run_store, admitter = await wire_execution_spine(
         None, workspace_id=settings.workspace_id
     )
     await logger.awarning(
@@ -120,6 +121,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         detail="Runs admitted by /tasks are lost on restart until a durable store is wired (#122)",
     )
     queue = configure_task_queue(admitter=admitter)
+    # The run_id POST /tasks returns has to resolve somewhere, or it is an
+    # advertised handle with nothing behind it.
+    runs.configure_run_store(run_store)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog
@@ -151,6 +155,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Graceful shutdown: drain tasks → cleanup containers → flush observability
     if _runner:
         await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+
+    # Drop the queue singleton after draining, so a later lifespan in the same
+    # interpreter can install a fresh one. Startup refuses to replace a queue
+    # that has accepted tasks — correctly, since a queued task cannot be given a
+    # Run afterwards — and without this that guard latched permanently.
+    reset_task_queue()
+    runs.configure_run_store(None)
 
     await cleanup_all_containers()
 
@@ -260,6 +271,7 @@ app.include_router(metrics.router)
 # API v1 — all business endpoints under /v1 prefix for versioning
 API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
+app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(agents.router, prefix=f"{API_V1_PREFIX}/maistro")
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
@@ -274,6 +286,7 @@ app.include_router(canvas.router)
 
 # Backward compatibility — also mount at root (will be removed in v2)
 app.include_router(tasks.router)
+app.include_router(runs.router)
 app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)

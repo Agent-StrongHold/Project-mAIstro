@@ -18,6 +18,7 @@ failure the scope tree exists to prevent.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.runs.admission import admit_direct_work
@@ -66,7 +67,14 @@ class TaskAdmitter(Protocol):
         """Admit one queued task and return its canonical ``run_id``."""
         ...
 
-    async def record_transition(self, run_id: str, status: TaskStatus) -> bool:
+    async def record_transition(
+        self,
+        run_id: str,
+        status: TaskStatus,
+        *,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> bool:
         """Advance the Run to match a task transition. False if it refused."""
         ...
 
@@ -136,10 +144,30 @@ class TaskRunAdmitter:
         # The receipt is born QUEUED, so the Run is too. Leaving it CREATED
         # would mean the two disagreed from the first instant about a task that
         # is, by then, genuinely queued.
-        await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
+        #
+        # Two commits on a durable store, and a failure between them would leave
+        # a CREATED Run whose provenance names a task receipt that was never
+        # queued. Compensate rather than leak: a Run that could not be queued is
+        # cancelled, which is true and terminal. The remaining window — process
+        # death between the two commits — needs a create-in-queued-state
+        # operation on the RunStore protocol, which is #132's to add along with
+        # the durable backend.
+        try:
+            await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
+            raise
         return run.run_id
 
-    async def record_transition(self, run_id: str, status: TaskStatus) -> bool:
+    async def record_transition(
+        self,
+        run_id: str,
+        status: TaskStatus,
+        *,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> bool:
         """Advance the Run to match one task transition.
 
         Returns False when the Run refuses, and the caller must then refuse the
@@ -148,14 +176,25 @@ class TaskRunAdmitter:
         two can never tell different stories about the same work.
 
         A transition the Run is already in is not a refusal — it is the finer
-        task machine moving between phases of one execution.
+        task machine moving between phases of one execution. A Run that does not
+        resolve *is* a refusal: a receipt carrying a run_id nothing can find is
+        an orphaned identity, and letting it advance anyway is the exact
+        divergence this seam exists to prevent. (Returning True there was a bug:
+        it made "no Run" indistinguishable from "already in that state".)
+
+        ``result`` and ``error`` carry the terminal outcome onto the Run. Without
+        them every terminal Run reported result=None and error=None forever,
+        including failed work, so a caller who followed the run_id learned that
+        the work ended and nothing about how.
         """
         target = RUN_STATUS_BY_TASK_STATUS[status]
         run = await self._runs.get_run(run_id)
-        if run is None or run.status is target:
+        if run is None:
+            return False
+        if run.status is target:
             return True
         try:
-            await self._runs.transition_run(run_id, target)
+            await self._runs.transition_run(run_id, target, result=result, error=error)
         except InvalidLifecycleTransition:
             return False
         return True

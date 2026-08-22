@@ -110,7 +110,12 @@ async def admit_direct_work(
         graph,
         actor_principal_id=actor_principal_id,
         persona_id=persona_id,
-        provenance={ADMISSION_SOURCE: source, **(provenance or {})},
+        # `source` last, deliberately. With the spread last, a caller passing
+        # `admission_source` in its own provenance silently overrode the
+        # argument, and the Run could then claim it entered through a queue,
+        # webhook or request path it never touched — which is the one field an
+        # audit correlates on.
+        provenance={**(provenance or {}), ADMISSION_SOURCE: source},
     )
 
 

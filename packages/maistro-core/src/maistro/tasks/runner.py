@@ -211,12 +211,14 @@ class TaskRunner:
             await self._execute_task(task_id)
         except asyncio.CancelledError:
             # Graceful shutdown — mark task as failed rather than leaving it stuck
-            await self._queue.update_status(task_id, TaskStatus.FAILED)
+            await self._queue.update_status(
+                task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
+            )
             self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
             await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)
-            await self._queue.update_status(task_id, TaskStatus.FAILED)
+            await self._queue.update_status(task_id, TaskStatus.FAILED, error=str(exc))
             self._queue.set_result(task_id, TaskResult(error=str(exc)))
             await self._emit_progress_webhook(task_id)
         finally:
@@ -244,7 +246,14 @@ class TaskRunner:
 
         async with self._queue.claim(task_id):
             # Planning phase
-            await self._queue.update_status(task_id, TaskStatus.PLANNING)
+            if not await self._queue.update_status(task_id, TaskStatus.PLANNING):
+                # The canonical Run refused (cancelled, or already terminal),
+                # so this work must not run. Ignoring the return value meant a
+                # cancelled Run still had its task executed, with the receipt
+                # left QUEUED and the result written afterwards describing work
+                # nobody asked for.
+                await logger.awarning("task_abandoned_run_refused", task_id=task_id)
+                return
             self._queue.update_progress(
                 task_id, TaskProgress(current="Analyzing task and creating plan...")
             )
@@ -264,7 +273,9 @@ class TaskRunner:
             )
 
             # Run conductor (single-pass: plan + code in one LLM call)
-            await self._queue.update_status(task_id, TaskStatus.CODING)
+            if not await self._queue.update_status(task_id, TaskStatus.CODING):
+                await logger.awarning("task_abandoned_run_refused", task_id=task_id)
+                return
             self._queue.update_progress(
                 task_id, TaskProgress(current="Generating implementation...")
             )
@@ -273,17 +284,26 @@ class TaskRunner:
             result = await self._executor(request)
 
             # Phase 1 is single-pass — transition to COMPLETED or FAILED directly
+            # The outcome goes to both: the Run because it is the execution
+            # identity a caller follows, the receipt because that is what the
+            # /tasks API returns. Passing it only to `set_result` left every
+            # terminal Run reporting result=None and error=None.
             if result.success:
-                await self._queue.update_status(task_id, TaskStatus.COMPLETED)
+                files_changed = result.code.files_changed if result.code else []
+                await self._queue.update_status(
+                    task_id,
+                    TaskStatus.COMPLETED,
+                    result={"files_changed": files_changed},
+                )
                 self._queue.set_result(
                     task_id,
-                    TaskResult(
-                        files_changed=result.code.files_changed if result.code else [],
-                    ),
+                    TaskResult(files_changed=files_changed),
                 )
                 await self._emit_progress_webhook(task_id)
             else:
-                await self._queue.update_status(task_id, TaskStatus.FAILED)
+                await self._queue.update_status(
+                    task_id, TaskStatus.FAILED, error=result.final_answer
+                )
                 self._queue.set_result(
                     task_id,
                     TaskResult(error=result.final_answer),

@@ -161,3 +161,22 @@ async def test_admission_into_an_unknown_project_is_refused(scoped) -> None:
         await admit_direct_work(
             store, workspace_id="w1", project_id="p-nope", node_type=KIND, name="n", source="s"
         )
+
+
+async def test_caller_provenance_cannot_override_the_admission_source(scoped) -> None:
+    """`admission_source` is what an audit correlates on, so a caller must not
+    be able to relabel where its work entered from."""
+    runs, project_id = scoped
+
+    run = await admit_direct_work(
+        runs,
+        workspace_id="w1",
+        project_id=project_id,
+        node_type=KIND,
+        name="n",
+        source="task_queue",
+        provenance={ADMISSION_SOURCE: "totally_trusted_webhook", "other": "kept"},
+    )
+
+    assert run.provenance[ADMISSION_SOURCE] == "task_queue"
+    assert run.provenance["other"] == "kept"

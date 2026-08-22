@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from maistro.agents.intents import IntentRegistry
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.store import RunStore
 from maistro.tasks.admission import TaskRunAdmitter
@@ -22,6 +23,7 @@ async def wire_execution_spine(
     conn: Any,
     *,
     workspace_id: str,
+    intents: IntentRegistry | None = None,
 ) -> tuple[ProjectScopeStore, RunStore, TaskRunAdmitter]:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
@@ -52,9 +54,15 @@ async def wire_execution_spine(
         run_store = InMemoryRunStore(project_store=project_scope_store)
 
     root = await project_scope_store.create_root(workspace_id)
+    # The caller's registry, not a fresh default. `IntentRegistry()` builds the
+    # engineering table unconditionally, so a PM-mode deployment admitted
+    # `delivery`, `risk` and `reporting` to the engineering fallback agent while
+    # the rest of the container routed them correctly — the canonical Graph then
+    # recorded a target agent nothing else agreed with.
     admitter = TaskRunAdmitter(
         run_store,
         workspace_id=workspace_id,
         project_id=root.project_id,
+        intents=intents,
     )
     return project_scope_store, run_store, admitter

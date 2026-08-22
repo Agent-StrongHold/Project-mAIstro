@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from maistro.tasks.models import TaskResponse
 
@@ -32,6 +35,33 @@ class TaskCreatedResponse(BaseModel):
     # tasks without a Run.
     run_id: str | None = None
     task: TaskResponse
+
+
+class RunSummary(BaseModel):
+    """The canonical execution state a `run_id` resolves to."""
+
+    run_id: str
+    status: str
+    workspace_id: str
+    project_id: str
+    graph_id: str
+    #: How the Run entered the system, and what receipt it correlates to —
+    #: `admission_source`, `task_id`, `session_id`, `user_id`.
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    finished_at: datetime | None = None
+    result: Any = None
+    error: str | None = None
+
+
+class NodeRunSummary(BaseModel):
+    """Per-node execution state under a Run."""
+
+    node_run_id: str
+    node_id: str
+    status: str
+    created_at: datetime
+    finished_at: datetime | None = None
 
 
 class TaskCancelledResponse(BaseModel):
