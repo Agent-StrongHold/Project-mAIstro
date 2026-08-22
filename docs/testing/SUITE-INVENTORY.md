@@ -95,26 +95,18 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
-Fifteen maistro-core node IDs arrive with two security fixes on this branch.
-Sentinel argument limits (#68) contribute the larger share: a new
-`test_argument_limits.py` covering per-argument and total-payload caps.
-Warden's L3 judge (#71) contributes the rest, covering each way an inconclusive
-classifier result reaches the caller — provider error, timeout, empty body,
-malformed body, a partial answer that names no verdict, and the judge being
-unreachable altogether — since the point of the fix is that none of those may
-read as `safe`.
-
-Ten more maistro-core node IDs arrive with PII-evasion normalization (#70): five
-for the acceptance and same-length homoglyph-offset invariants, then five from
-adversarial review covering Base64 SSNs, percent-encoded connection strings,
-form-encoded phones, encoded-span absorption/idempotence, and partial-overlap
-refusal.
+One maistro-rsi node ID pins the property the sandbox group-kill test depends
+on (#152): a zombie reads as stopped. The old check asked `os.kill(pid, 0)`,
+which a killed-but-unreaped process answers for as long as nothing reaps it, so
+the suite reported a containment failure about a process the kernel had already
+killed. Forking a child that exits without being reaped makes that state
+unambiguous, so the helper's semantics are held rather than assumed.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
 | `packages/maistro-core/tests` | 6409 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
-| `packages/maistro-rsi/tests` | 427 | `ci.yml` |
+| `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
