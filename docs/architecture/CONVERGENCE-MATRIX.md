@@ -182,6 +182,13 @@ currently holds belongs to `Run`/`Invocation`.
   worker with `pending → claimed → done/failed/requeued` states whose leases duplicate the
   ADR-2026-08-16 execution fencing. All five are `MIGRATE` rows with a parity-before-deletion
   dependency on [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
+- **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
+  were first derived from what each package is *for*; re-deriving them from what each module's
+  own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's
+  DAG, skills and tools and is not `maistro-rsi` improving the engine's own code; `routes/projects`
+  is an onboarding flow, not the project *scope* surface; `builders/orchestrator` already says core
+  owns workflow state. Absence of callers distinguishes unwired from dead not at all, which is the
+  entire distinction the CONNECT/RETIRE split exists to draw.
 - **Evolve, RSI and Turing are *not* duplicate lifecycle owners**, though their executions
   still belong in canonical Runs (#51, #50, #54). `maistro_evolve.cycle` and
   `maistro_rsi.coordinator` are domain orchestrators holding results, not work states;
@@ -208,8 +215,11 @@ currently holds belongs to `Run`/`Invocation`.
   [#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122) rather than fixed here.
 - **`maistro.conduit` is constructed but unrouted.** `maistro.container` builds it; no shipped
   product path calls it. The "one front door" claim is currently a design, not a fact.
-- **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
-  largest self-contained retirement candidate.
+- **`maistro.builders` is 15/15 unreachable**, and one module of the fifteen —
+  `builders/graph_executor.py` — drives its own traversal and writes free-text `run.status`
+  values. The rest is domain logic ADR-090/ADR-099 keep: `dag.py` implements SPEC-070226-82ea
+  under ADR-099, and `orchestrator.py` states the convergence rule in its own docstring ("Core
+  owns workflow state. Builders runtime only returns results.").
 - **Reachability is not evenly distributed debt.** Of 203 unreachable modules, 68 — a third — sit
   in four subsystems (`maistro.agents` 26, `maistro.builders` 15, Conductor `services` 15,
   `maistro.skills`/`code_registry`/`repertoire` 12), which is why

@@ -14,18 +14,6 @@
       ]
     },
     {
-      "id": "hive-superseded-routes",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "RETIRE",
-      "rationale": "Superseded route modules kept beside their replacements. routes.daily_report is replaced by routes.daily_report_v2 (a declared dynamic root); routes.chat_complete is a 5-line remnant. routes.projects duplicates the canonical project scope surface.",
-      "replaced_by": "routes.daily_report_v2; maistro.projects scope surface",
-      "modules": [
-        "routes.chat_complete",
-        "routes.daily_report",
-        "routes.projects"
-      ]
-    },
-    {
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
@@ -110,50 +98,6 @@
       ]
     },
     {
-      "id": "builders-duplicate-lifecycle",
-      "subsystem": "Builders pipeline",
-      "disposition": "RETIRE",
-      "rationale": "Builders' own run lifecycle and graph executor: a RunStatus enum plus free-text run.status assignments, driving its own traversal. This is one of the competing universal lifecycles the convergence program exists to remove, and is deleted after parity per #49/#35.",
-      "replaced_by": "maistro.runs + maistro.graph.durable_runs (ADR-081226-a66b, ADR-062)",
-      "modules": [
-        "maistro.builders.dag",
-        "maistro.builders.graph",
-        "maistro.builders.graph_executor",
-        "maistro.builders.logger",
-        "maistro.builders.orchestrator",
-        "maistro.builders.runtime"
-      ]
-    },
-    {
-      "id": "builders-domain-logic",
-      "subsystem": "Builders pipeline",
-      "disposition": "CONNECT",
-      "rationale": "The spec\u2192tests\u2192code\u2192review domain logic, which ADR-090/ADR-099 keep. It becomes Node implementations once the duplicate lifecycle above is gone (#49).",
-      "root": "Graph nodes registered in maistro.graph.nodes (#49)",
-      "modules": [
-        "maistro.builders",
-        "maistro.builders.contracts",
-        "maistro.builders.pipeline",
-        "maistro.builders.property_gen",
-        "maistro.builders.services",
-        "maistro.builders.spec_coverage",
-        "maistro.builders.spec_emitter",
-        "maistro.builders.spec_templates",
-        "maistro.builders.verifier"
-      ]
-    },
-    {
-      "id": "canvas-legacy-layerrecord",
-      "subsystem": "Canvas ability",
-      "disposition": "RETIRE",
-      "rationale": "ADR-044 (Accepted) names store.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules. Retired once ADR-045's cutover lands.",
-      "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
-      "modules": [
-        "maistro_canvas.canvas.store",
-        "maistro_canvas.canvas.tool"
-      ]
-    },
-    {
       "id": "canvas-assetinstance",
       "subsystem": "Canvas ability",
       "disposition": "CONNECT",
@@ -165,16 +109,6 @@
         "maistro_canvas.canvas.asset_routes",
         "maistro_canvas.canvas.asset_store",
         "maistro_canvas.canvas.asset_tool"
-      ]
-    },
-    {
-      "id": "canvas-job-runner",
-      "subsystem": "Canvas ability",
-      "disposition": "RETIRE",
-      "rationale": "CanvasJobRunner is a claim/lease/reap worker with its own pending\u2192claimed\u2192done/failed states \u2014 a package-private execution lifecycle competing with Run/NodeRun/Attempt, whose leases duplicate the canonical execution fencing. Retired after parity per #52/#35.",
-      "replaced_by": "maistro.runs + ADR-2026-08-16 execution-lease fencing",
-      "modules": [
-        "maistro_canvas.canvas.runner"
       ]
     },
     {
@@ -414,17 +348,6 @@
       ]
     },
     {
-      "id": "persistence-sqlite-noncanonical",
-      "subsystem": "Relational persistence",
-      "disposition": "RETIRE",
-      "rationale": "SQLite audit and prompt stores. ADR-082226-5104 decides SQLite is not a canonical datastore; these two have no caller even on the sqlite: path, so they carry no behaviour to preserve.",
-      "replaced_by": "maistro.persistence.pg_audit / pg_prompts (ADR-082226-5104)",
-      "modules": [
-        "maistro.persistence.sqlite_audit",
-        "maistro.persistence.sqlite_prompts"
-      ]
-    },
-    {
       "id": "resilience-unwired",
       "subsystem": "Resilience",
       "disposition": "CONNECT",
@@ -614,6 +537,92 @@
         "services.ui_auto_climb",
         "services.ui_climb_vm",
         "services.ui_hill_climber"
+      ]
+    },
+    {
+      "id": "hive-superseded-routes",
+      "subsystem": "Agent Conductor HTTP surface",
+      "disposition": "RETIRE",
+      "rationale": "routes/chat_complete.py is a five-line backward-compatible import path re-exporting services.chat_completion.run_chat_completion; nothing imports it, and hive-conductor is an application rather than a published library, so there is no external importer the shim could still be serving. routes/daily_report.py is unregistered while routes/daily_report_v2 \u2014 a declared dynamic root \u2014 is mounted at /v1/daily-report under the same tag, so v2 holds the path. Note before deleting: v1 is 455 lines with richer Jira and Airtable sections than v2, which describes itself as 'simple', so confirm nothing is wanted back.",
+      "replaced_by": "services.chat_completion; routes.daily_report_v2",
+      "modules": [
+        "routes.chat_complete",
+        "routes.daily_report"
+      ]
+    },
+    {
+      "id": "hive-project-onboarding",
+      "subsystem": "Agent Conductor HTTP surface",
+      "disposition": "CONNECT",
+      "rationale": "routes/projects.py is a project onboarding flow \u2014 intake, scan, deploy, persisted through the Launch DB/Cache/Store \u2014 declaring prefix=/v1/projects and never registered in main.py. An earlier disposition called it a duplicate of the canonical project scope surface and marked it RETIRE. That was wrong: maistro.projects owns Workspace/Project *scope*, which is a different thing from an onboarding wizard.",
+      "root": "main.py route registration",
+      "modules": [
+        "routes.projects"
+      ]
+    },
+    {
+      "id": "builders-competing-executor",
+      "subsystem": "Builders pipeline",
+      "disposition": "RETIRE",
+      "rationale": "builders/graph_executor.py drives a PipelineGraph to completion on its own traversal loop and writes free-text run.status values ('running', 'completed', 'failed at <node>'), which is a second execution lifecycle over the same work the canonical Run/NodeRun/Attempt records describe. #49 migrates Builders onto canonical Graph/Run; this module is what that migration removes, after parity (#35).",
+      "replaced_by": "maistro.graph.durable_runs executor over maistro.runs (ADR-062, ADR-081226-a66b)",
+      "modules": [
+        "maistro.builders.graph_executor"
+      ]
+    },
+    {
+      "id": "builders-domain-logic",
+      "subsystem": "Builders pipeline",
+      "disposition": "CONNECT",
+      "rationale": "The spec-to-tests-to-code-to-review domain that ADR-090 and ADR-099 keep. builders/dag.py implements SPEC-070226-82ea, which implements ADR-099 \u2014 current accepted architecture, not something superseded. builders/orchestrator.py states the convergence rule outright in its own docstring: 'Core owns workflow state. Builders runtime only returns results.' graph.py is the PipelineGraph data model, logger.py records builder actions and XP, runtime.py is the shared runtime for Frank, Mason and Auditor. An earlier disposition marked six of these RETIRE as a 'duplicate lifecycle'; reading them shows only graph_executor.py fits that description.",
+      "root": "Graph nodes registered in maistro.graph.nodes (#49)",
+      "modules": [
+        "maistro.builders",
+        "maistro.builders.contracts",
+        "maistro.builders.dag",
+        "maistro.builders.graph",
+        "maistro.builders.logger",
+        "maistro.builders.orchestrator",
+        "maistro.builders.pipeline",
+        "maistro.builders.property_gen",
+        "maistro.builders.runtime",
+        "maistro.builders.services",
+        "maistro.builders.spec_coverage",
+        "maistro.builders.spec_emitter",
+        "maistro.builders.spec_templates",
+        "maistro.builders.verifier"
+      ]
+    },
+    {
+      "id": "canvas-legacy-layerrecord",
+      "subsystem": "Canvas ability",
+      "disposition": "RETIRE",
+      "rationale": "ADR-044 (Accepted) names store.py, compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor.",
+      "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
+      "modules": [
+        "maistro_canvas.canvas.store",
+        "maistro_canvas.canvas.tool"
+      ]
+    },
+    {
+      "id": "canvas-job-runner",
+      "subsystem": "Canvas ability",
+      "disposition": "RETIRE",
+      "rationale": "CanvasJobRunner claims, executes and reaps canvas jobs on its own poll loop: claim_next_pending, then mark done/failed/requeue, with a reaper sweeping expired leases. Those are work states and worker leases, which the canonical Attempt and the ADR-2026-08-16 execution fence already own. Verified by reading it. Retired after parity (#52, #35).",
+      "replaced_by": "maistro.runs Attempt + ADR-2026-08-16 execution-lease fencing",
+      "modules": [
+        "maistro_canvas.canvas.runner"
+      ]
+    },
+    {
+      "id": "persistence-sqlite-homelab",
+      "subsystem": "Relational persistence",
+      "disposition": "CONNECT",
+      "rationale": "Both describe themselves as homelab/single-instance stores. ADR-082226-5104 says SQLite should not be another *canonical* datastore without a concrete requirement \u2014 it does not say single-instance homelab deployments are not one, and it explicitly leaves small local uses alone. An earlier disposition read that as a retirement order and marked these RETIRE; that over-read the decision. Their fate follows #122, where the container's backend selection is settled.",
+      "root": "maistro.container backend selection for a homelab deployment (#122)",
+      "modules": [
+        "maistro.persistence.sqlite_audit",
+        "maistro.persistence.sqlite_prompts"
       ]
     }
   ]
