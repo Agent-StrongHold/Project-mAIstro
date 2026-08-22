@@ -180,8 +180,11 @@ currently holds belongs to `Run`/`Invocation`.
   events — but it is what the Conductor UI reads as authoritative, so it competes with
   `Run` for the same job. A fifth, `maistro_canvas.canvas.runner`, is a claim/lease/reap
   worker with `pending → claimed → done/failed/requeued` states whose leases duplicate the
-  ADR-2026-08-16 execution fencing. All five are `MIGRATE` rows with a parity-before-deletion
-  dependency on [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
+  ADR-2026-08-16 execution fencing — though unlike the others it is *unstarted rather than
+  superseded*: a migration exists for its leases, the reachable `canvas/executor.py` documents
+  its contract, and two suites cover it under contention. All five are `MIGRATE` rows with a
+  parity-before-deletion dependency on
+  [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
 - **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
   were first derived from what each package is *for*; re-deriving them from what each module's
   own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's

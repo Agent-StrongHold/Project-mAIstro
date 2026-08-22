@@ -540,17 +540,6 @@
       ]
     },
     {
-      "id": "hive-superseded-routes",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "RETIRE",
-      "rationale": "routes/chat_complete.py is a five-line backward-compatible import path re-exporting services.chat_completion.run_chat_completion; nothing imports it, and hive-conductor is an application rather than a published library, so there is no external importer the shim could still be serving. routes/daily_report.py is unregistered while routes/daily_report_v2 \u2014 a declared dynamic root \u2014 is mounted at /v1/daily-report under the same tag, so v2 holds the path. Note before deleting: v1 is 455 lines with richer Jira and Airtable sections than v2, which describes itself as 'simple', so confirm nothing is wanted back.",
-      "replaced_by": "services.chat_completion; routes.daily_report_v2",
-      "modules": [
-        "routes.chat_complete",
-        "routes.daily_report"
-      ]
-    },
-    {
       "id": "hive-project-onboarding",
       "subsystem": "Agent Conductor HTTP surface",
       "disposition": "CONNECT",
@@ -605,16 +594,6 @@
       ]
     },
     {
-      "id": "canvas-job-runner",
-      "subsystem": "Canvas ability",
-      "disposition": "RETIRE",
-      "rationale": "CanvasJobRunner claims, executes and reaps canvas jobs on its own poll loop: claim_next_pending, then mark done/failed/requeue, with a reaper sweeping expired leases. Those are work states and worker leases, which the canonical Attempt and the ADR-2026-08-16 execution fence already own. Verified by reading it. Retired after parity (#52, #35).",
-      "replaced_by": "maistro.runs Attempt + ADR-2026-08-16 execution-lease fencing",
-      "modules": [
-        "maistro_canvas.canvas.runner"
-      ]
-    },
-    {
       "id": "persistence-sqlite-homelab",
       "subsystem": "Relational persistence",
       "disposition": "CONNECT",
@@ -623,6 +602,36 @@
       "modules": [
         "maistro.persistence.sqlite_audit",
         "maistro.persistence.sqlite_prompts"
+      ]
+    },
+    {
+      "id": "canvas-job-runner",
+      "subsystem": "Canvas ability",
+      "disposition": "CONNECT",
+      "rationale": "CanvasJobRunner is unstarted, not dead. canvas/executor.py \u2014 which is reachable \u2014 documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and two dedicated suites cover it, including single-claim-under-contention and lease reaping. An earlier disposition marked it RETIRE because its claim/lease/reap states duplicate the ADR-2026-08-16 fence. They do, and #52 is where that is resolved \u2014 but a module with a migration, a documented contract from reachable code and concurrency tests is wiring owed, not debt to delete.",
+      "root": "a canvas worker process started at deploy time; #52 folds it into Attempt execution",
+      "modules": [
+        "maistro_canvas.canvas.runner"
+      ]
+    },
+    {
+      "id": "hive-compat-shim",
+      "subsystem": "Agent Conductor HTTP surface",
+      "disposition": "RETIRE",
+      "rationale": "routes/chat_complete.py is five lines re-exporting services.chat_completion.run_chat_completion for backward compatibility. Nothing imports it \u2014 the two test_chat_complete_* tests exercise the endpoint, not this module \u2014 and hive-conductor is an application, not a published library, so there is no external importer the shim could still be serving.",
+      "replaced_by": "services.chat_completion.run_chat_completion",
+      "modules": [
+        "routes.chat_complete"
+      ]
+    },
+    {
+      "id": "hive-daily-report-v1",
+      "subsystem": "Agent Conductor HTTP surface",
+      "disposition": "CONNECT",
+      "rationale": "routes/daily_report.py is unregistered while daily_report_v2 is mounted at /v1/daily-report under the same tag, so v2 holds the root path. But v2 does not replace v1: v1 has two endpoints and v2 has one \u2014 GET /jira/projects exists only in v1 \u2014 and v1's 455 lines carry richer Jira and Airtable sections with no_pat deep links, against v2's self-described 'simple'. An earlier disposition called it superseded and marked it RETIRE on the shared path alone. Either port what is wanted into v2 and then retire this, or register the missing endpoint; both are decisions, not sweeps.",
+      "root": "main.py route registration, or a port of /jira/projects into daily_report_v2",
+      "modules": [
+        "routes.daily_report"
       ]
     }
   ]
