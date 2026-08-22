@@ -114,6 +114,9 @@ _PG_SCRATCH_TABLES = (
     "canonical_project_resources",
     "canonical_project_memberships",
     "canonical_projects",
+    "security_violations",
+    "security_strikes",
+    "security_rate_limits",
 )
 
 

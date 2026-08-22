@@ -78,7 +78,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
 | Delivery gateway | `maistro.delivery` | Effect channel | its own send records | — | — |
-| Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` lockout state | audit log durable via `persistence.pg_audit`; strike state still in-memory on every backend — `security.pg_strikes` is not Gate-compatible (#134) | itself (canonical) |
+| Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` / `security.pg_strikes` behind `protocols.StrikeTracker` | `security.pg_strikes` on a `postgresql://` URL, in-memory otherwise; audit log via `persistence.pg_audit` | itself (canonical) |
 | Authentication and identity | `maistro.auth`, `maistro.identity` | Principal | n/a | service-key store | itself (canonical) |
 | Authorization, privilege, governance | `maistro.privilege`, `maistro.policy`, `maistro.governance` | Authorization decision | n/a | — | itself (canonical, ADR-068 partly unbuilt) |
 | Secrets vault | `maistro.vault` | Secret material | n/a | age-encrypted file | OS file permissions |
@@ -137,7 +137,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on the Invocation, not a side ledger | #56, #63 |
 | External integrations | `maistro.integrations` exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from a product route | #34 |
 | Delivery gateway | none | `5/5` | CONNECT | ADR-047 | a delivery effect recorded as an Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/51` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `10/51` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
@@ -155,7 +155,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
 | Core CLI | `maistro.cli` console script | `5/14` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API only | — |
-| Shared contracts and config | imported by every package | `1/44` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
+| Shared contracts and config | imported by every package | `1/45` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/18` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `4/69` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |

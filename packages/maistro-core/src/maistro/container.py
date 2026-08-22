@@ -25,6 +25,7 @@ from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.projects.store import InMemoryProjectStore
+from maistro.protocols import StrikeTracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -84,7 +85,6 @@ if TYPE_CHECKING:
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
-    from maistro.security.strikes import InMemoryStrikeTracker
     from maistro.skills.import_pipeline import (
         PolicyAttachmentStore,
         SkillImportRequest,
@@ -181,7 +181,10 @@ class Container:
     elevation_store: ElevationStore = None  # type: ignore[assignment]
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
-    strike_tracker: InMemoryStrikeTracker | None = None
+    # Typed against the protocol, not a concrete tracker: `Gate` reading
+    # attributes off whatever this holds is how a dict-returning implementation
+    # got as far as looking like a drop-in (#134).
+    strike_tracker: StrikeTracker | None = None
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -674,31 +677,31 @@ def _wire_audit_log(pg_pool: Any) -> Any:
     return PgAuditLog(pg_pool)
 
 
-def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> InMemoryStrikeTracker | None:
-    """The strike ladder, which stays in-memory even on PostgreSQL — loudly.
+def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
+    """The strike ladder, durable when there is somewhere durable to put it.
 
-    `security.pg_strikes.PgStrikeTracker` looks like a drop-in and is not. Its
-    `get()` returns a dict where `Gate` does attribute access on a
-    `StrikeRecord`, and its `record_violation()` returns only
-    user_id/strike_count/escalated where `Gate` reads scrutiny_level,
-    locked_until and disabled as well. Wiring it would raise AttributeError on
-    the first security violation — the worst possible place to find out. Making
-    it usable needs an adapter, which is #134; until then the operator is told
-    that lockout state does not survive a restart rather than left to assume a
-    configured database means it does.
+    Lockout state that resets on restart is a lockout an attacker clears by
+    waiting for a deploy, and an in-memory ladder is only as shared as one
+    process — so a multi-worker deployment does not have one ladder, it has
+    several. PostgreSQL is the answer to both.
+
+    `PgStrikeTracker` used to be unsubstitutable here (#134): it returned dicts
+    where `Gate` does attribute access, and wiring it would have raised
+    AttributeError on the first security violation. Both now satisfy
+    `protocols.StrikeTracker`, and one conformance suite runs the same bodies
+    against each, which is what makes swapping them safe rather than hopeful.
     """
     if not enabled:
         return None
+    if pg_pool is not None:
+        from maistro.security.pg_strikes import PgStrikeTracker
+
+        logger.info("Strike ladder armed (3-strike escalation via PgStrikeTracker).")
+        return PgStrikeTracker(pg_pool)
     from maistro.security.strikes import InMemoryStrikeTracker
 
-    tracker = InMemoryStrikeTracker()
     logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
-    if pg_pool is not None:
-        logger.warning(
-            "Strike ladder is in-memory despite a PostgreSQL backend: lockout state "
-            "resets on restart. PgStrikeTracker is not yet Gate-compatible (#134)."
-        )
-    return tracker
+    return InMemoryStrikeTracker()
 
 
 #: URL schemes that select the PostgreSQL backend. `postgres://` is the legacy
