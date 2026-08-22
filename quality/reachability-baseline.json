@@ -126,7 +126,6 @@
     "maistro.resilience.context_probe",
     "maistro.resilience.rate_coordination",
     "maistro.resilience.retry_policy",
-    "maistro.runs.admission",
     "maistro.sandbox",
     "maistro.sandbox.backends",
     "maistro.sandbox.backends.fake",

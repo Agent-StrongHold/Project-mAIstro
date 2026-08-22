@@ -29,6 +29,7 @@ from maistro.observability.metrics import (
     tasks_failed_total,
     tasks_submitted_total,
 )
+from maistro.tasks.admission import TaskAdmitter
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
 from maistro.tasks.status import can_transition
 
@@ -47,6 +48,7 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
     so the fire-and-forget write cannot race later in-memory mutation."""
     return {
         "id": task.task_id,
+        "run_id": task.run_id,
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
@@ -100,7 +102,13 @@ _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCE
 class TaskQueue:
     """In-memory task queue with event-based notification and async lock."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, admitter: TaskAdmitter | None = None) -> None:
+        # Canonical execution identity (#41). When an admitter is wired every
+        # submission creates a Run before the task is queued, and the task row
+        # carries its run_id. When it is not, submission behaves as it always
+        # did and `run_id` stays None — the queue does not fabricate an
+        # execution identity it cannot back with a Run.
+        self._admitter = admitter
         self._tasks: OrderedDict[str, TaskResponse] = OrderedDict()
         self._pending: asyncio.Queue[str] = asyncio.Queue()
         self._lock = asyncio.Lock()
@@ -188,10 +196,17 @@ class TaskQueue:
             tier=request.tier or 2,
             lane=request.lane,
             priority_tier=request.priority_tier,
+            session_id=request.session_id,
             phase="queued",
             progress=TaskProgress(),
             created_at=datetime.now(UTC),
         )
+        if self._admitter is not None:
+            # Deliberately not best-effort. TaskRecord persistence may fail
+            # without the task failing, because the row is a receipt; the Run
+            # is the execution identity, and a task admitted without one would
+            # be exactly the untracked second lifecycle #41 exists to remove.
+            task.run_id = await self._admitter.admit(task)
         async with self._lock:
             self._tasks[task_id] = task
             self._maybe_prune()
@@ -202,6 +217,7 @@ class TaskQueue:
         await logger.ainfo(
             "task_queued",
             task_id=task_id,
+            run_id=task.run_id,
             description=request.description[:DESCRIPTION_LOG_PREVIEW_LEN],
         )
         return task

@@ -613,16 +613,6 @@
       "modules": [
         "maistro_canvas.canvas.runner"
       ]
-    },
-    {
-      "id": "runs-admission-seam",
-      "subsystem": "Run / NodeRun / Attempt lifecycle",
-      "disposition": "CONNECT",
-      "rationale": "The admission seam for #41: directly-submitted work \u2014 a task, a chat turn, a single-agent request \u2014 becomes a canonical Run over a trivial one-node Graph. It ships unwired on purpose, and this row is the receipt rather than a silent addition to the very debt this ledger exists to track. Wiring it means deciding which node kind a plain task maps to, and maistro.agents.intents already holds a task_type -> agent_name table that is the natural source for that decision. Making it is #41's design work; inventing a kind here would produce Runs whose only node no executor knows, which admission itself refuses.",
-      "root": "maistro.tasks.queue.submit, once the task_type -> node kind mapping is settled (#41)",
-      "modules": [
-        "maistro.runs.admission"
-      ]
     }
   ]
 }

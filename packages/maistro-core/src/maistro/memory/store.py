@@ -74,6 +74,9 @@ class TaskRecord(Base):
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    # Canonical execution identity (#41). Nullable: rows predating the Run spine
+    # and builds with no Run store wired still write a receipt.
+    run_id: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     workspace: Mapped[str] = mapped_column(String(500), nullable=False)

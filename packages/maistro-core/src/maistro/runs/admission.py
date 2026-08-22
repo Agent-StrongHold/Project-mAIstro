@@ -14,10 +14,10 @@ executor knows would be a canonical-looking record of work that can never
 start — the shape of half-truth this convergence program exists to remove. So
 this module checks the kind against the registry and refuses otherwise.
 
-What this module does not do is choose the kind. `maistro.agents.intents` maps
-`task_type → agent_name` and is the natural source for that decision, but making
-it is #41's design work rather than a detail of admission, so the caller passes
-the kind and this seam holds it to being real.
+What this module does not do is choose the kind. That decision belongs to the
+entry point, because only the entry point knows what it submitted;
+`maistro.runs.task_kinds` makes it for the task-shaped ones. Admission takes the
+kind as given and holds it to being real.
 """
 
 from __future__ import annotations
