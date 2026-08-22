@@ -209,3 +209,145 @@ class TestGherkin:
         adrs = check.collect_adrs(specs, {}, set(), None)
         bad = [d["id"] for d in (*specs, *adrs) if d["gherkin_parse_errors"]]
         assert bad == []
+
+
+class TestNonMeasurableMarker:
+    """The escape hatch for a spec that legitimately has no criteria (#164).
+
+    An opt-out that costs nothing is a way to make a counter fall without doing
+    anything, so the marker is only honoured when it carries a reason.
+    """
+
+    def test_a_marker_with_a_reason_is_recognised(self, check):
+        assert check.declares_non_measurable(
+            "<!-- ac-state: non-measurable - a glossary, nothing to assert -->"
+        )
+
+    def test_an_em_dash_reads_the_same_as_a_hyphen(self, check):
+        """Markdown tooling and humans both produce the em dash; rejecting it
+        would make the hatch depend on which one somebody typed."""
+        assert check.declares_non_measurable("<!-- ac-state: non-measurable — because -->")
+
+    def test_the_marker_is_case_insensitive(self, check):
+        assert check.declares_non_measurable("<!-- AC-State: Non-Measurable: because -->")
+
+    def test_a_marker_with_no_reason_does_not_count(self, check):
+        """The whole point of the hatch is that it justifies itself."""
+        assert not check.declares_non_measurable("<!-- ac-state: non-measurable -->")
+        assert not check.declares_non_measurable("<!-- ac-state: non-measurable -  -->")
+
+    def test_a_reasonless_marker_cannot_borrow_a_later_comment(self, check):
+        """The bug this test exists for, found in review.
+
+        The delimiter class matches the first hyphen of the marker's own `-->`,
+        and under DOTALL the body then ran on to the *next* `-->` anywhere in
+        the file — so any unrelated HTML comment further down donated a
+        "reason". The isolated reasonless test above passed only because its
+        fixture had no second comment, which is exactly the shape of an
+        assertion that proves less than it appears to.
+        """
+        document = (
+            "<!-- ac-state: non-measurable -->\n"
+            "\n"
+            "prose that is not a reason\n"
+            "\n"
+            "<!-- an unrelated comment -->\n"
+        )
+        assert not check.declares_non_measurable(document)
+
+    def test_a_real_reason_still_counts_with_later_comments_present(self, check):
+        """Fixing the bypass must not break the legitimate case."""
+        document = (
+            "<!-- ac-state: non-measurable - a glossary; nothing to assert -->\n"
+            "\n<!-- an unrelated comment -->\n"
+        )
+        assert check.declares_non_measurable(document)
+
+
+class TestAdrRefs:
+    """`implements:` has more spellings than one, and two of them broke the
+    counters in opposite directions (found in review)."""
+
+    def test_a_block_list_entry_yields_its_adr(self, check):
+        assert check.adr_refs(["- maistro-engine#ADR-073"]) == ["ADR-073"]
+
+    def test_an_inline_yaml_list_is_parsed(self, check):
+        """`implements: [maistro-engine#ADR-073]` is valid YAML, and
+        `_list_field` hands back the whole bracketed string. Splitting on `#`
+        gave `ADR-073]`, so the spec counted as mapped while its ADR still
+        counted as uncovered — both wrong, and in opposite directions."""
+        assert check.adr_refs(["[maistro-engine#ADR-073]"]) == ["ADR-073"]
+
+    def test_an_inline_list_of_several_keeps_every_mapping(self, check):
+        assert check.adr_refs(["[maistro-engine#ADR-073, maistro-engine#ADR-072]"]) == [
+            "ADR-073",
+            "ADR-072",
+        ]
+
+    def test_a_spec_reference_is_not_an_adr_reference(self, check):
+        """The schema accepts `SPEC-*` in `implements` too. A spec implementing
+        only another spec maps to no *decision*, so it must stay counted — the
+        alternative is the check going green for precisely the missing chain it
+        reports."""
+        assert check.adr_refs(["maistro-engine#SPEC-160"]) == []
+
+    def test_a_mixed_list_keeps_only_the_decisions(self, check):
+        assert check.adr_refs(["maistro-engine#SPEC-160", "- maistro-engine#ADR-073"]) == [
+            "ADR-073"
+        ]
+
+    def test_a_date_based_id_survives_intact(self, check):
+        """ADR-062026-9b30's scheme has two hyphenated groups; a lazier pattern
+        would truncate it and silently orphan every spec implementing it."""
+        assert check.adr_refs(["maistro-engine#ADR-062026-9b30"]) == ["ADR-062026-9b30"]
+
+
+class TestAdrOwnCriteria:
+    def test_bullet_criteria_count_as_the_adrs_own(self, check):
+        """An ADR carrying `**AC-N**` bullets rather than Gherkin scenarios is
+        measured, not uncovered. Counting only scenarios put ADR-062026-9b30 —
+        three bullets, no implementing spec — into
+        `adrs_without_implementing_spec` against that counter's own stated
+        exemption, and banked a debt figure one too high.
+        """
+        adrs = check.collect_adrs(specs=[], markers={}, unreachable=set(), passing=None)
+        by_id = {a["id"]: a for a in adrs}
+        assert by_id["ADR-062026-9b30"]["own_criteria"] == 3
+
+    def test_prose_mentioning_the_words_does_not_count(self, check):
+        assert not check.declares_non_measurable("This spec is non-measurable, sadly.")
+
+
+class TestDecisionTaken:
+    def test_proposed_is_not_owed_an_implementation(self, check):
+        """Counting `Proposed` would make writing an idea down look like
+        incurring debt, which would teach people not to write ideas down."""
+        assert "Proposed" not in check.DECISION_TAKEN
+
+    def test_both_taken_statuses_are_owed(self, check):
+        assert set(check.DECISION_TAKEN) == {"Accepted", "Implemented"}
+
+
+class TestAbsenceCountersAreRatcheted:
+    def test_all_three_may_only_fall(self, check):
+        """A counter that is measured but not ratcheted is a dashboard, not a
+        gate — it would report the chain breaking and let the PR through."""
+        for name in (
+            "specs_implementing_nothing",
+            "adrs_without_implementing_spec",
+            "specs_declaring_no_criteria",
+        ):
+            assert name in check.RATCHETED
+
+    def test_the_reverse_index_is_derived_from_spec_front_matter(self, check):
+        """Not from a checked-in file.
+
+        A recorded ADR->spec index is a file somebody has to regenerate, and the
+        one nobody regenerates is exactly how a stale entry absorbs a later
+        regression. Deriving it from `implements:` at run time also means two
+        concurrent PRs adding specs under one ADR cannot collide.
+        """
+        import inspect
+
+        source = inspect.getsource(check.collect_adrs)
+        assert 'spec["implements"]' in source
