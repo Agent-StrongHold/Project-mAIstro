@@ -1,6 +1,6 @@
 """Sentinel policy enforcement: pre-call and post-call security pipeline.
 
-Pre-call: validate + repair args, check permissions, audit log.
+Pre-call: check permissions and resource limits, validate + repair args, audit log.
 Post-call: Warden scan tool result, PII filter, token optimize, audit log.
 """
 
@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from maistro.security._types import AuditEntry, SentinelVerdict, Violation, WardenVerdict
 from maistro.security.sentinel.approver_graph import ApproverGraph
+from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
 from maistro.security.sentinel.pii_filter import scan_and_redact
@@ -42,7 +43,7 @@ def _principal_auth_context(principal: Principal) -> AuthContext:
 class Sentinel:
     """Policy enforcement at every boundary crossing.
 
-    Pre-call: validates args, checks permissions, logs audit.
+    Pre-call: checks permission and argument resource limits, then validates args.
     Post-call: scans result for threats + PII, optimizes tokens, logs audit.
     """
 
@@ -57,6 +58,7 @@ class Sentinel:
         elevation_store: ElevationStore | None = None,
         rlphd_model: RlphdModel | None = None,
         rlphd_threshold_store: RlphdThresholdStore | None = None,
+        argument_limits: ToolArgumentLimits | None = None,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -66,6 +68,7 @@ class Sentinel:
         self._elevation_store = elevation_store
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
+        self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
 
     def resolve_tier(
         self,
@@ -256,6 +259,21 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
+            )
+            return verdict
+
+        limit_violation = check_argument_limits(args, limits=self._argument_limits)
+        if limit_violation is not None:
+            violations.append(limit_violation)
+            verdict = SentinelVerdict(allowed=False, violations=tuple(violations))
+            await self._log_audit(
+                boundary="pre_call",
+                user_id=auth.user_id,
+                team_id=auth.team_id,
+                tool_name=tool_name,
+                verdict="denied",
+                violations=tuple(violations),
+                detail=limit_violation.detail,
             )
             return verdict
 

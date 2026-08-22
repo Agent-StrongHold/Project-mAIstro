@@ -127,7 +127,7 @@ behaviour on an unresolvable host and on a URL with no parseable hostname.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6404 | `ci.yml` |
+| `packages/maistro-core/tests` | 6429 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |
