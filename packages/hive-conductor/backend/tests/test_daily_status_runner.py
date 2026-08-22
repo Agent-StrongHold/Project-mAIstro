@@ -12,7 +12,7 @@ import pytest
 _BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_BACKEND_DIR))
 
-from services.dag_agents import _node_resolver  # noqa: E402
+from services.dag_agents import get_node_resolver  # noqa: E402
 from services.daily_status_runner import (  # noqa: E402
     _get_registry,
     _inject_jira_credentials,
@@ -108,18 +108,21 @@ def test_inject_credentials_without_jira_poll_is_noop() -> None:
     assert out.nodes == []
 
 
-# --- _node_resolver compatibility seam ------------------------------------
+# --- node resolver compatibility seam -------------------------------------
+#
+# Built lazily since #147: `agent.delegate_remote` needs the Container's
+# delegator and child-Run admitter, and no Container exists at import time.
 
 
 def test_node_resolver_returns_registered_node_by_id() -> None:
     dag = {"nodes": [{"id": "n1", "kind": "transform.alias_keys"}]}
-    node = _node_resolver("n1", dag)
+    node = get_node_resolver()("n1", dag)
     assert type(node).__name__ == "TransformAliasKeysNode"
 
 
 def test_node_resolver_unknown_id_raises_key_error() -> None:
     with pytest.raises(KeyError):
-        _node_resolver("ghost", {"nodes": []})
+        get_node_resolver()("ghost", {"nodes": []})
 
 
 def test_node_resolver_accepts_canonical_graph() -> None:
@@ -131,7 +134,7 @@ def test_node_resolver_accepts_canonical_graph() -> None:
         "entry_node": "n1",
     }
     graph = snapshot_to_template(snapshot, workspace_id="w1").instantiate(project_id="p1")
-    node = _node_resolver(graph.nodes[0].node_id, graph)
+    node = get_node_resolver()(graph.nodes[0].node_id, graph)
     assert type(node).__name__ == "TransformAliasKeysNode"
 
 

@@ -23,7 +23,7 @@ only path that already defines one) rather than a new one.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,23 @@ from maistro.a2a.guest_peers import GuestPeerManager
 
 from . import register_node
 from .base import BaseNode, NodeContext, now_utc, pause_until
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Imported here, not at module scope: `maistro.a2a.admission` reaches
+    # `maistro.runs.admission`, which imports `maistro.graph.nodes` to check a
+    # node kind against the registry — and this module is one of the modules
+    # that package imports. Same cycle `runs/model.py` defers `Graph` for.
+    from maistro.a2a.admission import DelegationRunAdmitter
+
+
+class DelegationUnavailable(RuntimeError):
+    """The node was asked to delegate through a path this process has not wired.
+
+    Distinct from a delegation the policy refused or the peer declined: those
+    are answers about the work, and this is a statement about the deployment.
+    Collapsing them into `status="failed"` is what let an unwired node look like
+    a remote agent that kept saying no (#147).
+    """
 
 
 class DelegateRemoteIn(BaseModel):
@@ -56,6 +73,9 @@ class DelegateRemoteOut(BaseModel):
 
     status: Literal["completed", "failed", "rejected", "timed_out"] = "completed"
     task_id: str = ""
+    #: The delegated work's canonical child Run (#147). Empty only when no
+    #: admitter is wired, which is the case a Container-less test exercises.
+    run_id: str = ""
     result: str | None = None
     error: str | None = None
     timed_out: bool = False
@@ -83,10 +103,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         *,
         a2a_delegator: A2ADelegator | None = None,
         guest_peers: GuestPeerManager | None = None,
+        delegation_admitter: DelegationRunAdmitter | None = None,
     ) -> None:
-        """Wire in the in-process delegator and/or cross-instance guest-peer manager."""
+        """Wire in the in-process delegator, guest-peer manager and Run admitter."""
         self._a2a_delegator = a2a_delegator
         self._guest_peers = guest_peers
+        self._delegation_admitter = delegation_admitter
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> DelegateRemoteOut:
         """Dispatch on first run, or return the resumed delegation result."""
@@ -96,6 +118,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return DelegateRemoteOut(
                 status=resumed.get("status", "completed"),
                 task_id=str(resumed.get("task_id") or ""),
+                run_id=str(resumed.get("run_id") or ""),
                 result=resumed.get("result"),
                 error=resumed.get("error"),
                 timed_out=bool(resumed.get("timed_out", False)),
@@ -105,12 +128,57 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
+    async def _admit_child_run(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        task_id: str,
+        mode: str,
+        to_agent: str,
+    ) -> str:
+        """Create the delegated work's child Run and return its id.
+
+        The Workspace and Project are taken from the parent Run, so the store's
+        two escape guards — no crossing a Workspace, no implicitly crossing a
+        Project — apply to delegation for the first time. They have always
+        existed on `create_run`; delegation never reached them because it
+        created no Run.
+
+        Returns "" when no admitter is wired. That is not a silent degradation
+        so much as the absence of a spine to file against: a node constructed
+        directly in a test has no Container, and refusing there would make the
+        node untestable without one.
+        """
+        if self._delegation_admitter is None:
+            return ""
+        run = await self._delegation_admitter.admit_delegation(
+            parent_run_id=ctx.run_id,
+            parent_node_run_id=ctx.node_run_id or None,
+            task=inputs.task,
+            to_agent=to_agent,
+            from_agent=inputs.from_agent,
+            mode=mode,
+            peer_name=inputs.peer_name,
+            a2a_task_id=task_id,
+            user_id=ctx.user_id,
+        )
+        return run.run_id
+
     async def _dispatch_cross_instance(
         self, inputs: DelegateRemoteIn, ctx: NodeContext
     ) -> DelegateRemoteOut:
         """Delegate to a trusted external peer via `GuestPeerManager`, then pause."""
         if self._guest_peers is None:
-            return DelegateRemoteOut(status="failed", error="no guest_peers manager configured")
+            # Raised, not returned. `status="failed"` is the shape a remote peer
+            # declining the work takes, and a deployment that never registered a
+            # peer is a different fact — one an operator can fix and should be
+            # told about, rather than reading as "the peer said no".
+            raise DelegationUnavailable(
+                "agent.delegate_remote was asked to delegate to peer "
+                f"{inputs.peer_name!r}, but no GuestPeerManager is configured. "
+                "Register peer trusts, or remove the peer_name to delegate in-process."
+            )
 
         result = await self._guest_peers.delegate(
             inputs.peer_name or "",
@@ -124,7 +192,16 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 error=result.error,
             )
 
-        self._pause(inputs, task_id=result.task_id, mode="guest_peer")
+        # After dispatch, not before: a child Run for work the peer refused
+        # would be a Run recording something that never happened.
+        run_id = await self._admit_child_run(
+            inputs,
+            ctx,
+            task_id=result.task_id,
+            mode="guest_peer",
+            to_agent=inputs.to_agent or (inputs.peer_name or ""),
+        )
+        self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=run_id)
         return DelegateRemoteOut()  # unreachable
 
     async def _dispatch_in_process(
@@ -132,7 +209,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     ) -> DelegateRemoteOut:
         """Delegate to another agent in the same Conductor instance, then pause."""
         if self._a2a_delegator is None:
-            return DelegateRemoteOut(status="failed", error="no a2a_delegator configured")
+            raise DelegationUnavailable(
+                "agent.delegate_remote has no A2ADelegator configured, so it cannot "
+                "delegate in-process. Build the node through "
+                "`maistro.container.build_node_resolver`, which wires one."
+            )
 
         try:
             task_id = self._a2a_delegator.delegate_task(
@@ -144,12 +225,24 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 else DelegationMode.ALLOW_LIST,
             )
         except ValueError as exc:
+            # A refusal by the delegation policy — the caller's allow-list, or an
+            # agent with no delegation capability at all. Rejected work gets no
+            # child Run: nothing was handed to anyone.
             return DelegateRemoteOut(status="rejected", error=str(exc))
 
-        self._pause(inputs, task_id=task_id, mode="in_process")
+        run_id = await self._admit_child_run(
+            inputs,
+            ctx,
+            task_id=task_id,
+            mode="in_process",
+            to_agent=inputs.to_agent or "",
+        )
+        self._pause(inputs, task_id=task_id, mode="in_process", run_id=run_id)
         return DelegateRemoteOut()  # unreachable
 
-    def _pause(self, inputs: DelegateRemoteIn, *, task_id: str, mode: str) -> None:
+    def _pause(
+        self, inputs: DelegateRemoteIn, *, task_id: str, mode: str, run_id: str = ""
+    ) -> None:
         """Checkpoint the DAG until the delegated task completes or times out."""
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(
@@ -157,6 +250,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             resume_at=resume_at,
             metadata={
                 "task_id": task_id,
+                # Carried through the pause so whatever resumes this node can
+                # correlate to the child Run, not only to the transport receipt.
+                "run_id": run_id,
                 "mode": mode,
                 "peer_name": inputs.peer_name,
                 "to_agent": inputs.to_agent,
