@@ -34,6 +34,7 @@ Usage
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -46,26 +47,66 @@ BEGIN = "<!-- checks:table -->"
 END = "<!-- /checks:table -->"
 
 
+class ContractError(RuntimeError):
+    """A workflow the contract cannot express, rather than one it misreads.
+
+    Raised instead of recording a best guess. A gate whose failure mode is a
+    plausible-looking wrong answer is worse than one that stops: the wrong
+    answer gets banked into the table and read as the truth afterwards.
+    """
+
+
 def _pull_request_trigger(doc: dict) -> dict | None:
     """The `pull_request:` block, or None when the workflow has no PR trigger.
+
+    Three spellings, all valid:
+
+        on: {pull_request: {branches: [main]}}   -> the filter dict
+        on: {pull_request: null}                 -> {} (unfiltered)
+        on: [push, pull_request]                 -> {} (unfiltered)
 
     ``on:`` is YAML 1.1's boolean ``True`` after parsing — the classic GitHub
     Actions footgun. Both spellings are read so a `"on"`-quoted workflow is not
     silently treated as having no triggers at all.
+
+    The sequence form matters for the same reason: rejecting every
+    non-dictionary trigger dropped such a workflow out of the contract
+    *entirely*, and `--update` then produced a table that passed CI while the
+    checks it omitted were still gating merges.
     """
     triggers = doc.get(True, doc.get("on"))
+    if isinstance(triggers, list):
+        return {} if "pull_request" in triggers else None
+    if isinstance(triggers, str):
+        return {} if triggers == "pull_request" else None
     if not isinstance(triggers, dict) or "pull_request" not in triggers:
         return None
     return triggers["pull_request"] or {}
 
 
+#: Trigger filters that make a check's presence conditional, and how to say so.
+#: The `-ignore` forms are the same coupling stated in the negative — a
+#: `branches-ignore` reintroduces exactly the base-dependence #161 removed, and
+#: falling through to "every PR" would have left the table and `base_coupled()`
+#: both green while it did.
+_FILTER_LABELS = (
+    ("branches", "base"),
+    ("branches-ignore", "base-ignore"),
+    ("paths", "paths"),
+    ("paths-ignore", "paths"),
+)
+
+
 def _scope(pull_request: dict) -> str:
     if not isinstance(pull_request, dict):
         return "every PR"
-    if branches := pull_request.get("branches"):
-        return "base `" + "`, `".join(branches) + "`"
-    if pull_request.get("paths"):
-        return "paths"
+    for key, label in _FILTER_LABELS:
+        values = pull_request.get(key)
+        if not values:
+            continue
+        if label.startswith("base"):
+            return f"{label} `" + "`, `".join(values) + "`"
+        return label
     return "every PR"
 
 
@@ -94,10 +135,76 @@ def _job_scope(job: dict, trigger_scope: str) -> str:
     return f"{trigger_scope}, job `if:` on base_ref"
 
 
+def _matrix_rows(job: dict) -> list[dict]:
+    """Every matrix combination a job expands to, as name->value maps.
+
+    GitHub evaluates `job.name` once per combination, so a matrix job does not
+    emit the check name written in the YAML — CodeQL's
+    `Analyze (${{ matrix.language }})` emits `Analyze (actions)`,
+    `Analyze (javascript-typescript)` and `Analyze (python)`. Recording the
+    unevaluated string gave branch protection a name no run ever produces, and
+    changing the matrix would have altered three real check names without this
+    gate noticing.
+    """
+    matrix = ((job.get("strategy") or {}).get("matrix")) or {}
+    if not isinstance(matrix, dict):
+        raise ContractError(f"matrix is not a mapping: {matrix!r}")
+    if "exclude" in matrix:
+        # Expressible, but only by reimplementing GitHub's exclude matching.
+        # Refusing is honest; guessing would bank a wrong name.
+        raise ContractError("matrix `exclude:` is not supported by the contract generator")
+    include = matrix.get("include") or []
+    axes = {k: v for k, v in matrix.items() if k != "include"}
+
+    combos: list[dict] = [{}]
+    for key, values in axes.items():
+        if not isinstance(values, list):
+            raise ContractError(f"matrix axis {key!r} is not a list")
+        combos = [{**combo, key: value} for combo in combos for value in values]
+    if include:
+        extra = [dict(entry) for entry in include]
+        combos = extra if combos == [{}] else combos + extra
+    return combos
+
+
+_EXPRESSION_RE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+
+
+def _check_names(job_id: str, job: dict) -> list[str]:
+    """The check name(s) this job actually emits."""
+    template = job.get("name", job_id)
+    if "${{" not in str(template):
+        return [template]
+
+    def _substitute(combo: dict) -> str:
+        return _EXPRESSION_RE.sub(
+            lambda match: str(combo.get(match.group(1), match.group(0))), str(template)
+        )
+
+    names = []
+    for combo in _matrix_rows(job):
+        name = _substitute(combo)
+        if "${{" in name:
+            raise ContractError(
+                f"job {job_id!r} has a name this generator cannot resolve: {template!r}. "
+                "Branch protection needs a literal string, so either simplify the name or "
+                "teach this script the expression."
+            )
+        names.append(name)
+    return list(dict.fromkeys(names)) or [template]
+
+
+def _workflow_files() -> list[Path]:
+    """Both extensions GitHub honours. Scanning only `.yml` meant a workflow
+    renamed to `.yaml` left every one of its checks outside the contract, and
+    `--update` produced a table that passed while those checks still gated."""
+    return sorted([*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")])
+
+
 def collect() -> list[tuple[str, str, str]]:
     """(workflow, check name, scope) for every job reachable from a PR."""
     rows: list[tuple[str, str, str]] = []
-    for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+    for path in _workflow_files():
         doc = yaml.safe_load(path.read_text()) or {}
         pull_request = _pull_request_trigger(doc)
         if pull_request is None:
@@ -106,8 +213,31 @@ def collect() -> list[tuple[str, str, str]]:
         trigger_scope = _scope(pull_request)
         for job_id, job in (doc.get("jobs") or {}).items():
             job = job or {}
-            rows.append((workflow, job.get("name", job_id), _job_scope(job, trigger_scope)))
+            scope = _job_scope(job, trigger_scope)
+            try:
+                names = _check_names(job_id, job)
+            except ContractError as exc:
+                raise ContractError(f"{path.name}: {exc}") from exc
+            rows.extend((workflow, name, scope) for name in names)
+    _refuse_duplicates(rows)
     return sorted(rows)
+
+
+def _refuse_duplicates(rows: list[tuple[str, str, str]]) -> None:
+    """Branch protection keys checks by bare name, not by workflow.
+
+    Two jobs resolving to one name give a rule an ambiguous status to wait on,
+    which blocks merges in a way that reads as a stuck check rather than as a
+    naming collision. Cheaper to refuse here, naming both producers.
+    """
+    seen: dict[str, str] = {}
+    for workflow, name, _scope_value in rows:
+        if name in seen and seen[name] != workflow:
+            raise ContractError(
+                f"two workflows emit the check name {name!r}: {seen[name]!r} and {workflow!r}. "
+                "Branch protection cannot tell them apart; rename one."
+            )
+        seen.setdefault(name, workflow)
 
 
 def base_coupled(rows: list[tuple[str, str, str]]) -> set[tuple[str, str]]:

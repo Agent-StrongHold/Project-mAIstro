@@ -11,7 +11,16 @@ it, so a renamed job silently stops being required and the protection rule keeps
 reporting green. That failure is invisible by construction, which is why the
 names live here and are machine-checked rather than remembered.
 
-A check's name is its job's `name:`, or the job id when there is none.
+A check's name is its job's `name:`, or the job id when there is none — and for
+a **matrix** job, the name GitHub evaluates for each combination. CodeQL's
+`Analyze (${{ matrix.language }})` is three checks, not one; the generator
+expands them, and refuses rather than guessing when a name uses an expression it
+cannot resolve.
+
+Two names are also refused outright: a collision between workflows (branch
+protection keys checks by bare name, so two jobs sharing one give the rule an
+ambiguous status to wait on) and a `matrix: exclude:`, which would need
+GitHub's own matching rules to expand correctly.
 
 Regenerate after changing a workflow:
 
@@ -77,7 +86,9 @@ which ones carry the hazard.
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
 | Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | paths |
-| CodeQL Advanced | `Analyze (${{ matrix.language }})` | base `main` |
+| CodeQL Advanced | `Analyze (actions)` | base `main` |
+| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
+| CodeQL Advanced | `Analyze (python)` | base `main` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | paths |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |

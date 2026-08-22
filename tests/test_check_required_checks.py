@@ -126,7 +126,9 @@ class TestAgainstTheRealWorkflows:
         anything else means a PR's tick depends on what it is stacked on.
         """
         assert gate.base_coupled(gate.collect()) == {
-            ("CodeQL Advanced", "Analyze (${{ matrix.language }})"),
+            ("CodeQL Advanced", "Analyze (actions)"),
+            ("CodeQL Advanced", "Analyze (javascript-typescript)"),
+            ("CodeQL Advanced", "Analyze (python)"),
             ("security", "Container scan + SBOM + cosign"),
         }
 
@@ -160,3 +162,108 @@ class TestAgainstTheRealWorkflows:
             if not (per_pr and cancels):
                 offenders.append(path.name)
         assert offenders == [], f"unfiltered PR workflows without per-PR cancellation: {offenders}"
+
+
+class TestTriggerSpellings:
+    """`on:` has more legal forms than one, and the others were dropped (found
+    in review). A workflow this parser does not recognise leaves *every* check
+    it produces outside the contract, and `--update` then writes a table that
+    passes CI while those checks still gate merges."""
+
+    def test_the_sequence_form_is_a_pr_trigger(self, gate) -> None:
+        assert gate._pull_request_trigger({True: ["push", "pull_request"]}) == {}
+
+    def test_a_sequence_without_pull_request_is_not(self, gate) -> None:
+        assert gate._pull_request_trigger({True: ["push"]}) is None
+
+    def test_the_bare_string_form_is_a_pr_trigger(self, gate) -> None:
+        assert gate._pull_request_trigger({True: "pull_request"}) == {}
+
+
+class TestIgnoreFilters:
+    """`branches-ignore` is base coupling stated in the negative.
+
+    Falling through to "every PR" would have left the generated table and
+    `base_coupled()` both green while a workflow excluded whole bases — the
+    exact hole #161 closed, reintroduced in a spelling the gate did not read.
+    """
+
+    def test_branches_ignore_is_reported_as_base_coupled(self, gate) -> None:
+        scope = gate._scope({"branches-ignore": ["experimental"]})
+        assert scope.startswith("base")
+        assert gate.base_coupled([("W", "c", scope)]) == {("W", "c")}
+
+    def test_paths_ignore_is_reported_as_filtered(self, gate) -> None:
+        assert gate._scope({"paths-ignore": ["docs/**"]}) == "paths"
+
+
+class TestMatrixExpansion:
+    """A matrix job does not emit the name written in the YAML.
+
+    GitHub evaluates `job.name` once per combination, so recording the
+    unevaluated string handed branch protection a name no run ever produces —
+    and changing the matrix would have altered three real check names with the
+    gate reporting no change at all.
+    """
+
+    def test_an_include_matrix_expands_to_one_name_each(self, gate) -> None:
+        job = {
+            "name": "Analyze (${{ matrix.language }})",
+            "strategy": {"matrix": {"include": [{"language": "python"}, {"language": "actions"}]}},
+        }
+        assert gate._check_names("analyze", job) == ["Analyze (python)", "Analyze (actions)"]
+
+    def test_axes_expand_as_a_product(self, gate) -> None:
+        job = {
+            "name": "t (${{ matrix.os }}, ${{ matrix.py }})",
+            "strategy": {"matrix": {"os": ["linux", "mac"], "py": ["3.12"]}},
+        }
+        assert gate._check_names("t", job) == ["t (linux, 3.12)", "t (mac, 3.12)"]
+
+    def test_a_literal_name_is_left_alone(self, gate) -> None:
+        assert gate._check_names("j", {"name": "plain"}) == ["plain"]
+
+    def test_a_job_with_no_name_uses_its_id(self, gate) -> None:
+        assert gate._check_names("job-id", {}) == ["job-id"]
+
+    def test_an_unresolvable_expression_is_refused_not_guessed(self, gate) -> None:
+        """Refusing beats recording a plausible wrong string: the wrong string
+        gets banked into the table and read as the truth afterwards."""
+        with pytest.raises(gate.ContractError, match="cannot resolve"):
+            gate._check_names("j", {"name": "x (${{ github.sha }})"})
+
+    def test_matrix_exclude_is_refused_rather_than_approximated(self, gate) -> None:
+        job = {
+            "name": "t (${{ matrix.os }})",
+            "strategy": {"matrix": {"os": ["a", "b"], "exclude": [{"os": "b"}]}},
+        }
+        with pytest.raises(gate.ContractError, match="exclude"):
+            gate._check_names("t", job)
+
+
+class TestDuplicateNames:
+    def test_two_workflows_emitting_one_name_are_refused(self, gate) -> None:
+        """Branch protection keys checks by bare name, not by workflow, so a
+        collision gives the rule an ambiguous status to wait on — which reads
+        as a stuck check rather than as a naming problem."""
+        rows = [("A", "test", "every PR"), ("B", "test", "every PR")]
+        with pytest.raises(gate.ContractError, match="two workflows emit"):
+            gate._refuse_duplicates(rows)
+
+    def test_one_workflow_repeating_a_name_is_not_a_collision(self, gate) -> None:
+        """A matrix expanding to the same name twice is deduplicated upstream,
+        not a cross-workflow ambiguity."""
+        gate._refuse_duplicates([("A", "test", "every PR"), ("A", "test", "every PR")])
+
+    def test_the_real_workflows_have_no_collisions(self, gate) -> None:
+        gate._refuse_duplicates(gate.collect())
+
+
+class TestWorkflowDiscovery:
+    def test_both_extensions_are_scanned(self, gate) -> None:
+        """GitHub honours `.yaml` too. Scanning only `.yml` meant a renamed
+        workflow left every check it produces outside the contract."""
+        import inspect
+
+        source = inspect.getsource(gate._workflow_files)
+        assert "*.yml" in source and "*.yaml" in source
