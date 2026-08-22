@@ -115,19 +115,6 @@ jobs:
     # "compatible with the parts moto implements" (ADR-082226-f436 decision 3).
     name: object storage (MinIO)
     runs-on: ubuntu-latest
-    services:
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: maistro
-          MINIO_ROOT_PASSWORD: maistro-secret
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -fsS http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     env:
       MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
       AWS_ACCESS_KEY_ID: maistro
@@ -142,6 +129,29 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --extra dev --extra s3
+      # `docker run`, not a `services:` container. MinIO's own image needs an
+      # explicit `server /data` command and service containers cannot set one,
+      # which is why this used `bitnami/minio` — a repackaging that starts the
+      # server by default. Bitnami withdrew that tag and the job began failing
+      # on `manifest unknown`, so the dependency on someone else's repackaging
+      # is gone: the upstream image, pinned, started here.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=maistro \
+            -e MINIO_ROOT_PASSWORD=maistro-secret \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "minio ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "minio did not become ready" >&2
+          docker logs minio >&2 || true
+          exit 1
       - name: Archive conformance against MinIO
         run: uv run pytest packages/maistro-core/tests/archive -v --tb=short
 

@@ -132,7 +132,7 @@ async def test_the_container_defaults_to_no_archive() -> None:
 #: A sentinel no message could contain as prose. "secret" collides with the
 #: rejection message's own wording ("the secret path (SPEC-011)"), which would
 #: make this test fail for a reason that is not a leak.
-_SECRET = "hunter2-Zx9Q"
+_SECRET = "hunter2-Zx9Q"  # gitleaks:allow - test fixture, not a credential
 
 
 @pytest.mark.parametrize(
