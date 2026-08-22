@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
@@ -399,6 +399,7 @@ async def create_container(
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
     else:
+        _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
         learning_store = InMemoryLearningStore()
         outcome_store = InMemoryOutcomeStore()
@@ -602,6 +603,47 @@ async def create_container(
     backend = "SQLite" if db_pool is not None else "InMemory"
     logger.info("Container wired (%s stores)", backend)
     return container
+
+
+#: Schemes that deliberately select ephemeral in-memory stores.
+_EPHEMERAL_SCHEMES: Final = ("memory://",)
+
+
+def _require_ephemeral_is_deliberate(database_url: str) -> None:
+    """Refuse a configured database this container cannot actually wire (#122).
+
+    Only ``sqlite:`` has a backend. Everything else fell through to in-memory
+    stores, so a deployment set to ``postgresql://…`` got learnings, outcomes,
+    sessions and quota that vanish on restart — with no error, no warning, and
+    nothing in the log saying the configured database had been ignored. A
+    misconfigured model gives visibly wrong answers; a misconfigured database
+    gives correct answers that quietly disappear, which is the worse failure and
+    the one `graph_runner.StubLLMNotAllowedError` exists to prevent elsewhere.
+
+    Three cases, deliberately distinguished:
+
+    - **unset** — no database was asked for, so in-memory is the honest answer.
+      Logged at warning so an operator who *meant* to configure one can see it.
+    - **``memory://``** — ephemeral on purpose. Silent, because it was chosen.
+    - **anything else** — a database was configured and cannot be honoured.
+      That is a configuration error, not a degraded mode to paper over.
+    """
+    if not database_url.strip():
+        logger.warning(
+            "No database_url configured; using in-memory stores. Learnings, outcomes, "
+            "sessions and quota will not survive a restart. Set database_url to a "
+            "sqlite: URL for durability, or memory:// to select this deliberately."
+        )
+        return
+    if database_url.startswith(_EPHEMERAL_SCHEMES):
+        return
+    msg = (
+        f"database_url {database_url!r} names a backend this build cannot wire. "
+        "Supported: sqlite:// (durable) and memory:// (explicitly ephemeral). "
+        "Falling back to in-memory would discard the data you configured a "
+        "database to keep -- see issue #122."
+    )
+    raise ConfigError(msg)
 
 
 async def _wire_sqlite_backend(
