@@ -239,6 +239,27 @@ jobs:
       - name: acceptance-state ratchet (claims cannot outrun their evidence)
         run: uv run python scripts/check-ac-state.py --run-tests --ratchet
 
+      # ----- Pillar 3b: the mandate, as distinct from the ratchet -----
+      #
+      # The step above says "the repository did not get worse". It never says
+      # "this change proved what it claimed", and the difference is not
+      # academic: a PR could add a spec, tick a criterion `Implemented`, add no
+      # marker, and pass — because the counter it lands in already permits 68 of
+      # them. The ceiling absorbs the new debt, silently.
+      #
+      # So the criteria a PR *creates or newly claims* get zero tolerance, while
+      # legacy criteria stay on the ceilings and fall over time. A criterion may
+      # be declared unproven with a reason, in the document, where a reviewer
+      # sees it — an escape hatch nobody can see is an unstated one.
+      #
+      # PR-only: `github.base_ref` is empty on a push, and there is no "criteria
+      # this change touched" without one. The ratchet governs a push.
+      - name: acceptance mandate (a PR proves the criteria it declares)
+        if: github.event_name == 'pull_request'
+        run: |
+          uv run python scripts/check-ac-state.py \
+            --run-tests --mandate "origin/${{ github.base_ref }}"
+
       # ----- Pillar 4: types -----
       - name: mypy --strict
         run: uv run mypy --strict packages/maistro-core/src

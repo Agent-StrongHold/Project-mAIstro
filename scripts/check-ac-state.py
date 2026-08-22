@@ -486,6 +486,7 @@ def collect_specs(
                 "declared_status": (STATUS_RE.search(fm) or [None, "?"])[1],
                 "implements": _list_field(fm, IMPLEMENTS_RE),
                 "declares_non_measurable": declares_non_measurable(text),
+                "declared_unproven": sorted(declared_unproven(text)),
                 "has_ac_heading": bool(AC_HEADING_RE.search(text)),
                 "criteria_total": len(criteria),
                 "annotated": sum(1 for c in criteria if c.module),
@@ -584,6 +585,146 @@ def collect_adrs(
             }
         )
     return adrs
+
+
+# ─── the mandate: a PR must prove the criteria it declares (#165) ─────────────
+#
+# Everything above this line is a *ratchet*. A ratchet says "the repository did
+# not get worse"; it never says "this change proved what it claimed". The
+# difference is not academic: a PR could add a spec, tick a criterion
+# `Implemented`, add no marker, and pass — because the counter it lands in is a
+# counter that already permits 68 of them. The ceiling absorbs the new debt, and
+# the absorption is silent.
+#
+# So two populations, two rules. Legacy criteria stay on the ceiling and fall
+# over time. Criteria a PR *creates or touches* get zero tolerance. That split
+# is what turns "adherence to acceptance criteria" from a trend into a gate.
+
+
+#: How a spec says "this criterion is declared but deliberately not yet proven".
+#:
+#: Per-criterion, reason mandatory, and in the body so it shows up in the diff —
+#: an escape hatch nobody can see while reviewing is an unstated one. Same shape
+#: as the non-measurable marker, for the same reasons.
+UNPROVEN_RE = re.compile(
+    r"<!--\s*ac-state:\s*unproven\s+(?P<ac>AC-\d+)(?P<body>(?:(?!-->).)*)-->",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def declared_unproven(text: str) -> set[str]:
+    """The `AC-N` ids this document declares unproven, *with a reason*."""
+    found = set()
+    for match in UNPROVEN_RE.finditer(text):
+        body = match.group("body").strip()
+        if body.startswith(_REASON_DELIMITERS) and body[1:].strip():
+            found.add(match.group("ac").upper())
+    return found
+
+
+def _file_at(rev: str, path: str) -> str | None:
+    """`path` as of `rev`, or None when it did not exist there."""
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{path}"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _criteria_in(text: str, doc_id: str) -> dict[str, bool]:
+    """Every criterion the document declares, mapped to whether it claims done.
+
+    Text-only on purpose: this is run against a *past* revision, where the tests
+    cannot be executed and the module graph does not apply. Ids and tick marks
+    are all the comparison needs.
+    """
+    section = _ac_section(text)
+    scenarios, _untagged, _errors = gherkin_criteria(text)
+    boxes = {f"AC-{n}": state.lower() == "x" for state, n in CHECKBOX_RE.findall(section)}
+    shorts = dict.fromkeys([f"AC-{n}" for n in AC_ID_RE.findall(section)] + list(scenarios))
+    return {f"{doc_id}/{short}": boxes.get(short, False) for short in shorts}
+
+
+def snapshot_at(rev: str) -> dict[str, bool] | None:
+    """Every criterion in the corpus as of `rev`. None when `rev` is unreadable.
+
+    None rather than an empty dict, and the caller refuses rather than
+    proceeding: an unreadable base makes *every* criterion look new, which would
+    turn the mandate from a gate on this PR into a demand that the whole
+    corpus be retrofitted at once. A gate that fires on everything gets turned
+    off, which is worse than one that stops and says why.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", rev, "--", "docs/specs", "docs/adr"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listing.returncode != 0:
+        return None
+
+    snapshot: dict[str, bool] = {}
+    for path in listing.stdout.split():
+        if not path.endswith(".md"):
+            continue
+        text = _file_at(rev, path)
+        if text is None:
+            continue
+        fm = _frontmatter(text)
+        doc_id = (ID_RE.search(fm) or [None, Path(path).stem])[1]
+        snapshot.update(_criteria_in(text, doc_id))
+    return snapshot
+
+
+def touched_since(base: dict[str, bool], head: dict[str, bool]) -> set[str]:
+    """Criteria this change created, or newly claimed as done.
+
+    Ticking a box is the claim, so flipping one to `[x]` counts as touching the
+    criterion even when its text did not move — that is precisely the moment to
+    demand the evidence.
+    """
+    added = set(head) - set(base)
+    newly_claimed = {ac for ac, claimed in head.items() if claimed and not base.get(ac, False)}
+    return added | newly_claimed
+
+
+def mandate_violations(
+    documents: list[dict[str, Any]],
+    touched: set[str],
+    exempt: dict[str, set[str]],
+) -> list[dict[str, str]]:
+    """Touched criteria that are not proven and not declared unproven."""
+    violations = []
+    for doc in documents:
+        allowed = exempt.get(doc["id"], set())
+        for criterion in doc.get("criteria", []) or doc.get("own_detail", []):
+            ac_id = criterion["id"]
+            if ac_id not in touched or ac_id.split("/")[-1].upper() in allowed:
+                continue
+            if criterion["rung"] == "reachable":
+                continue
+            violations.append(
+                {
+                    "id": ac_id,
+                    "file": doc.get("file", ""),
+                    "rung": criterion["rung"],
+                    "module": criterion.get("module") or "-",
+                    "covered_by": ", ".join(criterion.get("covered_by") or []) or "-",
+                }
+            )
+    return violations
 
 
 CEILINGS = ROOT / "quality" / "ac-state-ceilings.json"
@@ -720,7 +861,22 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="run the ac-marked tests to settle the passing rung (slow; off by default)",
     )
+    ap.add_argument(
+        "--mandate",
+        metavar="BASE_REV",
+        help=(
+            "fail when a criterion this change adds or newly claims is not proven "
+            "(requires --run-tests; legacy criteria stay on the ceilings)"
+        ),
+    )
     args = ap.parse_args(argv)
+
+    if args.mandate and not args.run_tests:
+        # Without a measured run nothing reaches `reachable`, so every touched
+        # criterion would look unproven. Refusing beats failing a PR for a
+        # question that was never asked.
+        print("FAIL: --mandate needs --run-tests; the passing rung is what it checks against")
+        return 1
 
     roots = configured_test_roots()
     markers = scan_markers(roots)
@@ -876,10 +1032,62 @@ def main(argv: list[str]) -> int:
     except ValueError:  # --out may legitimately point outside the repo
         written = args.out
     print(f"\nwrote {written}")
+    exit_code = 0
     if args.ratchet:
         print()
-        return ratchet(t, measured=passing is not None, bank=args.bank)
-    return 0
+        exit_code = ratchet(t, measured=passing is not None, bank=args.bank)
+
+    if args.mandate:
+        print()
+        exit_code = run_mandate(args.mandate, specs, adrs) or exit_code
+    return exit_code
+
+
+def run_mandate(base_rev: str, specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> int:
+    """Zero tolerance on the criteria this change created or newly claimed."""
+    base = snapshot_at(base_rev)
+    if base is None:
+        print(
+            f"FAIL: could not read the criteria corpus at {base_rev!r}.\n\n"
+            "  On a shallow clone, fetch the base first (`fetch-depth: 0`).\n"
+            "  Refusing rather than proceeding: an unreadable base makes every\n"
+            "  criterion look new, which would demand the whole corpus be\n"
+            "  retrofitted in one PR — a gate that fires on everything gets\n"
+            "  turned off."
+        )
+        return 1
+
+    head = {c["id"]: c["claimed"] for s in specs for c in s["criteria"]}
+    head.update({c["id"]: False for a in adrs for c in a["own_detail"]})
+    touched = touched_since(base, head)
+
+    exempt = {d["id"]: set(d.get("declared_unproven") or []) for d in specs}
+    violations = mandate_violations([*specs, *adrs], touched, exempt)
+
+    print(f"acceptance mandate (criteria touched since {base_rev}):")
+    print(f"  criteria added or newly claimed: {len(touched)}")
+    print(f"  unproven and not declared so   : {len(violations)}")
+    if not violations:
+        print("\nOK: every criterion this change declares is proven.")
+        return 0
+
+    print()
+    for violation in violations:
+        print(
+            f"  {violation['id']}  rung={violation['rung']}  "
+            f"module={violation['module']}  tests={violation['covered_by']}"
+        )
+    print(
+        "\nFAIL: a criterion this change declares is not proven by it.\n\n"
+        "  Legacy criteria are grandfathered on quality/ac-state-ceilings.json;\n"
+        "  these are not legacy — this change created them, or ticked their box.\n"
+        "  Reaching `reachable` needs an AC-N id, a module annotation the\n"
+        "  reachability graph can get to, and a passing @pytest.mark.ac test.\n\n"
+        "  To declare one deliberately unproven, put the reason in the document\n"
+        "  where a reviewer will see it:\n\n"
+        "      <!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->\n"
+    )
+    return 1
 
 
 if __name__ == "__main__":
