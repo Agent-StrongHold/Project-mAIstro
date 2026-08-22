@@ -67,11 +67,17 @@ def upgrade() -> None:
 
     # ── handler_invocations (HandlerInvocation) ────────────────────
     # The composite primary key is the idempotency guarantee, enforced by the
-    # database rather than by the caller: it is what `ON CONFLICT DO NOTHING`
-    # in `PgInvocationStore.get_or_create` relies on, and what makes two
-    # workers racing on one redelivered event converge on a single row. A
+    # database rather than by the caller: it is what `ON CONFLICT` in
+    # `PgInvocationStore.get_or_create` and `claim` relies on, and what makes
+    # two workers racing on one redelivered event converge on a single row. A
     # surrogate key here would leave a read-then-write window instead, which
     # is the failure SQLite never had to answer for.
+    #
+    # `lease_expires_at` is the other half, and the key alone is not it: two
+    # workers converging on one row both read it back non-terminal, and both
+    # would call the handler. The lease is what hands dispatch to exactly one
+    # of them, and what lets a worker that dies mid-handler be superseded
+    # rather than stranding the event.
     op.create_table(
         "handler_invocations",
         sa.Column("trigger_id", sa.Text, primary_key=True),
@@ -80,6 +86,17 @@ def upgrade() -> None:
         sa.Column("attempts", sa.Integer, nullable=False, server_default="0"),
         sa.Column("last_error", sa.Text, nullable=False, server_default=""),
         sa.Column("created_at", sa.Float(precision=53), nullable=False),
+        # `sa.text("0")`, not `"0"`: a string default on a float column is
+        # rendered as `'0'::double precision`, which stores differently from
+        # the bare `DEFAULT 0` the store's own DDL emits. Same value, different
+        # catalogue entry — and `test_event_schema_agreement` compares the
+        # catalogue, which is how this was caught.
+        sa.Column(
+            "lease_expires_at",
+            sa.Float(precision=53),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
     )
     op.create_index("idx_invocations_event", "handler_invocations", ["event_id"])
 

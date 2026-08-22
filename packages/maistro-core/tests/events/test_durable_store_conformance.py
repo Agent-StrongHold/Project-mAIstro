@@ -301,6 +301,78 @@ class TestInvocationStore:
         assert len(await invocations.list_for_event(2)) == 1
 
 
+class TestDispatchIsLeasedToOneWorker:
+    """The composite key deduplicates rows. It does not deduplicate *dispatch*
+    (Codex review, #181).
+
+    `get_or_create` hands every racing worker the same non-terminal row, and
+    `process_events` reads "not terminal" as permission to call the handler — so
+    one event fired the side effect once per worker while the bookkeeping showed
+    a single tidy invocation. ADR-086 says a handler is invoked "at most once
+    successfully per event"; one row and two handler calls is not that.
+    """
+
+    async def test_only_one_of_many_racing_claims_succeeds(self, invocations):
+        claims = await asyncio.gather(*(invocations.claim("t1", 42) for _ in range(16)))
+
+        winners = [c for c in claims if c is not None]
+        assert len(winners) == 1, f"{len(winners)} workers would have called the handler"
+        assert len(await invocations.list_for_event(42)) == 1
+
+    async def test_the_loser_gets_none_rather_than_a_dispatchable_row(self, invocations):
+        """The distinction the bug turned on: a non-terminal row reads as
+        permission to dispatch, so the loser must not receive one."""
+        assert await invocations.claim("t1", 1) is not None
+        assert await invocations.claim("t1", 1) is None
+
+    async def test_a_terminal_invocation_is_never_reclaimed(self, invocations):
+        invocation = await invocations.claim("t1", 1)
+        assert invocation is not None
+        invocation.status = InvocationStatus.SUCCESS
+        invocation.lease_expires_at = 0.0
+        await invocations.save(invocation)
+
+        assert await invocations.claim("t1", 1) is None
+
+    async def test_a_released_lease_can_be_reclaimed(self, invocations):
+        """The normal retry path: a handler failed, the worker released the
+        lease, the next tick must be able to pick the event up again. Without
+        this the retry waits out the whole lease window instead."""
+        first = await invocations.claim("t1", 1)
+        assert first is not None
+        first.status = InvocationStatus.RETRYING
+        first.lease_expires_at = 0.0
+        await invocations.save(first)
+
+        second = await invocations.claim("t1", 1)
+        assert second is not None
+        assert second.attempts == 2
+
+    async def test_an_expired_lease_is_reclaimable(self, invocations):
+        """A worker killed between claiming and finishing releases nothing. The
+        lease has to lapse on its own, or one dead process strands the event
+        forever — trading a double-dispatch bug for a stuck-queue one."""
+        assert await invocations.claim("t1", 1, lease_seconds=-1.0) is not None
+
+        reclaimed = await invocations.claim("t1", 1)
+        assert reclaimed is not None
+        assert reclaimed.attempts == 2
+
+    async def test_claiming_counts_attempts_so_retries_still_converge(self, invocations):
+        """`process_events` used to increment `attempts` itself. Now the claim
+        does, inside the same statement — otherwise a handler that keeps dying
+        is retried forever by whichever worker wins each round."""
+        for expected in (1, 2, 3):
+            invocation = await invocations.claim("t1", 1, lease_seconds=-1.0)
+            assert invocation is not None
+            assert invocation.attempts == expected
+
+    async def test_claims_on_different_keys_do_not_block_each_other(self, invocations):
+        assert await invocations.claim("t1", 1) is not None
+        assert await invocations.claim("t2", 1) is not None
+        assert await invocations.claim("t1", 2) is not None
+
+
 class TestIdempotencyUnderConcurrency:
     """The substance of #135: one invocation per redelivered event, per trigger.
 
