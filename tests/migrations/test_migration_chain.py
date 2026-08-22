@@ -53,6 +53,10 @@ EXPECTED_TABLES = frozenset(
         "learnings",
         "memory_entries",
         "outcomes",
+        # Added by 004_quota_sessions (#182): the two tables `PgQuotaTracker`
+        # and `PgSessionStore` were already querying and no revision created.
+        "quota_usage",
+        "sessions",
         "tasks",
     }
 )
@@ -95,8 +99,22 @@ def _tables() -> set[str]:
 
 @pytest.fixture
 def empty_database():
-    """Start each test from `base`, so one failure cannot cascade into the next."""
+    """Start each test from `base`, so one failure cannot cascade into the next.
+
+    `downgrade base` drops what the *chain* created and nothing else, so a table
+    made outside it — `ensure_event_schema` during development, a hand-run
+    CREATE — survives and lands in the exact-set assertions below as unexplained
+    extra items. That reads exactly like the chain creating tables it should
+    not, which is the defect these tests exist to catch, so it is worth one
+    explicit check that says which it is.
+    """
     _alembic("downgrade", "base")
+    residue = _tables() - {"alembic_version"}
+    assert not residue, (
+        f"the test database holds tables the migration chain did not create: "
+        f"{sorted(residue)}. Drop them — the assertions below compare an exact "
+        f"set, and residue here is indistinguishable from a chain defect."
+    )
     yield
     _alembic("downgrade", "base")
 
