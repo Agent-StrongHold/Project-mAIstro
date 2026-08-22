@@ -124,3 +124,67 @@ async def test_the_container_defaults_to_no_archive() -> None:
     container = await create_container(AgentConfig(router_api_key="k"))
 
     assert container.archive_store is None
+
+
+# ── URLs are configuration, and configuration gets logged ─────────
+
+
+#: A sentinel no message could contain as prose. "secret" collides with the
+#: rejection message's own wording ("the secret path (SPEC-011)"), which would
+#: make this test fail for a reason that is not a leak.
+_SECRET = "hunter2-Zx9Q"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"s3://key:{_SECRET}@bucket",
+        f"gs://key:{_SECRET}@bucket",
+        f"file://key:{_SECRET}@/path",
+        f"s3+https://key:{_SECRET}@bucket?endpoint=minio",
+        f"s3://{_SECRET}@bucket",
+    ],
+)
+def test_no_error_echoes_credentials(url: str) -> None:
+    """These raise at startup, uncaught, into process logs — the same reason
+    the database-config check redacts."""
+    with pytest.raises(ArchiveError) as excinfo:
+        build_archive_store(url)
+
+    assert _SECRET not in str(excinfo.value)
+
+
+def test_a_rejected_url_stays_diagnosable() -> None:
+    with pytest.raises(ArchiveError) as excinfo:
+        build_archive_store("gs://my-bucket")
+
+    message = str(excinfo.value)
+    assert "gs" in message
+    assert "my-bucket" in message
+
+
+def test_the_bucket_is_the_host_not_the_netloc() -> None:
+    """`netloc` carries userinfo and any port, so a bucket read from it would
+    be `user:pw@bucket` or `bucket:9000`."""
+    pytest.importorskip("boto3")
+
+    store = build_archive_store("s3://my-bucket")
+
+    assert store._bucket == "my-bucket"  # type: ignore[union-attr]
+
+
+def test_bucket_names_are_case_insensitive() -> None:
+    """S3 bucket names are lowercase by rule, so two spellings addressing one
+    bucket is the right behaviour rather than a surprise."""
+    pytest.importorskip("boto3")
+
+    store = build_archive_store("s3://My-Bucket")
+
+    assert store._bucket == "my-bucket"  # type: ignore[union-attr]
+
+
+def test_a_port_on_the_bucket_is_refused() -> None:
+    """Dropping it silently would leave an operator believing they configured
+    an endpoint when they configured nothing."""
+    with pytest.raises(ArchiveError, match="port belongs"):
+        build_archive_store("s3://bucket:9000")

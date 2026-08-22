@@ -15,7 +15,7 @@ now: a deployment can name where its archive lives before anything writes to it.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urlparse, urlunparse
 
 from maistro.archive.types import ArchiveError
 
@@ -47,31 +47,55 @@ def build_archive_store(archive_url: str) -> ArchiveStore | None:
         return None
 
     parsed = urlparse(url)
+
+    # Credentials are checked before anything else, and never echoed. Every
+    # error below reports a redacted URL for the same reason the database-config
+    # check does: these raise at startup, uncaught, into process logs.
+    if parsed.username or parsed.password:
+        raise ArchiveError(
+            "archive_url must not carry credentials; they resolve through the "
+            "secret path (SPEC-011) so they do not end up in logs"
+        )
+    safe = _redact(parsed)
+
     if parsed.scheme == FILE_SCHEME:
         path = parsed.path
         if not path:
-            raise ArchiveError(f"archive_url {url!r} names no directory")
+            raise ArchiveError(f"archive_url {safe!r} names no directory")
         from maistro.archive.filesystem import FilesystemArchiveStore
 
         return FilesystemArchiveStore(path)
 
     if parsed.scheme in S3_SCHEMES:
-        bucket = parsed.netloc
+        # `hostname`, not `netloc`: netloc carries userinfo and any port, so a
+        # bucket read from it would be "bucket:9000" or "user:pw@bucket". The
+        # lowercasing hostname applies is correct here — S3 bucket names are
+        # lowercase by rule, so two spellings addressing one bucket is right.
+        bucket = parsed.hostname or ""
         if not bucket:
-            raise ArchiveError(f"archive_url {url!r} names no bucket")
-        if parsed.username or parsed.password:
+            raise ArchiveError(f"archive_url {safe!r} names no bucket")
+        if parsed.port is not None:
             raise ArchiveError(
-                "archive_url must not carry credentials; they resolve through the "
-                "secret path (SPEC-011) so they do not end up in logs"
+                f"archive_url {safe!r} puts a port on the bucket. The port belongs "
+                f"to the service: s3+http(s)://bucket?endpoint=host:port"
             )
         from maistro.archive.s3 import S3ArchiveStore
 
         return S3ArchiveStore(bucket, endpoint_url=_endpoint(parsed.scheme, parsed.query))
 
     raise ArchiveError(
-        f"archive_url {url!r} names no known backend. Use file:///path, s3://bucket, "
+        f"archive_url {safe!r} names no known backend. Use file:///path, s3://bucket, "
         f"or s3+http(s)://bucket?endpoint=host:port"
     )
+
+
+def _redact(parsed: ParseResult) -> str:
+    """The URL without userinfo, for an error that will be logged."""
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    userinfo = "***:***@" if (parsed.username or parsed.password) else ""
+    return urlunparse((parsed.scheme, f"{userinfo}{host}", parsed.path, "", parsed.query, ""))
 
 
 def _endpoint(scheme: str, query: str) -> str | None:
