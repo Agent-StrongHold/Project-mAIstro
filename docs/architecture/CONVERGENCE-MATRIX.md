@@ -143,7 +143,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
 | Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance only | ADR-034, ADR-011, ADR-091, ADR-057 | a memory write that names its producing Run | #64 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on a Run without owning lifecycle | #64 |
-| Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the Postgres half has no caller | ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, or their removal | #33, #34 |
+| Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the Postgres half has no caller | ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, or their removal | #122, #33, #34 |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
@@ -198,7 +198,9 @@ currently holds belongs to `Run`/`Invocation`.
   restart, with no warning. That is the failure mode `graph_runner.StubLLMNotAllowedError`
   was introduced to end elsewhere in this repo ("loud degraded modes"), and it contradicts
   the root `CLAUDE.md` subsystem table, which advertises `maistro.persistence` as
-  "PostgreSQL stores". Filed as its own issue rather than fixed here.
+  "PostgreSQL stores". Filed as
+  [#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122) rather than fixed
+  here.
 - **`maistro.conduit` is constructed but unrouted.** `maistro.container` builds it; no shipped
   product path calls it. The "one front door" claim is currently a design, not a fact.
 - **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
