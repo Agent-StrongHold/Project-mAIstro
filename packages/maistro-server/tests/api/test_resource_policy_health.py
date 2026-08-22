@@ -12,6 +12,17 @@ from maistro_server.api.health import ProbeResult
 from maistro_server.main import app
 
 
+@pytest.fixture(autouse=True)
+def _pristine_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`conftest.py` turns the unsafe override on suite-wide so its high rate
+    limits are legal. This test asserts the exact diagnostic payload, including
+    `unsafe_overrides_enabled: False`, so it has to construct `Settings` as an
+    ordinary deployment would."""
+    monkeypatch.delenv("ALLOW_UNSAFE_RESOURCE_OVERRIDES", raising=False)
+    monkeypatch.delenv("RATE_LIMIT_PER_MINUTE", raising=False)
+    monkeypatch.delenv("RATE_LIMIT_BURST", raising=False)
+
+
 @pytest.mark.ac("SPEC-082226-2a10/AC-6")
 def test_readiness_exposes_effective_resource_policy() -> None:
     settings = Settings(

@@ -33,6 +33,7 @@ ac-modules:
   AC-4: maistro.security.resource_policy
   AC-5: maistro.agents.circuit_breaker
   AC-6: maistro_server.api.health
+  AC-7: maistro.security.resource_policy
 source:
   - SECURITY.md
 layer: Governance
@@ -61,6 +62,8 @@ The shipped values are both defaults and the declared safe baseline. Operators m
 
 - **smaller is tighter:** request body maximum, webhook body maximum, requests/minute, burst limit, circuit failure threshold;
 - **larger is tighter:** circuit recovery timeout.
+
+`rate_limit_burst` carries one exception to the reading above, because the runtime does: `RateLimiter` skips the burst window entirely when the limit is 0, so 0 means "no separate burst check" and admits as much as the per-minute limit. The floor compares the value the limiter enforces — the per-minute limit when burst is 0, the burst limit otherwise — so a tight per-minute limit with no burst throttle is accepted and a loose one is not. Zero remains coherent for that setting alone; a negative value never is.
 
 A value that crosses the baseline in the weaker direction is rejected during Settings validation. `ALLOW_UNSAFE_RESOURCE_OVERRIDES=true` is the sole explicit escape hatch for an unsafe/development deployment. `debug` does not imply permission to weaken policy. Non-positive values remain invalid even in unsafe mode.
 
@@ -99,7 +102,14 @@ Feature: Config-driven resource security floors
     When a protected value is configured weaker than baseline
     Then Settings accepts it
     And the effective policy reports unsafe overrides enabled
-    But non-positive resource values are still rejected
+    But incoherent resource values are still rejected
+
+  @AC-7
+  Scenario: A disabled burst throttle is read as the limiter reads it
+    Given rate_limit_burst is 0, which the limiter treats as no burst check
+    When the per-minute limit is itself at or below the burst baseline
+    Then Settings accepts it
+    But the same zero with a per-minute limit above that baseline is refused
 
   @AC-5
   Scenario: Circuit breaker uses deployment policy

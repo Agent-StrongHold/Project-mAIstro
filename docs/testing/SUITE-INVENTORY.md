@@ -95,12 +95,28 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+Configurable resource security floors (#75) add fifteen maistro-core node IDs
+and one maistro-server node ID. The core set is one per acceptance criterion —
+defaults equal the baseline, tightening in every direction is accepted, each of
+the six protected limits is refused when it crosses its floor the weak way,
+the unsafe override admits a weaker dev policy, and the LLM circuit is built
+from validated settings — plus three that guard the check itself: non-positive
+values are rejected even in unsafe mode, every field of
+`EffectiveResourcePolicy` has a declared floor, and the suite's own unsafe
+override would hide the refusals if the fixture that clears it were removed —
+and two on the `rate_limit_burst = 0` sentinel, which the limiter reads as "no
+burst check" rather than "allow nothing", so it is accepted under a tight
+per-minute limit and refused under a loose one, while a negative value stays
+incoherent in every mode.
+The maistro-server node ID covers the readiness diagnostic reporting the
+effective values.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6384 | `ci.yml` |
+| `packages/maistro-core/tests` | 6399 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
-| `packages/maistro-server/tests` | 188 | `ci.yml` |
+| `packages/maistro-server/tests` | 189 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |
