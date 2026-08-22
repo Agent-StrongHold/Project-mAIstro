@@ -26,20 +26,6 @@
       ]
     },
     {
-      "id": "hive-hill-climbing-experiments",
-      "subsystem": "Agent Conductor services",
-      "disposition": "RETIRE",
-      "rationale": "Five hill-climbing/UI-climbing services with no route, no scheduler entry and no caller. Self-improvement is maistro-rsi's job under ADR-088; a second private optimiser inside the product backend is the duplication M0-B3 exists to remove.",
-      "replaced_by": "maistro_rsi (ADR-088)",
-      "modules": [
-        "services.hill_climber",
-        "services.skill_optimizer",
-        "services.ui_auto_climb",
-        "services.ui_climb_vm",
-        "services.ui_hill_climber"
-      ]
-    },
-    {
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
@@ -614,6 +600,16 @@
         "maistro.workspaces",
         "maistro.workspaces.model",
         "maistro.workspaces.store"
+      ]
+    },
+    {
+      "id": "hive-hill-climber-criterion",
+      "subsystem": "Agent Conductor services",
+      "disposition": "CONNECT",
+      "rationale": "A noise-aware accept criterion with its own unit tests and an integration test, but no route, scheduler entry or caller. Its four sibling hill-climbing services were orphans and have been deleted; this one is not an orphan \u2014 someone specified and tested it. ADR-088 gives self-improvement to maistro-rsi, so this either becomes RSI's accept criterion or is retired against it, and that judgement belongs with #50 rather than to a reachability sweep.",
+      "root": "the maistro-rsi candidate-evaluation path (#50)",
+      "modules": [
+        "services.hill_climber"
       ]
     }
   ]

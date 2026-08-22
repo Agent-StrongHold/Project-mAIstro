@@ -159,7 +159,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Test scaffolding | test suites only | `3/3` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/17` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `6/71` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | `main` route registration + background loops | `15/62` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
+| Agent Conductor services | `main` route registration + background loops | `11/58` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `8/17` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `1/18` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | a render effect recorded as an Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `7/61` | MIGRATE — a cycle is a Run, a battle is a NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
@@ -210,9 +210,9 @@ currently holds belongs to `Run`/`Invocation`.
   product path calls it. The "one front door" claim is currently a design, not a fact.
 - **`maistro.builders` is 15/15 unreachable** while holding its own graph executor — the single
   largest self-contained retirement candidate.
-- **Reachability is not evenly distributed debt.** Of 203 unreachable modules, 68 — a third — sit
-  in four subsystems (`maistro.agents` 26, `maistro.builders` 15, Conductor `services` 15,
-  `maistro.skills`/`code_registry`/`repertoire` 12), which is why
+- **Reachability is not evenly distributed debt.** Of 199 unreachable modules, 64 — a third — sit
+  in four subsystems (`maistro.agents` 26, `maistro.builders` 15, `maistro.skills`/`code_registry`/
+  `repertoire` 12, Conductor `services` 11), which is why
   [#34](https://github.com/Agent-StrongHold/Project-mAIstro/issues/34) burns them down by
   subsystem rather than by file.
 - **Twenty-five of the modules previously counted as unreachable were never dead.** The node
@@ -227,8 +227,7 @@ currently holds belongs to `Run`/`Invocation`.
   to the package and the flat file could never run — both carried "DEAD CODE — superseded"
   docstrings for months. Because modules are keyed by dotted name, one silently overwrote the
   other and only one was ever analysed. `check-reachability.py` now refuses a flat module
-  shadowed by a package, and the six dead files are gone: 207 → 203 unreachable, 886 → 882
-  modules.
+  shadowed by a package, and the six dead files are gone.
 
 ## Corrections to the issue that requested this
 
