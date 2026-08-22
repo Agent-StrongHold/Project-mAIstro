@@ -163,5 +163,22 @@ class Warden:
                     reasoning_trace=result.get("reasoning_trace"),
                 )
         except Exception:
-            logger.warning("L3 LLM classification failed", exc_info=True)
+            # `classify_tool_result` already fails closed on everything it can
+            # see, so reaching here means the judge could not be consulted at
+            # all — an import failure, a shape this function does not expect.
+            # `self._llm` is set, so L3 *was* configured; treating its absence
+            # as clean would put the fail-open path back one frame further out,
+            # which is the defect this whole check exists to remove.
+            logger.warning("L3 LLM classification unavailable; failing closed", exc_info=True)
+            flags.append(
+                f"llm_classification:suspicious (model={self._classifier_model}, "
+                "mode=unavailable)"
+            )
+            return WardenVerdict(
+                clean=False,
+                blocked=False,
+                flags=tuple(flags),
+                confidence=0.8,
+                reasoning_trace="llm_judge_inconclusive:classifier_unavailable",
+            )
         return None

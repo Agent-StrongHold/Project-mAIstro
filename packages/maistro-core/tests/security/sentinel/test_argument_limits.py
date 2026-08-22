@@ -47,7 +47,9 @@ def test_ordinary_arguments_are_within_default_limits() -> None:
 
 
 @pytest.mark.ac("SPEC-082126-7a31/AC-3")
-def test_nested_objects_over_depth_limit_are_rejected_before_serialization(monkeypatch: Any) -> None:
+def test_nested_objects_over_depth_limit_are_rejected_before_serialization(
+    monkeypatch: Any,
+) -> None:
     import maistro.security.sentinel.argument_limits as limits_module
 
     def _must_not_serialize(*args: Any, **kwargs: Any) -> str:

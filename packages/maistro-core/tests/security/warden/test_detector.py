@@ -157,6 +157,31 @@ async def test_scan_llm_layer_fails_closed_on_partial_classification() -> None:
     assert verdict.reasoning_trace == "llm_judge_inconclusive:malformed_response"
 
 
+@pytest.mark.ac("SPEC-082126-5f6a/AC-6")
+async def test_scan_llm_layer_fails_closed_when_the_judge_cannot_be_consulted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`classify_tool_result` fails closed on everything it can see, so the
+    detector's own `except` is only reached when the judge could not be
+    consulted at all — an import failure, a shape it does not expect. An L3
+    client is configured either way, so reading that as clean would just move
+    the fail-open path one frame further out."""
+    import maistro.security.warden.llm_classifier as classifier
+
+    async def _explode(*args: object, **kwargs: object) -> dict[str, object]:
+        raise ImportError("classifier backend missing")
+
+    monkeypatch.setattr(classifier, "classify_tool_result", _explode)
+
+    llm = _StubLLMClient(response={"choices": [{"message": {"content": "safe"}}]})
+    warden = Warden(llm=llm, classifier_model="gpt")
+    verdict = await warden.scan("clean tool output", "tool_result")
+
+    assert verdict.clean is False
+    assert verdict.reasoning_trace == "llm_judge_inconclusive:classifier_unavailable"
+    assert any("mode=unavailable" in flag for flag in verdict.flags)
+
+
 async def test_scan_chunks_content_longer_than_window_size_and_finds_pattern() -> None:
     warden = Warden()
     window_size = 50 * 1024

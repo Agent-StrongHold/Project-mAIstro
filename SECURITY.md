@@ -142,8 +142,10 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    exact `safe` response clears the judge. Provider errors, timeouts, empty/malformed responses,
    and partial/prose classifications are projected onto the suspicious/non-clean path and carry an
    `llm_judge_inconclusive:*` reasoning trace so classifier failure is observable rather than
-   silently treated as safe. If no L3 client is configured, Warden continues to rely on its
-   deterministic layers. See `SPEC-082126-5f6a` and
+   silently treated as safe. A judge that cannot be consulted at all fails closed the same way
+   (`llm_judge_inconclusive:classifier_unavailable`) — with an L3 client configured, an
+   unreachable classifier is uncertainty, not absence. If no L3 client is configured, Warden
+   continues to rely on its deterministic layers. See `SPEC-082126-5f6a` and
    `packages/maistro-core/tests/security/warden/test_detector.py`.
 7. **No content-safety / toxicity filtering.** Warden's scope is threat detection (injection,
    exfiltration, dangerous commands), not hate-speech or general content moderation.

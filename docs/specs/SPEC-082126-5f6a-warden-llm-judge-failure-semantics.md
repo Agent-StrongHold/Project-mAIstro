@@ -31,6 +31,7 @@ ac-modules:
   AC-3: maistro.security.warden.detector
   AC-4: maistro.security.warden.detector
   AC-5: maistro.security.warden.detector
+  AC-6: maistro.security.warden.detector
 source:
   - SECURITY.md
 layer: Governance
@@ -57,7 +58,14 @@ The following outcomes are inconclusive and MUST fail closed through Warden's su
 - missing or empty choices;
 - malformed response structure;
 - any response other than the exact tokens `safe` or `suspicious`;
-- partial/prose classifications such as `safe, but ...`.
+- partial/prose classifications such as `safe, but ...`;
+- the judge being unreachable altogether, so that no classification is produced.
+
+The last case is separate from the rest on purpose. The classifier itself fails
+closed on every outcome it can observe, so Warden's own guard around the call is
+reached only when the judge could not be consulted at all. Letting *that* return
+clean would not preserve the old behaviour — it would reinstate the same
+fail-open one frame further out, with a configured L3 client present.
 
 An inconclusive judge result is projected onto the suspicious enforcement path so existing Warden callers do not need a second decision universe. The result MUST retain an observable `reasoning_trace` identifying classifier failure or malformed output so operators can distinguish uncertainty from a genuine suspicious classification.
 
@@ -99,6 +107,13 @@ Feature: Warden L3 judge failure semantics
     Given no L3 judge client is configured
     When deterministic Warden layers find no threat
     Then Warden may return a clean verdict without attempting an LLM call
+
+  @AC-6
+  Scenario: A judge that cannot be consulted fails closed
+    Given the L3 judge is configured
+    When invoking it raises before any classification is produced
+    Then Warden returns a non-clean verdict
+    And the reasoning trace records that the classifier was unavailable
 ```
 
 ## Non-goals
