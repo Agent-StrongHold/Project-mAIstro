@@ -43,10 +43,8 @@ FLAT_APPS = (
         dynamic_roots=(
             "routes.design",
             "routes.canvas",
-            "routes.pm_fleet_v2",
             "routes.evolution",
             "routes.rsi",
-            "routes.daily_report_v2",
             "services.design_service",
             "services.design_preview",
             "services.design_render",

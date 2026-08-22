@@ -95,9 +95,17 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+Merging `develop` into the canonical-Run branch moves three rows at once, and
+the net is `+0` — which is why the paragraph matters more than the number. The
+canonical-Run work adds nineteen maistro-core node IDs (Run retention, the
+non-finite evidence codec, chat/schedule/delegation admission, graph
+templates). Retiring the PM-demo surface removes eighteen Hive backend node IDs
+and one e2e case along with the routes and services they covered. A reader who
+only checked the total would see no change at all.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6604 | `ci.yml` |
+| `packages/maistro-core/tests` | 6623 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 201 | `ci.yml` |
@@ -108,8 +116,8 @@ a duplicate approval or Invocation. Other suite counts are unchanged.
 | `packages/maistro-turing/backend/tests` | 26 | `ci.yml` (own invocation) |
 | `tests/` (root) | 801 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
-| `packages/hive-conductor/backend/tests` | 1241 | `ci.yml` (bare python) |
-| `packages/hive-conductor/tests/e2e` | 24 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
+| `packages/hive-conductor/backend/tests` | 1223 | `ci.yml` (bare python) |
+| `packages/hive-conductor/tests/e2e` | 23 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
 
 ## `packages/hive-conductor/tests/e2e` — read before "wiring it in"
 

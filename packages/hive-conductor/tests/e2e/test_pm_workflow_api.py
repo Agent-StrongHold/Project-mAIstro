@@ -263,7 +263,3 @@ class TestDashboardAPIs:
     def test_settings(self, client: httpx.Client, session):
         r = client.get("/v1/settings")
         assert r.status_code == 200
-
-    def test_daily_report(self, client: httpx.Client, session):
-        r = client.get("/v1/daily-report")
-        assert r.status_code == 200
