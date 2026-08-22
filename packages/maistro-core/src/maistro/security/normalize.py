@@ -9,7 +9,7 @@ inside "ignore" defeats a word-boundary regex while the model reads the word
 unimpeded. Every scanner therefore folds its input through this module first,
 so a bypass fixed for one boundary is fixed for all of them.
 
-Three folds, applied in order:
+Three folds, applied in order where applicable:
 
 1. NFKD — compatibility decomposition (fullwidth forms, ligatures, composed
    accents) so ``ｉｇｎｏｒｅ`` and ``ﬁ`` match their ASCII spellings.
@@ -17,11 +17,12 @@ Three folds, applied in order:
    spaces/joiners, directional marks, BOM, soft hyphen) plus U+034F COMBINING
    GRAPHEME JOINER, which is Mn but equally invisible. These carry no visible
    content, so removal is lossless for scanning purposes.
-3. Homoglyph folding (Warden only) — a curated map of Cyrillic and Greek
-   letters that render identically to the Latin letters the reject patterns
-   are written in. Deliberately not a full confusables table: the PII filter
-   skips this fold because rewriting letters inside redacted output would
-   corrupt legitimate non-Latin prose, and secrets are ASCII-shaped anyway.
+3. Homoglyph folding — a curated map of Cyrillic and Greek letters that render
+   identically to the Latin letters security patterns are written in. Warden
+   applies this directly to its detection string. The PII filter keeps its
+   returned/redacted canonical text at step 2 and scans a separate same-length
+   homoglyph-folded detection view, so legitimate non-Latin prose is not
+   rewritten while confusable secrets are still detected.
 """
 
 from __future__ import annotations
@@ -109,12 +110,11 @@ def normalize_for_detection(text: str) -> str:
 
 
 def normalize_for_redaction(text: str) -> str:
-    """The PII-filter fold: NFKD plus invisible stripping, no homoglyph fold.
+    """Canonical redaction text: NFKD plus invisible stripping.
 
     Redaction returns this string to the caller, so it must stay readable as
-    the user's own text; folding letters would rewrite legitimate non-Latin
-    prose. Stripping invisibles is still required — a secret with a zero-width
-    space inserted every few characters would otherwise walk past every
-    pattern and reach the user intact.
+    the user's own text; global homoglyph folding would rewrite legitimate
+    non-Latin prose. Callers that need confusable detection may scan a separate
+    same-length ``fold_homoglyphs`` view while keeping offsets anchored here.
     """
     return strip_invisibles(unicodedata.normalize("NFKD", text))
