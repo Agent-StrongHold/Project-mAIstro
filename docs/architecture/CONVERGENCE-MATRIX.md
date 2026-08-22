@@ -158,8 +158,8 @@ currently holds belongs to `Run`/`Invocation`.
 | Shared contracts and config | imported by every package | `1/44` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `3/3` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/17` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
-| Agent Conductor HTTP surface | `main` (uvicorn) | `4/69` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | `main` route registration + background loops | `15/62` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
+| Agent Conductor HTTP surface | `main` (uvicorn) | `4/68` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
+| Agent Conductor services | `main` route registration + background loops | `15/61` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `8/17` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `1/18` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | a render effect recorded as an Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `7/61` | MIGRATE — a cycle is a Run, a battle is a NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
@@ -185,29 +185,15 @@ currently holds belongs to `Run`/`Invocation`.
   its contract, and two suites cover it under contention. All five are `MIGRATE` rows with a
   parity-before-deletion dependency on
   [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
-- **Jira and Airtable have four independent implementations between them.** The canonical ones
-  are registered node kinds — `jira.poll` queries by JQL across both Atlassian backends,
+- **Jira and Airtable no longer have four independent implementations.** The canonical ones are
+  registered node kinds — `jira.poll` queries by JQL across both Atlassian backends,
   `airtable.poll` reads base/table records — plus `maistro.tools.atlassian`'s MCP client, which
-  `agents/pm_runner.py` reaches. Against those, `routes/daily_report.py` and
-  `routes/daily_report_v2.py` each call `api.atlassian.com` and `api.airtable.com` over raw
-  `httpx`. v2's docstring says it "uses same path as chat tools", but that describes how it
-  resolves credentials, not how it performs the effect. v1 has been deleted. **v2 is live** —
-  the React `DailyReport.tsx` calls `/v1/daily-report` and an e2e test asserts on it — so
-  removing its bespoke client means routing it through `jira.poll`/`airtable.poll`, not deleting
-  the endpoint. That is #55/#57 work: an integration call becomes a governed Invocation rather
-  than a per-route client. ADR-082226-4478 generalises the finding: tool execution happens in
-  four unrelated places — `pm_fleet_v2`'s prefix-string dispatch, `services/tool_executor`'s
-  own hard-coded set, `daily_report_v2`'s raw clients, and `routes/mcp.py`, which discovers
-  tools but cannot execute one — while `maistro.capabilities` implements the accepted
+  `agents/pm_runner.py` reaches. Both bespoke `httpx` clients that sat in `routes/daily_report.py`
+  and `routes/daily_report_v2.py` are gone with the Daily Report feature, which was a PM-demo
+  artefact superseded by workspace personas. ADR-082226-4478 records the general finding this
+  came from: tool execution happened in four unrelated places, and `routes/mcp.py` discovers
+  tools but cannot execute one, while `maistro.capabilities` implements the accepted
   Capability → Provider → Binding → Invocation path and is reached by none of them.
-- **There is no approved model egress for anything to be outside of.** `maistro.providers` is a
-  registry — catalog, router, protocols, errors — and holds no HTTP client, so it performs no
-  calls. Twenty-six modules each call a completions endpoint themselves. #56's premise, "no
-  legacy harness or direct-provider escape outside approved Provider code", presumes approved
-  Provider code that does not exist yet; building it is the work, and until then
-  `quality/model-egress.json` freezes the caller set so it can only shrink. This is the same
-  shape as the tool finding: the general surface is half-built and unrouted while the specific
-  ones are live and duplicated.
 - **Reading a module beats inferring from its package.** The disposition ledger's RETIRE rows
   were first derived from what each package is *for*; re-deriving them from what each module's
   own docstring *says* moved eight of fourteen to CONNECT. DAG hill-climbing optimises a user's
