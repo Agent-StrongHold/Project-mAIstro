@@ -68,14 +68,28 @@ async def _open_run_spine_pool() -> Any:
     database and got in-memory Runs without being told is exactly the defect
     #122 was filed about.
     """
-    from maistro.container import POSTGRES_SCHEMES, _asyncpg_dsn
+    from maistro.container import (
+        POSTGRES_SCHEMES,
+        _asyncpg_dsn,
+        _require_postgres_schema,
+        _require_supported_postgres,
+    )
 
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url.startswith(POSTGRES_SCHEMES):
         return None
     from maistro.persistence import get_pool
 
-    return await get_pool(_asyncpg_dsn(database_url))
+    pool = await get_pool(_asyncpg_dsn(database_url))
+    # The same preflight the container path runs. Without it a database
+    # migrated only as far as revision 009 got past this, and `wire_execution_spine`
+    # then queried `canonical_projects` and failed startup with a raw
+    # `UndefinedTableError` — the operator learning about a missing migration
+    # from a driver error rather than from the message written for it.
+    async with pool.acquire() as conn:
+        await _require_supported_postgres(conn)
+        await _require_postgres_schema(conn)
+    return pool
 
 
 def _validate_startup(settings: Settings) -> None:

@@ -18,7 +18,6 @@ failure the scope tree exists to prevent.
 
 from __future__ import annotations
 
-import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.runs.admission import (
@@ -125,6 +124,12 @@ class TaskRunAdmitter:
             provenance[USER_ID_KEY] = task.user_id
         run = await admit_direct_work(
             self._runs,
+            # The receipt is born QUEUED, so the Run is created QUEUED. Creating
+            # it CREATED and transitioning afterwards was two commits on a
+            # durable store, and a failure between them left a CREATED Run whose
+            # provenance named a task receipt that was never queued — with no
+            # recovery scan looking for it.
+            initial_status=RunStatus.QUEUED,
             workspace_id=self._workspace_id,
             project_id=await self._binding.project_id(),
             node_type=work.node_type,
@@ -135,23 +140,6 @@ class TaskRunAdmitter:
             actor_principal_id=task.user_id or None,
             provenance=provenance,
         )
-        # The receipt is born QUEUED, so the Run is too. Leaving it CREATED
-        # would mean the two disagreed from the first instant about a task that
-        # is, by then, genuinely queued.
-        #
-        # Two commits on a durable store, and a failure between them would leave
-        # a CREATED Run whose provenance names a task receipt that was never
-        # queued. Compensate rather than leak: a Run that could not be queued is
-        # cancelled, which is true and terminal. The remaining window — process
-        # death between the two commits — needs a create-in-queued-state
-        # operation on the RunStore protocol, which is #132's to add along with
-        # the durable backend.
-        try:
-            await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
-            raise
         return run.run_id
 
     async def record_transition(

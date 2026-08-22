@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.nodes import list_kinds
+from maistro.runs.model import RunStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.model import Run
@@ -100,6 +101,7 @@ async def admit_direct_work(
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
+    initial_status: RunStatus = RunStatus.CREATED,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -130,6 +132,9 @@ async def admit_direct_work(
         # every entry point except chat passes and what every Run recorded
         # before retention existed already carries.
         retention_expires_at=retention_expires_at,
+        # One commit. An entry point that already knows the work is queued says
+        # so here rather than transitioning immediately afterwards.
+        initial_status=initial_status,
     )
 
 
