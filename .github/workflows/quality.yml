@@ -216,6 +216,14 @@ jobs:
       - name: convergence matrix (subsystem ownership stays current)
         run: uv run python scripts/check-convergence-matrix.py
 
+      # The baseline says a module is unreachable; this says what is to be done
+      # about it. Without the pairing, 207 unexplained entries is a number people
+      # learn to ignore rather than a plan (#33). CONNECT must name the root that
+      # would reach it, RETIRE must name what replaces it -- a disposition with no
+      # evidence is a shrug.
+      - name: reachability dispositions (every unreachable module has an owner)
+        run: uv run python scripts/check-reachability-dispositions.py
+
       # ----- Pillar 4: types -----
       - name: mypy --strict
         run: uv run mypy --strict packages/maistro-core/src

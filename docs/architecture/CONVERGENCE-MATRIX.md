@@ -101,7 +101,7 @@ currently holds belongs to `Run`/`Invocation`.
 | maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` | inherited | `maistro.auth` + rate limiter |
 | Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` |
 | Agent Conductor services | `services` | Product services | `services.dag_run_store` — a parallel run identity, event-derived, authoritative for the UI | `services.pg_store` | per-route |
-| Canvas ability | `maistro_canvas` | Graph of canvas Nodes | `canvas.executor` pipeline | `canvas.store` (PostgreSQL) | `maistro_canvas.auth` (standalone API key) |
+| Canvas ability | `maistro_canvas` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` (a claim/lease/reap job state machine) | `canvas.store` (PostgreSQL) | `maistro_canvas.auth` (standalone API key) |
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
 | Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no work-state machine of its own | `evolve.serialize` | — |
 | RSI autorun | `maistro_rsi` | Run per improvement cycle | `rsi.coordinator` orchestrates; result records, no work-state machine | `rsi.spec_tracker`, quarantine ledger | `rsi.quarantine` gate |
@@ -178,7 +178,9 @@ currently holds belongs to `Run`/`Invocation`.
   and free-text `run.status` assignments). A fourth, `services.dag_run_store`, owns a
   *parallel run identity* rather than a state machine — its node states are folded from
   events — but it is what the Conductor UI reads as authoritative, so it competes with
-  `Run` for the same job. All four are `MIGRATE` rows with a parity-before-deletion
+  `Run` for the same job. A fifth, `maistro_canvas.canvas.runner`, is a claim/lease/reap
+  worker with `pending → claimed → done/failed/requeued` states whose leases duplicate the
+  ADR-2026-08-16 execution fencing. All five are `MIGRATE` rows with a parity-before-deletion
   dependency on [#35](https://github.com/Agent-StrongHold/Project-mAIstro/issues/35).
 - **Evolve, RSI and Turing are *not* duplicate lifecycle owners**, though their executions
   still belong in canonical Runs (#51, #50, #54). `maistro_evolve.cycle` and

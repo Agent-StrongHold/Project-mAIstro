@@ -1,0 +1,633 @@
+{
+  "_comment": "One disposition and owner for every module in reachability-baseline.json, grouped by coherent subsystem (#33). CONNECT = correct design, no production entry point yet; names the root that would reach it. LIBRARY = published surface or test scaffolding, unreachable by construction and honestly so. RETIRE = superseded; names what replaces it. Checked by scripts/check-reachability-dispositions.py: every baseline module must appear in exactly one group, no group may name a module that is not in the baseline, and every subsystem must be a row in docs/architecture/CONVERGENCE-MATRIX.md. A RETIRE disposition is a decision, not permission to delete -- deletion requires behavioural parity first (#35).",
+  "groups": [
+    {
+      "id": "hive-privilege-and-protocols",
+      "subsystem": "Agent Conductor HTTP surface",
+      "disposition": "CONNECT",
+      "rationale": "Privilege middleware and the agent/telemetry protocols are the Conductor's half of ADR-028 and ADR-037; they are written but never installed on the app. Wiring them is #60/#63 work.",
+      "root": "main.py middleware registration",
+      "modules": [
+        "middleware.privilege",
+        "protocols.agent",
+        "protocols.telemetry"
+      ]
+    },
+    {
+      "id": "hive-superseded-routes",
+      "subsystem": "Agent Conductor HTTP surface",
+      "disposition": "RETIRE",
+      "rationale": "Superseded route modules kept beside their replacements. routes.daily_report is replaced by routes.daily_report_v2 (a declared dynamic root); routes.chat_complete is a 5-line remnant. routes.projects duplicates the canonical project scope surface.",
+      "replaced_by": "routes.daily_report_v2; maistro.projects scope surface",
+      "modules": [
+        "routes.chat_complete",
+        "routes.daily_report",
+        "routes.projects"
+      ]
+    },
+    {
+      "id": "hive-hill-climbing-experiments",
+      "subsystem": "Agent Conductor services",
+      "disposition": "RETIRE",
+      "rationale": "Five hill-climbing/UI-climbing services with no route, no scheduler entry and no caller. Self-improvement is maistro-rsi's job under ADR-088; a second private optimiser inside the product backend is the duplication M0-B3 exists to remove.",
+      "replaced_by": "maistro_rsi (ADR-088)",
+      "modules": [
+        "services.hill_climber",
+        "services.skill_optimizer",
+        "services.ui_auto_climb",
+        "services.ui_climb_vm",
+        "services.ui_hill_climber"
+      ]
+    },
+    {
+      "id": "hive-unwired-services",
+      "subsystem": "Agent Conductor services",
+      "disposition": "CONNECT",
+      "rationale": "Product services with no route or background caller. Each is plausible product surface that was never registered; none owns lifecycle state that the spine must reclaim.",
+      "root": "main.py route registration or a background loop",
+      "modules": [
+        "services.canonical_corpus",
+        "services.chatbot_integration",
+        "services.eval_bootstrap",
+        "services.onboard_db",
+        "services.pipeline_orchestrator",
+        "services.preference_calibration",
+        "services.repo_scanner",
+        "services.tool_binding"
+      ]
+    },
+    {
+      "id": "hive-persistence-v2",
+      "subsystem": "Agent Conductor services",
+      "disposition": "CONNECT",
+      "rationale": "Second-generation persistence helpers that predate the storage decision. ADR-082226-5104 makes PostgreSQL the durable system of record, so these are wiring owed rather than debt.",
+      "root": "maistro.container / main.py startup, per ADR-082226-5104",
+      "modules": [
+        "services.credential_store_v2",
+        "services.pg_persisted"
+      ]
+    },
+    {
+      "id": "agents-namespace-shims",
+      "subsystem": "Agents",
+      "disposition": "CONNECT",
+      "rationale": "One-line package __init__ shims whose only job is to expose an agent implementation. They are unreachable because nothing constructs the agents beneath them, not because the shim is wrong.",
+      "root": "maistro.agents.factory / the agent roster",
+      "modules": [
+        "maistro.agents.auditor",
+        "maistro.agents.cache",
+        "maistro.agents.exporter",
+        "maistro.agents.feedback",
+        "maistro.agents.forge",
+        "maistro.agents.forge.strategy",
+        "maistro.agents.frank",
+        "maistro.agents.identity",
+        "maistro.agents.importer",
+        "maistro.agents.mason",
+        "maistro.agents.registry",
+        "maistro.agents.scribe",
+        "maistro.agents.scribe.strategy",
+        "maistro.agents.spawner",
+        "maistro.agents.streaming",
+        "maistro.agents.warden_at_arms",
+        "maistro.agents.warden_at_arms.strategy"
+      ]
+    },
+    {
+      "id": "agents-unwired-implementations",
+      "subsystem": "Agents",
+      "disposition": "CONNECT",
+      "rationale": "Agent implementations and supporting stores with no factory or roster entry. #55/#56 make agent invocation a governed Invocation, which is the wiring these need.",
+      "root": "maistro.agents.factory, behind a Capability binding (#55)",
+      "modules": [
+        "maistro.agents.auditor.checks",
+        "maistro.agents.feedback.extractor",
+        "maistro.agents.feedback.loop",
+        "maistro.agents.feedback.tracker",
+        "maistro.agents.spawner.spawner",
+        "maistro.agents.spawner.variant_selector",
+        "maistro.agents.store",
+        "maistro.agents.strategies.tool_http",
+        "maistro.agents.tournament"
+      ]
+    },
+    {
+      "id": "governance-conformance",
+      "subsystem": "Authorization, privilege, governance",
+      "disposition": "CONNECT",
+      "rationale": "The policy-conformance engine of SPEC-206 with no evaluator calling it. ADR-068's approver matrix is the decision it serves and is itself unbuilt (#60).",
+      "root": "maistro.security.sentinel policy evaluation (#60)",
+      "modules": [
+        "maistro.governance",
+        "maistro.governance.conformance",
+        "maistro.governance.conformance_types"
+      ]
+    },
+    {
+      "id": "builders-duplicate-lifecycle",
+      "subsystem": "Builders pipeline",
+      "disposition": "RETIRE",
+      "rationale": "Builders' own run lifecycle and graph executor: a RunStatus enum plus free-text run.status assignments, driving its own traversal. This is one of the competing universal lifecycles the convergence program exists to remove, and is deleted after parity per #49/#35.",
+      "replaced_by": "maistro.runs + maistro.graph.durable_runs (ADR-081226-a66b, ADR-062)",
+      "modules": [
+        "maistro.builders.dag",
+        "maistro.builders.graph",
+        "maistro.builders.graph_executor",
+        "maistro.builders.logger",
+        "maistro.builders.orchestrator",
+        "maistro.builders.runtime"
+      ]
+    },
+    {
+      "id": "builders-domain-logic",
+      "subsystem": "Builders pipeline",
+      "disposition": "CONNECT",
+      "rationale": "The spec\u2192tests\u2192code\u2192review domain logic, which ADR-090/ADR-099 keep. It becomes Node implementations once the duplicate lifecycle above is gone (#49).",
+      "root": "Graph nodes registered in maistro.graph.nodes (#49)",
+      "modules": [
+        "maistro.builders",
+        "maistro.builders.contracts",
+        "maistro.builders.pipeline",
+        "maistro.builders.property_gen",
+        "maistro.builders.services",
+        "maistro.builders.spec_coverage",
+        "maistro.builders.spec_emitter",
+        "maistro.builders.spec_templates",
+        "maistro.builders.verifier"
+      ]
+    },
+    {
+      "id": "canvas-legacy-layerrecord",
+      "subsystem": "Canvas ability",
+      "disposition": "RETIRE",
+      "rationale": "ADR-044 (Accepted) names store.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules. Retired once ADR-045's cutover lands.",
+      "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
+      "modules": [
+        "maistro_canvas.canvas.store",
+        "maistro_canvas.canvas.tool"
+      ]
+    },
+    {
+      "id": "canvas-assetinstance",
+      "subsystem": "Canvas ability",
+      "disposition": "CONNECT",
+      "rationale": "The ADR-044 AssetInstance replacement, complete but not cut over: routes.py still wires the legacy executor and compositor. ADR-045, which performs the cutover, is still Proposed.",
+      "root": "maistro_canvas.canvas.routes, after the ADR-045 cutover",
+      "modules": [
+        "maistro_canvas.canvas.asset_compositor",
+        "maistro_canvas.canvas.asset_executor",
+        "maistro_canvas.canvas.asset_routes",
+        "maistro_canvas.canvas.asset_store",
+        "maistro_canvas.canvas.asset_tool"
+      ]
+    },
+    {
+      "id": "canvas-job-runner",
+      "subsystem": "Canvas ability",
+      "disposition": "RETIRE",
+      "rationale": "CanvasJobRunner is a claim/lease/reap worker with its own pending\u2192claimed\u2192done/failed states \u2014 a package-private execution lifecycle competing with Run/NodeRun/Attempt, whose leases duplicate the canonical execution fencing. Retired after parity per #52/#35.",
+      "replaced_by": "maistro.runs + ADR-2026-08-16 execution-lease fencing",
+      "modules": [
+        "maistro_canvas.canvas.runner"
+      ]
+    },
+    {
+      "id": "capabilities-test-doubles",
+      "subsystem": "Capability / Provider / Binding / Invocation",
+      "disposition": "LIBRARY",
+      "rationale": "Fakes and a stub provider that exist for tests and for downstream importers building their own harness. Unreachable from a process entry point by construction, and honestly so.",
+      "modules": [
+        "maistro.capabilities.providers.harness_stub",
+        "maistro.capabilities.tests_fakes"
+      ]
+    },
+    {
+      "id": "collaboration",
+      "subsystem": "Collaboration",
+      "disposition": "CONNECT",
+      "rationale": "Multi-actor editing sessions with no product surface. ADR-070426-3a1f's A2UI protocol is the consumer, and it is not built.",
+      "root": "a Conductor collaboration route (#34)",
+      "modules": [
+        "maistro.collaboration",
+        "maistro.collaboration.session_collab",
+        "maistro.collaboration.types"
+      ]
+    },
+    {
+      "id": "cli-container-runtimes",
+      "subsystem": "Core CLI",
+      "disposition": "CONNECT",
+      "rationale": "Docker/Podman runtime selection for the CLI's container commands, with no CLI subcommand reaching it. ADR-093's sandbox isolation model is the consumer.",
+      "root": "a maistro.cli subcommand",
+      "modules": [
+        "maistro.cli._container",
+        "maistro.cli._container.docker_runtime",
+        "maistro.cli._container.lifecycle",
+        "maistro.cli._container.podman_runtime",
+        "maistro.cli._container.runtime"
+      ]
+    },
+    {
+      "id": "credentials-pool",
+      "subsystem": "Credentials",
+      "disposition": "CONNECT",
+      "rationale": "ADR-063's credential pool and rotation, which #58 moves to Provider selection so rotation reacts to real Invocation outcomes.",
+      "root": "Provider selection on the Invocation path (#58)",
+      "modules": [
+        "maistro.credentials.pool",
+        "maistro.credentials.protocols",
+        "maistro.credentials.rotation",
+        "maistro.credentials.types"
+      ]
+    },
+    {
+      "id": "delivery-gateway",
+      "subsystem": "Delivery gateway",
+      "disposition": "CONNECT",
+      "rationale": "ADR-047's delivery gateway, complete and uncalled. #57 makes a delivery an auditable Invocation, which is the seam it plugs into.",
+      "root": "a governed Invocation effect (#57)",
+      "modules": [
+        "maistro.delivery",
+        "maistro.delivery.dispatch",
+        "maistro.delivery.protocols",
+        "maistro.delivery.registry",
+        "maistro.delivery.types"
+      ]
+    },
+    {
+      "id": "events-handlers-recipes",
+      "subsystem": "Events and checkpoints",
+      "disposition": "CONNECT",
+      "rationale": "ADR-086 handlers and recipes with no bus subscription in a shipped process. #61 migrates event families onto one envelope, which is where these get subscribed.",
+      "root": "the canonical event bus wiring (#61)",
+      "modules": [
+        "maistro.events.handlers",
+        "maistro.events.recipes"
+      ]
+    },
+    {
+      "id": "evolve-unwired",
+      "subsystem": "Evolve tournament optimizer",
+      "disposition": "CONNECT",
+      "rationale": "Evolve providers, benchmarks and serialisation with no caller on the cycle path. #51 moves cycles onto canonical Runs, which is when these are reached.",
+      "root": "maistro_evolve.cycle, once it runs as a canonical Run (#51)",
+      "modules": [
+        "maistro_evolve.architecture_fit",
+        "maistro_evolve.benchmarks.repo_history",
+        "maistro_evolve.executable_terminal_runner",
+        "maistro_evolve.providers",
+        "maistro_evolve.providers.codex_cli",
+        "maistro_evolve.providers.openai_compatible",
+        "maistro_evolve.serialize"
+      ]
+    },
+    {
+      "id": "integrations-bridges",
+      "subsystem": "External integrations",
+      "disposition": "CONNECT",
+      "rationale": "Home Assistant, CoinSwarm, ntfy and Turing bridges \u2014 the homelab product surface, none of it reached from a route or a trigger.",
+      "root": "a Conductor route or an ADR-086 trigger",
+      "modules": [
+        "maistro.integrations",
+        "maistro.integrations.coinswarm",
+        "maistro.integrations.home_assistant",
+        "maistro.integrations.ntfy",
+        "maistro.integrations.turing"
+      ]
+    },
+    {
+      "id": "graph-unwired-helpers",
+      "subsystem": "Graph execution",
+      "disposition": "CONNECT",
+      "rationale": "Compaction, scout and steering: graph facilities with no executor calling them. They belong to the traversal half of #44 rather than to lifecycle.",
+      "root": "maistro.graph.durable_runs.executor (#44)",
+      "modules": [
+        "maistro.graph.compaction",
+        "maistro.graph.scout",
+        "maistro.graph.steering"
+      ]
+    },
+    {
+      "id": "memory-advanced-retrieval",
+      "subsystem": "Memory",
+      "disposition": "CONNECT",
+      "rationale": "Episodic consolidation, ranking, retrieval and sharing, plus learnings approval, embeddings and promotion. ADR-082226-5104 makes these first-class: embeddings move onto the memory row via pgvector, and consolidation is what dreaming executes as a canonical Run.",
+      "root": "the dream consolidation Graph and pgvector retrieval (ADR-082226-5104)",
+      "modules": [
+        "maistro.memory.episodic.consolidation",
+        "maistro.memory.episodic.ranking",
+        "maistro.memory.episodic.retrieval",
+        "maistro.memory.episodic.sharing",
+        "maistro.memory.exposure",
+        "maistro.memory.learnings.approval",
+        "maistro.memory.learnings.embeddings",
+        "maistro.memory.learnings.promoter",
+        "maistro.memory.mutations"
+      ]
+    },
+    {
+      "id": "ontology",
+      "subsystem": "Ontology",
+      "disposition": "CONNECT",
+      "rationale": "ADR-036's semantic object layer, Accepted with no consumer. OUT-OF-SCOPE.md already excludes its graph-query language, so the registry is the whole of what must be reached.",
+      "root": "a subsystem resolving semantic objects through the registry (#34)",
+      "modules": [
+        "maistro.ontology",
+        "maistro.ontology.protocols",
+        "maistro.ontology.registry",
+        "maistro.ontology.types"
+      ]
+    },
+    {
+      "id": "design-node",
+      "subsystem": "Open Design integration",
+      "disposition": "CONNECT",
+      "rationale": "DesignOrchestrateNode registers kind design.orchestrate but sits outside maistro.graph.nodes, so the catalog's eager-import sweep never loads it and the kind is never registered.",
+      "root": "the maistro.graph.nodes catalog sweep, or an explicit registration at design import",
+      "modules": [
+        "maistro_design.nodes"
+      ]
+    },
+    {
+      "id": "orchestrator-waves",
+      "subsystem": "Planning and wave orchestration",
+      "disposition": "CONNECT",
+      "rationale": "ADR-052's parallel agent waves. #44 makes fan-out/fan-in graph structure, which is the shape these become rather than a separate wave runtime.",
+      "root": "Graph fan-out/fan-in nodes (#44)",
+      "modules": [
+        "maistro.orchestrator.waves.fan_in",
+        "maistro.orchestrator.waves.fan_out",
+        "maistro.orchestrator.waves.types"
+      ]
+    },
+    {
+      "id": "portability",
+      "subsystem": "Portability / backup",
+      "disposition": "CONNECT",
+      "rationale": "ADR-081/ADR-101 export and import of agents and skills, with no CLI or route calling them. #62 needs backup/restore to preserve canonical Run records, which is the consumer.",
+      "root": "a maistro.cli export/import subcommand (#62)",
+      "modules": [
+        "maistro.portability",
+        "maistro.portability.agents",
+        "maistro.portability.export",
+        "maistro.portability.skills"
+      ]
+    },
+    {
+      "id": "prompts-diff",
+      "subsystem": "Prompts and personas",
+      "disposition": "CONNECT",
+      "rationale": "Prompt diffing with no caller; the persona eval protocol of ADR-060 is its consumer.",
+      "root": "the ADR-060 persona eval path",
+      "modules": [
+        "maistro.prompts.diff"
+      ]
+    },
+    {
+      "id": "quota-verification",
+      "subsystem": "Quota and billing",
+      "disposition": "CONNECT",
+      "rationale": "ADR-085 provider-side quota verification and reconciliation. #56 attaches token and cost metadata to the Invocation, which is where these belong.",
+      "root": "the Invocation cost path (#56)",
+      "modules": [
+        "maistro.quota.ambient",
+        "maistro.quota.reconciliation",
+        "maistro.quota.recorder",
+        "maistro.quota.sqlite_usage_log",
+        "maistro.quota.verifiers",
+        "maistro.quota.verifiers.mistral",
+        "maistro.quota.verifiers.openrouter",
+        "maistro.quota.verify"
+      ]
+    },
+    {
+      "id": "rsi-unwired",
+      "subsystem": "RSI autorun",
+      "disposition": "CONNECT",
+      "rationale": "The autorun loop, harness adapter, rate pacer and apply-agents path. #50 makes RSI cycles canonical Runs over an authorised work source, which is the wiring owed.",
+      "root": "maistro_rsi.cli / the RSI route, as canonical Runs (#50)",
+      "modules": [
+        "maistro_rsi.apply_agents",
+        "maistro_rsi.autorun",
+        "maistro_rsi.harness_adapter",
+        "maistro_rsi.rate_pacer"
+      ]
+    },
+    {
+      "id": "persistence-postgres",
+      "subsystem": "Relational persistence",
+      "disposition": "CONNECT",
+      "rationale": "The PostgreSQL half of the persistence layer. ADR-082226-5104 makes PostgreSQL the durable system of record, so these are the canonical stores and the container simply does not wire them \u2014 see #122, which also covers the silent in-memory fallback.",
+      "root": "maistro.container, for a postgresql:// database_url (#122, ADR-082226-5104)",
+      "modules": [
+        "maistro.persistence.pg_audit",
+        "maistro.persistence.pg_learnings",
+        "maistro.persistence.pg_outcomes",
+        "maistro.persistence.pg_prompts",
+        "maistro.persistence.pg_sessions"
+      ]
+    },
+    {
+      "id": "persistence-sqlite-noncanonical",
+      "subsystem": "Relational persistence",
+      "disposition": "RETIRE",
+      "rationale": "SQLite audit and prompt stores. ADR-082226-5104 decides SQLite is not a canonical datastore; these two have no caller even on the sqlite: path, so they carry no behaviour to preserve.",
+      "replaced_by": "maistro.persistence.pg_audit / pg_prompts (ADR-082226-5104)",
+      "modules": [
+        "maistro.persistence.sqlite_audit",
+        "maistro.persistence.sqlite_prompts"
+      ]
+    },
+    {
+      "id": "resilience-unwired",
+      "subsystem": "Resilience",
+      "disposition": "CONNECT",
+      "rationale": "ADR-038 primitives with no producer: context probing, cross-instance rate coordination and the retry policy. #63 wires reliability signals to real producers.",
+      "root": "the Invocation and circuit-breaker paths (#63)",
+      "modules": [
+        "maistro.resilience.context_probe",
+        "maistro.resilience.rate_coordination",
+        "maistro.resilience.retry_policy"
+      ]
+    },
+    {
+      "id": "classifier-logging",
+      "subsystem": "Router and classifier",
+      "disposition": "CONNECT",
+      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
+      "root": "maistro.classifier.engine",
+      "modules": [
+        "maistro.classifier.logging"
+      ]
+    },
+    {
+      "id": "sandbox",
+      "subsystem": "Sandbox isolation",
+      "disposition": "CONNECT",
+      "rationale": "ADR-093's sandbox protocol, policy, selector and fake backend. #42 executes an Attempt inside an ExecutionRuntime, which is what makes the sandbox reachable.",
+      "root": "ExecutionRuntime attempt execution (#42)",
+      "modules": [
+        "maistro.sandbox",
+        "maistro.sandbox.backends",
+        "maistro.sandbox.backends.fake",
+        "maistro.sandbox.policy",
+        "maistro.sandbox.protocol",
+        "maistro.sandbox.selector"
+      ]
+    },
+    {
+      "id": "sessions-search",
+      "subsystem": "Sessions",
+      "disposition": "CONNECT",
+      "rationale": "ADR-048 session search with no route. Under ADR-082226-5104 this becomes a pgvector query rather than a separate index.",
+      "root": "a Conductor session-search route over pgvector (ADR-082226-5104)",
+      "modules": [
+        "maistro.sessions.search"
+      ]
+    },
+    {
+      "id": "config-loader",
+      "subsystem": "Shared contracts and config",
+      "disposition": "CONNECT",
+      "rationale": "ADR-078's file-based config loader; shipped processes construct settings directly instead.",
+      "root": "maistro.config.settings construction",
+      "modules": [
+        "maistro.config.loader"
+      ]
+    },
+    {
+      "id": "supply-chain-unwired",
+      "subsystem": "Skills, code registry, repertoire",
+      "disposition": "CONNECT",
+      "rationale": "ADR-069's signed code registry, ADR-070's repertoire, and the skills catalog, connectors, forge and loader. #59 puts MCP, skill import and signed loading on one governed path, which is where every one of these is reached.",
+      "root": "the governed supply-chain path (#59)",
+      "modules": [
+        "maistro.code_registry",
+        "maistro.code_registry.registry",
+        "maistro.code_registry.types",
+        "maistro.code_registry.verify",
+        "maistro.repertoire",
+        "maistro.repertoire.protocol",
+        "maistro.repertoire.run",
+        "maistro.repertoire.types",
+        "maistro.skills.catalog",
+        "maistro.skills.connectors",
+        "maistro.skills.forge",
+        "maistro.skills.loader"
+      ]
+    },
+    {
+      "id": "tasks-recovery",
+      "subsystem": "Task queue and runner",
+      "disposition": "CONNECT",
+      "rationale": "ADR-056 crash recovery and replay for the task queue. #41/#43 make the queue a receipt over a canonical Run, and #62 owns recovery, so these are reached from the canonical recovery path.",
+      "root": "canonical Run recovery (#62), not a queue-private one",
+      "modules": [
+        "maistro.tasks.recovery",
+        "maistro.tasks.replay"
+      ]
+    },
+    {
+      "id": "testing-scaffolding",
+      "subsystem": "Test scaffolding",
+      "disposition": "LIBRARY",
+      "rationale": "FauxProvider and the harness environment. maistro-core is a published library and this is its test scaffolding for importers; unreachable from a process entry point by construction. The reachability baseline's own comment already records this.",
+      "modules": [
+        "maistro.testing",
+        "maistro.testing.faux_provider",
+        "maistro.testing.harness"
+      ]
+    },
+    {
+      "id": "tools-approval-and-reversibility",
+      "subsystem": "Tool execution",
+      "disposition": "CONNECT",
+      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both.",
+      "root": "governed tool Invocation (#57)",
+      "modules": [
+        "maistro.tools.approval",
+        "maistro.tools.approval.gate",
+        "maistro.tools.approval.protocols",
+        "maistro.tools.approval.types",
+        "maistro.tools.reversibility",
+        "maistro.tools.reversibility_registry"
+      ]
+    },
+    {
+      "id": "tools-unwired",
+      "subsystem": "Tool execution",
+      "disposition": "CONNECT",
+      "rationale": "ADR-049's shadow-git rollback and the media tool package, neither reached from a tool registry.",
+      "root": "the tool registry (#57)",
+      "modules": [
+        "maistro.tools.git.shadow",
+        "maistro.tools.media"
+      ]
+    },
+    {
+      "id": "turing-empty-scaffolding",
+      "subsystem": "Turing self-model",
+      "disposition": "RETIRE",
+      "rationale": "Four package directories containing nothing but a zero-byte __init__.py, present since the monorepo consolidation. There is no code to connect.",
+      "replaced_by": "nothing \u2014 empty placeholder packages",
+      "modules": [
+        "maistro_turing.memory",
+        "maistro_turing.providers",
+        "maistro_turing.schema",
+        "maistro_turing.tools"
+      ]
+    },
+    {
+      "id": "security-auth-backends",
+      "subsystem": "Warden / Sentinel / Gate",
+      "disposition": "CONNECT",
+      "rationale": "Interchangeable auth backends \u2014 JWT, static, cookie, demo cookie and the composite that selects among them. Products wire their own auth instead, so none is selected here.",
+      "root": "maistro.container auth wiring, or maistro_server middleware",
+      "modules": [
+        "maistro.security.auth_composite",
+        "maistro.security.auth_cookie",
+        "maistro.security.auth_demo_cookie",
+        "maistro.security.auth_jwt",
+        "maistro.security.auth_static"
+      ]
+    },
+    {
+      "id": "security-unenforced-controls",
+      "subsystem": "Warden / Sentinel / Gate",
+      "disposition": "CONNECT",
+      "rationale": "Guardrails, trust-boundary checks, task policy and Warden flag response: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
+      "root": "the real Conductor chat and tool paths (#66)",
+      "modules": [
+        "maistro.security.guardrail",
+        "maistro.security.secure_random",
+        "maistro.security.task_policy",
+        "maistro.security.trust_boundary",
+        "maistro.security.warden.flag_response"
+      ]
+    },
+    {
+      "id": "security-strikes-postgres",
+      "subsystem": "Warden / Sentinel / Gate",
+      "disposition": "CONNECT",
+      "rationale": "The PostgreSQL strike store. Under ADR-082226-5104 PostgreSQL is the durable system of record, so lockout state belongs here rather than in the in-memory tracker the container wires.",
+      "root": "maistro.container strike-tracker wiring (#122)",
+      "modules": [
+        "maistro.security.pg_strikes"
+      ]
+    },
+    {
+      "id": "workspace-project-scope",
+      "subsystem": "Workspace / Project scope",
+      "disposition": "CONNECT",
+      "rationale": "The Workspace model and store, the SQLite scope store, and project authorization. These are the scope roots of the canonical spine; #37/#38 give every Run a Project id enforced at the store boundary, which is what reaches them.",
+      "root": "the canonical Run store's scope enforcement (#37, #38)",
+      "modules": [
+        "maistro.projects.authorization",
+        "maistro.projects.sqlite_scope_store",
+        "maistro.workspaces",
+        "maistro.workspaces.model",
+        "maistro.workspaces.store"
+      ]
+    }
+  ]
+}
