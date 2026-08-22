@@ -11868,6 +11868,18 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-082226-ff3c",
+      "file": "docs/adr/ADR-082226-ff3c-design-coverage-metric.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-083",
       "file": "docs/adr/ADR-083-skills-mcp-trust.md",
       "declared_status": "Proposed",
