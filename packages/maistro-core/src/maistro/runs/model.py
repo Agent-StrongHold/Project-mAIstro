@@ -244,6 +244,13 @@ class Run(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
+    #: When this Run may be purged, or None to retain it indefinitely
+    #: (ADR-082226-c126). A floor, not a ceiling: a Run past its deadline that
+    #: is still running is never purged, because deleting the execution
+    #: identity of live work is worse than the storage it reclaims. None is the
+    #: default so that task Runs, graph Runs and every Run recorded before this
+    #: field existed keep exactly the retention they already had.
+    retention_expires_at: datetime | None = None
     result: Any | None = None
     error: str | None = None
 

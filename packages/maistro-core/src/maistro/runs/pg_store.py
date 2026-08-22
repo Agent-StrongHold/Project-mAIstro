@@ -31,7 +31,7 @@ codec (`maistro.persistence._register_json_codecs`).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
@@ -49,6 +49,7 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.store import (
+    DEFAULT_PURGE_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
     NodeRunNotFound,
@@ -65,6 +66,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: unique index in migration 010 — if these two ever disagree, the index stops
 #: enforcing what this store believes it enforces.
 _ACTIVE_ATTEMPT_STATUSES = ("created", "running")
+
+#: Terminal Run statuses as the database spells them. Derived from the model
+#: rather than written out, so a new terminal status cannot silently become one
+#: retention refuses to sweep.
+_TERMINAL_RUN_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
 
 #: Tables this store may write, and the column identifying a row in each.
 #: `_update_payload` interpolates the table name, so the pair is checked against
@@ -95,6 +101,7 @@ class PgRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -123,13 +130,14 @@ class PgRunStore:
             persona_id=persona_id,
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
+            retention_expires_at=retention_expires_at,
         )
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                    parent_node_run_id, status, payload, retention_expires_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
                 run.run_id,
                 run.workspace_id,
                 run.project_id,
@@ -137,8 +145,69 @@ class PgRunStore:
                 run.parent_node_run_id,
                 run.status.value,
                 run.model_dump(mode="json"),
+                # Duplicated out of the payload so the retention sweep can use
+                # an index (migration 012). Written once at creation and never
+                # transitioned, so the two cannot drift the way `status` could.
+                run.retention_expires_at,
             )
         return run
+
+    async def purge_expired_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+
+        One statement, in one transaction, in the order the foreign keys
+        require: Attempts, then NodeRuns, then Runs. Every FK into the spine is
+        `ON DELETE RESTRICT` by design, so retention must not be the thing that
+        discovers that.
+
+        `FOR UPDATE SKIP LOCKED` on the candidate select rather than plain
+        `FOR UPDATE`: two processes sweeping concurrently should divide the
+        work, not queue behind each other, and a Run another transaction is
+        mid-transition on is one this sweep should leave alone anyway.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        cutoff = now if now is not None else datetime.now(UTC)
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                """SELECT run_id FROM canonical_runs r
+                    WHERE r.retention_expires_at IS NOT NULL
+                      AND r.retention_expires_at <= $1
+                      AND r.status = ANY($2::text[])
+                      AND NOT EXISTS (
+                          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM canonical_node_runs n
+                          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+                          WHERE n.run_id = r.run_id
+                      )
+                    ORDER BY r.retention_expires_at
+                    LIMIT $3
+                    FOR UPDATE SKIP LOCKED""",
+                cutoff,
+                _TERMINAL_RUN_STATUS_VALUES,
+                limit,
+            )
+            run_ids = [row["run_id"] for row in rows]
+            if not run_ids:
+                return 0
+            await conn.execute(
+                """DELETE FROM canonical_attempts a
+                   USING canonical_node_runs n
+                   WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])""",
+                run_ids,
+            )
+            await conn.execute(
+                "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[])", run_ids
+            )
+            await conn.execute("DELETE FROM canonical_runs WHERE run_id = ANY($1::text[])", run_ids)
+        return len(run_ids)
 
     async def get_run(self, run_id: str) -> Run | None:
         payload = await self._payload(

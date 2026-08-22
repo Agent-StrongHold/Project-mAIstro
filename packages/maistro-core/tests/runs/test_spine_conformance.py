@@ -18,64 +18,19 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import aiosqlite
 import pytest
 
 from maistro.graph import Graph, Node
-from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import (
     ActiveAttemptExists,
     AttemptNotFound,
-    InMemoryRunStore,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
 )
 from maistro.testing.postgres import postgres_dsn
-
-WORKSPACE = "workspace-1"
-
-
-@pytest.fixture(params=["memory", "sqlite", "postgres"])
-async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
-    """A (run_store, project_id) pair on each backend, isolated per test."""
-    if request.param == "postgres":
-        if pg_pool is None:
-            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-        from maistro.projects.pg_scope_store import PgProjectScopeStore
-        from maistro.runs.pg_store import PgRunStore
-
-        # A fresh Workspace per test: the tables are shared and durable, so
-        # isolating by scope is cheaper and truer than truncating between tests.
-        workspace = f"{WORKSPACE}-{request.node.name}"
-        projects = PgProjectScopeStore(pg_pool)
-        root = await projects.create_root(workspace)
-        project = await projects.create(
-            workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
-        )
-        yield PgRunStore(pg_pool, project_store=projects), workspace, project.project_id
-        return
-
-    projects = InMemoryProjectScopeStore()
-    root = await projects.create_root(WORKSPACE)
-    project = await projects.create(
-        workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Durable"
-    )
-    if request.param == "memory":
-        yield InMemoryRunStore(project_store=projects), WORKSPACE, project.project_id
-        return
-
-    from maistro.runs.sqlite_store import SqliteRunStore
-
-    conn = await aiosqlite.connect(":memory:")
-    store = SqliteRunStore(conn, project_store=projects)
-    await store.ensure_schema()
-    try:
-        yield store, WORKSPACE, project.project_id
-    finally:
-        await conn.close()
 
 
 def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("node-1",)) -> Graph:

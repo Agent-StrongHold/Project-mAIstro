@@ -22,6 +22,7 @@ kind as given and holds it to being real.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph, Node
@@ -33,6 +34,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: Provenance key recording how a Run entered the system.
 ADMISSION_SOURCE = "admission_source"
+
+#: Provenance keys correlating a Run back to what admitted it. They live here
+#: rather than beside any one entry point because more than one entry point
+#: writes them, and two entry points spelling `session_id` differently would
+#: make a conversation's Runs unqueryable as a set.
+SESSION_ID_KEY = "session_id"
+REQUEST_ID_KEY = "request_id"
+USER_ID_KEY = "user_id"
 
 
 class UnknownNodeKindError(ValueError):
@@ -90,6 +99,7 @@ async def admit_direct_work(
     actor_principal_id: str | None = None,
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
+    retention_expires_at: datetime | None = None,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -116,11 +126,18 @@ async def admit_direct_work(
         # webhook or request path it never touched — which is the one field an
         # audit correlates on.
         provenance={**(provenance or {}), ADMISSION_SOURCE: source},
+        # None means "retain indefinitely" (ADR-082226-c126), which is what
+        # every entry point except chat passes and what every Run recorded
+        # before retention existed already carries.
+        retention_expires_at=retention_expires_at,
     )
 
 
 __all__ = [
     "ADMISSION_SOURCE",
+    "REQUEST_ID_KEY",
+    "SESSION_ID_KEY",
+    "USER_ID_KEY",
     "UnknownNodeKindError",
     "admit_direct_work",
     "direct_work_graph",

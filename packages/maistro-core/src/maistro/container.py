@@ -29,6 +29,7 @@ from maistro.protocols import StrikeTracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.chat import ChatRunAdmitter
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.security.gate import Gate
@@ -123,6 +124,10 @@ class Container:
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
+    # Chat's half of the same seam (#131). Optional in the same way the rest of
+    # the spine is: a Container built directly, without `create_container`, still
+    # routes requests — it just does not admit Runs for them.
+    chat_admitter: ChatRunAdmitter | None = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -204,6 +209,7 @@ class Container:
         auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         # An armed security control that cannot run is worse than an unarmed
         # one: the operator believes it is enforcing. Both controls this
@@ -239,6 +245,7 @@ class Container:
             auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
+            request_id=request_id,
         )
         return result
 
@@ -440,7 +447,7 @@ async def create_container(
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
     intent_registry = build_intent_registry()
-    project_scope_store, run_store, task_admitter = await wire_execution_spine(
+    spine = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
         intents=intent_registry,
@@ -615,9 +622,10 @@ async def create_container(
         capabilities=capabilities,
         episodic_store=episodic_store,
         project_store=project_store,
-        project_scope_store=project_scope_store,
-        run_store=run_store,
-        task_admitter=task_admitter,
+        project_scope_store=spine.project_store,
+        run_store=spine.run_store,
+        task_admitter=spine.task_admitter,
+        chat_admitter=spine.chat_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,

@@ -2,21 +2,32 @@
 
 Lives here rather than in `maistro.container` because more than one process
 needs it: the DI container wires it for the Conductor, and maistro-server's
-`/tasks` API needs the same three objects without building a whole Container.
+`/tasks` API needs the same objects without building a whole Container.
 Duplicating the wiring in each would be how the two drift into disagreeing about
 which Workspace a Run belongs to.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 from maistro.agents.intents import IntentRegistry
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.chat import ChatRunAdmitter
+from maistro.runs.retention import RetentionPolicy
 from maistro.runs.store import RunStore
 from maistro.tasks.admission import TaskRunAdmitter
 
-__all__ = ["wire_execution_spine"]
+__all__ = ["ExecutionSpine", "wire_execution_spine"]
+
+
+class ExecutionSpine(NamedTuple):
+    """Everything an entry point needs to admit work as a canonical Run."""
+
+    project_store: ProjectScopeStore
+    run_store: RunStore
+    task_admitter: TaskRunAdmitter
+    chat_admitter: ChatRunAdmitter
 
 
 async def wire_execution_spine(
@@ -25,7 +36,8 @@ async def wire_execution_spine(
     workspace_id: str,
     intents: IntentRegistry | None = None,
     pg_pool: Any = None,
-) -> tuple[ProjectScopeStore, RunStore, TaskRunAdmitter]:
+    chat_retention: RetentionPolicy | None = None,
+) -> ExecutionSpine:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
     PostgreSQL when the deployment has one, SQLite for a homelab, in-memory
@@ -80,4 +92,13 @@ async def wire_execution_spine(
         project_id=root.project_id,
         intents=intents,
     )
-    return project_scope_store, run_store, admitter
+    # Same store, same Workspace, same intent table — a chat turn and a task
+    # differ in retention and in nothing else (#131, ADR-082226-c126).
+    chat_admitter = ChatRunAdmitter(
+        run_store,
+        workspace_id=workspace_id,
+        project_id=root.project_id,
+        intents=intents,
+        retention=chat_retention,
+    )
+    return ExecutionSpine(project_scope_store, run_store, admitter, chat_admitter)

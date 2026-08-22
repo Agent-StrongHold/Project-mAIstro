@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
@@ -22,17 +22,24 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.store import (
+    DEFAULT_PURGE_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
+    is_purgeable,
     validate_accepted_outcome_against_attempt,
 )
 
 if TYPE_CHECKING:
     import aiosqlite
+
+#: Terminal Run statuses as the database spells them. Derived from the model
+#: rather than written out, so a new terminal status cannot silently become one
+#: retention refuses to sweep.
+_TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -129,6 +136,7 @@ class SqliteRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -157,6 +165,7 @@ class SqliteRunStore:
             persona_id=persona_id,
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
+            retention_expires_at=retention_expires_at,
         )
         await self._conn.execute(
             """INSERT INTO canonical_runs
@@ -182,6 +191,76 @@ class SqliteRunStore:
             (run_id,),
         )
         return Run.model_validate_json(row[0]) if row is not None else None
+
+    async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
+        """Terminal Runs carrying a deadline and descended from by nobody.
+
+        Ordered by deadline, so the caller can stop at the first unexpired one
+        rather than parsing the whole batch. `json_extract` is only used to
+        *narrow* and *order*; the comparison against the cutoff happens in
+        Python against a parsed datetime, because comparing ISO-8601 strings
+        lexically is only correct while every one of them carries the same UTC
+        offset — true today, and not something to make load-bearing.
+        """
+        cursor = await self._conn.execute(
+            f"""SELECT run_id, payload FROM canonical_runs r
+                WHERE r.status IN ({",".join("?" * len(_TERMINAL_STATUS_VALUES))})
+                  AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM canonical_node_runs n
+                      JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+                      WHERE n.run_id = r.run_id
+                  )
+                ORDER BY json_extract(r.payload, '$.retention_expires_at')
+                LIMIT ?""",
+            (*_TERMINAL_STATUS_VALUES, limit),
+        )
+        return [(row[0], Run.model_validate_json(row[1])) for row in await cursor.fetchall()]
+
+    async def purge_expired_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+
+        Deletes in the order the foreign keys require — Attempts, NodeRuns,
+        Runs — under the same write lock every other mutation takes, so a
+        concurrent transition cannot land on a Run this sweep is removing.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        cutoff = now if now is not None else datetime.now(UTC)
+        async with self._write_lock:
+            doomed = []
+            for run_id, run in await self._purge_candidates(limit):
+                if not is_purgeable(run, cutoff):
+                    break
+                doomed.append(run_id)
+            if not doomed:
+                return 0
+            placeholders = ",".join("?" * len(doomed))
+            await self._conn.execute(
+                f"""DELETE FROM canonical_attempts WHERE node_run_id IN (
+                        SELECT node_run_id FROM canonical_node_runs
+                        WHERE run_id IN ({placeholders})
+                    )""",
+                tuple(doomed),
+            )
+            await self._conn.execute(
+                f"DELETE FROM canonical_node_runs WHERE run_id IN ({placeholders})",
+                tuple(doomed),
+            )
+            await self._conn.execute(
+                f"DELETE FROM canonical_runs WHERE run_id IN ({placeholders})",
+                tuple(doomed),
+            )
+            await self._conn.commit()
+        return len(doomed)
 
     async def transition_run(
         self,
