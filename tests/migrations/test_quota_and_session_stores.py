@@ -104,15 +104,28 @@ def migrated_url() -> str:
 
     env = _alembic_env(url)
     for args in (["stamp", "003"], ["upgrade", "head"]):
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "alembic", *args],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
             text=True,
             timeout=180,
-            check=True,
+            check=False,
         )
+        if result.returncode != 0:
+            # `check=True` raises a CalledProcessError that reports the exit
+            # code and swallows the captured output, so the one thing worth
+            # reading is the one thing you do not get. The first CI run of this
+            # suite reported `returned non-zero exit status 1` ten times over
+            # while alembic had been saying `ModuleNotFoundError: No module
+            # named 'psycopg2'` all along — a round trip spent on a message
+            # that was already in the buffer.
+            msg = (
+                f"alembic {' '.join(args)} failed with exit {result.returncode}\n"
+                f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+            )
+            raise AssertionError(msg)
     return urlsplit(url)._replace(path=f"/{SCRATCH_DB}").geturl()
 
 
