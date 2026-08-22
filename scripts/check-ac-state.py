@@ -93,10 +93,60 @@ IMPLEMENTS_RE = re.compile(r"^implements:\s*(.*)$((?:\n  - .*)*)", re.MULTILINE)
 #: and this needs to be visible in the diff far more than it needs to be
 #: queryable. The reason is mandatory — an escape hatch that does not have to
 #: justify itself is just a way to make the counter go down.
+#: The whole `ac-state: non-measurable` comment, body captured but not parsed.
+#:
+#: The body is `(?:(?!-->).)*` so it physically cannot reach a closing
+#: delimiter, and the delimiter between "non-measurable" and the reason is
+#: matched in code rather than in the pattern. An earlier version put the
+#: delimiter in a character class — which matched the first hyphen of the
+#: marker's own `-->`, leaving `->` for a DOTALL body to run on from until the
+#: *next* `-->` anywhere in the file. Any unrelated HTML comment further down
+#: then donated a "reason", so the mandatory-reason rule was stated and not
+#: enforced. The isolated reasonless test passed because its fixture had no
+#: second comment: an assertion that proved less than it appeared to.
 NON_MEASURABLE_RE = re.compile(
-    r"<!--\s*ac-state:\s*non-measurable\s*[-\u2014:]\s*(?P<reason>\S.*?)-->",
+    r"<!--\s*ac-state:\s*non-measurable(?P<body>(?:(?!-->).)*)-->",
     re.IGNORECASE | re.DOTALL,
 )
+
+#: What may separate the marker from its reason. Both dashes and the colon,
+#: because Markdown tooling and people produce different ones and the hatch
+#: should not depend on which was typed.
+_REASON_DELIMITERS = ("-", "\u2014", ":")
+
+
+def declares_non_measurable(text: str) -> bool:
+    """Whether `text` opts out of the criteria requirement, *with a reason*.
+
+    An opt-out that does not have to justify itself is only a way to make a
+    counter fall without doing anything, so a bare marker does not count.
+    """
+    match = NON_MEASURABLE_RE.search(text)
+    if match is None:
+        return False
+    body = match.group("body").strip()
+    if not body.startswith(_REASON_DELIMITERS):
+        return False
+    return bool(body[1:].strip())
+
+
+#: An `implements:` entry that names an ADR.
+#:
+#: Two things the raw field is not. It may be an **inline** YAML list —
+#: `implements: [maistro-engine#ADR-073]` is valid and `_list_field` hands back
+#: the whole bracketed string, so splitting on `#` yielded `ADR-073]`: the spec
+#: counted as mapped while its ADR still counted as uncovered, both wrong and in
+#: opposite directions. And the schema accepts `SPEC-*` references as well as
+#: `ADR-*`, so a spec implementing only another spec maps to no decision at all
+#: — it would drop out of `specs_implementing_nothing` for exactly the missing
+#: chain that counter exists to report.
+_ADR_REF_RE = re.compile(r"\bADR-[0-9A-Za-z-]+")
+
+
+def adr_refs(entries: list[str]) -> list[str]:
+    """The ADR ids named by an `implements:` field, in any of its spellings."""
+    return [ref for entry in entries for ref in _ADR_REF_RE.findall(entry)]
+
 
 #: ADR statuses that mean the decision is taken, so implementation is owed.
 #: `Proposed` is excluded by definition — a decision not yet made cannot be
@@ -435,7 +485,7 @@ def collect_specs(
                 "layer": (LAYER_RE.search(fm) or [None, "?"])[1],
                 "declared_status": (STATUS_RE.search(fm) or [None, "?"])[1],
                 "implements": _list_field(fm, IMPLEMENTS_RE),
-                "declares_non_measurable": bool(NON_MEASURABLE_RE.search(text)),
+                "declares_non_measurable": declares_non_measurable(text),
                 "has_ac_heading": bool(AC_HEADING_RE.search(text)),
                 "criteria_total": len(criteria),
                 "annotated": sum(1 for c in criteria if c.module),
@@ -470,8 +520,8 @@ def collect_adrs(
     """Fold specs up to the ADRs they implement, via the spec's `implements:`."""
     by_adr: dict[str, list[dict[str, Any]]] = {}
     for spec in specs:
-        for ref in spec["implements"]:
-            by_adr.setdefault(ref.split("#")[-1], []).append(spec)
+        for ref in adr_refs(spec["implements"]):
+            by_adr.setdefault(ref, []).append(spec)
 
     adrs = []
     for path in sorted(ADR_DIR.glob("ADR-*.md")):
@@ -486,6 +536,14 @@ def collect_adrs(
         # them as `unmeasured` while their own acceptance criteria sit right
         # there in the document.
         own, own_untagged, own_errors = gherkin_criteria(text)
+        # Bullet **AC-N** ids count as the ADR's own criteria as much as
+        # scenarios do. Deriving `own_criteria` from Gherkin alone reported
+        # ADR-062026-9b30 — three bullet criteria under its acceptance heading,
+        # no implementing spec — as carrying none, so it landed in
+        # `adrs_without_implementing_spec` against that counter's own stated
+        # exemption, and banked a debt figure that was too high.
+        own_bullets = [f"AC-{n}" for n in AC_ID_RE.findall(_ac_section(text))]
+        own = list(dict.fromkeys(list(own) + own_bullets))
         # The ADR's own ac-modules map, same as a spec's. Without it every
         # ADR-owned criterion has module=None and silently caps at `passing` —
         # the ladder would tell an ADR its work can never be proven reachable,
@@ -719,13 +777,15 @@ def main(argv: list[str]) -> int:
     # implemented by nothing, and both were clean. That makes "specs map to
     # ADRs" mean "specs do not *mis*-map to ADRs" — a much weaker claim than the
     # one a green build is read as supporting.
-    orphan_specs = [{"id": s["id"], "file": s["file"]} for s in specs if not s["implements"]]
+    orphan_specs = [
+        {"id": s["id"], "file": s["file"]} for s in specs if not adr_refs(s["implements"])
+    ]
 
     # An ADR is owed an implementation once the decision is taken. Carrying its
     # own criteria counts: ADR-063..066 hold 147 scenarios written before the
     # spec split, and calling those uncovered would report measured work as
     # missing.
-    implemented_adrs = {ref.split("#")[-1] for s in specs for ref in s["implements"]}
+    implemented_adrs = {ref for s in specs for ref in adr_refs(s["implements"])}
     uncovered_adrs = [
         {"id": a["id"], "file": a["file"], "declared_status": a["declared_status"]}
         for a in adrs

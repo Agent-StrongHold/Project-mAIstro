@@ -13,7 +13,7 @@
     "specs_with_ac_heading": 169,
     "specs_with_ac_ids": 31,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 478,
+    "criteria_declared": 484,
     "criteria_annotated": 207,
     "markers_found": 196,
     "markers_without_criterion": 2,
@@ -24,7 +24,7 @@
     "completion_claims_contradicted": 9,
     "completion_claims_unverifiable": 68,
     "specs_implementing_nothing": 76,
-    "adrs_without_implementing_spec": 35,
+    "adrs_without_implementing_spec": 34,
     "specs_declaring_no_criteria": 7
   },
   "markers_without_criterion": [
@@ -980,11 +980,6 @@
     {
       "id": "ADR-062",
       "file": "docs/adr/ADR-062-graph-execution-protocol.md",
-      "declared_status": "Accepted"
-    },
-    {
-      "id": "ADR-062026-9b30",
-      "file": "docs/adr/ADR-062026-9b30-date-based-adr-spec-ids.md",
       "declared_status": "Accepted"
     },
     {
@@ -9585,11 +9580,30 @@
       "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 3,
+      "own_detail": [
+        {
+          "id": "ADR-062026-9b30/AC-1",
+          "module": null,
+          "covered_by": [],
+          "rung": "declared"
+        },
+        {
+          "id": "ADR-062026-9b30/AC-2",
+          "module": null,
+          "covered_by": [],
+          "rung": "declared"
+        },
+        {
+          "id": "ADR-062026-9b30/AC-3",
+          "module": null,
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "declared"
     },
     {
       "id": "ADR-062226-674b",
@@ -11592,11 +11606,30 @@
         "SPEC-232"
       ],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 3,
+      "own_detail": [
+        {
+          "id": "ADR-097/AC-1",
+          "module": null,
+          "covered_by": [],
+          "rung": "declared"
+        },
+        {
+          "id": "ADR-097/AC-2",
+          "module": null,
+          "covered_by": [],
+          "rung": "declared"
+        },
+        {
+          "id": "ADR-097/AC-3",
+          "module": null,
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "declared"
     },
     {
       "id": "ADR-098",

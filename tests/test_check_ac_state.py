@@ -219,26 +219,103 @@ class TestNonMeasurableMarker:
     """
 
     def test_a_marker_with_a_reason_is_recognised(self, check):
-        m = check.NON_MEASURABLE_RE.search(
+        assert check.declares_non_measurable(
             "<!-- ac-state: non-measurable - a glossary, nothing to assert -->"
         )
-        assert m and m.group("reason").strip() == "a glossary, nothing to assert"
 
     def test_an_em_dash_reads_the_same_as_a_hyphen(self, check):
         """Markdown tooling and humans both produce the em dash; rejecting it
         would make the hatch depend on which one somebody typed."""
-        assert check.NON_MEASURABLE_RE.search("<!-- ac-state: non-measurable — because -->")
+        assert check.declares_non_measurable("<!-- ac-state: non-measurable — because -->")
 
     def test_the_marker_is_case_insensitive(self, check):
-        assert check.NON_MEASURABLE_RE.search("<!-- AC-State: Non-Measurable: because -->")
+        assert check.declares_non_measurable("<!-- AC-State: Non-Measurable: because -->")
 
     def test_a_marker_with_no_reason_does_not_count(self, check):
         """The whole point of the hatch is that it justifies itself."""
-        assert check.NON_MEASURABLE_RE.search("<!-- ac-state: non-measurable -->") is None
-        assert check.NON_MEASURABLE_RE.search("<!-- ac-state: non-measurable -  -->") is None
+        assert not check.declares_non_measurable("<!-- ac-state: non-measurable -->")
+        assert not check.declares_non_measurable("<!-- ac-state: non-measurable -  -->")
+
+    def test_a_reasonless_marker_cannot_borrow_a_later_comment(self, check):
+        """The bug this test exists for, found in review.
+
+        The delimiter class matches the first hyphen of the marker's own `-->`,
+        and under DOTALL the body then ran on to the *next* `-->` anywhere in
+        the file — so any unrelated HTML comment further down donated a
+        "reason". The isolated reasonless test above passed only because its
+        fixture had no second comment, which is exactly the shape of an
+        assertion that proves less than it appears to.
+        """
+        document = (
+            "<!-- ac-state: non-measurable -->\n"
+            "\n"
+            "prose that is not a reason\n"
+            "\n"
+            "<!-- an unrelated comment -->\n"
+        )
+        assert not check.declares_non_measurable(document)
+
+    def test_a_real_reason_still_counts_with_later_comments_present(self, check):
+        """Fixing the bypass must not break the legitimate case."""
+        document = (
+            "<!-- ac-state: non-measurable - a glossary; nothing to assert -->\n"
+            "\n<!-- an unrelated comment -->\n"
+        )
+        assert check.declares_non_measurable(document)
+
+
+class TestAdrRefs:
+    """`implements:` has more spellings than one, and two of them broke the
+    counters in opposite directions (found in review)."""
+
+    def test_a_block_list_entry_yields_its_adr(self, check):
+        assert check.adr_refs(["- maistro-engine#ADR-073"]) == ["ADR-073"]
+
+    def test_an_inline_yaml_list_is_parsed(self, check):
+        """`implements: [maistro-engine#ADR-073]` is valid YAML, and
+        `_list_field` hands back the whole bracketed string. Splitting on `#`
+        gave `ADR-073]`, so the spec counted as mapped while its ADR still
+        counted as uncovered — both wrong, and in opposite directions."""
+        assert check.adr_refs(["[maistro-engine#ADR-073]"]) == ["ADR-073"]
+
+    def test_an_inline_list_of_several_keeps_every_mapping(self, check):
+        assert check.adr_refs(["[maistro-engine#ADR-073, maistro-engine#ADR-072]"]) == [
+            "ADR-073",
+            "ADR-072",
+        ]
+
+    def test_a_spec_reference_is_not_an_adr_reference(self, check):
+        """The schema accepts `SPEC-*` in `implements` too. A spec implementing
+        only another spec maps to no *decision*, so it must stay counted — the
+        alternative is the check going green for precisely the missing chain it
+        reports."""
+        assert check.adr_refs(["maistro-engine#SPEC-160"]) == []
+
+    def test_a_mixed_list_keeps_only_the_decisions(self, check):
+        assert check.adr_refs(["maistro-engine#SPEC-160", "- maistro-engine#ADR-073"]) == [
+            "ADR-073"
+        ]
+
+    def test_a_date_based_id_survives_intact(self, check):
+        """ADR-062026-9b30's scheme has two hyphenated groups; a lazier pattern
+        would truncate it and silently orphan every spec implementing it."""
+        assert check.adr_refs(["maistro-engine#ADR-062026-9b30"]) == ["ADR-062026-9b30"]
+
+
+class TestAdrOwnCriteria:
+    def test_bullet_criteria_count_as_the_adrs_own(self, check):
+        """An ADR carrying `**AC-N**` bullets rather than Gherkin scenarios is
+        measured, not uncovered. Counting only scenarios put ADR-062026-9b30 —
+        three bullets, no implementing spec — into
+        `adrs_without_implementing_spec` against that counter's own stated
+        exemption, and banked a debt figure one too high.
+        """
+        adrs = check.collect_adrs(specs=[], markers={}, unreachable=set(), passing=None)
+        by_id = {a["id"]: a for a in adrs}
+        assert by_id["ADR-062026-9b30"]["own_criteria"] == 3
 
     def test_prose_mentioning_the_words_does_not_count(self, check):
-        assert check.NON_MEASURABLE_RE.search("This spec is non-measurable, sadly.") is None
+        assert not check.declares_non_measurable("This spec is non-measurable, sadly.")
 
 
 class TestDecisionTaken:
