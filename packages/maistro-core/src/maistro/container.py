@@ -76,12 +76,12 @@ if TYPE_CHECKING:
     )
     from maistro.protocols.quota import QuotaTracker
     from maistro.protocols.scorer import Scorer
+    from maistro.protocols.strikes import StrikeTracker
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
-    from maistro.security.strikes import InMemoryStrikeTracker
     from maistro.skills.import_pipeline import (
         PolicyAttachmentStore,
         SkillImportRequest,
@@ -167,7 +167,7 @@ class Container:
     elevation_store: ElevationStore = None  # type: ignore[assignment]
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
-    strike_tracker: InMemoryStrikeTracker | None = None
+    strike_tracker: StrikeTracker | None = None
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -418,7 +418,7 @@ async def create_container(
     context_builder = ContextBuilder()
     intent_registry = build_intent_registry()
 
-    strike_tracker: InMemoryStrikeTracker | None = None
+    strike_tracker: StrikeTracker | None = None
     if config.security.strike_tracking_enabled:
         from maistro.security.strikes import InMemoryStrikeTracker
 
