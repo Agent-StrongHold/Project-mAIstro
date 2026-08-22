@@ -11,6 +11,9 @@ import structlog
 
 from maistro.agents.types import ConductorOutput
 from maistro.constants import WORKER_POLL_TIMEOUT
+from maistro.runs.store import RunStore
+from maistro.runtime import ExecutionRuntime
+from maistro.tasks.execution import TaskAttemptRunner
 from maistro.tasks.lanes import Lane, LaneGate
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
 from maistro.tasks.progress_webhook import ProgressWebhookSink, payload_from_task
@@ -46,9 +49,23 @@ class TaskRunner:
         progress_webhook: ProgressWebhookSink | None = None,
         live_slots: int | None = None,
         background_slots: int | None = None,
+        run_store: RunStore | None = None,
+        runtime: ExecutionRuntime | None = None,
     ) -> None:
         self._queue = queue
         self._executor = executor
+        # With a store, execution goes through the canonical NodeRun/Attempt
+        # seam (#143): the Run stops being a record of work that was admitted
+        # and starts being a record of work that ran. Without one — a runner
+        # built by a test, or a process with no spine — the executor is called
+        # directly, exactly as before. That fallback is not a second execution
+        # path so much as the absence of a spine to route through; every
+        # shipped deployment wires one.
+        self._attempts = (
+            TaskAttemptRunner(run_store, executor=executor, runtime=runtime)
+            if run_store is not None
+            else None
+        )
         self._max_workers = max_workers
         self._progress_webhook = progress_webhook
         self._running = False
@@ -239,6 +256,24 @@ class TaskRunner:
                 exc_info=True,
             )
 
+    async def _run_once(
+        self,
+        task_id: str,
+        run_id: str | None,
+        request: TaskCreate,
+    ) -> ConductorOutput:
+        """One physical execution, through the canonical Attempt when there is one.
+
+        `run_id` can be absent: `TaskQueue` admits without a Run when it has no
+        admitter (the stub path in `hive-conductor`'s LocalTaskBackend). A
+        missing Run is not something to invent one for here — admission owns
+        that decision — so the executor is called directly and the caller is no
+        worse off than before #143.
+        """
+        if self._attempts is None or not run_id:
+            return await self._executor(request)
+        return await self._attempts.execute(run_id=run_id, task_id=task_id, request=request)
+
     async def _execute_task(self, task_id: str) -> None:
         task = self._queue.get(task_id)
         if task is None:
@@ -281,7 +316,7 @@ class TaskRunner:
             )
             await self._emit_progress_webhook(task_id)
 
-            result = await self._executor(request)
+            result = await self._run_once(task_id, task.run_id, request)
 
             # Phase 1 is single-pass — transition to COMPLETED or FAILED directly
             # The outcome goes to both: the Run because it is the execution

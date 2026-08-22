@@ -112,15 +112,19 @@ class TaskBackend(Protocol):
 class LocalTaskBackend:
     """Wraps TaskQueue + TaskRunner in-process. Demo/dev mode only (ADR-096)."""
 
-    def __init__(self, *, executor: Any, admitter: Any = None) -> None:
+    def __init__(self, *, executor: Any, admitter: Any = None, run_store: Any = None) -> None:
         from maistro.tasks.queue import TaskQueue
         from maistro.tasks.runner import TaskRunner
 
         # `admitter` is the core Container's seam onto the canonical Run spine
         # (#41). None means this process has no Container — the stub path — and
         # the queue then admits without a Run rather than inventing one.
+        #
+        # `run_store` is the execution half of the same seam (#143). It travels
+        # with the admitter: a Run admitted here and executed somewhere the
+        # store cannot see would be the split this spine exists to close.
         self._queue = TaskQueue(admitter=admitter)
-        self._runner = TaskRunner(self._queue, executor=executor)
+        self._runner = TaskRunner(self._queue, executor=executor, run_store=run_store)
 
     async def start(self) -> None:
         await self._runner.start()

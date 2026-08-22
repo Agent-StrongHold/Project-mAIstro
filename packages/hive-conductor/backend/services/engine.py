@@ -67,6 +67,17 @@ class EngineService:
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "task_admitter", None)
 
+    @property
+    def run_store(self) -> Any:
+        """The core Container's canonical Run store, or None.
+
+        The execution half of `task_admitter` (#143). It comes from the same
+        Container for a reason: a Run admitted through one and executed against
+        another would be the split the spine exists to close.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "run_store", None)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
@@ -116,7 +127,11 @@ class EngineService:
                     executor = run_task
                     logger.info("LocalTaskBackend (demo) using engineering conductor executor")
 
-                backend = LocalTaskBackend(executor=executor, admitter=self.task_admitter)
+                backend = LocalTaskBackend(
+                    executor=executor,
+                    admitter=self.task_admitter,
+                    run_store=self.run_store,
+                )
                 await backend.start()
                 self._backend = backend
                 if pm_mode:

@@ -166,7 +166,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             api_key=settings.task_progress_webhook_api_key,
         )
 
-    _runner = TaskRunner(queue, executor=run_task, progress_webhook=progress_wh)
+    # `run_store` is what routes execution through the canonical NodeRun and
+    # Attempt (#143). Without it the Run records only that work was admitted.
+    _runner = TaskRunner(
+        queue,
+        executor=run_task,
+        progress_webhook=progress_wh,
+        run_store=spine.run_store,
+    )
     await _runner.start()
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 

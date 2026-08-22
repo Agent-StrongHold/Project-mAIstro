@@ -6,7 +6,7 @@ from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
-from maistro.runs.model import Attempt, NodeRun, Run
+from maistro.runs.model import AcceptedNodeOutcome, Attempt, NodeRun, Run
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionCallable, ExecutionRuntime
 
@@ -71,8 +71,18 @@ class RunExecutionService:
         runtime_id: str | None = None,
         timeout_s: float | None = None,
         resume_checkpoint_id: str | None = None,
+        reconcile_logical: bool = True,
     ) -> tuple[NodeRun, Attempt]:
-        """Create a logical NodeRun and execute its first physical Attempt."""
+        """Create a logical NodeRun and execute its first physical Attempt.
+
+        ``reconcile_logical=False`` leaves a *completed* Attempt's logical
+        disposition to the caller, via :meth:`accept_outcome`. It never
+        suppresses reconciliation of a failure, timeout or cancellation. The
+        layer below has documented this since it was written; this method simply
+        was not passing it through, so a domain that needed the distinction had
+        to bypass this service to get it — which is how a stable handoff surface
+        stops being the surface anyone uses.
+        """
 
         node_run = await self._store.create_node_run(run_id, node_id=node_id)
         attempt = await self._attempts.execute(
@@ -84,6 +94,7 @@ class RunExecutionService:
             runtime_id=runtime_id,
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
+            reconcile_logical=reconcile_logical,
         )
         reconciled = await self._store.get_node_run(node_run.node_run_id)
         if reconciled is None:
@@ -114,6 +125,17 @@ class RunExecutionService:
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
         )
+
+    async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
+        """Give one physically completed Attempt its logical disposition.
+
+        The other half of ``reconcile_logical=False``. A domain that ran to
+        completion and decided the work nonetheless failed says so here, which
+        keeps 'the process finished' and 'the work succeeded' as the two
+        separate facts they are.
+        """
+
+        return await self._attempts.accept_outcome(outcome)
 
     async def cancel_attempt(self, attempt_id: str) -> bool:
         """Request cancellation using canonical physical Attempt identity."""

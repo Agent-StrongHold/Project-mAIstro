@@ -168,7 +168,7 @@ class TestLifespan:
 
         captured: dict[str, object] = {}
 
-        def _capture_runner(queue, executor, progress_webhook=None):
+        def _capture_runner(queue, executor, progress_webhook=None, run_store=None):
             captured["progress_webhook"] = progress_webhook
             mock_runner = MagicMock()
             mock_runner.start = AsyncMock()
