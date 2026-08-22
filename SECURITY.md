@@ -66,8 +66,8 @@ Real numeric caps found in the engine (grepped, not asserted from memory — eac
 | Limit | Value | File:constant | Purpose |
 |---|---|---|---|
 | Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py:81-82` (`window_size = 50 * 1024`, `overlap = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
-| Warden pattern-match timeout | 0.5 s | `security/warden/detector.py:27` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
-| Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py:32` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
+| Warden pattern-match timeout | 0.5 s | `security/warden/detector.py:32` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
+| Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py:34` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
 | Skill body size | 50,000 chars | `skills/parser.py:25` (`MAX_SKILL_BODY_LENGTH`) | Context-window-stuffing protection, enforced at both parse (`parser.py:116`) and import (`import_pipeline.py:210`) |
 | Learning store cap | 10,000 entries | `memory/learnings/store.py:15` (`MAX_LEARNINGS`) | OOM protection (FIFO-style bound on the in-memory store) |
 | `find_relevant` result cap | 10 results (default) | `memory/learnings/store.py:66` (`max_results: int = 10`) | Context-overflow protection |
@@ -89,7 +89,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | Only a **filesystem** path blocklist exists (`security/patterns.py:BLOCKED_HOST_PATHS` — `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, Docker socket paths); no URL/host-based SSRF blocklist was found in `tools/browser/client.py`, `skills/marketplace.py`, or `skills/import_pipeline.py`, all of which make outbound HTTP calls | `gap-impl` — real risk: a skill or connector fetching an attacker-controlled URL can reach `169.254.169.254` or a LAN-internal service today |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing when the name cannot be resolved at all. Wired into `tools/browser/client.py`, `skills/marketplace.py` and `skills/import_pipeline.py`. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — the guard is sound but reaches **3 of the 25** modules that issue outbound requests. The other twenty-two are unguarded, including `tasks/progress_webhook` and `agents/strategies/tool_http`, whose destinations are the most likely to be caller-influenced (#155) |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -114,12 +114,35 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **No SSRF blocklist for outbound HTTP.** Skills, connectors, and the browser tool all make
-   outbound HTTP calls (`skills/marketplace.py`, `skills/import_pipeline.py`,
-   `tools/browser/client.py`). Only a filesystem-path blocklist exists
-   (`security/patterns.py:BLOCKED_HOST_PATHS`); nothing blocks a request to
-   `169.254.169.254` (cloud metadata) or a LAN-internal address. This is the single largest gap
-   relative to Stronghold's inventory.
+1. **SSRF protection exists, and reaches 3 of 25 outbound surfaces.** This entry
+   previously said no URL-based SSRF guard existed and named `skills/marketplace.py`,
+   `skills/import_pipeline.py` and `tools/browser/client.py` as unprotected. Those are the three
+   that *are* protected. `security/ssrf.py` refuses anything that is not http(s) with a
+   resolvable host, and checks every address the host resolves to — which normalises the
+   obfuscations (`2852039166`, `0x7f000001`, `127.1`, `[::ffff:169.254.169.254]`,
+   `metadata.google.internal`) to the address they denote. A host that cannot be resolved is
+   refused rather than allowed.
+
+   The real gap is **reach**: **3 of 25**. Counting modules in `maistro-core` that issue an
+   outbound HTTP request, twenty-two have no guard at all — `a2a/guest_peers`,
+   `agents/conductor`, `agents/pm_llm_call`, `agents/strategies/tool_http`, `auth/client`,
+   `auth/oauth`, `events/handlers`, `events/processing`, the four `graph/nodes` pollers,
+   `integrations/{coinswarm,home_assistant,ntfy,turing}`, `orchestrator/hierarchy`,
+   `quota/verifiers/{mistral,openrouter}`, `quota/verify`, `tasks/progress_webhook` and
+   `tools/atlassian/client`.
+
+   Two of those deserve naming separately, because their destination is the most likely to be
+   attacker-influenced rather than configured: `tasks/progress_webhook` posts to a webhook URL,
+   and `agents/strategies/tool_http` fetches whatever a tool call names.
+
+   Nearly all of them route through `maistro.http.shared_client`, so there is one seam that
+   would reach them — but the engine also legitimately calls internal LLM gateways through it,
+   so switching it on needs a policy for those rather than a blanket refusal. Tracked as #155.
+
+   Two further limits, stated rather than implied: the guard resolves the name and the HTTP
+   client resolves it again when it connects, so a name that answers differently between those
+   two lookups is not caught; and redirect hops are only checked where the caller validates each
+   hop, which none of the three call sites currently does.
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
