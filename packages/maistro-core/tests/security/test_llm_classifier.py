@@ -62,16 +62,18 @@ def test_prompt_truncates_text_to_2000_chars():
 # ─── classify_tool_result ───────────────────────────────────────────────────────
 
 
-async def test_response_containing_suspicious_word_is_classified_suspicious():
+async def test_suspicious_label_response_is_classified_suspicious():
     client = _StubLLMClient(_resp("suspicious"))
     result = await classify_tool_result("text", client)
     assert result["label"] == "suspicious"
 
 
-async def test_response_not_containing_suspicious_defaults_to_safe():
+async def test_unexpected_output_fails_closed_as_suspicious():
     client = _StubLLMClient(_resp("totally unexpected garbage output"))
     result = await classify_tool_result("text", client)
-    assert result["label"] == "safe"
+    assert result["label"] == "suspicious"
+    assert result["error"] == "malformed_response"
+    assert result["reasoning_trace"] == "llm_judge_inconclusive:malformed_response"
 
 
 async def test_safe_label_response_is_classified_safe():
@@ -92,21 +94,24 @@ async def test_missing_usage_key_defaults_tokens_to_zero():
     assert result["tokens"] == 0
 
 
-async def test_missing_choices_defaults_content_empty_and_safe():
+async def test_missing_choices_fails_closed_as_malformed():
     client = _StubLLMClient({})
     result = await classify_tool_result("text", client)
-    assert result["label"] == "safe"
+    assert result["label"] == "suspicious"
     assert result["tokens"] == 0
+    assert result["error"] == "malformed_response"
+    assert result["reasoning_trace"] == "llm_judge_inconclusive:malformed_response"
 
 
-async def test_exception_from_llm_client_is_swallowed_and_inconclusive():
+async def test_exception_from_llm_client_fails_closed_as_suspicious():
     client = _StubLLMClient(exc=RuntimeError("provider down"))
     result = await classify_tool_result("text", client, model="fast-model")
     assert result == {
-        "label": "inconclusive",
+        "label": "suspicious",
         "model": "fast-model",
         "tokens": 0,
         "error": "classification_failed",
+        "reasoning_trace": "llm_judge_inconclusive:classification_failed",
     }
 
 

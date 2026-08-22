@@ -105,7 +105,7 @@ only checked the total would see no change at all.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6623 | `ci.yml` |
+| `packages/maistro-core/tests` | 6638 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 201 | `ci.yml` |
