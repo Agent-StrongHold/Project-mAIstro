@@ -44,6 +44,7 @@ import sys
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -615,6 +616,87 @@ def collect_adrs(
     return adrs
 
 
+# ─── design coverage: how much of the decided design is proven (#166) ─────────
+#
+# Every other counter in this file measures debt — things that are wrong,
+# recorded so they cannot increase. None of them measures *distance*: how much
+# of the design the ADRs describe is implemented and proven. Without that,
+# "every green PR moves us closer to the designed future state" is an
+# aspiration CI cannot check, because there is no number that would have to go
+# up. Traceability plus non-regression is necessary and is not progress — a PR
+# that changes nothing satisfies both.
+#
+# ADR-082226-ff3c decides the shape, and the choice that matters is the
+# denominator. Measured over the criteria that *exist*, the corpus reads 30.5%;
+# measured over the decisions that have been *taken*, 3.96%. The gap is 76 of 99
+# taken ADRs that declare no acceptance criteria anywhere. The first number lets
+# a decision with nothing written vanish from its own denominator, and is
+# gameable in the wrong direction — deleting an unproven criterion raises it.
+
+#: Decimal places kept on the banked percentage.
+#:
+#: This is a float in a file of integers, so it needs a stated resolution rather
+#: than exact equality on a binary fraction. The bound to clear is the smallest
+#: move one criterion can make: proving a single criterion of the *largest*
+#: decision, spread over the count of decisions, i.e. 100/(decisions * criteria
+#: in the biggest one). Measured on today's corpus that is 100/(99 * 46) =
+#: 0.0220 percentage points. Four places resolves 0.0001 — 200x finer — and
+#: stays finer until the product of those two counts passes a million, so no
+#: real change to a single criterion can round away into a no-op.
+COVERAGE_PRECISION = 4
+
+
+def design_coverage(
+    specs: list[dict[str, Any]], adrs: list[dict[str, Any]]
+) -> tuple[float, list[dict[str, Any]]]:
+    """Mean, over taken decisions, of the fraction of their criteria at ``reachable``.
+
+    Decision-weighted per ADR-082226-ff3c: one ADR is one unit of design however
+    verbosely it was written, and one that declares no criteria contributes 0
+    rather than dropping out of the denominator. ``Proposed`` is excluded — a
+    decision not yet taken cannot be owed an implementation, and counting it
+    would make writing an idea down look like incurring debt.
+
+    ``reachable`` and not ``passing`` is the bar: a passing test whose module the
+    import graph cannot reach proves the test runs, not that the system does.
+
+    The sum is over ``Fraction`` and rounds once at the end, so the value is a
+    property of the corpus rather than of summation order. To be clear about
+    what that buys: measured against naive float accumulation the difference is
+    about 4e-16, twelve orders of magnitude below the 1e-4 the floor compares,
+    and no divergence appears at that precision over 200k randomised corpora.
+    It is insurance against a later precision increase, not a bug being fixed
+    here — worth the two lines it costs, and not worth claiming more for.
+    """
+    by_spec = {s["id"]: s for s in specs}
+    rows: list[dict[str, Any]] = []
+    for adr in adrs:
+        if adr["declared_status"] not in DECISION_TAKEN:
+            continue
+        rungs = [c["rung"] for c in adr["own_detail"]]
+        # dict.fromkeys, not the raw list: a spec whose `implements:` names one
+        # ADR twice appears twice among that ADR's children, and would weight
+        # its own criteria double inside the fraction.
+        for spec_id in dict.fromkeys(adr["specs"]):
+            spec = by_spec.get(spec_id)
+            if spec is not None:
+                rungs.extend(c["rung"] for c in spec["criteria"])
+        proven = sum(1 for rung in rungs if rung == "reachable")
+        rows.append(
+            {
+                "id": adr["id"],
+                "declared_status": adr["declared_status"],
+                "criteria": len(rungs),
+                "reachable": proven,
+                "fraction": Fraction(proven, len(rungs)) if rungs else Fraction(0),
+            }
+        )
+    if not rows:
+        return 0.0, rows
+    mean = sum((row["fraction"] for row in rows), Fraction(0)) / len(rows)
+    return round(float(mean) * 100, COVERAGE_PRECISION), rows
+
+
 # ─── the mandate: a PR must prove the criteria it declares (#165) ─────────────
 #
 # Everything above this line is a *ratchet*. A ratchet says "the repository did
@@ -783,6 +865,13 @@ RATCHETED = (
     "specs_declaring_no_criteria",
 )
 
+#: Counters that may only go **up**. Design coverage is the first of these, and
+#: the direction is the whole reason it exists: a ratchet on debt says the
+#: repository did not get worse, and only a floor under progress says it got
+#: better. `_compare` handled one direction for ten counters before this, so the
+#: asymmetry is named here rather than left implicit in a comparison operator.
+FLOORED = ("design_coverage",)
+
 
 def _mode_mismatch(run_tests: bool) -> str | None:
     """The refusal message for a wrong-mode ratchet, checked before measuring.
@@ -807,7 +896,7 @@ def _mode_mismatch(run_tests: bool) -> str | None:
 
 def _bank(recorded: dict[str, Any], totals: dict[str, Any], measured: bool) -> int:
     recorded["measured_with_tests"] = measured
-    recorded["ceilings"] = {name: totals[name] for name in RATCHETED}
+    recorded["ceilings"] = {name: totals[name] for name in (*RATCHETED, *FLOORED)}
     CEILINGS.write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
     try:
         shown = CEILINGS.relative_to(ROOT)
@@ -818,6 +907,14 @@ def _bank(recorded: dict[str, Any], totals: dict[str, Any], measured: bool) -> i
 
 
 def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Split the counters into "worse than recorded" and "better than recorded".
+
+    Both lists fail the gate; they differ in what the reviewer has to do about
+    it. The two loops are the same shape with the inequality reversed, kept
+    apart rather than folded behind a sign because reading `actual > allowed`
+    and having to remember which counters that means is exactly how a
+    higher-is-better counter gets silently ratcheted the wrong way.
+    """
     regressions: list[str] = []
     improvements: list[str] = []
     for name in RATCHETED:
@@ -829,17 +926,32 @@ def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str
             regressions.append(f"{name}: {actual} exceeds the ceiling of {allowed}")
         elif actual < allowed:
             improvements.append(f"{name}: {actual}, ceiling still says {allowed}")
+    for name in FLOORED:
+        required = ceilings.get(name)
+        actual = totals[name]
+        if required is None:
+            regressions.append(f"{name}: no floor recorded (measured {actual})")
+        elif actual < required:
+            regressions.append(f"{name}: {actual} falls below the floor of {required}")
+        elif actual > required:
+            improvements.append(f"{name}: {actual}, floor still says {required}")
     return regressions, improvements
 
 
 def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
-    """Compare the measured debt against its reviewed ceilings.
+    """Compare the measured state against its reviewed bounds, in both directions.
 
-    Both directions fail. A rise is a regression: a document started claiming
-    more than its artefacts support. A fall that has not been banked is slack —
-    the same weakness a count ceiling always has, where one genuine improvement
-    silently pays for a later regression. Banking is a reviewed edit to a small
-    JSON file, so there is no reason to leave the margin sitting there.
+    Both directions fail. For the ten debt counters a rise is a regression: a
+    document started claiming more than its artefacts support. A fall that has
+    not been banked is slack — the same weakness a count ceiling always has,
+    where one genuine improvement silently pays for a later regression. Banking
+    is a reviewed edit to a small JSON file, so there is no reason to leave the
+    margin sitting there.
+
+    `design_coverage` runs the same mechanism with the inequality reversed: it
+    is the one counter where higher is better, so its recorded number is a floor
+    and a *fall* is what fails. The symmetry is deliberate — unbanked slack
+    above the floor is the same weakness as unbanked slack below a ceiling.
 
     The comparison is refused across measurement modes. Without ``--run-tests``
     no criterion can reach the ``passing`` rung, so every claim above it reads as
@@ -863,21 +975,30 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
 
     regressions, improvements = _compare(recorded["ceilings"], totals)
     if regressions:
-        print("FAIL: a completion claim now outruns its evidence\n")
+        print("FAIL: the repository moved away from its recorded state\n")
         for line in regressions:
             print(f"  - {line}")
         print(
-            "\nEither prove the claim (add an **AC-N** id and a @pytest.mark.ac test) or "
-            "correct the document's status. The ceiling does not move up."
+            "\nA ceiling exceeded: either prove the claim (add an **AC-N** id and a "
+            "@pytest.mark.ac test) or correct the document's status. The ceiling does not "
+            "move up.\nA floor undercut: design coverage fell, so a decision that was "
+            "proven no longer is — restore the evidence, or bank the fall with --bank and "
+            "justify it in the diff (retiring an ADR and accepting a new one both do this "
+            "legitimately; see ADR-082226-ff3c)."
         )
     if improvements:
-        print("FAIL: unbanked improvement — the ceiling holds slack a regression could spend\n")
+        print(
+            "FAIL: unbanked improvement — the recorded bound holds slack a regression could spend\n"
+        )
         for line in improvements:
             print(f"  - {line}")
         print("\nBank it: python scripts/check-ac-state.py --run-tests --ratchet --bank")
     if regressions or improvements:
         return 1
-    print(f"OK: every acceptance-state debt counter sits exactly on its ceiling ({len(RATCHETED)})")
+    print(
+        f"OK: {len(RATCHETED)} debt counters sit exactly on their ceilings and "
+        f"{len(FLOORED)} progress counter sits exactly on its floor"
+    )
     return 0
 
 
@@ -999,6 +1120,9 @@ def main(argv: list[str]) -> int:
         if not s["criteria_total"] and not s["has_ac_heading"] and not s["declares_non_measurable"]
     ]
 
+    # ---- distance rather than debt (#166) --------------------------------
+    coverage, coverage_rows = design_coverage(specs, adrs)
+
     payload = {
         "generated_by": "scripts/check-ac-state.py",
         "measured": passing is not None,
@@ -1026,6 +1150,11 @@ def main(argv: list[str]) -> int:
             "specs_implementing_nothing": len(orphan_specs),
             "adrs_without_implementing_spec": len(uncovered_adrs),
             "specs_declaring_no_criteria": len(silent_specs),
+            # The one counter here that is a percentage and the one that may
+            # only rise. It is 0.0 without --run-tests, because `reachable`
+            # sits above `passing` and nothing can reach it in an unmeasured
+            # run; the ratchet refuses to compare across modes for that reason.
+            "design_coverage": coverage,
         },
         "markers_without_criterion": orphans,
         "criteria_claimed_but_unproven": false_claims,
@@ -1034,6 +1163,27 @@ def main(argv: list[str]) -> int:
         "specs_implementing_nothing": orphan_specs,
         "adrs_without_implementing_spec": uncovered_adrs,
         "specs_declaring_no_criteria": silent_specs,
+        "design_coverage": {
+            "definition": (
+                "mean over Accepted|Implemented ADRs of the fraction of their criteria "
+                "(own, plus every implementing spec's) at the `reachable` rung; an ADR "
+                "declaring no criteria contributes 0 (ADR-082226-ff3c)"
+            ),
+            "percent": coverage,
+            "decisions": len(coverage_rows),
+            "decisions_scoring_zero": sum(1 for r in coverage_rows if not r["reachable"]),
+            "decisions_declaring_no_criteria": sum(1 for r in coverage_rows if not r["criteria"]),
+            "per_decision": [
+                {
+                    "id": r["id"],
+                    "declared_status": r["declared_status"],
+                    "criteria": r["criteria"],
+                    "reachable": r["reachable"],
+                    "percent": round(float(r["fraction"]) * 100, COVERAGE_PRECISION),
+                }
+                for r in coverage_rows
+            ],
+        },
         "specs": specs,
         "adrs": adrs,
     }
@@ -1062,6 +1212,11 @@ def main(argv: list[str]) -> int:
     print(f"  specs implementing no ADR    : {t['specs_implementing_nothing']}")
     print(f"  taken ADRs with no spec      : {t['adrs_without_implementing_spec']}")
     print(f"  specs with no criteria at all: {t['specs_declaring_no_criteria']}")
+    zero = sum(1 for r in coverage_rows if not r["reachable"])
+    print(
+        f"  design coverage              : {t['design_coverage']}% "
+        f"over {len(coverage_rows)} taken decisions ({zero} at zero)"
+    )
     for rung in RUNGS:
         n = sum(1 for s in specs if s["criteria_total"] and s["tier"] == rung)
         print(f"  specs at tier {rung:<10}: {n}")

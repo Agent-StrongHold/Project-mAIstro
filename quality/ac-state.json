@@ -25,7 +25,8 @@
     "completion_claims_unverifiable": 68,
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 34,
-    "specs_declaring_no_criteria": 7
+    "specs_declaring_no_criteria": 7,
+    "design_coverage": 3.9582
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1083,6 +1084,708 @@
       "file": "docs/specs/SPEC-197-llm-api-capability-lanes.md"
     }
   ],
+  "design_coverage": {
+    "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
+    "percent": 3.9582,
+    "decisions": 99,
+    "decisions_scoring_zero": 94,
+    "decisions_declaring_no_criteria": 76,
+    "per_decision": [
+      {
+        "id": "ADR-002",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-003",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-004",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-005",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-006",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-007",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-008",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-009",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-010",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-011",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-012",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-013",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-014",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-015",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-016",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-017",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-018",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-019",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-020",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-021",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-022",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-023",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-024",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-026",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-028",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-029",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-031",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-032",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-033",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-034",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-035",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-036",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-037",
+        "declared_status": "Accepted",
+        "criteria": 10,
+        "reachable": 4,
+        "percent": 40.0
+      },
+      {
+        "id": "ADR-038",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-039",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-040",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-041",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-042",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-043",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-044",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-048",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-050",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-051",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-053",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-054",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-056",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-057",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-061",
+        "declared_status": "Implemented",
+        "criteria": 46,
+        "reachable": 37,
+        "percent": 80.4348
+      },
+      {
+        "id": "ADR-062",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-062026-9b30",
+        "declared_status": "Accepted",
+        "criteria": 3,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-062226-674b",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-062326-616c",
+        "declared_status": "Implemented",
+        "criteria": 12,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-062326-702b",
+        "declared_status": "Implemented",
+        "criteria": 7,
+        "reachable": 5,
+        "percent": 71.4286
+      },
+      {
+        "id": "ADR-063",
+        "declared_status": "Accepted",
+        "criteria": 32,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-064",
+        "declared_status": "Accepted",
+        "criteria": 44,
+        "reachable": 44,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-065",
+        "declared_status": "Accepted",
+        "criteria": 26,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-067",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-068",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-069",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-070",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-070426-f2a0",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-072",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-073",
+        "declared_status": "Accepted",
+        "criteria": 16,
+        "reachable": 16,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-073126-c4e1",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-074",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-075",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-076",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-077",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-078",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-080",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-034b",
+        "declared_status": "Accepted",
+        "criteria": 10,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-69ee",
+        "declared_status": "Accepted",
+        "criteria": 13,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-6b46",
+        "declared_status": "Accepted",
+        "criteria": 12,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-6e34",
+        "declared_status": "Accepted",
+        "criteria": 12,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-7248",
+        "declared_status": "Accepted",
+        "criteria": 12,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-9944",
+        "declared_status": "Accepted",
+        "criteria": 9,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-a66b",
+        "declared_status": "Accepted",
+        "criteria": 18,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-bb3a",
+        "declared_status": "Accepted",
+        "criteria": 12,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081226-e626",
+        "declared_status": "Accepted",
+        "criteria": 9,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081426-1f7c",
+        "declared_status": "Accepted",
+        "criteria": 12,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081426-b1d3",
+        "declared_status": "Accepted",
+        "criteria": 15,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-082",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-082126-f69c",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-082226-5104",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-085",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-087",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-088",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-089",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-090",
+        "declared_status": "Accepted",
+        "criteria": 9,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-091",
+        "declared_status": "Implemented",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-092",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-093",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-094",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-095",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-096",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-097",
+        "declared_status": "Accepted",
+        "criteria": 3,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-098",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-100",
+        "declared_status": "Accepted",
+        "criteria": 6,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-081626-f383",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      }
+    ]
+  },
   "specs": [
     {
       "id": "SPEC-001",
@@ -11877,6 +12580,7 @@
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
+      "declared_unproven": [],
       "tier": "unmeasured"
     },
     {

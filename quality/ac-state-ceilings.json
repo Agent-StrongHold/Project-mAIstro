@@ -11,6 +11,7 @@
     "gherkin_parse_errors": 0,
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 34,
-    "specs_declaring_no_criteria": 7
+    "specs_declaring_no_criteria": 7,
+    "design_coverage": 3.9582
   }
 }

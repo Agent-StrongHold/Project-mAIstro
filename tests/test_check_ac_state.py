@@ -10,6 +10,7 @@ suite that never ran must report `unmeasured` rather than "not passing".
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -513,3 +514,155 @@ class TestSpecCorpusMatchesTheRegistry:
         (tmp_path / "SPEC-1.md").write_text("---\nid: SPEC-1\nkind: spec\n---\n")
         monkeypatch.setattr(check, "SPEC_DIR", tmp_path)
         assert {p.name for p in check._spec_files()} == {"SPEC-1.md"}
+
+
+def _adr(adr_id, status="Accepted", own=(), specs=()):
+    """An ADR row in the shape `collect_adrs` emits."""
+    return {
+        "id": adr_id,
+        "declared_status": status,
+        "specs": list(specs),
+        "own_detail": [{"id": f"{adr_id}/AC-{i}", "rung": r} for i, r in enumerate(own, 1)],
+    }
+
+
+def _spec(spec_id, rungs=()):
+    """A spec row in the shape `collect_specs` emits."""
+    return {
+        "id": spec_id,
+        "criteria": [{"id": f"{spec_id}/AC-{i}", "rung": r} for i, r in enumerate(rungs, 1)],
+    }
+
+
+class TestDesignCoverage:
+    """The one number that has to go *up* (#166, ADR-082226-ff3c).
+
+    Every other counter in the gate measures debt. These pin the four
+    properties the ADR commits to, because each is a place where a metric of
+    this kind normally goes wrong: a denominator that lets unwritten work
+    vanish, a weighting that rewards verbosity, a bar set at `passing`, and a
+    number that rises when you delete the evidence of your own debt.
+    """
+
+    def test_every_decision_weighs_the_same_however_verbosely_it_was_written(self, check):
+        """One fully-proven criterion and forty fully-proven criteria are each
+        one unit of design. Criterion-weighting would make the forty-criterion
+        ADR worth forty times as much, so the metric would measure how much was
+        typed rather than how much was decided."""
+        small = _adr("ADR-A", own=["reachable"])
+        large = _adr("ADR-B", own=["reachable"] * 40)
+        pct, rows = check.design_coverage([], [small, large])
+        assert pct == 100.0
+        assert [r["fraction"] for r in rows] == [1, 1]
+
+    def test_a_half_proven_decision_contributes_a_half(self, check):
+        pct, _ = check.design_coverage([], [_adr("ADR-A", own=["reachable", "declared"])])
+        assert pct == 50.0
+
+    def test_a_decision_declaring_no_criteria_scores_zero_rather_than_vanishing(self, check):
+        """The property the whole shape turns on. Measured over criteria that
+        *exist* the corpus reads 30.5%; measured over decisions *taken*, 4.0%.
+        The gap is 76 taken ADRs with nothing written, and a denominator they
+        drop out of is one that reads respectably while three-quarters of the
+        design is unmeasured."""
+        proven = _adr("ADR-A", own=["reachable"])
+        silent = _adr("ADR-B", own=[])
+        pct, rows = check.design_coverage([], [proven, silent])
+        assert pct == 50.0, "the silent decision was excluded from the denominator"
+        assert [r["criteria"] for r in rows] == [1, 0]
+
+    def test_deleting_an_unproven_criterion_cannot_raise_the_number(self, check):
+        """Gameable-in-the-wrong-direction is what disqualified the
+        criterion-weighted formulation. Here the ADR falls from 1/2 to 0/0,
+        which is 0 — deleting the record of debt destroys the credit with it."""
+        before, _ = check.design_coverage([], [_adr("ADR-A", own=["reachable", "declared"])])
+        after, _ = check.design_coverage([], [_adr("ADR-A", own=[])])
+        assert before == 50.0
+        assert after == 0.0
+        assert after < before
+
+    def test_proposed_decisions_are_excluded(self, check):
+        """A decision not yet taken cannot be owed an implementation, and
+        counting it would make writing an idea down look like incurring debt."""
+        pct, rows = check.design_coverage(
+            [], [_adr("ADR-A", own=["reachable"]), _adr("ADR-B", status="Proposed", own=[])]
+        )
+        assert [r["id"] for r in rows] == ["ADR-A"]
+        assert pct == 100.0
+
+    def test_implemented_counts_as_taken_alongside_accepted(self, check):
+        pct, rows = check.design_coverage(
+            [], [_adr("ADR-A", status="Implemented", own=["declared"])]
+        )
+        assert [r["id"] for r in rows] == ["ADR-A"]
+        assert pct == 0.0
+
+    def test_the_bar_is_reachable_and_not_passing(self, check):
+        """A passing test whose module the import graph cannot reach proves the
+        test runs, not that the system does."""
+        pct, _ = check.design_coverage([], [_adr("ADR-A", own=["passing", "covered", "declared"])])
+        assert pct == 0.0
+
+    def test_an_implementing_specs_criteria_count_toward_its_decision(self, check):
+        """The fold the ADR specifies: own criteria *plus* every spec whose
+        `implements:` names it. Most decisions carry no criteria of their own,
+        so folding from specs is where nearly all the signal comes from."""
+        spec = _spec("SPEC-1", rungs=["reachable", "declared"])
+        pct, rows = check.design_coverage([spec], [_adr("ADR-A", own=[], specs=["SPEC-1"])])
+        assert rows[0]["criteria"] == 2
+        assert pct == 50.0
+
+    def test_own_and_spec_criteria_are_pooled_into_one_fraction(self, check):
+        spec = _spec("SPEC-1", rungs=["reachable"])
+        adr = _adr("ADR-A", own=["declared"], specs=["SPEC-1"])
+        pct, rows = check.design_coverage([spec], [adr])
+        assert (rows[0]["reachable"], rows[0]["criteria"]) == (1, 2)
+        assert pct == 50.0
+
+    def test_a_spec_naming_its_decision_twice_is_not_counted_twice(self, check):
+        """`collect_adrs` appends a child per resolved reference, so an
+        `implements:` list naming one ADR twice puts the same spec in that
+        ADR's children twice and would double-weight its criteria."""
+        spec = _spec("SPEC-1", rungs=["reachable", "declared"])
+        adr = _adr("ADR-A", own=[], specs=["SPEC-1", "SPEC-1"])
+        _, rows = check.design_coverage([spec], [adr])
+        assert rows[0]["criteria"] == 2
+
+    def test_a_dangling_spec_reference_is_skipped_rather_than_raising(self, check):
+        """The registry refuses unresolvable references, so this should not
+        occur — but the gate must not be the thing that crashes if it does."""
+        _, rows = check.design_coverage([], [_adr("ADR-A", own=["reachable"], specs=["SPEC-GONE"])])
+        assert rows[0]["criteria"] == 1
+
+    def test_no_taken_decisions_is_zero_rather_than_a_division_error(self, check):
+        assert check.design_coverage([], []) == (0.0, [])
+        assert check.design_coverage([], [_adr("ADR-A", status="Proposed")])[0] == 0.0
+
+    def test_the_banked_precision_resolves_a_single_criterion(self, check):
+        """The claim `COVERAGE_PRECISION` actually has to carry.
+
+        The number is a float in a file of integers, so it is compared at a
+        stated resolution rather than exactly. That resolution is only safe if
+        it is finer than the smallest real move — proving one criterion of the
+        largest decision, spread over the count of decisions. Here that is
+        1/(99 * 46) of the mean; if rounding swallowed it, a PR could prove a
+        criterion and the floor would read the result as no change.
+        """
+        decisions = 99
+        biggest = 46
+        adrs = [_adr(f"ADR-{i}", own=["declared"] * biggest) for i in range(decisions)]
+        before, _ = check.design_coverage([], adrs)
+        adrs[0]["own_detail"][0]["rung"] = "reachable"
+        after, _ = check.design_coverage([], adrs)
+        assert before == 0.0
+        assert after > before, "one proven criterion rounded away to no change"
+        assert round(after - before, check.COVERAGE_PRECISION) == pytest.approx(0.022, abs=0.001)
+
+    def test_the_shipped_floor_is_the_measured_value(self, check):
+        """The ADR banks 4.0% and says so in its own Consequences: a metric
+        chosen to flatter would not be worth ratcheting. This pins the shipped
+        floor to the report so the two cannot drift apart silently."""
+        recorded = json.loads((ROOT / "quality" / "ac-state-ceilings.json").read_text())
+        report = json.loads((ROOT / "quality" / "ac-state.json").read_text())
+        assert recorded["ceilings"]["design_coverage"] == report["totals"]["design_coverage"]
+        assert report["design_coverage"]["percent"] == report["totals"]["design_coverage"]
