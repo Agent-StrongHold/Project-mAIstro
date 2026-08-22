@@ -26,8 +26,8 @@ from maistro.security.request_analyzer import analyze_request_sufficiency
 from maistro.security.warden.sanitizer import sanitize
 
 if TYPE_CHECKING:
+    from maistro.protocols import StrikeTracker
     from maistro.security._types import AuthContext
-    from maistro.security.strikes import InMemoryStrikeTracker
     from maistro.security.warden.detector import Warden
 
 logger = logging.getLogger("maistro.gate")
@@ -42,7 +42,7 @@ class Gate:
     def __init__(
         self,
         warden: Warden | None = None,
-        strike_tracker: InMemoryStrikeTracker | None = None,
+        strike_tracker: StrikeTracker | None = None,
     ) -> None:
         if warden is None:
             from maistro.security.warden.detector import Warden as WardenImpl
