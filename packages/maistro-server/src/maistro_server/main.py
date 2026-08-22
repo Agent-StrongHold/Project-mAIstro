@@ -148,9 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Durable on PostgreSQL (#132); in-process otherwise, and said so — a run_id
     # that silently stops resolving is worse than one that was never promised.
     pg_pool = await _open_run_spine_pool()
-    _scope_store, run_store, admitter = await wire_execution_spine(
-        None, workspace_id=settings.workspace_id, pg_pool=pg_pool
-    )
+    spine = await wire_execution_spine(None, workspace_id=settings.workspace_id, pg_pool=pg_pool)
     if pg_pool is None:
         await logger.awarning(
             "run_store_in_process_only",
@@ -161,10 +159,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "durable execution spine (#132)."
             ),
         )
-    queue = configure_task_queue(admitter=admitter)
+    queue = configure_task_queue(admitter=spine.task_admitter)
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.
-    runs.configure_run_store(run_store)
+    runs.configure_run_store(spine.run_store)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog

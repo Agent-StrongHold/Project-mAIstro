@@ -26,9 +26,8 @@ async def wired():
     """Install a queue on a real Run spine, as the app's lifespan does."""
     previous = queue_module._queue
     queue_module._queue = None
-    _scope_store, run_store, admitter = await wire_execution_spine(
-        None, workspace_id="test-workspace"
-    )
+    spine = await wire_execution_spine(None, workspace_id="test-workspace")
+    run_store, admitter = spine.run_store, spine.task_admitter
     configure_task_queue(admitter=admitter)
     try:
         yield run_store

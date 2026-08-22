@@ -6,6 +6,13 @@ durable object as interactive work and there is no second execution lifecycle
 to keep in sync. See the recurrence-and-scheduling ADR.
 """
 
+from maistro.scheduling.admission import (
+    CATCHUP_KEY,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULED_FOR_KEY,
+    ScheduleRunAdmitter,
+)
 from maistro.scheduling.cron import CronExpression, CronParseError, minimum_gap, parse_cron
 from maistro.scheduling.engine import (
     FireDecision,
@@ -26,7 +33,11 @@ from maistro.scheduling.store import (
 )
 
 __all__ = [
+    "CATCHUP_KEY",
     "DEFAULT_CATCHUP_WINDOW_SECONDS",
+    "SCHEDULED_FOR_KEY",
+    "SCHEDULE_ID_KEY",
+    "SCHEDULE_SOURCE",
     "CronExpression",
     "CronParseError",
     "FireDecision",
@@ -34,6 +45,7 @@ __all__ = [
     "OverlapPolicy",
     "Schedule",
     "ScheduleEvaluation",
+    "ScheduleRunAdmitter",
     "ScheduleStore",
     "SkipReason",
     "SkippedFire",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from datetime import datetime
+from datetime import UTC, datetime
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
@@ -66,6 +66,35 @@ class StaleExecutionFence(RunIntegrityError):
     pass
 
 
+#: Most Runs one `purge_expired_runs` call may delete.
+#:
+#: A bound, not a tuning knob. The first sweep after a long outage would
+#: otherwise be an unbounded DELETE holding row locks across the whole spine,
+#: which is how a retention sweep becomes a reason to disable the retention
+#: sweep. Sweeping is opportunistic (ADR-082226-c126), so a backlog larger than
+#: one batch simply drains over the next several sweeps.
+DEFAULT_PURGE_BATCH = 500
+
+
+def is_purgeable(run: Run, cutoff: datetime) -> bool:
+    """Whether retention may delete this Run as of ``cutoff`` (ADR-082226-c126).
+
+    Three conditions, and all three are load-bearing:
+
+    - a deadline was set at all — `None` means "retain indefinitely", which is
+      the default and therefore every Run recorded before retention existed;
+    - the deadline has passed;
+    - the Run is terminal. The deadline is a floor, not a ceiling: a Run past
+      its deadline that is still running keeps its execution identity, because
+      deleting the identity of live work is worse than the storage it reclaims.
+    """
+    return (
+        run.retention_expires_at is not None
+        and run.retention_expires_at <= cutoff
+        and run.status in TERMINAL_RUN_STATUSES
+    )
+
+
 @runtime_checkable
 class RunStore(Protocol):
     async def create_run(
@@ -78,10 +107,18 @@ class RunStore(Protocol):
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
+
+    async def purge_expired_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int: ...
 
     async def transition_run(
         self,
@@ -243,6 +280,7 @@ class InMemoryRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         await self._validate_graph_scope(graph)
@@ -270,6 +308,7 @@ class InMemoryRunStore:
             persona_id=persona_id,
             actor_principal_id=actor_principal_id,
             provenance=dict(provenance or {}),
+            retention_expires_at=retention_expires_at,
         )
         run = admit_in_state(run, initial_status)
         self._runs[run.run_id] = run
@@ -279,6 +318,59 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    def _referenced_by_children(self) -> tuple[set[str], set[str]]:
+        """The Run and NodeRun ids some other Run names as its parent."""
+        parent_runs = {
+            run.parent_run_id for run in self._runs.values() if run.parent_run_id is not None
+        }
+        parent_node_runs = {
+            run.parent_node_run_id
+            for run in self._runs.values()
+            if run.parent_node_run_id is not None
+        }
+        return parent_runs, parent_node_runs
+
+    def _has_child(
+        self,
+        run_id: str,
+        parent_runs: set[str],
+        parent_node_runs: set[str],
+    ) -> bool:
+        if run_id in parent_runs:
+            return True
+        return any(
+            node_run.node_run_id in parent_node_runs
+            for node_run in self._node_runs.values()
+            if node_run.run_id == run_id
+        )
+
+    async def purge_expired_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+
+        Orphan-safe: a Run some other Run descends from is skipped, however
+        expired. The durable backend enforces that with `ON DELETE RESTRICT`
+        and this one must agree, or the same retention policy would produce a
+        dangling parent pointer here and an integrity error there.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        cutoff = now if now is not None else datetime.now(UTC)
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        doomed = [
+            run_id
+            for run_id, run in self._runs.items()
+            if is_purgeable(run, cutoff)
+            and not self._has_child(run_id, parent_runs, parent_node_runs)
+        ]
+        for run_id in doomed[:limit]:
+            self._forget_run(run_id)
+        return min(len(doomed), limit)
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.

@@ -117,6 +117,16 @@ jobs:
           packages/maistro-core/tests/security
           packages/maistro-core/tests/events
           -v --tb=short
+      # The template registry and the schedule seam both have a PostgreSQL
+      # backend whose round-trip behaviour differs from the in-memory one
+      # (#145) — a JSONB payload comes back as a dict, and a version conflict
+      # is a constraint rather than a check.
+      - name: Template registry and scheduling conformance
+        run: >-
+          uv run pytest
+          packages/maistro-core/tests/graph/test_template_store.py
+          packages/maistro-core/tests/scheduling
+          -v --tb=short
 
   test:
     runs-on: ubuntu-latest

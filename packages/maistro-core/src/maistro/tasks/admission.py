@@ -20,7 +20,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
 
-from maistro.runs.admission import admit_direct_work
+from maistro.runs.admission import (
+    SESSION_ID_KEY,
+    USER_ID_KEY,
+    admit_direct_work,
+)
+from maistro.runs.binding import ProjectBinding
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
@@ -54,9 +59,11 @@ RUN_STATUS_BY_TASK_STATUS: dict[TaskStatus, RunStatus] = {
 #: `admission_source` value for work that entered through the task queue.
 TASK_QUEUE_SOURCE = "task_queue"
 
-#: Provenance keys correlating the Run back to the receipt that admitted it.
+#: Provenance key correlating the Run back to the receipt that admitted it.
+#: `SESSION_ID_KEY` is re-exported from `maistro.runs.admission`, where chat
+#: admission also reads it — one spelling, or a conversation's Runs cannot be
+#: queried as a set.
 TASK_ID_KEY = "task_id"
-SESSION_ID_KEY = "session_id"
 
 
 class TaskAdmitter(Protocol):
@@ -90,30 +97,17 @@ class TaskRunAdmitter:
         project_store: ProjectScopeStore | None = None,
         intents: IntentRegistry | None = None,
     ) -> None:
-        if not workspace_id.strip():
-            raise ValueError("workspace_id must be a non-empty string")
-        if project_id is None and project_store is None:
-            raise ValueError(
-                "TaskRunAdmitter needs either an explicit project_id or a project_store "
-                "to resolve the Workspace's Root Project"
-            )
         self._runs = run_store
-        self._workspace_id = workspace_id
-        self._project_id = project_id
-        self._projects = project_store
+        self._binding = ProjectBinding(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            project_store=project_store,
+        )
         self._intents = intents
 
-    async def _resolve_project_id(self) -> str:
-        if self._project_id is not None:
-            return self._project_id
-        if self._projects is None:  # pragma: no cover - guarded in __init__
-            raise RuntimeError("TaskRunAdmitter has no project_store to resolve a Project")
-        root = await self._projects.root_for_workspace(self._workspace_id)
-        # Cached: a Workspace's Root Project is created once and never moves,
-        # so re-resolving it on every submission is a store round-trip for an
-        # answer that cannot have changed.
-        self._project_id = root.project_id
-        return self._project_id
+    @property
+    def _workspace_id(self) -> str:
+        return self._binding.workspace_id
 
     async def admit(self, task: TaskResponse) -> str:
         """Admit one queued task as a Run and return its ``run_id``."""
@@ -127,7 +121,7 @@ class TaskRunAdmitter:
         if task.session_id:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
-            provenance["user_id"] = task.user_id
+            provenance[USER_ID_KEY] = task.user_id
         run = await admit_direct_work(
             self._runs,
             # The receipt is born QUEUED, so the Run is created QUEUED. Creating
@@ -137,7 +131,7 @@ class TaskRunAdmitter:
             # recovery scan looking for it.
             initial_status=RunStatus.QUEUED,
             workspace_id=self._workspace_id,
-            project_id=await self._resolve_project_id(),
+            project_id=await self._binding.project_id(),
             node_type=work.node_type,
             name=work.name,
             source=TASK_QUEUE_SOURCE,
@@ -193,6 +187,7 @@ __all__ = [
     "SESSION_ID_KEY",
     "TASK_ID_KEY",
     "TASK_QUEUE_SOURCE",
+    "USER_ID_KEY",
     "TaskAdmitter",
     "TaskRunAdmitter",
 ]

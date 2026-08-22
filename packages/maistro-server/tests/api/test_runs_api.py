@@ -24,9 +24,8 @@ WORKSPACE = "/tmp/maistro-workspace/test"  # nosec B108 — API contract, gated 
 async def wired():
     previous = queue_module._queue
     queue_module._queue = None
-    _scope_store, run_store, admitter = await wire_execution_spine(
-        None, workspace_id="test-workspace"
-    )
+    spine = await wire_execution_spine(None, workspace_id="test-workspace")
+    run_store, admitter = spine.run_store, spine.task_admitter
     configure_task_queue(admitter=admitter)
     runs_api.configure_run_store(run_store)
     try:
