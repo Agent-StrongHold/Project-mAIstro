@@ -182,7 +182,7 @@ ACCEPTED_NODE_OUTCOME_STATUSES = frozenset(
 class GraphSnapshot(BaseModel):
     """Immutable-by-value Graph definition captured when a Run is created."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, ser_json_inf_nan="constants")
 
     graph_id: str
     workspace_id: str
@@ -228,7 +228,7 @@ class GraphSnapshot(BaseModel):
 class Run(BaseModel):
     """One logical execution of a stable Graph snapshot in one Project scope."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
 
     run_id: str = Field(default_factory=_id)
     workspace_id: str
@@ -271,7 +271,7 @@ class Run(BaseModel):
 class ExecutionLease(BaseModel):
     """Durable authority token for one physical Attempt execution epoch."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, ser_json_inf_nan="constants")
 
     node_run_id: str
     attempt_id: str
@@ -295,7 +295,7 @@ class ExecutionLease(BaseModel):
 class AttemptResult(BaseModel):
     """Immutable evidence produced by one terminal physical Attempt."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, ser_json_inf_nan="constants")
 
     attempt_id: str
     node_run_id: str
@@ -334,7 +334,7 @@ class AttemptResult(BaseModel):
 class AcceptedNodeOutcome(BaseModel):
     """Authoritative logical projection of one physically completed AttemptResult."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, ser_json_inf_nan="constants")
 
     node_run_id: str
     attempt_result: AttemptResult
@@ -377,7 +377,7 @@ class AcceptedNodeOutcome(BaseModel):
 class NodeRun(BaseModel):
     """One logical execution of one Node within a Run."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
 
     node_run_id: str = Field(default_factory=_id)
     run_id: str
@@ -416,7 +416,7 @@ class NodeRun(BaseModel):
 class Attempt(BaseModel):
     """One physical try under a NodeRun."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
 
     attempt_id: str = Field(default_factory=_id)
     node_run_id: str
