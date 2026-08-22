@@ -426,13 +426,21 @@ class TestS3NamespaceIsolation:
 class TestS3CredentialsAreExplicitOrAbsent:
     """Half a credential silently became no credential, and boto fell back to
     the host's ambient chain — so a malformed secret configuration archived into
-    whatever account an instance role or developer profile pointed at."""
+    whatever account an instance role or developer profile pointed at.
+
+    These need no server but they do need the SDK, since they construct the
+    store. `importorskip` rather than the `S3_ENDPOINT` gate the rest of the S3
+    tests use: the distinction is the dependency, not the endpoint. They still
+    run in CI — the `archive` job installs `maistro-core[s3]` — they are only
+    skipped in the plain `test` job, which deliberately runs a base install.
+    """
 
     @pytest.mark.parametrize(
         ("access_key_id", "secret_access_key", "missing"),
         [("AKIA-something", None, "secret_access_key"), (None, "a-secret", "access_key_id")],
     )
     def test_half_a_pair_is_rejected(self, access_key_id, secret_access_key, missing):
+        pytest.importorskip("aioboto3")
         from maistro.memory.archive import s3_archive_store
 
         with pytest.raises(ValueError, match=missing):
@@ -442,6 +450,7 @@ class TestS3CredentialsAreExplicitOrAbsent:
 
     def test_neither_is_accepted_as_a_deliberate_choice(self):
         """Omitting both is how a deployment asks for the instance role."""
+        pytest.importorskip("aioboto3")
         from maistro.memory.archive import s3_archive_store
 
         assert s3_archive_store(bucket="b") is not None
