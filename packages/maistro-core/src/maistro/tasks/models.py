@@ -84,6 +84,11 @@ class TaskResponse(BaseModel):
     # the API boundary and silently dropped before scheduling ever sees them.
     lane: Lane = Lane.BACKGROUND
     priority_tier: Literal["P0", "P1", "P2", "P3", "P4", "P5"] = "P2"
+    session_id: str | None = None
+    # Canonical execution identity (#41). Populated at submission when the queue
+    # is wired to a Run store; ``None`` means this build admitted the task
+    # without a Run, and the receipt is all the execution identity there is.
+    run_id: str | None = None
     phase: str | None = None
     progress: TaskProgress = Field(default_factory=TaskProgress)
     result: TaskResult | None = None

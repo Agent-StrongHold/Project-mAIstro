@@ -42,6 +42,11 @@ class TaskRecord:
         return self._task.task_id
 
     @property
+    def run_id(self) -> str | None:
+        """Canonical execution identity (#41), or None where none was admitted."""
+        return getattr(self._task, "run_id", None)
+
+    @property
     def name(self) -> str:
         return self._task.description[:60]
 
@@ -107,11 +112,14 @@ class TaskBackend(Protocol):
 class LocalTaskBackend:
     """Wraps TaskQueue + TaskRunner in-process. Demo/dev mode only (ADR-096)."""
 
-    def __init__(self, *, executor: Any) -> None:
+    def __init__(self, *, executor: Any, admitter: Any = None) -> None:
         from maistro.tasks.queue import TaskQueue
         from maistro.tasks.runner import TaskRunner
 
-        self._queue = TaskQueue()
+        # `admitter` is the core Container's seam onto the canonical Run spine
+        # (#41). None means this process has no Container — the stub path — and
+        # the queue then admits without a Run rather than inventing one.
+        self._queue = TaskQueue(admitter=admitter)
         self._runner = TaskRunner(self._queue, executor=executor)
 
     async def start(self) -> None:

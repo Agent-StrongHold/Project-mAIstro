@@ -46,6 +46,7 @@ async def create_task(
     return TaskCreatedResponse(
         task_id=task.task_id,
         status=task.status.value,
+        run_id=task.run_id,
         task=task,
     )
 

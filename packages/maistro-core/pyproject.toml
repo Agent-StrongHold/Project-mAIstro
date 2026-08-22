@@ -33,6 +33,14 @@ llm = [
     # Resolves at 3.x in the workspace lock; >=2.0 remains the true floor.
     "fastmcp>=2.0,<4",
 ]
+# Object storage for the archive tier (ADR-082226-f436). Optional on purpose:
+# maistro-core is a library other products import (ADR-019), and a transitive
+# boto3 is a large, opinionated dependency to inflict on a consumer that wanted
+# a router. `maistro.archive` imports cleanly without it and the filesystem
+# backend needs nothing — see archive/s3.py for the lazy import.
+s3 = [
+    "boto3>=1.34,<2",
+]
 # The sandbox tool drives the `docker` CLI via subprocess, not the Python SDK,
 # so it needs no pip dependency. Kept as an explicit (empty) extra for clarity.
 sandbox = []

@@ -29,17 +29,11 @@ from maistro.observability.metrics import (
     tasks_failed_total,
     tasks_submitted_total,
 )
+from maistro.tasks.admission import TaskAdmitter
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
-
-
-def _naive(value: datetime | None) -> datetime | None:
-    """TaskRecord columns are timezone-naive; store UTC wall-clock values."""
-    if value is None:
-        return None
-    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _record_values(task: TaskResponse) -> dict[str, Any]:
@@ -47,6 +41,7 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
     so the fire-and-forget write cannot race later in-memory mutation."""
     return {
         "id": task.task_id,
+        "run_id": task.run_id,
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
@@ -54,8 +49,8 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
         "result": task.result.model_dump(mode="json") if task.result else None,
-        "started_at": _naive(task.started_at),
-        "completed_at": _naive(task.completed_at),
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
     }
 
 
@@ -100,7 +95,13 @@ _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCE
 class TaskQueue:
     """In-memory task queue with event-based notification and async lock."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, admitter: TaskAdmitter | None = None) -> None:
+        # Canonical execution identity (#41). When an admitter is wired every
+        # submission creates a Run before the task is queued, and the task row
+        # carries its run_id. When it is not, submission behaves as it always
+        # did and `run_id` stays None — the queue does not fabricate an
+        # execution identity it cannot back with a Run.
+        self._admitter = admitter
         self._tasks: OrderedDict[str, TaskResponse] = OrderedDict()
         self._pending: asyncio.Queue[str] = asyncio.Queue()
         self._lock = asyncio.Lock()
@@ -188,10 +189,17 @@ class TaskQueue:
             tier=request.tier or 2,
             lane=request.lane,
             priority_tier=request.priority_tier,
+            session_id=request.session_id,
             phase="queued",
             progress=TaskProgress(),
             created_at=datetime.now(UTC),
         )
+        if self._admitter is not None:
+            # Deliberately not best-effort. TaskRecord persistence may fail
+            # without the task failing, because the row is a receipt; the Run
+            # is the execution identity, and a task admitted without one would
+            # be exactly the untracked second lifecycle #41 exists to remove.
+            task.run_id = await self._admitter.admit(task)
         async with self._lock:
             self._tasks[task_id] = task
             self._maybe_prune()
@@ -202,6 +210,7 @@ class TaskQueue:
         await logger.ainfo(
             "task_queued",
             task_id=task_id,
+            run_id=task.run_id,
             description=request.description[:DESCRIPTION_LOG_PREVIEW_LEN],
         )
         return task
@@ -218,7 +227,21 @@ class TaskQueue:
             return None
         return task
 
-    async def update_status(self, task_id: str, status: TaskStatus) -> bool:
+    async def update_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        *,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> bool:
+        """Advance the task, and the Run behind it, together.
+
+        ``result``/``error`` are the terminal outcome. They go to the Run rather
+        than the receipt — `set_result` still owns the receipt's own copy — so a
+        caller following the canonical run_id learns *how* the work ended and not
+        merely that it did.
+        """
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -230,6 +253,25 @@ class TaskQueue:
                 logger.warning(
                     "invalid_state_transition",
                     task_id=task_id,
+                    current=task.status.value,
+                    requested=status.value,
+                )
+                return False
+
+            # The Run moves first, and refusing there refuses here (#41). The
+            # receipt must never record a state the execution identity rejected,
+            # or the two tell different stories about the same work.
+            if (
+                self._admitter is not None
+                and task.run_id
+                and not await self._admitter.record_transition(
+                    task.run_id, status, result=result, error=error
+                )
+            ):
+                logger.warning(
+                    "run_refused_task_transition",
+                    task_id=task_id,
+                    run_id=task.run_id,
                     current=task.status.value,
                     requested=status.value,
                 )
@@ -364,4 +406,37 @@ def get_task_queue() -> TaskQueue:
     global _queue
     if _queue is None:
         _queue = TaskQueue()
+    return _queue
+
+
+def reset_task_queue() -> None:
+    """Drop the process singleton, so a later lifespan can install a fresh one.
+
+    Startup refuses to replace a queue that already accepted tasks, which is
+    right — a queued task cannot be given a Run after the fact. But shutdown
+    never cleared it, so any interpreter that ran the FastAPI lifespan twice
+    after serving traffic (an embedded server, a TestClient reused across
+    modules) could not start again. Teardown clearing the singleton is what
+    makes the startup check a guard rather than a one-shot latch.
+    """
+    global _queue
+    _queue = None
+
+
+def configure_task_queue(*, admitter: TaskAdmitter | None) -> TaskQueue:
+    """Install the process singleton with a Run admitter wired (#41).
+
+    Call once at startup, before anything resolves `get_task_queue`. FastAPI
+    routes depend on the singleton, so the admitter has to reach it here rather
+    than at each call site — and it has to be installed before the first
+    submission, because a task admitted without a Run cannot be given one
+    afterwards without inventing its execution history.
+    """
+    global _queue
+    if _queue is not None and _queue._tasks:
+        raise RuntimeError(
+            "configure_task_queue() called after tasks were submitted; the "
+            "already-queued tasks have no Run and cannot be given one"
+        )
+    _queue = TaskQueue(admitter=admitter)
     return _queue

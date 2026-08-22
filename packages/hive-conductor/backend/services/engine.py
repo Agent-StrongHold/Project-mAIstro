@@ -56,6 +56,17 @@ class EngineService:
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "episodic_store", None)
 
+    @property
+    def task_admitter(self) -> Any:
+        """The core Container's seam onto the canonical Run spine, or None.
+
+        None is a real answer, like `episodic_store` above: without the bridge
+        there is no Run store in this process, and a task queue told to admit
+        against nothing would fail every submission.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "task_admitter", None)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
@@ -105,7 +116,7 @@ class EngineService:
                     executor = run_task
                     logger.info("LocalTaskBackend (demo) using engineering conductor executor")
 
-                backend = LocalTaskBackend(executor=executor)
+                backend = LocalTaskBackend(executor=executor, admitter=self.task_admitter)
                 await backend.start()
                 self._backend = backend
                 if pm_mode:

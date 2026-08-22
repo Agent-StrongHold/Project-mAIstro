@@ -3,6 +3,9 @@
 **Project:** Maistro Engine — Shared Python runtime for AI agent platforms
 **License:** Apache 2.0
 **Python:** 3.12+ (the version CI actually tests; 3.11 was claimed but never tested)
+**PostgreSQL:** 17-19, 18 recommended. CI matrixes 17 and 18 against `pgvector/pgvector`;
+19 is expected to work and is added the day a pgvector image ships for it. Below 17 the
+container refuses at startup rather than failing later.
 
 ---
 
@@ -61,7 +64,7 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Builders** | `maistro.builders` | Pipeline: spec → tests → code → review |
 | **A2A** | `maistro.a2a` | Agent-to-agent delegation + lifecycle |
 | **Skills** | `maistro.skills` | Marketplace, Forge, parser, canary |
-| **Persistence** | `maistro.persistence` | PostgreSQL stores (learnings, agents, audit, quota) |
+| **Persistence** | `maistro.persistence` | PostgreSQL stores (learnings, outcomes, sessions, agents, audit, quota, prompts) + SQLite twins for homelab. `postgresql://` selects PG, `sqlite:` SQLite, `memory://` neither |
 | **Protocols** | `maistro.protocols` | Abstract interfaces for DI |
 | **Types** | `maistro.types` | Shared dataclasses |
 | **Orchestrator** | `maistro.orchestrator` | Super Planner + Master Orchestrator |
@@ -215,7 +218,7 @@ maistro-engine/
 │   │       ├── memory/          # learnings, episodic, scopes, outcomes
 │   │       ├── observability/   # logging, metrics, tracing
 │   │       ├── orchestrator/    # Super Planner, Master Orchestrator
-│   │       ├── persistence/     # PostgreSQL stores
+│   │       ├── persistence/     # PostgreSQL stores + SQLite twins (same protocols)
 │   │       ├── protocols/       # abstract interfaces
 │   │       ├── quota/           # billing, tracker
 │   │       ├── router/          # scorer, selector, filter, scarcity, speed

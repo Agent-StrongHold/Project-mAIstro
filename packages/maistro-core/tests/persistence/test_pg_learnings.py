@@ -97,6 +97,8 @@ def make_learning(**overrides: Any) -> Learning:
         "trigger_keys": ["foo", "bar"],
         "learning": "do not do X",
         "tool_name": "bash",
+        "source_query": "why did X fail",
+        "team_id": "team-a",
         "agent_id": "scribe",
         "user_id": "u1",
         "scope": MemoryScope.AGENT,
@@ -140,9 +142,13 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         ["foo", "bar"],
         "do not do X",
         "bash",
+        # source_query and team_id, which the insert used to omit while the read
+        # paths selected them — see #122.
+        "why did X fail",
         "scribe",
         "u1",
         "",
+        "team-a",
         MemoryScope.AGENT,
         "active",
         None,
@@ -204,7 +210,13 @@ async def test_store_defaults_missing_agent_id_to_empty_string(
     await store.store(make_learning(agent_id=None))
 
     insert_call = conn.calls[1]
-    assert insert_call.args[4] == ""  # agent_id position
+    # Position derived from the query's own column list, not hardcoded: this
+    # assertion silently moved onto source_query when the insert gained it
+    # (#122), which is the failure mode of asserting on argument tuples.
+    columns = insert_call.query.split("(", 1)[1].split(")", 1)[0]
+    position = [c.strip() for c in columns.split(",")].index("agent_id")
+
+    assert insert_call.args[position] == ""
 
 
 async def test_store_returns_zero_when_insert_returns_no_row(

@@ -110,7 +110,17 @@ class DatabaseSettings(BaseSettings):
 
     @property
     def sync_url(self) -> str:
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        """Synchronous URL, used by Alembic (`alembic/env.py`).
+
+        The driver is named explicitly. Bare `postgresql://` makes SQLAlchemy
+        reach for psycopg2, which this project has never declared as a
+        dependency — so `alembic upgrade head`, the schema-evolution path
+        ADR-087 documents, failed with ModuleNotFoundError on any clean install.
+        psycopg 3 is the maintained driver and is what the lock now carries.
+        """
+        return (
+            f"postgresql+psycopg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        )
 
 
 class LiteLLMSettings(BaseSettings):
@@ -178,6 +188,10 @@ class Settings(BaseSettings):
 
     app_name: str = "maistro-engine"
     debug: bool = False
+    # The Workspace this instance admits work into (#41), mirroring
+    # AgentConfig.workspace_id. One instance is one Workspace; hard tenancy is
+    # Stronghold's (ADR-019/ADR-068).
+    workspace_id: str = "default"
     # Default to loopback so a careless dev-server start doesn't expose the
     # API on every interface. Container deployments override this via the
     # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).
