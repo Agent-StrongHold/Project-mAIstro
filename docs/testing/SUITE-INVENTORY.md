@@ -103,12 +103,27 @@ templates). Retiring the PM-demo surface removes eighteen Hive backend node IDs
 and one e2e case along with the routes and services they covered. A reader who
 only checked the total would see no change at all.
 
+Merging the canonical-Run base back into this branch moves maistro-core by +432
+and maistro-server by +1. Almost none of it is new work here: it is the
+arithmetic of a stack whose lower PRs kept landing after this inventory was
+last refreshed — the durable PostgreSQL spine and its conformance suites, the
+strike-tracker protocol, durable events, the chat-turn Run seam, task execution
+through NodeRun and Attempt, schedule and delegation admission, the graph
+template store, and the retention sweep. The base contributes the PostgreSQL
+container backend, the S3 archive tier, and four CI fixes that add no tests.
+
+A stale inventory in the middle of a stack is worth naming rather than quietly
+refreshing. Only Registry CI and Formal Conformance run on a pull request based
+on another branch, so this tree had never been seen by `check-suite-inventory`
+at all — and that number is precisely what would otherwise absorb a suite
+silently dropping out of collection.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6623 | `ci.yml` |
+| `packages/maistro-core/tests` | 7055 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
-| `packages/maistro-server/tests` | 201 | `ci.yml` |
+| `packages/maistro-server/tests` | 202 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |

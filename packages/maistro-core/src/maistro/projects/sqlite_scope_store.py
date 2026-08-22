@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -71,6 +72,12 @@ class SqliteProjectScopeStore:
         """Bind the store to an application-owned SQLite connection."""
 
         self._conn = conn
+        self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+
+    def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
+        """Register the predicate `delete()` consults for Run ownership."""
+
+        self._owns_runs = owns_runs
 
     async def ensure_schema(self) -> None:
         """Create canonical Project tables and integrity indexes."""
@@ -241,6 +248,12 @@ class SqliteProjectScopeStore:
             (project_id,),
         ):
             raise ProjectNotEmpty("Project has ProjectMembership records")
+        # The Run tables belong to `runs.sqlite_store`, so this store asks
+        # rather than joining: deleting a Project out from under its Run history
+        # is the rule, and only the Run store can answer whether it applies.
+        # PostgreSQL expresses the same rule as a foreign key.
+        if self._owns_runs is not None and await self._owns_runs(project_id):
+            raise ProjectNotEmpty("Project has canonical Runs")
         await self._conn.execute(
             "DELETE FROM canonical_projects WHERE project_id = ?",
             (project_id,),

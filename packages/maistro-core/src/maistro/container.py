@@ -15,11 +15,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
+from maistro.a2a.admission import DelegationRunAdmitter
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+from maistro.graph.templates import GraphTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -27,9 +29,11 @@ from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.projects.store import InMemoryProjectStore
+from maistro.protocols import StrikeTracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.chat import ChatRunAdmitter
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.security.gate import Gate
@@ -86,7 +90,6 @@ if TYPE_CHECKING:
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
-    from maistro.security.strikes import InMemoryStrikeTracker
     from maistro.skills.import_pipeline import (
         PolicyAttachmentStore,
         SkillImportRequest,
@@ -125,6 +128,14 @@ class Container:
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
+    # Chat's half of the same seam (#131). Optional in the same way the rest of
+    # the spine is: a Container built directly, without `create_container`, still
+    # routes requests — it just does not admit Runs for them.
+    chat_admitter: ChatRunAdmitter | None = None
+    # Where a Graph definition comes from when a Run is not trivial work — a
+    # schedule firing, or anything else that instantiates a drawn topology
+    # rather than a one-node stand-in (#145).
+    template_store: GraphTemplateStore | None = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -170,6 +181,12 @@ class Container:
     secret_store: SecretStore = None  # type: ignore[assignment]
     # A2A delegation broker (ADR-058).
     a2a_broker: A2ABroker = None  # type: ignore[assignment]
+    # The in-process delegator `agent.delegate_remote` dispatches through, and
+    # the seam that files delegated work as a child Run (#147). Exposed on the
+    # Container because `build_node_resolver` is called by its consumers rather
+    # than by the container, so they need somewhere to read them from.
+    a2a_delegator: Any = None
+    delegation_admitter: Any = None
     # Hierarchical orchestration across foreign harnesses (ADR-101).
     harness_registry: HarnessRegistry = None  # type: ignore[assignment]
     hierarchy: HierarchicalOrchestrator = None  # type: ignore[assignment]
@@ -187,7 +204,10 @@ class Container:
     elevation_store: ElevationStore = None  # type: ignore[assignment]
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
-    strike_tracker: InMemoryStrikeTracker | None = None
+    # Typed against the protocol, not a concrete tracker: `Gate` reading
+    # attributes off whatever this holds is how a dict-returning implementation
+    # got as far as looking like a drop-in (#134).
+    strike_tracker: StrikeTracker | None = None
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -207,6 +227,7 @@ class Container:
         auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         # An armed security control that cannot run is worse than an unarmed
         # one: the operator believes it is enforcing. Both controls this
@@ -242,6 +263,7 @@ class Container:
             auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
+            request_id=request_id,
         )
         return result
 
@@ -445,10 +467,11 @@ async def create_container(
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
     intent_registry = build_intent_registry()
-    project_scope_store, run_store, task_admitter = await wire_execution_spine(
+    spine = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
         intents=intent_registry,
+        pg_pool=pg_pool,
     )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
@@ -518,21 +541,19 @@ async def create_container(
             trigger_store,
             invocation_store,
         ) = await _wire_sqlite_durable_events(db_pool)
+    elif pg_pool is not None:
+        from maistro.events.pg_stores import PgEventLog, PgInvocationStore, PgTriggerStore
+
+        # Tables come from `alembic/versions/011`; the PostgreSQL preflight
+        # already refuses an unmigrated database by name, so there is no
+        # ensure_schema here and no second schema owner.
+        durable_event_log = PgEventLog(pg_pool)
+        trigger_store = PgTriggerStore(pg_pool)
+        invocation_store = PgInvocationStore(pg_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -583,6 +604,7 @@ async def create_container(
     # --- A2A delegation broker (ADR-058) ----------------------------------
     agents: dict[str, Agent] = {}
     a2a_broker = _wire_a2a_broker(agents)
+    a2a_delegator = _wire_a2a_delegator(agents)
 
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
@@ -621,9 +643,11 @@ async def create_container(
         capabilities=capabilities,
         episodic_store=episodic_store,
         project_store=project_store,
-        project_scope_store=project_scope_store,
-        run_store=run_store,
-        task_admitter=task_admitter,
+        project_scope_store=spine.project_store,
+        run_store=spine.run_store,
+        task_admitter=spine.task_admitter,
+        chat_admitter=spine.chat_admitter,
+        template_store=spine.template_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
@@ -644,6 +668,8 @@ async def create_container(
         token_store=token_store,
         secret_store=secret_store,
         a2a_broker=a2a_broker,
+        a2a_delegator=a2a_delegator,
+        delegation_admitter=DelegationRunAdmitter(spine.run_store, intents=intent_registry),
         harness_registry=harness_registry,
         hierarchy=hierarchy,
         harness_adapters=wired_harness_adapters,
@@ -682,31 +708,31 @@ def _wire_audit_log(pg_pool: Any) -> Any:
     return PgAuditLog(pg_pool)
 
 
-def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> InMemoryStrikeTracker | None:
-    """The strike ladder, which stays in-memory even on PostgreSQL — loudly.
+def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
+    """The strike ladder, durable when there is somewhere durable to put it.
 
-    `security.pg_strikes.PgStrikeTracker` looks like a drop-in and is not. Its
-    `get()` returns a dict where `Gate` does attribute access on a
-    `StrikeRecord`, and its `record_violation()` returns only
-    user_id/strike_count/escalated where `Gate` reads scrutiny_level,
-    locked_until and disabled as well. Wiring it would raise AttributeError on
-    the first security violation — the worst possible place to find out. Making
-    it usable needs an adapter, which is #134; until then the operator is told
-    that lockout state does not survive a restart rather than left to assume a
-    configured database means it does.
+    Lockout state that resets on restart is a lockout an attacker clears by
+    waiting for a deploy, and an in-memory ladder is only as shared as one
+    process — so a multi-worker deployment does not have one ladder, it has
+    several. PostgreSQL is the answer to both.
+
+    `PgStrikeTracker` used to be unsubstitutable here (#134): it returned dicts
+    where `Gate` does attribute access, and wiring it would have raised
+    AttributeError on the first security violation. Both now satisfy
+    `protocols.StrikeTracker`, and one conformance suite runs the same bodies
+    against each, which is what makes swapping them safe rather than hopeful.
     """
     if not enabled:
         return None
+    if pg_pool is not None:
+        from maistro.security.pg_strikes import PgStrikeTracker
+
+        logger.info("Strike ladder armed (3-strike escalation via PgStrikeTracker).")
+        return PgStrikeTracker(pg_pool)
     from maistro.security.strikes import InMemoryStrikeTracker
 
-    tracker = InMemoryStrikeTracker()
     logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
-    if pg_pool is not None:
-        logger.warning(
-            "Strike ladder is in-memory despite a PostgreSQL backend: lockout state "
-            "resets on restart. PgStrikeTracker is not yet Gate-compatible (#134)."
-        )
-    return tracker
+    return InMemoryStrikeTracker()
 
 
 #: URL schemes that select the PostgreSQL backend. `postgres://` is the legacy
@@ -728,6 +754,14 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # The canonical spine (migration 010). Listed because the preflight is what
+    # a deployment migrated only to revision 009 hits first — without these,
+    # startup got past this check and failed later with a raw
+    # `UndefinedTableError` from the first spine query.
+    "canonical_projects",
+    "canonical_runs",
+    "canonical_node_runs",
+    "canonical_attempts",
 )
 
 
@@ -1013,6 +1047,40 @@ def _wire_a2a_broker(agents: dict[str, Agent]) -> A2ABroker:
     return A2ABroker(resolver=_AgentMapCardResolver(), local=LocalTransport(_invoke))
 
 
+def _wire_a2a_delegator(agents: dict[str, Agent]) -> Any:
+    """Wire the in-process delegator over the container's live agent map (#147).
+
+    Policy comes from the agent's own identity — `delegation_mode` and
+    `sub_agents` — which is the same source `A2ABroker._enforce_policy` reads.
+    `A2ADelegator` keeps a separate `_agent_capabilities` table that nothing
+    ever populated, so every delegation through it raised "has no delegation
+    capabilities"; deriving the table from the cards means there is one policy
+    with two dispatch shapes rather than two policies.
+
+    The trust-tier ceiling is deliberately *not* reproduced here. It belongs to
+    the broker's synchronous path, where the caller's card is resolved at
+    dispatch; this table is built once at startup and would go stale. An
+    ALLOW_ALL agent therefore gets the broad table, and the tier check remains
+    the broker's to make — recorded so the difference is a decision rather than
+    an oversight.
+    """
+    from maistro.a2a.delegate import A2ADelegator, DelegationMode
+
+    delegator = A2ADelegator()
+    for name, agent in agents.items():
+        identity = agent.identity
+        mode = getattr(identity, "delegation_mode", DelegationMode.NONE)
+        if mode == DelegationMode.ALLOW_LIST:
+            allowed = [target for target in identity.sub_agents if target in agents]
+        elif mode == DelegationMode.ALLOW_ALL:
+            allowed = [target for target in agents if target != name]
+        else:
+            continue
+        if allowed:
+            delegator.register_agent_capability(name, allowed)
+    return delegator
+
+
 def _wire_hierarchy(
     agents: dict[str, Agent],
     skill_registry: InMemorySkillRegistry,
@@ -1076,6 +1144,9 @@ def build_node_resolver(
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     usage_log: InMemoryUsageLog | None = None,
+    a2a_delegator: Any = None,
+    guest_peers: Any = None,
+    delegation_admitter: Any = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -1113,6 +1184,18 @@ def build_node_resolver(
             return AgentSpawnHarnessNode(adapters=resolved_adapters)
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
+        if kind == "agent.delegate_remote":
+            # Previously fell through to `get_node(kind)()`, which constructs it
+            # with both dependencies at their `None` defaults — so in every
+            # production process the node returned "no a2a_delegator configured"
+            # for every delegation, as a value rather than an error (#147).
+            from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+
+            return AgentDelegateRemoteNode(
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                delegation_admitter=delegation_admitter,
+            )
         return get_node(kind)()
 
     return _resolver

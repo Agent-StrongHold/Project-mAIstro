@@ -54,12 +54,17 @@ async def test_in_process_first_reach_pauses_with_task_id() -> None:
     assert delegator.get_task_status(result.metadata["task_id"]) is not None
 
 
-async def test_in_process_no_delegator_configured_fails_without_pausing() -> None:
+async def test_in_process_without_a_delegator_is_a_node_failure() -> None:
+    """The companion to the cross-instance case, and the one that mattered
+    most: `build_node_resolver` constructed this node with both dependencies at
+    their None defaults, so every production delegation returned this — as a
+    value nothing surfaced (#147)."""
     node = AgentDelegateRemoteNode()  # no a2a_delegator injected
     result = await node.run({"from_agent": "planner", "task": "x"}, _ctx(node_id="delegate-1"))
-    assert result.status == "completed"
-    assert result.output.status == "failed"
-    assert result.output.error == "no a2a_delegator configured"
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.error_code == "DelegationUnavailable"
+    assert "A2ADelegator" in (result.error_message or "")
 
 
 async def test_in_process_delegation_rejected_returns_without_pausing() -> None:
@@ -133,14 +138,22 @@ async def test_cross_instance_first_reach_pauses_with_task_id() -> None:
     )
 
 
-async def test_cross_instance_no_guest_peers_configured_fails_without_pausing() -> None:
+async def test_cross_instance_without_guest_peers_is_a_node_failure() -> None:
+    """An unwired deployment is not the peer declining the work (#147).
+
+    This used to return `success=True` with `output.status="failed"`, which is
+    the same shape a peer refusal takes — so a process that had never
+    registered a peer looked like a remote agent that kept saying no. It is now
+    a node failure carrying the reason, which is what an operator can act on.
+    """
     node = AgentDelegateRemoteNode()  # no guest_peers injected
     result = await node.run(
         {"from_agent": "planner", "task": "x", "peer_name": "hub"}, _ctx(node_id="delegate-2")
     )
-    assert result.status == "completed"
-    assert result.output.status == "failed"
-    assert result.output.error == "no guest_peers manager configured"
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.error_code == "DelegationUnavailable"
+    assert "GuestPeerManager" in (result.error_message or "")
 
 
 async def test_cross_instance_peer_rejected_returns_without_pausing() -> None:

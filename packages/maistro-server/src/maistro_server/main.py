@@ -9,6 +9,7 @@ import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
@@ -53,6 +54,42 @@ except importlib.metadata.PackageNotFoundError:
 
 # Graceful shutdown drain timeout (seconds)
 SHUTDOWN_DRAIN_TIMEOUT = 30.0
+
+
+async def _open_run_spine_pool() -> Any:
+    """An asyncpg pool for the canonical spine, when one is configured.
+
+    This app has no DI container, so it reads `DATABASE_URL` directly — the same
+    variable `maistro.memory.store.get_engine()` reads a few lines above, so the
+    two cannot disagree about which database this process is talking to.
+
+    Returns None for any non-PostgreSQL value, including unset. A failure to
+    connect is deliberately *not* caught: a deployment that configured a durable
+    database and got in-memory Runs without being told is exactly the defect
+    #122 was filed about.
+    """
+    from maistro.container import (
+        POSTGRES_SCHEMES,
+        _asyncpg_dsn,
+        _require_postgres_schema,
+        _require_supported_postgres,
+    )
+
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url.startswith(POSTGRES_SCHEMES):
+        return None
+    from maistro.persistence import get_pool
+
+    pool = await get_pool(_asyncpg_dsn(database_url))
+    # The same preflight the container path runs. Without it a database
+    # migrated only as far as revision 009 got past this, and `wire_execution_spine`
+    # then queried `canonical_projects` and failed startup with a raw
+    # `UndefinedTableError` — the operator learning about a missing migration
+    # from a driver error rather than from the message written for it.
+    async with pool.acquire() as conn:
+        await _require_supported_postgres(conn)
+        await _require_postgres_schema(conn)
+    return pool
 
 
 def _validate_startup(settings: Settings) -> None:
@@ -108,22 +145,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Canonical execution identity (#41): every task submitted through /tasks
     # gets a Run over a one-node Graph, and the response carries its run_id.
-    # In-process store: this app talks to Postgres, and no Postgres Run store
-    # exists yet (#122), so Runs do not survive a restart here. Said out loud
-    # rather than left to be discovered, because a run_id that silently stops
-    # resolving is worse than one that was never promised.
-    _scope_store, run_store, admitter = await wire_execution_spine(
-        None, workspace_id=settings.workspace_id
-    )
-    await logger.awarning(
-        "run_store_in_process_only",
-        workspace_id=settings.workspace_id,
-        detail="Runs admitted by /tasks are lost on restart until a durable store is wired (#122)",
-    )
-    queue = configure_task_queue(admitter=admitter)
+    # Durable on PostgreSQL (#132); in-process otherwise, and said so — a run_id
+    # that silently stops resolving is worse than one that was never promised.
+    pg_pool = await _open_run_spine_pool()
+    spine = await wire_execution_spine(None, workspace_id=settings.workspace_id, pg_pool=pg_pool)
+    if pg_pool is None:
+        await logger.awarning(
+            "run_store_in_process_only",
+            workspace_id=settings.workspace_id,
+            detail=(
+                "Runs admitted by /tasks are lost on restart. Configure a "
+                "postgresql:// DATABASE_URL and run `alembic upgrade head` for a "
+                "durable execution spine (#132)."
+            ),
+        )
+    queue = configure_task_queue(admitter=spine.task_admitter)
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.
-    runs.configure_run_store(run_store)
+    runs.configure_run_store(spine.run_store)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog
@@ -141,7 +180,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             api_key=settings.task_progress_webhook_api_key,
         )
 
-    _runner = TaskRunner(queue, executor=run_task, progress_webhook=progress_wh)
+    # `run_store` is what routes execution through the canonical NodeRun and
+    # Attempt (#143). Without it the Run records only that work was admitted.
+    _runner = TaskRunner(
+        queue,
+        executor=run_task,
+        progress_webhook=progress_wh,
+        run_store=spine.run_store,
+    )
     await _runner.start()
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
@@ -162,6 +208,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Run afterwards — and without this that guard latched permanently.
     reset_task_queue()
     runs.configure_run_store(None)
+
+    # Release the canonical spine's pool with everything else it holds.
+    from maistro.persistence import close_pool
+
+    await close_pool()
 
     await cleanup_all_containers()
 

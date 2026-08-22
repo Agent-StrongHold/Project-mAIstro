@@ -25,11 +25,37 @@ from maistro.graph.template_adapter import descriptor_to_template
 # Module-level registry so a per-process boot registers the seeds once.
 _registry: DagRegistry | None = None
 
-# Module-level resolver: this app imports maistro-core pieces directly rather
-# than constructing a full Container, so build_node_resolver()'s no-arg
-# defaults (the shared usage log, an empty harness-adapter map) are what it
-# picks up. The resolver receives the canonical Graph from run_durable_graph.
-_node_resolver = build_node_resolver()
+# Resolved lazily rather than at import: `agent.delegate_remote` needs the
+# Container's delegator and child-Run admitter (#147), and the Container does
+# not exist yet at import time. Built once and cached — the resolver closes over
+# the dependencies it was given, so rebuilding it per call would hand different
+# nodes different wiring within one process.
+_node_resolver: Callable[[str, Any], Any] | None = None
+
+
+def get_node_resolver() -> Callable[[str, Any], Any]:
+    """The process-wide node resolver, wired to the Container when there is one.
+
+    Without a Container the delegation dependencies are None and
+    `agent.delegate_remote` refuses loudly rather than returning a failed
+    result — which is the honest answer for a process that cannot delegate.
+    """
+    global _node_resolver
+    if _node_resolver is not None:
+        return _node_resolver
+    container = None
+    try:
+        from services.engine import get_engine
+
+        container = getattr(getattr(get_engine(), "_agent_port", None), "container", None)
+    except Exception:
+        container = None
+    _node_resolver = build_node_resolver(
+        a2a_delegator=getattr(container, "a2a_delegator", None),
+        delegation_admitter=getattr(container, "delegation_admitter", None),
+    )
+    return _node_resolver
+
 
 # One store for the process, not one per invocation. A fresh store per call
 # discarded the whole Run/NodeRun history the moment the call returned, so the
@@ -63,6 +89,7 @@ async def run_registered_dag(
     configure: Callable[[Graph], None] | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> tuple[Graph, Any]:
     """Execute a registered DAG through the canonical durable Run path.
 
@@ -86,9 +113,10 @@ async def run_registered_dag(
     record = await run_durable_graph(
         graph,
         store=_run_store,
-        node_resolver=_node_resolver,
+        node_resolver=get_node_resolver(),
         actor_principal_id=user_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     return graph, record

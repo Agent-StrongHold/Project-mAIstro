@@ -88,3 +88,71 @@ def _reset_shared_http() -> Iterator[None]:
 
     yield
     set_test_transport(None)
+
+
+# ── a real PostgreSQL for the suites that want one ────────────────
+#
+# Lives here rather than in `tests/persistence/` because two suites need it —
+# the persistence conformance tests (#122) and the execution-spine conformance
+# tests (#132) — and pytest fixtures do not cross sibling directories.
+# Duplicating it would be two definitions of "an isolated database", which is
+# the kind of drift the conformance suites exist to catch.
+
+#: Tables those suites write to, truncated between tests. Listed rather than
+#: discovered: truncating everything would take out the alembic version table
+#: and make a migrated database look unmigrated.
+_PG_SCRATCH_TABLES = (
+    "quota_usage",
+    "sessions",
+    "audit_log",
+    "learnings",
+    "outcomes",
+    "prompts",
+    "canonical_attempts",
+    "canonical_node_runs",
+    "canonical_runs",
+    "canonical_project_resources",
+    "canonical_project_memberships",
+    "canonical_projects",
+    "security_violations",
+    "security_strikes",
+    "security_rate_limits",
+    "handler_invocations",
+    "trigger_definitions",
+    "event_log",
+)
+
+
+@pytest.fixture
+async def pg_pool():
+    """An asyncpg pool on a migrated database, truncated before each test.
+
+    Yields ``None`` rather than skipping when no server is configured, so a
+    parametrized fixture can request it unconditionally and skip only its
+    PostgreSQL parametrization. Skipping here would take the whole suite with it.
+
+    Built directly rather than through `maistro.persistence.get_pool`, which is a
+    process singleton: one test's pool would outlive it and be handed to the
+    next, along with whatever event loop it was created on.
+    """
+    from maistro.testing.postgres import postgres_dsn
+
+    dsn = postgres_dsn()
+    if not dsn:
+        yield None
+        return
+    asyncpg = pytest.importorskip("asyncpg")
+
+    from maistro.persistence import _register_json_codecs
+
+    # The same codec registration the production pool uses; a test pool without
+    # it would exercise a different connection than the one that ships.
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=8, init=_register_json_codecs)
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
+            )
+        yield pool
+    finally:
+        await pool.close()

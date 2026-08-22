@@ -69,12 +69,14 @@ class FakeContainer:
         agents: dict[str, Any] | None = None,
         resolved_name: str = "unknown",
         classifier: FakeClassifier | None = None,
+        chat_admitter: Any = None,
     ) -> None:
         self.gate = FakeGate()
         self.classifier = classifier or FakeClassifier()
         self.intent_registry = FakeIntentRegistry(resolved_name)
         self.agents = agents or {}
         self.config = FakeConfig()
+        self.chat_admitter = chat_admitter
 
 
 def _messages(content: str = "hi") -> list[dict[str, Any]]:

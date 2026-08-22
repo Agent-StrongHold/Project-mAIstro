@@ -10396,9 +10396,45 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-082226-4478",
+      "file": "docs/adr/ADR-082226-4478-retire-single-purpose-endpoints-for-one-governed-tool-surface.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-082226-5104",
       "file": "docs/adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md",
       "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082226-c126",
+      "file": "docs/adr/ADR-082226-c126-chat-turn-run-granularity-and-retention.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082226-f436",
+      "file": "docs/adr/ADR-082226-f436-object-storage-archive-tier-for-cold-memory.md",
+      "declared_status": "Proposed",
       "specs": [],
       "measurable_specs": 0,
       "own_criteria": 0,

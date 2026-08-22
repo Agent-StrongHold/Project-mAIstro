@@ -86,6 +86,10 @@ class FakeContainer:
         self.intent_registry = FakeIntentRegistry()
         self.agents = {"echo": agent}
         self.config = FakeConfig()
+        # No spine wired: these tests exercise the pipeline, not admission.
+        # `Conduit` reads this directly rather than through getattr, so a fake
+        # Container that omits it is a fake that has drifted from the real one.
+        self.chat_admitter = None
 
 
 def _messages() -> list[dict[str, Any]]:

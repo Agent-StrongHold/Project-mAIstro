@@ -215,7 +215,12 @@ def test_evaluate_fires_a_due_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     fired: list[datetime] = []
 
     async def _capture(
-        self: Any, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+        self: Any,
+        sid: str,
+        schedule: Any,
+        *,
+        scheduled_for: datetime | None = None,
+        catchup: bool = False,
     ) -> None:
         assert scheduled_for is not None
         fired.append(scheduled_for)
@@ -323,9 +328,14 @@ def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
         registry.deregister("sched-synth")
 
 
-def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
-    """A mission_template_id that is not a registered DAG audits the fire and
-    produces no run (no other mission-template kind is executable yet)."""
+def test_fire_schedule_unresolved_template_says_no_run_was_created() -> None:
+    """A mission_template_id that is not a registered DAG produces no Run — and
+    now says so instead of returning silently.
+
+    `DagRegistry` is in-process, so this is also what a restart looks like
+    before the DAG is re-registered. `last_run` has already been stamped by
+    then, so a silent return left a schedule that appeared to have fired and
+    had not (#145)."""
     import stores
     from services.scheduler import _ScheduleRunner
 
@@ -337,7 +347,9 @@ def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
         new_entries = [
             e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-noop"
         ]
-        assert [e["action"] for e in new_entries] == ["schedule_fire"]
+        assert [e["action"] for e in new_entries] == ["schedule_fire", "schedule_run"]
+        assert new_entries[1]["detail"]["error"] == "template_not_registered"
+        assert "run_id" not in new_entries[1]["detail"]
     finally:
         stores.schedules._data.pop("s-noop", None)  # type: ignore[attr-defined]
 

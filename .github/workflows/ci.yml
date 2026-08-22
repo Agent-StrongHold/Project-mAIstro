@@ -106,6 +106,27 @@ jobs:
         run: uv run pytest packages/maistro-core/tests/persistence -v --tb=short
       - name: Container wires the PostgreSQL backend
         run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short
+      # The concurrency cases here are the reason this job exists at all: they
+      # run genuinely concurrent writers, which SQLite's model cannot express
+      # and an in-memory store cannot fail (#132).
+      - name: Execution-spine conformance
+        run: uv run pytest packages/maistro-core/tests/runs -v --tb=short
+      - name: Security and durable-event conformance
+        run: >-
+          uv run pytest
+          packages/maistro-core/tests/security
+          packages/maistro-core/tests/events
+          -v --tb=short
+      # The template registry and the schedule seam both have a PostgreSQL
+      # backend whose round-trip behaviour differs from the in-memory one
+      # (#145) — a JSONB payload comes back as a dict, and a version conflict
+      # is a constraint rather than a check.
+      - name: Template registry and scheduling conformance
+        run: >-
+          uv run pytest
+          packages/maistro-core/tests/graph/test_template_store.py
+          packages/maistro-core/tests/scheduling
+          -v --tb=short
 
   object-storage:
     # MinIO, not moto. The default `test` job already runs the archive suite
