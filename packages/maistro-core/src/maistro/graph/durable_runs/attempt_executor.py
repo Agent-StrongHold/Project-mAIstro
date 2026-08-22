@@ -38,12 +38,21 @@ async def run_durable_graph(
     actor_principal_id: str | None = None,
     run_id: str | None = None,
     runtime: ExecutionRuntime | None = None,
+    parent_run_id: str | None = None,
+    parent_node_run_id: str | None = None,
 ) -> DurableRunRecord:
-    """Start a durable Graph whose physical node work crosses the Attempt firewall."""
+    """Start a durable Graph whose physical node work crosses the Attempt firewall.
+
+    ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
+    the Run (and NodeRun) that produced it — delegation and sub-graph work
+    say "work is happening" as a child Run, not a second lifecycle.
+    """
     run = traversal._new_run(
         graph,
         run_id=run_id,
         actor_principal_id=actor_principal_id,
+        parent_run_id=parent_run_id,
+        parent_node_run_id=parent_node_run_id,
     )
     state = GraphExecutionState(
         run_id=run.run_id,

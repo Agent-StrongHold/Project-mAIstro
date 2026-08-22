@@ -1,242 +1,189 @@
-"""Tests for InMemoryScheduleStore CRUD + cron field validation."""
+"""Schedule persistence, asserted identically against both implementations.
+
+Every test runs against the in-memory store and the SQLite store, because the
+failure this layer exists to prevent — a schedule that quietly stops existing
+— is exactly what a store that drifts from its protocol reintroduces.
+"""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+
+import aiosqlite
 import pytest
 
+from maistro.scheduling.model import Schedule
 from maistro.scheduling.store import (
-    MAX_TASKS_PER_USER,
     InMemoryScheduleStore,
-    ScheduledTask,
-    TaskExecution,
-    _expand_field,
-    validate_cron,
+    ScheduleStore,
+    SqliteScheduleStore,
 )
 
-
-class TestValidateCronFieldCount:
-    def test_wrong_field_count_raises(self) -> None:
-        with pytest.raises(ValueError, match="expected 5 fields"):
-            validate_cron("* * * *")
-
-    def test_too_many_fields_raises(self) -> None:
-        with pytest.raises(ValueError, match="expected 5 fields"):
-            validate_cron("* * * * * *")
+NOON = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 
 
-class TestValidateCronFieldShapes:
-    def test_invalid_minute_field_raises(self) -> None:
-        with pytest.raises(ValueError, match="bad minute field"):
-            validate_cron("99 * * * *")
-
-    def test_invalid_hour_field_raises(self) -> None:
-        with pytest.raises(ValueError, match="bad hour field"):
-            validate_cron("0 99 * * *")
-
-    def test_invalid_day_of_month_field_raises(self) -> None:
-        with pytest.raises(ValueError, match="bad day-of-month field"):
-            validate_cron("0 0 99 * *")
-
-    def test_invalid_month_field_raises(self) -> None:
-        with pytest.raises(ValueError, match="bad month field"):
-            validate_cron("0 0 1 99 *")
-
-    def test_invalid_day_of_week_field_raises(self) -> None:
-        with pytest.raises(ValueError, match="bad day-of-week field"):
-            validate_cron("0 0 1 1 99")
-
-    def test_step_value_zero_is_invalid(self) -> None:
-        with pytest.raises(ValueError, match="bad minute field"):
-            validate_cron("*/0 * * * *")
-
-    def test_range_out_of_bounds_is_invalid(self) -> None:
-        with pytest.raises(ValueError, match="bad hour field"):
-            validate_cron("0 20-30 * * *")
-
-    def test_range_reversed_is_invalid(self) -> None:
-        with pytest.raises(ValueError, match="bad hour field"):
-            validate_cron("0 10-5 * * *")
-
-    def test_list_with_out_of_bounds_value_is_invalid(self) -> None:
-        with pytest.raises(ValueError, match="bad minute field"):
-            validate_cron("0,99 * * * *")
-
-    def test_non_numeric_field_is_invalid(self) -> None:
-        with pytest.raises(ValueError, match="bad minute field"):
-            validate_cron("abc * * * *")
+def _schedule(**overrides: object) -> Schedule:
+    defaults: dict[str, object] = {
+        "workspace_id": "w1",
+        "project_id": "p1",
+        "cron": "0 * * * *",
+        "graph_template_id": "daily-status",
+    }
+    return Schedule(**{**defaults, **overrides})  # type: ignore[arg-type]
 
 
-class TestStoreCreate:
-    @pytest.mark.asyncio
-    async def test_create_assigns_id_and_created_at(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        assert task.id != ""
-        assert task.created_at > 0
-
-    @pytest.mark.asyncio
-    async def test_create_enforces_max_tasks_per_user(self) -> None:
-        store = InMemoryScheduleStore()
-        for i in range(MAX_TASKS_PER_USER):
-            await store.create(ScheduledTask(user_id="u1", name=f"t{i}", schedule="0 * * * *"))
-        with pytest.raises(ValueError, match="maximum"):
-            await store.create(ScheduledTask(user_id="u1", name="overflow", schedule="0 * * * *"))
-
-    @pytest.mark.asyncio
-    async def test_create_max_tasks_is_per_user(self) -> None:
-        store = InMemoryScheduleStore()
-        for i in range(MAX_TASKS_PER_USER):
-            await store.create(ScheduledTask(user_id="u1", name=f"t{i}", schedule="0 * * * *"))
-        # A different user is unaffected by u1's limit.
-        task = await store.create(ScheduledTask(user_id="u2", name="t", schedule="0 * * * *"))
-        assert task.id != ""
-
-    @pytest.mark.asyncio
-    async def test_create_invalid_schedule_raises_before_storing(self) -> None:
-        store = InMemoryScheduleStore()
-        with pytest.raises(ValueError):
-            await store.create(ScheduledTask(user_id="u1", name="t", schedule="bad"))
-        assert await store.list_for_user(user_id="u1") == []
+@pytest.fixture(params=["memory", "sqlite"])
+async def store(request: pytest.FixtureRequest, tmp_path) -> AsyncIterator[ScheduleStore]:
+    if request.param == "memory":
+        yield InMemoryScheduleStore()
+        return
+    async with aiosqlite.connect(tmp_path / "schedules.db") as conn:
+        sqlite_store = SqliteScheduleStore(conn)
+        await sqlite_store.ensure_schema()
+        yield sqlite_store
 
 
-class TestStoreGet:
-    @pytest.mark.asyncio
-    async def test_get_existing_task(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        fetched = await store.get(task.id)
-        assert fetched is task
-
-    @pytest.mark.asyncio
-    async def test_get_missing_task_returns_none(self) -> None:
-        store = InMemoryScheduleStore()
-        assert await store.get("nonexistent") is None
+async def test_put_and_get_round_trip(store: ScheduleStore) -> None:
+    schedule = _schedule(name="briefing", timezone="America/New_York", inputs={"k": "v"})
+    await store.put(schedule)
+    loaded = await store.get(schedule.schedule_id)
+    assert loaded is not None
+    assert loaded.name == "briefing"
+    assert loaded.timezone == "America/New_York"
+    assert loaded.inputs == {"k": "v"}
+    assert loaded.graph_template_id == "daily-status"
 
 
-class TestStoreListForUser:
-    @pytest.mark.asyncio
-    async def test_list_for_user_filters_by_user(self) -> None:
-        store = InMemoryScheduleStore()
-        mine = await store.create(ScheduledTask(user_id="u1", name="mine", schedule="0 * * * *"))
-        await store.create(ScheduledTask(user_id="u2", name="theirs", schedule="0 * * * *"))
-        tasks = await store.list_for_user(user_id="u1")
-        assert [t.id for t in tasks] == [mine.id]
+async def test_get_unknown_returns_none(store: ScheduleStore) -> None:
+    assert await store.get("nope") is None
 
 
-class TestStoreUpdate:
-    @pytest.mark.asyncio
-    async def test_update_missing_task_returns_none(self) -> None:
-        store = InMemoryScheduleStore()
-        assert await store.update("nonexistent", name="new") is None
+async def test_put_replaces_an_existing_schedule(store: ScheduleStore) -> None:
+    schedule = _schedule(name="before")
+    await store.put(schedule)
+    await store.put(schedule.model_copy(update={"name": "after"}))
+    loaded = await store.get(schedule.schedule_id)
+    assert loaded is not None and loaded.name == "after"
+    assert len(await store.list_for_project(workspace_id="w1", project_id="p1")) == 1
 
-    @pytest.mark.asyncio
-    async def test_update_mutable_field(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        updated = await store.update(task.id, name="renamed")
-        assert updated is not None
-        assert updated.name == "renamed"
 
-    @pytest.mark.asyncio
-    async def test_update_schedule_validates_new_cron(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        updated = await store.update(task.id, schedule="0 0 * * *")
-        assert updated is not None
-        assert updated.schedule == "0 0 * * *"
+async def test_delete(store: ScheduleStore) -> None:
+    schedule = await store.put(_schedule())
+    assert await store.delete(schedule.schedule_id) is True
+    assert await store.delete(schedule.schedule_id) is False
+    assert await store.get(schedule.schedule_id) is None
 
-    @pytest.mark.asyncio
-    async def test_update_protects_id_user_id_created_at(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        original_id, original_user, original_created = task.id, task.user_id, task.created_at
-        updated = await store.update(
-            task.id, id="hacked", user_id="hacked", created_at=999.0, name="ok"
+
+async def test_list_is_scoped_to_one_project(store: ScheduleStore) -> None:
+    await store.put(_schedule(name="mine"))
+    await store.put(_schedule(name="other-project", project_id="p2"))
+    await store.put(_schedule(name="other-workspace", workspace_id="w2"))
+    listed = await store.list_for_project(workspace_id="w1", project_id="p1")
+    assert [s.name for s in listed] == ["mine"]
+
+
+# --- due-ness ---------------------------------------------------------------
+
+
+async def test_due_returns_schedules_whose_cursor_has_arrived(store: ScheduleStore) -> None:
+    await store.put(_schedule(name="ready", next_due_at=NOON - timedelta(minutes=1)))
+    await store.put(_schedule(name="later", next_due_at=NOON + timedelta(hours=1)))
+    assert [s.name for s in await store.due(now=NOON)] == ["ready"]
+
+
+async def test_a_schedule_with_no_cursor_is_due(store: ScheduleStore) -> None:
+    """An unknown cursor must be evaluated, never treated as not-due — that is
+    how a freshly created schedule would never fire."""
+    await store.put(_schedule(name="fresh", next_due_at=None))
+    assert [s.name for s in await store.due(now=NOON)] == ["fresh"]
+
+
+async def test_disabled_schedules_are_never_due(store: ScheduleStore) -> None:
+    await store.put(_schedule(name="paused", enabled=False, next_due_at=NOON - timedelta(days=1)))
+    assert await store.due(now=NOON) == []
+
+
+# --- fire cursor ----------------------------------------------------------------
+
+
+async def test_record_fire_advances_the_cursor(store: ScheduleStore) -> None:
+    schedule = await store.put(_schedule(runs_so_far=2))
+    advanced = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-123",
+        next_due_at=NOON + timedelta(hours=1),
+    )
+    assert advanced is not None
+    assert advanced.last_fired_at == NOON
+    assert advanced.last_run_id == "run-123"
+    assert advanced.runs_so_far == 3
+    assert advanced.next_due_at == NOON + timedelta(hours=1)
+    # ...and it is the persisted state, not just the returned object.
+    reloaded = await store.get(schedule.schedule_id)
+    assert reloaded is not None and reloaded.runs_so_far == 3
+
+
+async def test_record_fire_can_advance_by_several_backfilled_fires(
+    store: ScheduleStore,
+) -> None:
+    schedule = await store.put(_schedule())
+    advanced = await store.record_fire(
+        schedule.schedule_id, fired_at=NOON, run_id=None, next_due_at=None, fires=3
+    )
+    assert advanced is not None and advanced.runs_so_far == 3
+
+
+async def test_disable_on_exhaustion_stops_the_schedule_being_due(
+    store: ScheduleStore,
+) -> None:
+    schedule = await store.put(_schedule(max_runs=1))
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-1",
+        next_due_at=NOON + timedelta(hours=1),
+        disable=True,
+    )
+    reloaded = await store.get(schedule.schedule_id)
+    assert reloaded is not None
+    assert reloaded.enabled is False and reloaded.next_due_at is None
+    assert await store.due(now=NOON + timedelta(days=1)) == []
+
+
+async def test_record_fire_on_unknown_schedule_returns_none(store: ScheduleStore) -> None:
+    assert (await store.record_fire("nope", fired_at=NOON, run_id=None, next_due_at=None)) is None
+
+
+# --- the actual defect --------------------------------------------------------
+
+
+async def test_sqlite_schedules_survive_a_reconnect(tmp_path) -> None:
+    """The whole point: a schedule created before a restart still exists,
+    still enabled, with its cursor intact."""
+    path = tmp_path / "durable.db"
+    async with aiosqlite.connect(path) as first:
+        store = SqliteScheduleStore(first)
+        await store.ensure_schema()
+        schedule = await store.put(_schedule(name="briefing", cron="0 7 * * 1-5"))
+        await store.record_fire(
+            schedule.schedule_id,
+            fired_at=NOON,
+            run_id="run-abc",
+            next_due_at=NOON + timedelta(hours=19),
         )
-        assert updated is not None
-        assert updated.id == original_id
-        assert updated.user_id == original_user
-        assert updated.created_at == original_created
-        assert updated.name == "ok"
 
-    @pytest.mark.asyncio
-    async def test_update_ignores_unknown_attribute(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        updated = await store.update(task.id, nonexistent_field="x")
-        assert updated is not None
-        assert not hasattr(updated, "nonexistent_field")
+    async with aiosqlite.connect(path) as second:
+        reopened = SqliteScheduleStore(second)
+        await reopened.ensure_schema()
+        survivor = await reopened.get(schedule.schedule_id)
+
+    assert survivor is not None
+    assert survivor.name == "briefing" and survivor.enabled is True
+    assert survivor.last_run_id == "run-abc"
+    assert survivor.next_due_at == NOON + timedelta(hours=19)
 
 
-class TestStoreDelete:
-    @pytest.mark.asyncio
-    async def test_delete_existing_task_returns_true(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        assert await store.delete(task.id) is True
-        assert await store.get(task.id) is None
-
-    @pytest.mark.asyncio
-    async def test_delete_missing_task_returns_false(self) -> None:
-        store = InMemoryScheduleStore()
-        assert await store.delete("nonexistent") is False
-
-    @pytest.mark.asyncio
-    async def test_delete_clears_execution_history(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        await store.record_execution(task.id, TaskExecution(id="e1", task_id=task.id))
-        await store.delete(task.id)
-        assert task.id not in store._executions
-
-
-class TestStoreExecutionHistory:
-    @pytest.mark.asyncio
-    async def test_record_and_get_history_most_recent_first(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        await store.record_execution(task.id, TaskExecution(id="e1", task_id=task.id))
-        await store.record_execution(task.id, TaskExecution(id="e2", task_id=task.id))
-        history = await store.get_history(task.id)
-        assert [e.id for e in history] == ["e2", "e1"]
-
-    @pytest.mark.asyncio
-    async def test_get_history_respects_limit(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        for i in range(5):
-            await store.record_execution(task.id, TaskExecution(id=f"e{i}", task_id=task.id))
-        history = await store.get_history(task.id, limit=2)
-        assert len(history) == 2
-
-    @pytest.mark.asyncio
-    async def test_get_history_for_unknown_task_returns_empty(self) -> None:
-        store = InMemoryScheduleStore()
-        assert await store.get_history("nonexistent") == []
-
-    @pytest.mark.asyncio
-    async def test_get_history_for_task_with_no_executions_returns_empty(self) -> None:
-        store = InMemoryScheduleStore()
-        task = await store.create(ScheduledTask(user_id="u1", name="t", schedule="0 * * * *"))
-        assert await store.get_history(task.id) == []
-
-
-class TestStoreListEnabled:
-    @pytest.mark.asyncio
-    async def test_list_enabled_filters_disabled_tasks(self) -> None:
-        store = InMemoryScheduleStore()
-        enabled = await store.create(ScheduledTask(user_id="u1", name="on", schedule="0 * * * *"))
-        disabled_task = await store.create(
-            ScheduledTask(user_id="u1", name="off", schedule="0 0 * * *")
-        )
-        await store.update(disabled_task.id, enabled=False)
-        result = await store.list_enabled()
-        assert [t.id for t in result] == [enabled.id]
-
-
-class TestExpandFieldFallback:
-    def test_signed_numeric_value_falls_back_to_single_value(self) -> None:
-        # Defensive fallback for direct calls with unvalidated input — a
-        # signed numeric string matches none of the wildcard/step/range/list
-        # patterns but is still int()-parseable.
-        assert _expand_field("-5", 0, 59) == [-5]
+def test_both_implementations_satisfy_the_protocol() -> None:
+    assert isinstance(InMemoryScheduleStore(), ScheduleStore)

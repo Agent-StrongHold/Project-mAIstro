@@ -509,9 +509,131 @@ def collect_adrs(
     return adrs
 
 
+CEILINGS = ROOT / "quality" / "ac-state-ceilings.json"
+
+#: Counters that may only go down. Each is a way a completion claim can outrun
+#: its evidence, so a rise is a new contradiction entering the repository.
+RATCHETED = (
+    "completion_claims_contradicted",
+    "completion_claims_unverifiable",
+    "specs_awaiting_retrofit",
+    "markers_without_criterion",
+    "criteria_claimed_but_unproven",
+    "scenarios_without_ac_tag",
+    "gherkin_parse_errors",
+)
+
+
+def _mode_mismatch(run_tests: bool) -> str | None:
+    """The refusal message for a wrong-mode ratchet, checked before measuring.
+
+    This runs first because the report is written to disk before the ratchet
+    would otherwise reach its own mode check — so a wrong-mode invocation used to
+    overwrite the committed `ac-state.json` with an unmeasured payload and *then*
+    complain. Failing before any measurement leaves the artefact untouched.
+    """
+    if not CEILINGS.is_file():
+        return None
+    recorded = json.loads(CEILINGS.read_text(encoding="utf-8"))
+    if recorded.get("measured_with_tests") == run_tests:
+        return None
+    want = "with" if recorded.get("measured_with_tests") else "without"
+    return (
+        f"FAIL: ceilings were banked {want} --run-tests; re-run in that mode. The passing "
+        "rung is unreachable without it, so the counters are not comparable. Nothing was "
+        "measured or written."
+    )
+
+
+def _bank(recorded: dict[str, Any], totals: dict[str, Any], measured: bool) -> int:
+    recorded["measured_with_tests"] = measured
+    recorded["ceilings"] = {name: totals[name] for name in RATCHETED}
+    CEILINGS.write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
+    try:
+        shown = CEILINGS.relative_to(ROOT)
+    except ValueError:  # a test may point CEILINGS outside the repo
+        shown = CEILINGS
+    print(f"banked {shown}; review the diff before committing")
+    return 0
+
+
+def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str], list[str]]:
+    regressions: list[str] = []
+    improvements: list[str] = []
+    for name in RATCHETED:
+        allowed = ceilings.get(name)
+        actual = totals[name]
+        if allowed is None:
+            regressions.append(f"{name}: no ceiling recorded (measured {actual})")
+        elif actual > allowed:
+            regressions.append(f"{name}: {actual} exceeds the ceiling of {allowed}")
+        elif actual < allowed:
+            improvements.append(f"{name}: {actual}, ceiling still says {allowed}")
+    return regressions, improvements
+
+
+def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
+    """Compare the measured debt against its reviewed ceilings.
+
+    Both directions fail. A rise is a regression: a document started claiming
+    more than its artefacts support. A fall that has not been banked is slack —
+    the same weakness a count ceiling always has, where one genuine improvement
+    silently pays for a later regression. Banking is a reviewed edit to a small
+    JSON file, so there is no reason to leave the margin sitting there.
+
+    The comparison is refused across measurement modes. Without ``--run-tests``
+    no criterion can reach the ``passing`` rung, so every claim above it reads as
+    contradicted and the counters are not comparable with ones banked from a real
+    run. Comparing them anyway would produce a gate that fails or passes
+    according to how it was invoked.
+    """
+    if not CEILINGS.is_file():
+        print(f"FAIL: {CEILINGS} is missing; run with --ratchet --bank to create it")
+        return 1
+    recorded = json.loads(CEILINGS.read_text(encoding="utf-8"))
+    if bank:
+        return _bank(recorded, totals, measured)
+    if recorded.get("measured_with_tests") != measured:
+        want = "with" if recorded.get("measured_with_tests") else "without"
+        print(
+            f"FAIL: ceilings were banked {want} --run-tests; re-run in that mode. "
+            "The passing rung is unreachable without it, so the counters are not comparable."
+        )
+        return 1
+
+    regressions, improvements = _compare(recorded["ceilings"], totals)
+    if regressions:
+        print("FAIL: a completion claim now outruns its evidence\n")
+        for line in regressions:
+            print(f"  - {line}")
+        print(
+            "\nEither prove the claim (add an **AC-N** id and a @pytest.mark.ac test) or "
+            "correct the document's status. The ceiling does not move up."
+        )
+    if improvements:
+        print("FAIL: unbanked improvement — the ceiling holds slack a regression could spend\n")
+        for line in improvements:
+            print(f"  - {line}")
+        print("\nBank it: python scripts/check-ac-state.py --run-tests --ratchet --bank")
+    if regressions or improvements:
+        return 1
+    print(f"OK: every acceptance-state debt counter sits exactly on its ceiling ({len(RATCHETED)})")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument(
+        "--ratchet",
+        action="store_true",
+        help="fail when any debt counter differs from quality/ac-state-ceilings.json",
+    )
+    ap.add_argument(
+        "--bank",
+        action="store_true",
+        help="rewrite the ceilings from this measurement (review the diff)",
+    )
     ap.add_argument(
         "--run-tests",
         action="store_true",
@@ -522,6 +644,9 @@ def main(argv: list[str]) -> int:
     roots = configured_test_roots()
     markers = scan_markers(roots)
     unreachable = load_unreachable()
+    if args.ratchet and not args.bank and (early := _mode_mismatch(args.run_tests)) is not None:
+        print(early)
+        return 1
     passing = passing_ac_ids(roots) if args.run_tests else None
 
     specs = collect_specs(markers, unreachable, passing)
@@ -620,7 +745,14 @@ def main(argv: list[str]) -> int:
     for rung in RUNGS:
         n = sum(1 for s in specs if s["criteria_total"] and s["tier"] == rung)
         print(f"  specs at tier {rung:<10}: {n}")
-    print(f"\nwrote {args.out.relative_to(ROOT)}")
+    try:
+        written = args.out.relative_to(ROOT)
+    except ValueError:  # --out may legitimately point outside the repo
+        written = args.out
+    print(f"\nwrote {written}")
+    if args.ratchet:
+        print()
+        return ratchet(t, measured=passing is not None, bank=args.bank)
     return 0
 
 

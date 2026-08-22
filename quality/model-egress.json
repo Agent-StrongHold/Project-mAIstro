@@ -1,0 +1,31 @@
+{
+  "_comment": "Modules that call a model endpoint (chat/completions, /completions, /v1/responses) directly over HTTP, frozen so the set cannot grow (#36, invariant 2). This is an inventory, not a verdict: maistro.providers is a registry with no HTTP client, so there is no approved Provider implementation for these to be outside of yet -- #56 builds it, and deciding which of these are providers, adapters or escapes is that issue's adjudication. Enforced by scripts/check-model-egress.py, which ratchets both ways: a new direct caller fails, and an entry that stops calling out fails until pruned, so a migration shrinks this file.",
+  "modules": [
+    "adapters.llm_http",
+    "adapters.maistro_core",
+    "maistro.agents.conductor",
+    "maistro.agents.pm_llm_call",
+    "maistro.events.handlers",
+    "maistro.graph.nodes.llm_summarize",
+    "maistro_bootstrap.builders.model_selector",
+    "maistro_bootstrap.builders.responses_callable",
+    "maistro_evolve.providers.openai_compatible",
+    "maistro_rsi.autorun",
+    "maistro_rsi.free_router",
+    "maistro_rsi.gateway",
+    "maistro_server.api.chat_completions",
+    "routes.providers",
+    "services.benchmark_eval",
+    "services.canonical_corpus",
+    "services.canvas_dag",
+    "services.chat_completion",
+    "services.eval_bootstrap",
+    "services.evolution",
+    "services.graph_runner",
+    "services.pm_fleet_v2",
+    "services.skill_optimizer",
+    "services.tool_executor",
+    "services.ui_auto_climb",
+    "services.ui_hill_climber"
+  ]
+}

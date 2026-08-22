@@ -40,6 +40,22 @@ This is the engine's version of Stronghold's Gate → Warden → Identity → Sk
 five-layer model, with sandbox isolation (ADR-093) called out as its own layer because it is a
 harder guarantee (hypervisor boundary) than the container/RBAC layers above it.
 
+### Account credential storage
+
+Conductor accounts are hashed with **Argon2id** (`maistro/security/passwords.py`), OWASP
+interactive-login parameters: 64 MiB memory, 3 iterations, parallelism 4, 32-byte hash,
+16-byte salt. bcrypt hashes still **verify** so pre-existing accounts keep working, and a
+successful login rewrites any non-current hash to Argon2id — so the bcrypt population drains
+by use rather than needing a migration. A stored hash that cannot be decoded denies the login;
+it never admits, and never overwrites the stored value.
+
+This row is evidence-backed rather than asserted: `packages/maistro-core/tests/security/`
+`test_passwords.py` covers hash/verify/rehash and every malformed-input branch, and
+`packages/hive-conductor/backend/tests/test_auth_password_storage.py` proves the product
+claims on the real HTTP path — registration stores Argon2id, a bcrypt row is upgraded on its
+owner's first login without changing the password, a failed login leaves the hash untouched,
+and four shapes of corrupt hash return 401.
+
 ---
 
 ## Resource-limits inventory

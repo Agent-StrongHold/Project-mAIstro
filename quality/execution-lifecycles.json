@@ -1,0 +1,59 @@
+{
+  "_comment": "Every work-state enum in production code, classified (#36). The convergence program's central claim is that Run/NodeRun/Attempt is the one execution identity; a new enum whose members are work states is how a second one gets built, usually without anyone deciding to. scripts/check-execution-lifecycles.py detects them and ratchets against this file in both directions: an unclassified enum fails, and an entry whose enum no longer exists fails until pruned. CANONICAL = part of the spine. DOMAIN = a genuinely different lifecycle that is not execution (an event handler's idempotency record, a graph's traversal phase). CONVERGE = a competing work-state machine, with the issue that removes it. Known limitation, stated rather than hidden: this finds enum-shaped lifecycles only. services.dag_run_store derives its states from events and maistro_canvas.canvas.runner assigns free-text strings, so neither appears here; both are recorded in docs/architecture/CONVERGENCE-MATRIX.md instead.",
+  "lifecycles": {
+    "maistro.runs.model::RunStatus": {
+      "classification": "CANONICAL",
+      "rationale": "The Run half of the canonical execution identity (ADR-081226-a66b)."
+    },
+    "maistro.runs.model::AttemptStatus": {
+      "classification": "CANONICAL",
+      "rationale": "The Attempt half; one physical execution, chronological across retries."
+    },
+    "maistro.capabilities.invocation::InvocationStatus": {
+      "classification": "CANONICAL",
+      "rationale": "The canonical Binding -> Invocation effect boundary (ADR-081226-6b46): one provider call beneath an Attempt, keyed by a retry-stable effect_key."
+    },
+    "maistro.events.invocations::InvocationStatus": {
+      "classification": "DOMAIN",
+      "rationale": "Not the same thing as the Invocation above despite the identical class name: this is an event handler's at-most-once record per (trigger_id, event_id) under ADR-086, so replay retries the same row. The name collision is confusing and worth renaming, but the lifecycle is legitimately its own."
+    },
+    "maistro.graph.phases::NodePhase": {
+      "classification": "DOMAIN",
+      "rationale": "Graph traversal phase, which ADR-062 and #44 keep in GraphExecutionState precisely so traversal state stays separate from execution lifecycle. It must not become the authority for whether work succeeded -- that is NodeRun's."
+    },
+    "maistro.graph.phases::GraphPhase": {
+      "classification": "DOMAIN",
+      "rationale": "The whole-graph counterpart of NodePhase, same reasoning."
+    },
+    "maistro.tasks.models::TaskStatus": {
+      "classification": "CONVERGE",
+      "rationale": "The task queue's own work states. #41 makes submission yield a canonical run_id and demotes the queue to an admission receipt; the Run then owns terminal truth.",
+      "converged_by": "#41"
+    },
+    "maistro.a2a.delegate::TaskStatus": {
+      "classification": "CONVERGE",
+      "rationale": "Delegation's own queued/assigned/running/completed/failed ladder, driven by a worker pool. #47 makes delegation create child Runs with durable parent correlation.",
+      "converged_by": "#47"
+    },
+    "maistro.builders.contracts::RunStatus": {
+      "classification": "CONVERGE",
+      "rationale": "Builders' own RunStatus, consumed by builders.runtime and by the graph_executor that drives its own traversal. #49 moves Builders onto canonical Graph/Run.",
+      "converged_by": "#49"
+    },
+    "maistro.builders.pipeline::StageStatus": {
+      "classification": "CONVERGE",
+      "rationale": "Per-stage states for the issue-to-merge pipeline, driven by GraphPipelineExecutor. Becomes NodeRun state under #49.",
+      "converged_by": "#49"
+    },
+    "maistro.orchestrator.master::WorkItemStatus": {
+      "classification": "CONVERGE",
+      "rationale": "The Master Orchestrator dispatches work items across parallel agent groups and tracks their progress and failures itself. #44 makes fan-out and fan-in graph structure, so each work item becomes a NodeRun rather than a row in a private tracker.",
+      "converged_by": "#44"
+    },
+    "maistro_canvas.types::JobStatus": {
+      "classification": "CONVERGE",
+      "rationale": "Canvas generation job states, driven by canvas.runner's claim/lease/reap loop. #52 makes canvas stages canonical NodeRuns and retries Attempts.",
+      "converged_by": "#52"
+    }
+  }
+}

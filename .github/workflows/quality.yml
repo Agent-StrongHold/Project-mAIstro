@@ -173,86 +173,31 @@ jobs:
             exit 1
           fi
 
-      # Ratchet, not a 0-baseline: the full backlog is tracked for the Phase 9
-      # KEEP/DEPRECATE/DELETE inventory, not a one-PR fix. Hard-fails on
-      # regression on every branch.
+      # Per-identity debt ledger, not a count: quality/vulture-baseline.json
+      # records the exact reviewed finding identities per classification rule,
+      # so a new finding fails by name and a fixed one must shrink the ledger
+      # in the same PR. This step ran a total-count ceiling until 2026-08
+      # (history in git); a count could hold slack — the ceiling sat at 1,426
+      # while the tree had 1,422 findings — and 4 findings of retained slack
+      # would have silently paid for a later regression. The same invocation
+      # also runs in vulture-ratchet.yml; the ledger JSON is the single
+      # authority, this job extends it to feat/* pushes.
       #
       # Scope: ALL packages/*/src (2026-07-01), not just maistro-core — a single
       # invocation so cross-package reachability resolves public APIs consumed
       # across packages (e.g. maistro-rsi -> maistro-evolve), which a per-package
       # scan would false-positive. The `packages/*/src` glob auto-covers new
-      # packages; adding one spikes the count and forces a conscious baseline
-      # bump here (that IS the ratchet).
-      #
-      # Baseline history:
-      #   1052 (2026-06-29) maistro-core/src only — mostly public-API methods
-      #        vulture can't see called via protocol-driven DI.
-      #   1265 (2026-07-01) expanded to all packages/*/src. The +213 vs. core is
-      #        the same false-positive class (public API used only by tests,
-      #        dataclass fields, protocol methods) across the other 8 packages;
-      #        genuine dead code in the new RSI/evolve code was removed in this
-      #        PR rather than baselined.
-      #   1303 (2026-07-02) 15 newly-implemented ADR specs (#193) add dataclass
-      #        fields / protocol methods / public API used only by tests — the
-      #        same known false-positive class already baselined above.
-      #   1317 (2026-07-02) RSI v2 (ADR-070126-6386 v2, #217): +14 on top,
-      #        measured on the merged tree, all live code vulture can't see —
-      #        FixerGenome StrEnum members (reached via list(Enum)/pydantic
-      #        validation, e.g. REACT/STRICT_TDD/CRITIC), HyperMutationOutcome
-      #        pydantic fields (candidate_count/challenger_id/parent_b_id),
-      #        ScoutItem.location, ImprovementKind.primary_signals, and the
-      #        back-compat scout_objective.
-      - name: vulture (dead-code; confidence ≥ 60 — ratchet)
-        env:
-          # Measured 2026-08-14 after combining the canonical spine and Stream 3
-          # authorization contracts: 1,423 findings. The spine's original
-          # reviewed delta to 1,396 was 85 new
-          # public model/protocol/API declarations, offset by two removals.
-          # The subsequent +18 accompanies the persistent Project/Run spine:
-          # 17 reported public store/service methods or Pydantic validators in
-          # sqlite_scope_store, runs/model, runs/service, runs/sqlite_store,
-          # and runs/store, plus one net line-count delta from those modules.
-          # The final +1 is ProjectScopeStore.validate_required_resources, added
-          # to make the validated implementation behavior part of the protocol.
-          # Stream 3 adds +8: four public StrEnum members, three public dataclass
-          # result/scope fields, and
-          # AuthorizationResolver.can_view_resource. Each is exercised by the
-          # authorization tests. Vulture scans production only and cannot see
-          # protocol dispatch, Pydantic hooks, or test-only consumers.
-          # Execution fencing adds +2 public persisted lease evidence fields
-          # (`lease_epoch` and `holder`) that are intentionally retained for
-          # recovery/fencing provenance and are exercised through persistence
-          # and tests even though vulture sees no direct production read yet.
-          #
-          # 1426 (2026-08-19) E3/E5 release pipeline (#412): +1 for
-          # `maistro_bootstrap.delivery.PINNED_IMAGES`. It is an intentional
-          # public constant of a published package ("kept for callers that want
-          # the mapping as a constant"), so it is the planned-package-API class
-          # already baselined above rather than an oversight.
-          #
-          # Flagged, deliberately not changed here: it has no consumer in this
-          # repo, and its own module warns that an import-time snapshot freezes
-          # the tag before `MAISTRO_IMAGE_TAG` is visible — which is the exact
-          # `latest`-instead-of-pinned-tag bug E5/#298 exists to fix. Any caller
-          # who reaches for the constant instead of `pinned_images()` silently
-          # reintroduces it. Removing a published symbol is a breaking change
-          # and belongs in its own reviewed PR, not a rebase.
-          VULTURE_BASELINE: 1426
-        run: |
-          # `third_party/` is vendored upstream source (Google's IFEval verifier,
-          # BFCL's AST checker), kept byte-faithful so the benchmarks run the
-          # official implementation. Linting someone else's tree for dead names
-          # measures nothing we can act on, and 'fixing' a finding there would
-          # turn the next re-vendor into a merge conflict.
-          uv run vulture packages/*/src --min-confidence 60 \
-            --exclude '*/third_party/*' > vulture.log 2>&1 || true
-          count=$(wc -l < vulture.log | tr -d ' ')
-          cat vulture.log
-          echo "vulture finding count: $count (baseline: $VULTURE_BASELINE)"
-          if [ "$count" -gt "$VULTURE_BASELINE" ]; then
-            echo "::error::vulture regression — $count findings exceeds baseline of $VULTURE_BASELINE; KEEP/DEPRECATE/DELETE inventory per Phase 9"
-            exit 1
-          fi
+      # packages; adding one surfaces every new identity for banking (that IS
+      # the ratchet). `third_party/` is vendored upstream source (Google's
+      # IFEval verifier, BFCL's AST checker), kept byte-faithful so the
+      # benchmarks run the official implementation — linting someone else's
+      # tree for dead names measures nothing we can act on.
+      - name: vulture (dead-code; confidence ≥ 60 — per-identity ledger)
+        run: >-
+          uv run python scripts/check-vulture-baseline.py
+          packages/*/src
+          --min-confidence 60
+          --exclude '*/third_party/*'
 
       # Vulture works at symbol granularity inside a file, so it is structurally
       # blind to a whole module that only its own siblings and tests import —
@@ -261,6 +206,38 @@ jobs:
       # This ratchet closes that blind spot at module granularity.
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
+
+      # The reachability ratchet says *how much* is unwired; the convergence
+      # matrix says *who owns what* and which subsystem each unreachable module
+      # belongs to. It is the M0 planning surface (#28), so it is checked rather
+      # than trusted: the rows must partition every production module, and each
+      # row's unreachable count is recomputed from the same import graph. A row
+      # that drifts out of date is a wrong plan, silently.
+      - name: convergence matrix (subsystem ownership stays current)
+        run: uv run python scripts/check-convergence-matrix.py
+
+      # The baseline says a module is unreachable; this says what is to be done
+      # about it. Without the pairing, 207 unexplained entries is a number people
+      # learn to ignore rather than a plan (#33). CONNECT must name the root that
+      # would reach it, RETIRE must name what replaces it -- a disposition with no
+      # evidence is a shrug.
+      - name: reachability dispositions (every unreachable module has an owner)
+        run: uv run python scripts/check-reachability-dispositions.py
+
+      # BACKLOG.md is the hand-maintained work-source of record until the DB
+      # backlog is live (#50), and agents read it as well as people. The gate
+      # reads its vocabulary out of the file's own legend tables, so a legend
+      # and its usage cannot drift apart (#30).
+      - name: backlog consistency (legends match usage; citations resolve)
+        run: uv run python scripts/check-backlog-consistency.py
+
+      # Measuring how far a completion claim outruns its evidence was the easy
+      # half; failing when it moves is the half that holds a line (#31). Seven
+      # debt counters, each may only go down, and an unbanked improvement fails
+      # too so the ceiling cannot hold slack a later regression would spend.
+      # --run-tests runs only the ~180 @pytest.mark.ac tests, not the suite.
+      - name: acceptance-state ratchet (claims cannot outrun their evidence)
+        run: uv run python scripts/check-ac-state.py --run-tests --ratchet
 
       # ----- Pillar 4: types -----
       - name: mypy --strict
@@ -358,6 +335,21 @@ jobs:
           uv run pytest formal/ --timeout=120 -q
 
       # ----- Pillar 7: architecture fitness functions -----
+      # The convergence spine's central claim is that Run/NodeRun/Attempt is the
+      # one execution identity. A second one arrives as an enum, not as a
+      # decision — someone needs pending/running/failed and the repository
+      # quietly has another lifecycle. Every work-state enum is classified in
+      # quality/execution-lifecycles.json (#36).
+      - name: execution lifecycles (no unclassified second spine)
+        run: uv run python scripts/check-execution-lifecycles.py
+
+      # Invariant 2 of #36 cannot be enforced as written yet: maistro.providers
+      # is a registry with no HTTP client, so there is no approved Provider
+      # implementation for a caller to be outside of. #56 builds it. What is
+      # enforceable meanwhile is that the set of direct callers cannot grow.
+      - name: model egress (the direct-caller set may only shrink)
+        run: uv run python scripts/check-model-egress.py
+
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src

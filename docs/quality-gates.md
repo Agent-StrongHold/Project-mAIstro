@@ -43,9 +43,11 @@ later regression.
 | pyright | ratchet | 24 | type errors mypy does not catch |
 | radon CC | identity ratchet | `quality/radon-baseline.json` | a new or regressed complexity hotspot |
 | xenon | count ratchet | 77 | per-function > B, per-module > B, project average > A |
-| vulture (count) | count ratchet | 1426, in `quality.yml` | dead code at confidence ≥ 60 |
-| vulture (identity) | identity ratchet | count + SHA-256 per rule, in `vulture-ratchet.yml` | the same finding set changing, including a same-count substitution |
+| vulture | identity ratchet | `quality/vulture-baseline.json`, in `quality.yml` + `vulture-ratchet.yml` | any change to the reviewed finding set, by name — a new finding, a fixed one left unbanked, or a same-count substitution |
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
+| convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
+| reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
+| backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
 | coverage | floor | 88% line + branch, publish set | undertested code |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
 | suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
@@ -54,14 +56,43 @@ later regression.
 | version consistency | floor | exact match | any version site disagreeing with `VERSION` |
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
+| execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state enum nobody classified, or an entry left behind after its enum was deleted |
+| model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
+
+The six architecture-fitness invariants of
+[#36](https://github.com/Agent-StrongHold/Project-mAIstro/issues/36) are not all gates, and two
+of them deliberately are not:
+
+| Invariant | Enforced by |
+|---|---|
+| 1. No new universal execution lifecycle | `check-execution-lifecycles.py` |
+| 2. No direct model/tool/effect provider bypass | `check-model-egress.py` (frozen set; the boundary itself is #56) |
+| 3. No second durable Workspace/Event-sequence authority | **the type, not a gate** — `EventEnvelope.__post_init__` refuses a Workspace event that also defines a `stream_scope`, and the store refuses a caller-supplied sequence; both are covered in `tests/events/test_envelope.py` |
+| 4. No unscoped durable project-owned objects | **the type, not a gate** — `Run` and `NodeRun` require a non-empty `project_id`, and `Run` rejects a graph snapshot whose `project_id` disagrees |
+| 5. No outward core dependency-direction violations | `tests/fitness/test_import_boundaries.py` |
+| 6. Compatibility owners not presented as canonical | convention: a compat alias carries the "Backwards compat aliases" banner |
+
+Invariants 3 and 4 fail closed at construction, which is stronger than a CI sweep — the object
+cannot exist in the wrong shape, so there is nothing for a gate to catch later. Adding one would
+be a check with no signal, and a gate that never fires teaches people to ignore the ones that do.
 | Hypothesis conformance | floor | zero falsifying examples | a property violation in `formal/` |
-| acceptance-criterion state | report only | `quality/ac-state.json` | nothing yet — see below |
+| acceptance-criterion state | count ratchet | `quality/ac-state-ceilings.json` (7 counters) | a completion claim outrunning its evidence — and an unbanked improvement, so the ceiling holds no slack |
 | Gherkin well-formedness | floor | zero parse failures | an acceptance-criteria block the Gherkin grammar rejects |
 
-Vulture is gated twice on purpose. `quality.yml` keeps a cheap total-count
-ceiling; `vulture-ratchet.yml` pins each rule's exact finding set by count and
-digest, which is what catches a same-count substitution — one finding fixed and
-a different one introduced under the same rule, invisible to a count alone.
+Vulture runs in two workflows but has one authority: the per-identity ledger
+in `quality/vulture-baseline.json`, which records every reviewed finding as an
+explicit `path::message` identity (line-number-independent, so unrelated code
+motion doesn't trip the gate). A new finding fails CI by name; an identity
+that no longer occurs also fails by name until pruned — the ledger can only
+shrink, so it cannot retain slack that a later regression could consume, and
+a same-count substitution is two named failures rather than an invisible swap.
+`vulture-ratchet.yml` covers PRs and trunk pushes; the `quality.yml` step
+extends the identical invocation to `feat/*` pushes. Bank a reviewed change
+with `scripts/check-vulture-baseline.py --update <scan args>` and review the
+JSON diff — never edit entries by hand to match a delta. (Until 2026-08 this
+was a total-count ceiling plus a per-rule count+SHA-256 digest; the digest
+caught substitutions but failures weren't legible per identity, and the count
+ceiling held slack.)
 
 ## Acceptance-criterion state
 
@@ -101,6 +132,29 @@ Two counts are reported separately and must not be merged:
   criteria that fall short. Its own artefacts refute it.
 - **unverifiable** — the document claims `Implemented` and has nothing to
   measure yet. Unproven, not refuted.
+
+Since #31 this is a **ratchet rather than a report**. Seven debt counters —
+contradicted, unverifiable, specs awaiting AC-id retrofit, markers naming no
+criterion, criteria ticked but unproven, Gherkin scenarios with no tag, and
+Gherkin parse errors — are recorded in `quality/ac-state-ceilings.json` and may
+only go down. A rise fails: a document started claiming more than its artefacts
+support, and the fix is to prove the claim or correct the status, never to raise
+the ceiling. An *unbanked improvement* fails too, for the reason the vulture
+ledger stopped being a count ceiling: a margin left sitting there is slack that
+a later regression spends invisibly. Bank one with
+`--ratchet --bank` and read the diff.
+
+The ratchet refuses to compare across measurement modes. Without `--run-tests`
+no criterion can reach `passing`, so every claim above it reads as contradicted;
+comparing those numbers against ceilings banked from a real run would make the
+gate's verdict depend on how it was invoked. The mode is checked before anything
+is measured, so a wrong-mode run leaves `quality/ac-state.json` untouched rather
+than overwriting it with an unmeasured payload.
+
+The starting ceilings are the debt as measured on 2026-08-22: **9 contradicted,
+68 unverifiable, 139 specs awaiting retrofit**, 2 orphan markers, and zero on the
+remaining three. Those are not targets — they are the line below which the
+repository may not slip while the burn-down happens.
 
 ## Criteria are written in Gherkin
 
@@ -171,12 +225,17 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy packages/maistro-core/src   # …and the other eight packages/*/src
 uv run python scripts/check-radon-baseline.py
 uv run python scripts/check-reachability.py
+uv run python scripts/check-convergence-matrix.py
+uv run python scripts/check-reachability-dispositions.py
+uv run python scripts/check-backlog-consistency.py
+uv run python scripts/check-execution-lifecycles.py
+uv run python scripts/check-model-egress.py
 uv run python scripts/check-suite-inventory.py
 uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check
 uv run python scripts/check-vulture-baseline.py packages/*/src \
   --min-confidence 60 --exclude '*/third_party/*'
-uv run python scripts/check-ac-state.py --run-tests   # report only
+uv run python scripts/check-ac-state.py --run-tests --ratchet
 ```
 
 `scripts/check-suite-inventory.py --update` rewrites the inventory from an

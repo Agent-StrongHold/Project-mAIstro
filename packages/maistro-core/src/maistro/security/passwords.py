@@ -32,12 +32,17 @@ def hash_password(plain: str) -> str:
 def verify_password(plain: str, stored: str) -> bool:
     """Verify plain text against Argon2id or legacy bcrypt hash."""
     if stored.startswith(_ARGON2_PREFIX):
-        from argon2.exceptions import InvalidHashError, VerifyMismatchError
+        # VerificationError is the parent of VerifyMismatchError and is what
+        # argon2 raises when the stored string carries the prefix but cannot be
+        # decoded ("Decoding failed"). Catching only the mismatch let a corrupt
+        # column escape as a 500 from the login route instead of a denial —
+        # still fail-closed, but an error where a decision belonged.
+        from argon2.exceptions import InvalidHashError, VerificationError
 
         try:
             _hasher().verify(stored, plain)
             return True
-        except (VerifyMismatchError, InvalidHashError):
+        except (VerificationError, InvalidHashError):
             return False
     if stored.startswith(_BCRYPT_PREFIX):
         try:

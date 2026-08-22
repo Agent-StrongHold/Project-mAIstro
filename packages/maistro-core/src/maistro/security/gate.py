@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from maistro.observability.metrics import maistro_security_block_total
 from maistro.security._types import ClarifyingQuestion, GateResult
 from maistro.security.request_analyzer import analyze_request_sufficiency
 from maistro.security.warden.sanitizer import sanitize
@@ -66,6 +67,7 @@ class Gate:
             if record and record.is_locked:
                 locked_str = record.locked_until.isoformat() if record.locked_until else ""
                 if record.disabled:
+                    maistro_security_block_total.inc(gate="strikes", reason="account_disabled")
                     return GateResult(
                         blocked=True,
                         block_reason=(
@@ -77,6 +79,7 @@ class Gate:
                         locked_until=locked_str,
                         account_disabled=True,
                     )
+                maistro_security_block_total.inc(gate="strikes", reason="account_locked")
                 return GateResult(
                     blocked=True,
                     block_reason=(
@@ -117,6 +120,13 @@ class Gate:
                 verdict.flags,
                 strike_number,
                 scrutiny_level,
+            )
+
+            # Warden flags are a bounded detector taxonomy, so the primary
+            # flag is a safe (low-cardinality) reason label.
+            maistro_security_block_total.inc(
+                gate="warden",
+                reason=next(iter(verdict.flags), "unclean"),
             )
 
             return GateResult(

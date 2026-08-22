@@ -22,6 +22,11 @@ from maistro.resilience.p1 import (
     exponential_backoff,
     linear_backoff,
 )
+from maistro.resilience.slo import (
+    ErrorBudget,
+    SloDefinition,
+    maistro_slo_remaining_budget_seconds,
+)
 
 __all__ = [
     "DEFAULT_POLICY",
@@ -29,6 +34,7 @@ __all__ = [
     "BackoffConfig",
     "ClassifiedError",
     "CompactedRetry",
+    "ErrorBudget",
     "ErrorCategory",
     "FallbackChain",
     "FallbackChainConfig",
@@ -40,6 +46,7 @@ __all__ = [
     "ResiliencePolicyStore",
     "RetryAttempt",
     "RetryBudget",
+    "SloDefinition",
     "classify_error",
     "classify_error_code",
     "compact_attempts",
@@ -47,4 +54,5 @@ __all__ = [
     "exponential_backoff",
     "jittered_backoff",
     "linear_backoff",
+    "maistro_slo_remaining_budget_seconds",
 ]

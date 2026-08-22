@@ -37,3 +37,12 @@ def test_needs_rehash_for_unrecognized_format_is_true() -> None:
 
 def test_needs_rehash_for_malformed_argon2_hash_is_true() -> None:
     assert needs_rehash("$argon2id$garbage")
+
+
+def test_undecodable_argon2_hash_returns_false_rather_than_raising() -> None:
+    """argon2 raises VerificationError ("Decoding failed"), not
+    VerifyMismatchError, for a string that carries the prefix but is not a hash.
+    Letting it escape turned a corrupt stored hash into a 500 from the login
+    route instead of a denial."""
+    assert not verify_password("testpass", "$argon2id$garbage")
+    assert not verify_password("testpass", "$argon2id$v=19$m=65536,t=3,p=4$short")

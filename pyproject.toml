@@ -76,7 +76,6 @@ dev = [
     "google-re2>=1.1",
 ]
 browser = ["playwright>=1.49"]
-scheduling = ["apscheduler>=3.11"]
 # NOTE: the on-demand /code-health and /security-scan toolchains are NOT project
 # extras — several (semgrep) carry transitive pins that conflict with the app's
 # resolution. They are standalone CLI tools listed in requirements-dev-tools.txt;

@@ -114,6 +114,34 @@ def _validate_flat_apps(root: Path, flat_apps: tuple[FlatApp, ...]) -> None:
         )
 
 
+def _validate_no_shadowed_modules(root: Path) -> None:
+    """Refuse a flat module sitting beside a package directory of the same name.
+
+    `foo.py` next to `foo/__init__.py` is not a warning — Python resolves
+    `import pkg.foo` to the package, always, so the flat file can never run.
+    Two such files existed here for months carrying "DEAD CODE — superseded"
+    docstrings, and this gate could not have found them: `_collect_modules` keys
+    modules by dotted name, so one silently overwrote the other and only one was
+    ever analysed. A module the analyser cannot see is worse than a module it
+    reports as unreachable.
+    """
+    collisions: list[str] = []
+    for base in [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]:
+        for directory in base.rglob("*"):
+            if not directory.is_dir() or directory.name == "__pycache__":
+                continue
+            if not (directory / "__init__.py").exists():
+                continue  # not a regular package; it cannot shadow anything
+            flat = directory.parent / f"{directory.name}.py"
+            if flat.exists():
+                collisions.append(flat.relative_to(root).as_posix())
+    if collisions:
+        raise RuntimeError(
+            "module(s) shadowed by a same-named package and unreachable by construction — "
+            "delete the flat file or rename one of them: " + ", ".join(sorted(collisions))
+        )
+
+
 def _flat_key(app_name: str, module: str) -> str:
     return f"{_FLAT_PREFIX}{app_name}/{module}"
 
@@ -130,6 +158,7 @@ def _collect_modules(
 ) -> dict[str, Path]:
     """Return scoped module identity → file for every production module."""
     _validate_flat_apps(root, flat_apps)
+    _validate_no_shadowed_modules(root)
     mods: dict[str, Path] = {}
 
     def add_tree(base: Path, prefix: str, app_name: str | None = None) -> None:
@@ -155,12 +184,113 @@ def _collect_modules(
     return mods
 
 
+def _eager_sweep(tree: ast.AST, selfmod: str) -> set[str]:
+    """Sibling modules a package imports by name in an eager-import sweep.
+
+    A node/plugin catalog registers its implementations by importing them at
+    package-import time::
+
+        module_names = ("jira_poll", "llm_summarize", ...)
+        for name in module_names:
+            importlib.import_module(f"{__name__}.{name}")
+
+    Those imports are real — the modules run on every import of the package —
+    but they are invisible to an AST walk that only reads `import` statements,
+    so an honest catalog looked like eighteen dead modules. Recognising the
+    idiom is the difference between the gate reporting dead code and reporting
+    its own blind spot.
+
+    Deliberately narrow: the loop's iterable must be a literal tuple/list of
+    strings (or a name bound to one in the same scope), and the interpolation
+    must be exactly ``f"{__name__}.{loop_variable}"``. Anything else is left
+    unresolved rather than guessed at, because a wrong "reachable" verdict is
+    the failure this gate exists to prevent.
+    """
+    out: set[str] = set()
+    for scope in ast.walk(tree):
+        if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Module):
+            continue
+        literals = _string_sequences(scope)
+        for loop in ast.walk(scope):
+            if not isinstance(loop, ast.For) or not isinstance(loop.target, ast.Name):
+                continue
+            names = _sequence_strings(loop.iter, literals)
+            if not names:
+                continue
+            if not any(_is_sibling_import(call, loop.target.id) for call in ast.walk(loop)):
+                continue
+            out.update(f"{selfmod}.{name}" for name in names)
+    return out
+
+
+def _string_sequences(scope: ast.AST) -> dict[str, tuple[str, ...]]:
+    """Names bound to a literal tuple/list of strings *in this scope's own body*.
+
+    Deliberately not an ``ast.walk``: walking would hoist every function's
+    locals into the module scope, so a tuple bound in one function could resolve
+    a loop in another that would ``NameError`` at run time — the recogniser
+    would claim a module reachable on the strength of code that cannot run.
+    A module-level binding read inside a function still resolves, because the
+    module-scope pass walks down to find that loop; only the leak in the other
+    direction is closed.
+    """
+    bound: dict[str, tuple[str, ...]] = {}
+    for node in getattr(scope, "body", ()):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and (values := _literal_strings(node.value)):
+            bound[target.id] = values
+    return bound
+
+
+def _literal_strings(node: ast.expr) -> tuple[str, ...]:
+    if not isinstance(node, ast.Tuple | ast.List):
+        return ()
+    values = [
+        element.value
+        for element in node.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    ]
+    return tuple(values) if len(values) == len(node.elts) else ()
+
+
+def _sequence_strings(node: ast.expr, bound: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return bound.get(node.id, ())
+    return _literal_strings(node)
+
+
+def _is_sibling_import(node: ast.AST, loop_variable: str) -> bool:
+    """True for ``importlib.import_module(f"{__name__}.{loop_variable}")``."""
+    if not isinstance(node, ast.Call) or len(node.args) != 1:
+        return False
+    callee = node.func
+    name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
+    if name != "import_module":
+        return False
+    template = node.args[0]
+    if not isinstance(template, ast.JoinedStr) or len(template.values) != 3:
+        return False
+    head, dot, tail = template.values
+    return (
+        isinstance(head, ast.FormattedValue)
+        and isinstance(head.value, ast.Name)
+        and head.value.id == "__name__"
+        and isinstance(dot, ast.Constant)
+        and dot.value == "."
+        and isinstance(tail, ast.FormattedValue)
+        and isinstance(tail.value, ast.Name)
+        and tail.value.id == loop_variable
+    )
+
+
 def _imports(path: Path, selfmod: str) -> set[str]:
     try:
         tree = ast.parse(path.read_text(errors="replace"))
     except SyntaxError:
         return set()
-    out: set[str] = set()
+    out: set[str] = _eager_sweep(tree, selfmod)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             out.update(alias.name for alias in node.names)

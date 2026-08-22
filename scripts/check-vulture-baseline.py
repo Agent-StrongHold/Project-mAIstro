@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Run Vulture and require an exact, monotonic reviewed debt ledger.
+"""Run Vulture and require the reviewed per-identity debt ledger to match exactly.
 
 Rules in quality/vulture-baseline.json explain why a static-analysis category is
-accepted. Each rule also records the count and SHA-256 digest of the sorted
-stable finding-identity multiset. Count catches growth and unbanked improvement;
-the digest catches same-count substitution. High-confidence unreachable code is
+accepted. Each rule also records the exact multiset of reviewed finding
+identities (`path::message`, deliberately line-number-independent so unrelated
+code motion doesn't trip the gate). A finding with no recorded identity fails CI
+by name; an identity that no longer occurs also fails CI by name until it is
+pruned — the ledger can only shrink, and every change is legible in the PR diff
+as the specific symbol that entered or left. High-confidence unreachable code is
 never allowlisted.
+
+Bank a reviewed change with `--update`, which rewrites each rule's `findings`
+from an actual scan — never by editing entries by hand to match a delta.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +30,7 @@ BASELINE = ROOT / "quality" / "vulture-baseline.json"
 _FINDING_RE = re.compile(
     r"^(?P<path>.*?):(?P<line>\d+): (?P<message>.*?) \((?P<confidence>\d+)% confidence\)$"
 )
+_DETAIL_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -62,10 +69,11 @@ class Classification:
 
 
 @dataclass(frozen=True)
-class RuleLedger:
+class RuleDelta:
     rule_id: str
-    finding_count: int
-    finding_sha256: str
+    added: list[Finding]
+    removed: list[str]
+    unbanked: bool  # rule has no "findings" ledger at all
 
 
 def _load_baseline() -> dict[str, Any]:
@@ -121,28 +129,41 @@ def _classify(findings: list[Finding], rules: list[dict[str, Any]]) -> Classific
     return Classification(by_rule, unclassified, never_allowlist)
 
 
-def _ledger(rule_id: str, findings: list[Finding]) -> RuleLedger:
-    identities = sorted(finding.stable_key for finding in findings)
-    payload = "\n".join(identities).encode("utf-8")
-    return RuleLedger(rule_id, len(identities), hashlib.sha256(payload).hexdigest())
-
-
-def _ledger_failures(
-    rules: list[dict[str, Any]], classification: Classification
-) -> tuple[list[RuleLedger], list[tuple[RuleLedger, int, str]]]:
-    missing: list[RuleLedger] = []
-    changed: list[tuple[RuleLedger, int, str]] = []
+def _rule_deltas(rules: list[dict[str, Any]], classification: Classification) -> list[RuleDelta]:
+    """Compare each rule's current identity multiset against its recorded ledger."""
+    deltas: list[RuleDelta] = []
     for rule in rules:
         rule_id = str(rule["id"])
-        current = _ledger(rule_id, classification.by_rule[rule_id])
-        expected_count = rule.get("finding_count")
-        expected_digest = rule.get("finding_sha256")
-        if not isinstance(expected_count, int) or not isinstance(expected_digest, str):
-            missing.append(current)
+        current_findings = classification.by_rule[rule_id]
+        recorded_list = rule.get("findings")
+        if not isinstance(recorded_list, list):
+            deltas.append(RuleDelta(rule_id, list(current_findings), [], unbanked=True))
             continue
-        if current.finding_count != expected_count or current.finding_sha256 != expected_digest:
-            changed.append((current, expected_count, expected_digest))
-    return missing, changed
+        current = Counter(finding.stable_key for finding in current_findings)
+        recorded = Counter(str(entry) for entry in recorded_list)
+        added_keys = current - recorded
+        removed = sorted((recorded - current).elements())
+        # Report each new identity with its live line/confidence so it can be
+        # located; a duplicate key surfaces once per unrecorded occurrence.
+        added: list[Finding] = []
+        budget = dict(added_keys)
+        for finding in current_findings:
+            if budget.get(finding.stable_key, 0) > 0:
+                budget[finding.stable_key] -= 1
+                added.append(finding)
+        if added or removed:
+            deltas.append(RuleDelta(rule_id, added, removed, unbanked=False))
+    return deltas
+
+
+def _write_baseline(baseline: dict[str, Any], classification: Classification) -> None:
+    for rule in baseline["rules"]:
+        rule.pop("finding_count", None)
+        rule.pop("finding_sha256", None)
+        rule["findings"] = sorted(
+            finding.stable_key for finding in classification.by_rule[str(rule["id"])]
+        )
+    BASELINE.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
 
 
 def _print_summary(findings: list[Finding], classification: Classification) -> None:
@@ -162,42 +183,56 @@ def _print_findings(title: str, findings: list[Finding]) -> None:
         print(f"  {finding.render()}", file=sys.stderr)
 
 
-def _print_ledger_failures(
-    missing: list[RuleLedger], changed: list[tuple[RuleLedger, int, str]]
-) -> None:
-    if missing:
-        print("\nRules missing exact count+digest ledger values:", file=sys.stderr)
-        for item in missing:
+def _print_capped(lines: list[str]) -> None:
+    for line in lines[:_DETAIL_LIMIT]:
+        print(f"    {line}", file=sys.stderr)
+    if len(lines) > _DETAIL_LIMIT:
+        print(f"    … and {len(lines) - _DETAIL_LIMIT} more", file=sys.stderr)
+
+
+def _print_deltas(deltas: list[RuleDelta]) -> None:
+    if not deltas:
+        return
+    print("\nReviewed Vulture debt changed:", file=sys.stderr)
+    for delta in deltas:
+        if delta.unbanked:
             print(
-                f'  {item.rule_id}: "finding_count": {item.finding_count}, '
-                f'"finding_sha256": "{item.finding_sha256}"',
+                f"  {delta.rule_id}: has no 'findings' ledger; "
+                f"{len(delta.added)} current finding(s) are unrecorded",
                 file=sys.stderr,
             )
-    if changed:
-        print("\nReviewed Vulture debt changed:", file=sys.stderr)
-        for current, expected_count, expected_digest in changed:
-            direction = "grew" if current.finding_count > expected_count else "shrunk"
-            if current.finding_count == expected_count:
-                direction = "changed identity at constant count"
+            _print_capped([finding.render() for finding in delta.added])
+            continue
+        if delta.added:
             print(
-                f"  {current.rule_id}: {direction}; expected count={expected_count} "
-                f"sha256={expected_digest}, current count={current.finding_count} "
-                f"sha256={current.finding_sha256}",
+                f"  {delta.rule_id}: {len(delta.added)} NEW identit(y/ies) not in the ledger:",
                 file=sys.stderr,
             )
-        print(
-            "\nAny improvement must be banked by lowering the count and updating the digest in "
-            "the same PR. Same-count substitutions require explicit review.",
-            file=sys.stderr,
-        )
+            _print_capped([finding.render() for finding in delta.added])
+        if delta.removed:
+            print(
+                f"  {delta.rule_id}: {len(delta.removed)} recorded identit(y/ies) no longer "
+                f"found — prune them:",
+                file=sys.stderr,
+            )
+            _print_capped(delta.removed)
+    print(
+        "\nEvery ledger change is per-identity: a new finding needs review, and a fixed one "
+        "must shrink the ledger in the same PR (stale entries would silently absorb a later "
+        "regression). Bank a reviewed state with: "
+        "scripts/check-vulture-baseline.py --update <scan args>",
+        file=sys.stderr,
+    )
 
 
 def main(argv: list[str]) -> int:
-    scan_args = argv or ["packages", "tests", "--exclude", "*/.venv/*"]
-    rules = _load_baseline()["rules"]
+    update = "--update" in argv
+    scan_args = [arg for arg in argv if arg != "--update"]
+    scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*"]
+    baseline = _load_baseline()
+    rules = baseline["rules"]
     findings = _run_vulture(scan_args)
     classification = _classify(findings, rules)
-    missing, changed = _ledger_failures(rules, classification)
 
     _print_summary(findings, classification)
     _print_findings("Unreachable-code findings must be fixed:", classification.never_allowlist)
@@ -205,12 +240,24 @@ def main(argv: list[str]) -> int:
         "Unclassified vulture findings need owner/category/rationale:",
         classification.unclassified,
     )
-    _print_ledger_failures(missing, changed)
 
-    failed = bool(
-        classification.never_allowlist or classification.unclassified or missing or changed
-    )
-    return int(failed)
+    if classification.never_allowlist or classification.unclassified:
+        if update:
+            print(
+                "\n--update refused: unreachable-code and unclassified findings are never "
+                "banked — fix or classify them first.",
+                file=sys.stderr,
+            )
+        return 1
+
+    if update:
+        _write_baseline(baseline, classification)
+        print(f"\nwrote {BASELINE} — review the diff before committing")
+        return 0
+
+    deltas = _rule_deltas(rules, classification)
+    _print_deltas(deltas)
+    return int(bool(deltas))
 
 
 if __name__ == "__main__":

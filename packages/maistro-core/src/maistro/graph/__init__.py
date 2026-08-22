@@ -20,6 +20,7 @@ from maistro.graph.node_types import (
     build_default_node_type_registry,
 )
 from maistro.graph.optimizer import GraphOptimizer
+from maistro.graph.template_adapter import descriptor_to_template, snapshot_to_template
 from maistro.graph.traversal_commit import (
     TraversalCheckpoint,
     TraversalCommit,
@@ -95,7 +96,9 @@ __all__ = [
     "TraversalCommit",
     "accepted_outcome_id",
     "build_default_node_type_registry",
+    "descriptor_to_template",
     "edge_decision_id",
     "graph_state_hash",
     "run_graph",
+    "snapshot_to_template",
 ]

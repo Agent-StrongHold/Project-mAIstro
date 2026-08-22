@@ -1,20 +1,28 @@
-"""In-memory task queue (Phase 1).
+"""In-memory task queue with best-effort TaskRecord persistence (ADR-018).
 
-All task state is held in memory. A process restart loses all tasks.
-Phase 2 will add PostgreSQL persistence via TaskRecord.
+Live task state is held in memory. When a database is configured
+(``get_async_session_factory()`` returns a factory), every mutation —
+``submit()``, ``update_status()``, ``set_result()`` and ``update_progress()``
+— upserts a ``TaskRecord`` row, fire-and-forget, so task execution never
+fails because the database is unavailable. Writes for one task are chained so
+they land in the order the state changed. With no database the queue behaves
+exactly as before and a restart loses all tasks.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
+from maistro.memory.store import TaskRecord, get_async_session_factory
 from maistro.observability.metrics import (
     active_tasks,
     tasks_completed_total,
@@ -25,6 +33,60 @@ from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskRes
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
+
+
+def _naive(value: datetime | None) -> datetime | None:
+    """TaskRecord columns are timezone-naive; store UTC wall-clock values."""
+    if value is None:
+        return None
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _record_values(task: TaskResponse) -> dict[str, Any]:
+    """Snapshot the TaskRecord column values for one task, taken synchronously
+    so the fire-and-forget write cannot race later in-memory mutation."""
+    return {
+        "id": task.task_id,
+        "status": task.status.value,
+        "description": task.description,
+        "workspace": task.workspace,
+        "tier": task.tier,
+        "phase": task.phase,
+        "progress": task.progress.model_dump(mode="json") if task.progress else None,
+        "result": task.result.model_dump(mode="json") if task.result else None,
+        "started_at": _naive(task.started_at),
+        "completed_at": _naive(task.completed_at),
+    }
+
+
+async def _write_after(
+    previous: asyncio.Task[None] | None, factory: Any, values: dict[str, Any]
+) -> None:
+    """Wait for this task's prior write, then upsert.
+
+    Ordering is the point: without it the persisted row is last-writer-wins
+    across concurrent sessions rather than last-state-wins.
+    """
+    if previous is not None and not previous.done():
+        with contextlib.suppress(BaseException):
+            await previous
+    await _write_record(factory, values)
+
+
+async def _write_record(factory: Any, values: dict[str, Any]) -> None:
+    """Upsert one TaskRecord. Failures are logged and swallowed (ADR-018):
+    persistence is best-effort and must never take task execution down."""
+    try:
+        async with factory() as session:
+            await session.merge(TaskRecord(**values))
+            await session.commit()
+    except Exception as exc:
+        logger.warning(
+            "task_record_persist_failed",
+            task_id=values.get("id"),
+            error=str(exc),
+        )
+
 
 # Maximum number of tasks stored in memory before pruning terminal tasks
 MAX_TASK_STORE_SIZE = 10_000
@@ -44,6 +106,37 @@ class TaskQueue:
         self._lock = asyncio.Lock()
         self._claimed: set[str] = set()
         self._events: dict[str, asyncio.Event] = {}
+        # In-flight fire-and-forget TaskRecord writes (ADR-018); referenced so
+        # the event loop cannot garbage-collect them mid-write.
+        self._persist_writes: set[asyncio.Task[None]] = set()
+        # The most recent write per task, so the next one for that task can
+        # wait on it. Independent writes with independent sessions can commit
+        # in any order, and a slow `queued` merge landing after `completed`
+        # would silently regress the persisted row to an older status.
+        self._last_write: dict[str, asyncio.Task[None]] = {}
+
+    def _persist(self, task: TaskResponse) -> None:
+        """Schedule a best-effort TaskRecord upsert when a DB is configured.
+
+        The snapshot is taken synchronously so it cannot race later in-memory
+        mutation, and each task's writes are chained so they commit in the
+        order the state actually changed.
+        """
+        factory = get_async_session_factory()
+        if factory is None:
+            return
+        values = _record_values(task)
+        previous = self._last_write.get(task.task_id)
+        write = asyncio.create_task(_write_after(previous, factory, values))
+        self._persist_writes.add(write)
+        self._last_write[task.task_id] = write
+
+        def _done(finished: asyncio.Task[None]) -> None:
+            self._persist_writes.discard(finished)
+            if self._last_write.get(task.task_id) is finished:
+                self._last_write.pop(task.task_id, None)
+
+        write.add_done_callback(_done)
 
     def _get_event(self, task_id: str) -> asyncio.Event:
         """Get or create an asyncio.Event for a task."""
@@ -102,6 +195,7 @@ class TaskQueue:
         async with self._lock:
             self._tasks[task_id] = task
             self._maybe_prune()
+        self._persist(task)
         await self._pending.put(task_id)
         tasks_submitted_total.inc()
         active_tasks.inc()
@@ -154,6 +248,8 @@ class TaskQueue:
                 elif status == TaskStatus.FAILED:
                     tasks_failed_total.inc()
 
+            self._persist(task)
+
         self._notify(task_id)
         return True
 
@@ -161,12 +257,18 @@ class TaskQueue:
         task = self._tasks.get(task_id)
         if task:
             task.progress = progress
+            self._persist(task)
             self._notify(task_id)
 
     def set_result(self, task_id: str, result: TaskResult) -> None:
         task = self._tasks.get(task_id)
         if task:
             task.result = result
+            # The runner transitions to COMPLETED/FAILED *before* attaching the
+            # result, so persisting only on status change stored every finished
+            # task with a NULL result — durable rows that answer neither an
+            # audit nor a recovery.
+            self._persist(task)
             self._notify(task_id)
 
     async def cancel(self, task_id: str) -> bool:

@@ -160,4 +160,12 @@ class AgentConfig(BaseModel):
     cache_breakpoints_enabled: bool = False
 
 
+# ── Backwards compat aliases ─────────────────────────────────────
+#
+# `AgentConfig` is the canonical name. This alias exists so pre-consolidation
+# importers keep working; new code must not use it. Marked here because an
+# unlabelled alias reads as a second canonical name to anyone opening this file
+# — the shape #36's sixth invariant exists to prevent. `types/errors.py` carries
+# the same banner over its own aliases.
+
 MaistroConfig = AgentConfig
