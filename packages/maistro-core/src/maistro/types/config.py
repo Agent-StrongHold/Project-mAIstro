@@ -150,6 +150,11 @@ class AgentConfig(BaseModel):
     # Workspace — hard tenancy is Stronghold's, which supplies its own value per
     # tenant rather than inheriting this default.
     workspace_id: str = "default"
+    # Where cold records live (ADR-082226-f436). Empty means no archive tier at
+    # all, which is the default and not a degraded mode. `file:///path`,
+    # `s3://bucket`, or `s3+http(s)://bucket?endpoint=host:port`. Never
+    # credentials — those resolve through the vault (SPEC-011).
+    archive_url: str = ""
     redis_url: str = ""
     agents_dir: str = ""
     provider_config_path: str = ""
