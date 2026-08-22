@@ -95,11 +95,18 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+One maistro-rsi node ID pins the property the sandbox group-kill test depends
+on (#152): a zombie reads as stopped. The old check asked `os.kill(pid, 0)`,
+which a killed-but-unreaped process answers for as long as nothing reaps it, so
+the suite reported a containment failure about a process the kernel had already
+killed. Forking a child that exits without being reaped makes that state
+unambiguous, so the helper's semantics are held rather than assumed.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
 | `packages/maistro-core/tests` | 6384 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
-| `packages/maistro-rsi/tests` | 427 | `ci.yml` |
+| `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
