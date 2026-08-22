@@ -47,6 +47,7 @@ later regression.
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
+| backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
 | coverage | floor | 88% line + branch, publish set | undertested code |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
 | suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
@@ -184,6 +185,7 @@ uv run python scripts/check-radon-baseline.py
 uv run python scripts/check-reachability.py
 uv run python scripts/check-convergence-matrix.py
 uv run python scripts/check-reachability-dispositions.py
+uv run python scripts/check-backlog-consistency.py
 uv run python scripts/check-suite-inventory.py
 uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check

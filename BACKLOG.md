@@ -5,9 +5,15 @@ Companion to [`ROADMAP.md`](ROADMAP.md). Items are tagged by the part of the pro
 - `engine-NNN` — shared substrate (runtime, ADRs, templates, registry)
 - `conductor-NNN` — Conductor variant (single-tenant multi-user)
 - `turing-NNN` — autonoetic variant
-- `sh-NNN` — multi-tenant variant (Stronghold)
+- `sh-NNN` — multi-tenant variant (Stronghold). **Not actionable in this repository.**
+  Stronghold is a planned downstream product that will *import* the engine (root `CLAUDE.md`);
+  no Stronghold code lives here. These items are kept for traceability and to record which
+  engine work they depend on — they are not a second system to build alongside the engine.
 
-Maintained per [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Status follows [`engine#ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md) lifecycle. External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md).
+Maintained per [`ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Status follows the
+[`ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md) lifecycle, and where an item names an
+ADR or spec, **that document's front matter is authoritative** — this file records the work, not
+the decision's status. External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md).
 
 ## Status legend
 
@@ -16,11 +22,11 @@ Maintained per [`engine#ADR-019`](docs/adr/ADR-019-canonical-source-split.md). S
 | Proposed | Open for discussion; not yet binding |
 | Accepted | Decision binding; implementation may follow |
 | Implemented | Decision shipped; production code matches |
+| Accepted (spec) | A spec records the decision, but no ADR does; binding on the spec's terms |
 | Superseded | Replaced by a successor (named in `supersedes:` of successor) |
 | Blocked | A `blocked-by:` dependency is unmet |
 | Abandoned | Decision deliberately not taken (kept for traceability) |
-
-**Obsolete** — the item tracked work against specs that lived in the pre-consolidation sibling repositories. Those specs are not part of this repo, so the item can no longer be actioned or verified here.
+| Obsolete | The item tracked work against specs that lived in the pre-consolidation sibling repositories. Those specs are not part of this repo, so the item can no longer be actioned or verified here. |
 
 ## Gap legend
 
@@ -501,10 +507,15 @@ Full v1.0 detail in [`stronghold/ROADMAP-v1.0.md`](https://github.com/agent-stro
 
 ## Maintenance
 
-- This file is **identical across all four repos**. Any edit lands in all four.
+- This file is **hand-maintained and canonical**, and is edited by humans and by authorized
+  agents. It is the single work-source of record until the database-backed backlog and its
+  Conductor UI are live and verified; consumers read it through a stable adapter seam rather
+  than parsing it inline
+  ([#50](https://github.com/Agent-StrongHold/Project-mAIstro/issues/50)).
 - IDs are stable. Items never get renumbered.
 - When an item is shipped, mark `Implemented` and link the PR.
 - When an item is no longer relevant, mark `Abandoned` with a one-line reason. Don't delete.
-- Once `engine-001` (registry CI) ships, this BACKLOG is regenerated from front-matter; hand-edits then fail CI.
-- Per-product `ROADMAP-v1.0.md` files contain v1.0 acceptance test detail (workstreams, property-test contracts) that doesn't duplicate here.
+- `scripts/check-backlog-consistency.py` gates this file: every item must parse, its status and
+  gap marker must appear in the legends above, and every ADR/SPEC it cites must exist. The
+  vocabulary is read from the legends themselves, so a legend and its usage cannot drift apart.
 - External-library decisions (which to import, which to service-boundary, which to pattern-reference, which to reject) follow `engine#ADR-039`.

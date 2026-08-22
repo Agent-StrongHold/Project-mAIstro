@@ -224,6 +224,13 @@ jobs:
       - name: reachability dispositions (every unreachable module has an owner)
         run: uv run python scripts/check-reachability-dispositions.py
 
+      # BACKLOG.md is the hand-maintained work-source of record until the DB
+      # backlog is live (#50), and agents read it as well as people. The gate
+      # reads its vocabulary out of the file's own legend tables, so a legend
+      # and its usage cannot drift apart (#30).
+      - name: backlog consistency (legends match usage; citations resolve)
+        run: uv run python scripts/check-backlog-consistency.py
+
       # ----- Pillar 4: types -----
       - name: mypy --strict
         run: uv run mypy --strict packages/maistro-core/src
