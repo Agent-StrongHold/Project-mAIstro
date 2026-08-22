@@ -603,13 +603,17 @@
       ]
     },
     {
-      "id": "hive-hill-climber-criterion",
+      "id": "hive-dag-and-artifact-optimisation",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
-      "rationale": "A noise-aware accept criterion with its own unit tests and an integration test, but no route, scheduler entry or caller. Its four sibling hill-climbing services were orphans and have been deleted; this one is not an orphan \u2014 someone specified and tested it. ADR-088 gives self-improvement to maistro-rsi, so this either becomes RSI's accept criterion or is retired against it, and that judgement belongs with #50 rather than to a reachability sweep.",
-      "root": "the maistro-rsi candidate-evaluation path (#50)",
+      "rationale": "DAG hill-climbing optimises a user's DAG, skills and tools \u2014 the artefacts an agent runs with. That is a product capability, and a distinct thing from maistro-rsi, which improves the engine's own codebase under ADR-088. An earlier disposition here called these a duplicate of RSI and retired four of them on that basis; the rationale was wrong and the deletion was reverted. services/optimizer.py and routes/optimizer.py already ship the DAG half of this surface (POST /v1/optimizer/{dag_id}/run, proposals, accept/reject), so these are unfinished extensions of a live feature rather than a second system. hill_climber is its eval-rotation strategy; skill_optimizer extends it to SKILL.md documents and tool schemas; the ui_* trio climbs the product's own UI against canonical examples, with ui_climb_vm naming the microVM as the execution model.",
+      "root": "services.optimizer / routes.optimizer for the DAG and skill halves; services.hyperlight_executor for the microVM UI loop",
       "modules": [
-        "services.hill_climber"
+        "services.hill_climber",
+        "services.skill_optimizer",
+        "services.ui_auto_climb",
+        "services.ui_climb_vm",
+        "services.ui_hill_climber"
       ]
     }
   ]
