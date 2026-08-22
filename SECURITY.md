@@ -89,7 +89,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | Only a **filesystem** path blocklist exists (`security/patterns.py:BLOCKED_HOST_PATHS` — `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, Docker socket paths); no URL/host-based SSRF blocklist was found in `tools/browser/client.py`, `skills/marketplace.py`, or `skills/import_pipeline.py`, all of which make outbound HTTP calls | `gap-impl` — real risk: a skill or connector fetching an attacker-controlled URL can reach `169.254.169.254` or a LAN-internal service today |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing when the name cannot be resolved at all. Wired into `tools/browser/client.py`, `skills/marketplace.py` and `skills/import_pipeline.py`. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — the guard is sound but reaches three call sites. `skills/connectors.py`, the `graph/nodes` pollers, `orchestrator/hierarchy.py` and `agents/pm_llm_call.py` all make outbound calls without it (#155) |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -114,12 +114,27 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **No SSRF blocklist for outbound HTTP.** Skills, connectors, and the browser tool all make
-   outbound HTTP calls (`skills/marketplace.py`, `skills/import_pipeline.py`,
-   `tools/browser/client.py`). Only a filesystem-path blocklist exists
-   (`security/patterns.py:BLOCKED_HOST_PATHS`); nothing blocks a request to
-   `169.254.169.254` (cloud metadata) or a LAN-internal address. This is the single largest gap
-   relative to Stronghold's inventory.
+1. **SSRF protection exists, and reaches three of eleven outbound surfaces.** This entry
+   previously said no URL-based SSRF guard existed and named `skills/marketplace.py`,
+   `skills/import_pipeline.py` and `tools/browser/client.py` as unprotected. Those are the three
+   that *are* protected. `security/ssrf.py` refuses anything that is not http(s) with a
+   resolvable host, and checks every address the host resolves to — which normalises the
+   obfuscations (`2852039166`, `0x7f000001`, `127.1`, `[::ffff:169.254.169.254]`,
+   `metadata.google.internal`) to the address they denote. A host that cannot be resolved is
+   refused rather than allowed.
+
+   The real gap is **reach**. `skills/connectors.py`, the `graph/nodes` pollers
+   (`jira_poll`, `airtable_poll`, `jira_wait_for_subtasks`, `llm_summarize`),
+   `orchestrator/hierarchy.py`, `agents/pm_llm_call.py` and `agents/strategies/tool_http.py`
+   make outbound calls with no guard. They all route through `maistro.http.shared_client`, so
+   there is one seam that would reach them — but the engine also legitimately calls internal
+   LLM gateways through it, so switching it on needs a policy for those rather than a blanket
+   refusal. Tracked as #155.
+
+   Two further limits, stated rather than implied: the guard resolves the name and the HTTP
+   client resolves it again when it connects, so a name that answers differently between those
+   two lookups is not caught; and redirect hops are only checked where the caller validates each
+   hop, which none of the three call sites currently does.
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.

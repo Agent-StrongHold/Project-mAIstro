@@ -95,9 +95,19 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
+Consolidating the two SSRF implementations onto one (#154) nets +10 maistro-core
+node IDs, and the shape of that number matters more than its size. The guard's
+own suite gains cases for the obfuscated spellings, the http(s) whitelist, an
+unparseable URL, a host that resolves to nothing, the unspecified address, and
+the async form agreeing with the sync one. `test_marketplace.py` loses the unit
+tests of the deleted duplicate's internals — that coverage did not vanish, it
+moved to `tests/security/test_ssrf.py`, which covers strictly more. Three
+assertions were **inverted** rather than deleted: they pinned the old fail-open
+behaviour on an unresolvable host and on a URL with no parseable hostname.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6384 | `ci.yml` |
+| `packages/maistro-core/tests` | 6394 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 188 | `ci.yml` |

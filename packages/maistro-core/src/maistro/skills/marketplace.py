@@ -22,94 +22,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maistro.skills.marketplace")
 
-_BLOCKED_HOSTNAME_PREFIXES = (
-    "metadata.",
-    "localhost",
-)
 _VALID_SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,50}$")
 
 
-def _is_blocked_ip(addr: object) -> bool:
-    """Check if an IP address object targets a private/internal network."""
-    import ipaddress
-
-    if not isinstance(addr, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
-        return False
-    return bool(
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_multicast
-    )
-
-
-def _block_literal_ip(hostname: str, url: str) -> bool:
-    """Block ``hostname`` if it is a literal blocked IP. Returns True if it was a
-    literal IP (blocked or allowed) so the caller can stop; False if not an IP."""
-    import ipaddress
-
-    try:
-        addr = ipaddress.ip_address(hostname)
-    except ValueError:
-        return False
-
-    if _is_blocked_ip(addr):
-        msg = f"Blocked: URL targets private/metadata network ({addr}): {url}"
-        raise ValueError(msg)
-    return True
-
-
-def _block_resolved_ip(hostname: str, url: str) -> None:
-    """Resolve ``hostname`` via DNS and block if any address is private/internal."""
-    import ipaddress
-    import socket
-
-    try:
-        addrinfos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    except socket.gaierror:
-        return
-
-    for *_meta, sockaddr in addrinfos:
-        ip_str = sockaddr[0]
-        try:
-            resolved_addr = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if _is_blocked_ip(resolved_addr):
-            msg = (
-                f"Blocked: hostname '{hostname}' resolves to private/internal "
-                f"address ({resolved_addr}): {url}"
-            )
-            raise ValueError(msg)
-
-
 def _block_ssrf(url: str) -> None:
-    """Block server-side request forgery via private/metadata URLs."""
-    from urllib.parse import urlparse
+    """Block SSRF targets, in `ValueError` terms.
 
-    url_lower = url.lower()
+    The check itself is `maistro.security.ssrf` — there used to be a second
+    implementation here, which is how the two drifted apart (#154). What stays
+    is the exception type: `install()` documents a `ValueError` contract and
+    `import_pipeline` turns one into a "blocked" verdict rather than an
+    exception, so translating at this boundary keeps both true without another
+    copy of the logic.
+    """
+    from maistro.security.ssrf import SSRFBlockedError, validate_outbound_url
 
     try:
-        parsed = urlparse(url_lower)
-    except Exception:
-        msg = f"Blocked: malformed URL: {url}"
-        raise ValueError(msg) from None
-
-    hostname = parsed.hostname or ""
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        msg = f"Blocked: unsupported marketplace URL: {url}"
-        raise ValueError(msg)
-
-    for prefix in _BLOCKED_HOSTNAME_PREFIXES:
-        if hostname.startswith(prefix) or hostname == prefix:
-            msg = f"Blocked: URL targets private/metadata network: {url}"
-            raise ValueError(msg)
-
-    if _block_literal_ip(hostname, url):
-        return
-
-    _block_resolved_ip(hostname, url)
+        validate_outbound_url(url)
+    except SSRFBlockedError as exc:
+        msg = f"Blocked: URL targets private/metadata network: {url}"
+        raise ValueError(msg) from exc
 
 
 @runtime_checkable

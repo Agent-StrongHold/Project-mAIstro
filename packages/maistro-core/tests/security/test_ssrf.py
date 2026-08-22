@@ -1,9 +1,9 @@
-"""Tests for maistro.tools.net_guard — SSRF outbound URL guard.
+"""Tests for maistro.security.ssrf — SSRF outbound URL guard.
 
 Adapted from stronghold's tests/tools/test_executor.py (TestHTTPFallbackSSRFPrefix,
 TestHTTPFallbackDNS, TestResolveBlocksPrivate) to the standalone
-`validate_outbound_url(url) -> None` / `_resolve_blocks_private(hostname) -> str | None`
-signatures exposed by `maistro.tools.net_guard`.
+`validate_outbound_url(url) -> None` / `_offending_address(addresses) -> str | None`
+signatures exposed by `maistro.security.ssrf`.
 """
 
 from __future__ import annotations
@@ -12,11 +12,18 @@ import socket
 
 import pytest
 
-from maistro.tools.net_guard import (
+from maistro.security.ssrf import (
     SSRFBlockedError,
-    _resolve_blocks_private,
+    _offending_address,
+    _resolve,
+    avalidate_outbound_url,
     validate_outbound_url,
 )
+
+
+def _resolved(hostname: str) -> str | None:
+    """The offending address `hostname` resolves to, or None if all are public."""
+    return _offending_address(_resolve(hostname))
 
 
 def _addrinfo_entry(ip: str) -> tuple[object, ...]:
@@ -128,7 +135,12 @@ class TestDNSRebinding:
         with pytest.raises(SSRFBlockedError, match=r"10\.0\.0\.5"):
             validate_outbound_url("https://evil.example.com/x")
 
-    def test_unresolvable_hostname_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unresolvable_hostname_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Inverted deliberately — see `TestResolveBlocksPrivate` for the reasoning.
+
+        The lookup still happens exactly once: refusing must not cost a retry
+        storm against a resolver that is already struggling.
+        """
         attempts = 0
 
         def fake_getaddrinfo(*a: object, **k: object) -> list[object]:
@@ -137,14 +149,17 @@ class TestDNSRebinding:
             raise socket.gaierror("no such host")
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        # Unresolvable — will fail at connect time, not here.
-        validate_outbound_url("https://missing.example.com/x")
+        with pytest.raises(SSRFBlockedError, match="could not be resolved"):
+            validate_outbound_url("https://missing.example.com/x")
 
         assert attempts == 1
 
-    def test_url_without_hostname_does_not_raise(self) -> None:
-        # No netloc/hostname to resolve — nothing to block on.
-        validate_outbound_url("not-a-url")
+    def test_a_url_without_a_hostname_is_refused(self) -> None:
+        """Also inverted. "No host to resolve" was read as "nothing to block
+        on", which let anything that failed to parse as a URL through the guard
+        untouched — including every scheme the shape check now names."""
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url("not-a-url")
 
 
 class TestResolveBlocksPrivate:
@@ -153,46 +168,154 @@ class TestResolveBlocksPrivate:
             return [_addrinfo_entry("93.184.216.34")]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("example.com") is None
+        assert _resolved("example.com") is None
 
     def test_returns_ip_for_private(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_gai(*a: object, **k: object) -> list[object]:
             return [_addrinfo_entry("10.0.0.1")]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("intranet") == "10.0.0.1"
+        assert _resolved("intranet") == "10.0.0.1"
 
-    def test_returns_none_on_gaierror(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unresolvable_host_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """This assertion is inverted from what it used to say, on purpose.
+
+        The old guard returned "not blocked" on `gaierror`, reasoning that the
+        connection would fail anyway — and the old test asserted exactly that.
+        But the resolution stage is the only one that inspects addresses, so a
+        transient SERVFAIL turned it off and left the prefix list alone against
+        anything it does not literally match. A name that cannot be resolved
+        cannot be shown to be external, and the guard's job is to refuse in
+        precisely that case (#154).
+        """
+
         def fake_gai(*a: object, **k: object) -> list[object]:
             raise socket.gaierror("no host")
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("nope") is None
+        with pytest.raises(SSRFBlockedError, match="could not be resolved"):
+            validate_outbound_url("http://nope.example/x")
+
+    def test_a_host_that_resolves_to_nothing_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty answer is the same claim as no answer: nothing was shown."""
+
+        def fake_gai(*a: object, **k: object) -> list[object]:
+            return []
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
+        with pytest.raises(SSRFBlockedError, match="no addresses"):
+            validate_outbound_url("http://empty.example/x")
 
     def test_skips_malformed_sockaddr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_gai(*a: object, **k: object) -> list[object]:
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("not-an-ip", 0))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("host") is None
+        assert _resolved("host") is None
 
     def test_catches_ipv6_link_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_gai(*a: object, **k: object) -> list[object]:
             return [_addrinfo_entry("fe80::1")]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("ll") == "fe80::1"
+        assert _resolved("ll") == "fe80::1"
 
     def test_catches_reserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_gai(*a: object, **k: object) -> list[object]:
             return [_addrinfo_entry("240.0.0.1")]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("reserved") == "240.0.0.1"
+        assert _resolved("reserved") == "240.0.0.1"
 
     def test_catches_multicast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_gai(*a: object, **k: object) -> list[object]:
             return [_addrinfo_entry("224.0.0.1")]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
-        assert _resolve_blocks_private("mcast") == "224.0.0.1"
+        assert _resolved("mcast") == "224.0.0.1"
+
+    def test_catches_the_unspecified_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`0.0.0.0` is not `is_reserved`, and on many stacks connecting to it
+        reaches localhost — so it needs naming rather than leaving to the other
+        predicates."""
+
+        def fake_gai(*a: object, **k: object) -> list[object]:
+            return [_addrinfo_entry("0.0.0.0")]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
+        assert _resolved("unspec") == "0.0.0.0"
+
+
+class TestShapeIsAWhitelist:
+    """A scheme nobody listed is a scheme nobody reasoned about."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "gopher://evil/",
+            "dict://evil/",
+            "ldap://evil/",
+            "data:text/html,<script>",
+            "not-a-url",
+            "",
+        ],
+    )
+    def test_refuses_anything_that_is_not_http(self, url: str) -> None:
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url(url)
+
+    def test_refuses_an_http_url_with_no_host(self) -> None:
+        with pytest.raises(SSRFBlockedError, match="no host"):
+            validate_outbound_url("http:///just-a-path")
+
+
+class TestObfuscatedAddresses:
+    """Every spelling of an internal address arrives at the resolution stage as
+    the address it denotes, which is why that stage rather than the prefix list
+    carries the guarantee."""
+
+    @pytest.mark.parametrize(
+        ("url", "what"),
+        [
+            ("http://2852039166/", "decimal 169.254.169.254"),
+            ("http://0x7f000001/", "hex 127.0.0.1"),
+            ("http://127.1/", "short-form loopback"),
+            ("http://[::ffff:169.254.169.254]/", "IPv4-mapped IPv6 metadata"),
+            ("http://[::]/", "IPv6 unspecified"),
+            ("http://0.0.0.0/", "IPv4 unspecified"),
+        ],
+    )
+    def test_blocked(self, url: str, what: str) -> None:
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url(url)
+
+
+class TestAsyncFormAgrees:
+    """`browse()` is async, and `getaddrinfo` blocks. The async form exists so a
+    slow resolver stalls one coroutine rather than the whole loop — it must not
+    also mean a second set of rules."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/",
+            "http://127.0.0.1/",
+            "file:///etc/passwd",
+            "http://[::ffff:169.254.169.254]/",
+        ],
+    )
+    async def test_blocks_what_the_sync_form_blocks(self, url: str) -> None:
+        with pytest.raises(SSRFBlockedError):
+            await avalidate_outbound_url(url)
+
+    @pytest.mark.asyncio
+    async def test_allows_a_public_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_gai(*a: object, **k: object) -> list[object]:
+            return [_addrinfo_entry("93.184.216.34")]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
+        await avalidate_outbound_url("http://example.com/x")
