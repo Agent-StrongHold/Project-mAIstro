@@ -100,7 +100,7 @@ a duplicate approval or Invocation. Other suite counts are unchanged.
 | `packages/maistro-core/tests` | 6949 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
-| `packages/maistro-server/tests` | 202 | `ci.yml` |
+| `packages/maistro-server/tests` | 216 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |

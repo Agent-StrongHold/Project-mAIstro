@@ -157,7 +157,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Core CLI | `maistro.cli` console script | `5/14` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API only | — |
 | Shared contracts and config | imported by every package | `1/45` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
-| maistro-server HTTP app | `maistro_server.main` | `0/18` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
+| maistro-server HTTP app | `maistro_server.main` | `0/19` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `4/69` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
 | Agent Conductor services | `main` route registration + background loops | `15/62` | MIGRATE — `dag_run_store` and `graph_runner` are duplicate lifecycle owners | ADR-096 | DAG execution creates canonical Runs; `dag_run_store` demoted to a projection | #53, #35 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `8/17` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
