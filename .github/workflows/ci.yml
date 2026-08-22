@@ -268,3 +268,14 @@ jobs:
       # PR that does the renaming, which after #161 is every PR.
       - name: PR check contract matches the workflows
         run: python3 scripts/check-required-checks.py
+
+      # And the ruleset that pins branch protection against those names (#162).
+      # Offline only: it checks that every required context is a real check
+      # name, that no branch requires one that cannot report there, and that
+      # every PR check is required somewhere or excused by name. The last is
+      # what makes adding a gate a decision rather than a default — a new job
+      # fails this step until someone says whether it is part of the merge
+      # contract. Live verification (--verify) needs admin scope and is run by
+      # hand, not here.
+      - name: Branch-protection ruleset matches the check names
+        run: python3 scripts/check-branch-protection.py
