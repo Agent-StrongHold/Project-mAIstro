@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
+from maistro.a2a.admission import DelegationRunAdmitter
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.classifier.engine import ClassifierEngine
@@ -174,6 +175,12 @@ class Container:
     secret_store: SecretStore = None  # type: ignore[assignment]
     # A2A delegation broker (ADR-058).
     a2a_broker: A2ABroker = None  # type: ignore[assignment]
+    # The in-process delegator `agent.delegate_remote` dispatches through, and
+    # the seam that files delegated work as a child Run (#147). Exposed on the
+    # Container because `build_node_resolver` is called by its consumers rather
+    # than by the container, so they need somewhere to read them from.
+    a2a_delegator: Any = None
+    delegation_admitter: Any = None
     # Hierarchical orchestration across foreign harnesses (ADR-101).
     harness_registry: HarnessRegistry = None  # type: ignore[assignment]
     hierarchy: HierarchicalOrchestrator = None  # type: ignore[assignment]
@@ -589,6 +596,7 @@ async def create_container(
     # --- A2A delegation broker (ADR-058) ----------------------------------
     agents: dict[str, Agent] = {}
     a2a_broker = _wire_a2a_broker(agents)
+    a2a_delegator = _wire_a2a_delegator(agents)
 
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
@@ -651,6 +659,8 @@ async def create_container(
         token_store=token_store,
         secret_store=secret_store,
         a2a_broker=a2a_broker,
+        a2a_delegator=a2a_delegator,
+        delegation_admitter=DelegationRunAdmitter(spine.run_store, intents=intent_registry),
         harness_registry=harness_registry,
         hierarchy=hierarchy,
         harness_adapters=wired_harness_adapters,
@@ -941,6 +951,40 @@ def _wire_a2a_broker(agents: dict[str, Agent]) -> A2ABroker:
     return A2ABroker(resolver=_AgentMapCardResolver(), local=LocalTransport(_invoke))
 
 
+def _wire_a2a_delegator(agents: dict[str, Agent]) -> Any:
+    """Wire the in-process delegator over the container's live agent map (#147).
+
+    Policy comes from the agent's own identity — `delegation_mode` and
+    `sub_agents` — which is the same source `A2ABroker._enforce_policy` reads.
+    `A2ADelegator` keeps a separate `_agent_capabilities` table that nothing
+    ever populated, so every delegation through it raised "has no delegation
+    capabilities"; deriving the table from the cards means there is one policy
+    with two dispatch shapes rather than two policies.
+
+    The trust-tier ceiling is deliberately *not* reproduced here. It belongs to
+    the broker's synchronous path, where the caller's card is resolved at
+    dispatch; this table is built once at startup and would go stale. An
+    ALLOW_ALL agent therefore gets the broad table, and the tier check remains
+    the broker's to make — recorded so the difference is a decision rather than
+    an oversight.
+    """
+    from maistro.a2a.delegate import A2ADelegator, DelegationMode
+
+    delegator = A2ADelegator()
+    for name, agent in agents.items():
+        identity = agent.identity
+        mode = getattr(identity, "delegation_mode", DelegationMode.NONE)
+        if mode == DelegationMode.ALLOW_LIST:
+            allowed = [target for target in identity.sub_agents if target in agents]
+        elif mode == DelegationMode.ALLOW_ALL:
+            allowed = [target for target in agents if target != name]
+        else:
+            continue
+        if allowed:
+            delegator.register_agent_capability(name, allowed)
+    return delegator
+
+
 def _wire_hierarchy(
     agents: dict[str, Agent],
     skill_registry: InMemorySkillRegistry,
@@ -1004,6 +1048,9 @@ def build_node_resolver(
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     usage_log: InMemoryUsageLog | None = None,
+    a2a_delegator: Any = None,
+    guest_peers: Any = None,
+    delegation_admitter: Any = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -1041,6 +1088,18 @@ def build_node_resolver(
             return AgentSpawnHarnessNode(adapters=resolved_adapters)
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
+        if kind == "agent.delegate_remote":
+            # Previously fell through to `get_node(kind)()`, which constructs it
+            # with both dependencies at their `None` defaults — so in every
+            # production process the node returned "no a2a_delegator configured"
+            # for every delegation, as a value rather than an error (#147).
+            from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+
+            return AgentDelegateRemoteNode(
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                delegation_admitter=delegation_admitter,
+            )
         return get_node(kind)()
 
     return _resolver

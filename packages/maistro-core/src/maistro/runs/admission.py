@@ -102,6 +102,8 @@ async def admit_direct_work(
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
     initial_status: RunStatus = RunStatus.CREATED,
+    parent_run_id: str | None = None,
+    parent_node_run_id: str | None = None,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -109,6 +111,11 @@ async def admit_direct_work(
     Run can be traced back to its entry point without the entry point having to
     own any lifecycle state of its own. That is the whole trade #41 asks for:
     the admission record stays a receipt, the Run becomes the truth.
+
+    ``parent_run_id``/``parent_node_run_id`` make the admitted work a child of
+    the Run that asked for it — delegation (#147). Passing them is what puts a
+    delegation under the store's Workspace and Project guards, which have always
+    existed and which delegation never reached.
     """
     graph = direct_work_graph(
         workspace_id=workspace_id,
@@ -120,6 +127,8 @@ async def admit_direct_work(
     )
     return await store.create_run(
         graph,
+        parent_run_id=parent_run_id,
+        parent_node_run_id=parent_node_run_id,
         actor_principal_id=actor_principal_id,
         persona_id=persona_id,
         # `source` last, deliberately. With the spread last, a caller passing
