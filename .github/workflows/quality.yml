@@ -231,6 +231,14 @@ jobs:
       - name: backlog consistency (legends match usage; citations resolve)
         run: uv run python scripts/check-backlog-consistency.py
 
+      # Measuring how far a completion claim outruns its evidence was the easy
+      # half; failing when it moves is the half that holds a line (#31). Seven
+      # debt counters, each may only go down, and an unbanked improvement fails
+      # too so the ceiling cannot hold slack a later regression would spend.
+      # --run-tests runs only the ~180 @pytest.mark.ac tests, not the suite.
+      - name: acceptance-state ratchet (claims cannot outrun their evidence)
+        run: uv run python scripts/check-ac-state.py --run-tests --ratchet
+
       # ----- Pillar 4: types -----
       - name: mypy --strict
         run: uv run mypy --strict packages/maistro-core/src

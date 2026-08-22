@@ -1,0 +1,13 @@
+{
+  "_comment": "Reviewed ceilings for the acceptance-state debt counters (#31). Each counter is a way a completion claim can outrun its evidence, and each may only go down: a rise is a new contradiction entering the repository, and a fall that has not been banked is slack a later regression could spend. Enforced by scripts/check-ac-state.py --ratchet, which refuses to compare across measurement modes -- without --run-tests no criterion can reach the passing rung, so the counters mean something different. Bank a reviewed improvement with --ratchet --bank and read the diff; never hand-edit a number to match a delta.",
+  "measured_with_tests": true,
+  "ceilings": {
+    "completion_claims_contradicted": 9,
+    "completion_claims_unverifiable": 68,
+    "specs_awaiting_retrofit": 139,
+    "markers_without_criterion": 2,
+    "criteria_claimed_but_unproven": 0,
+    "scenarios_without_ac_tag": 0,
+    "gherkin_parse_errors": 0
+  }
+}

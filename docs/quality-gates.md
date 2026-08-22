@@ -57,7 +57,7 @@ later regression.
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
 | Hypothesis conformance | floor | zero falsifying examples | a property violation in `formal/` |
-| acceptance-criterion state | report only | `quality/ac-state.json` | nothing yet — see below |
+| acceptance-criterion state | count ratchet | `quality/ac-state-ceilings.json` (7 counters) | a completion claim outrunning its evidence — and an unbanked improvement, so the ceiling holds no slack |
 | Gherkin well-formedness | floor | zero parse failures | an acceptance-criteria block the Gherkin grammar rejects |
 
 Vulture runs in two workflows but has one authority: the per-identity ledger
@@ -113,6 +113,29 @@ Two counts are reported separately and must not be merged:
   criteria that fall short. Its own artefacts refute it.
 - **unverifiable** — the document claims `Implemented` and has nothing to
   measure yet. Unproven, not refuted.
+
+Since #31 this is a **ratchet rather than a report**. Seven debt counters —
+contradicted, unverifiable, specs awaiting AC-id retrofit, markers naming no
+criterion, criteria ticked but unproven, Gherkin scenarios with no tag, and
+Gherkin parse errors — are recorded in `quality/ac-state-ceilings.json` and may
+only go down. A rise fails: a document started claiming more than its artefacts
+support, and the fix is to prove the claim or correct the status, never to raise
+the ceiling. An *unbanked improvement* fails too, for the reason the vulture
+ledger stopped being a count ceiling: a margin left sitting there is slack that
+a later regression spends invisibly. Bank one with
+`--ratchet --bank` and read the diff.
+
+The ratchet refuses to compare across measurement modes. Without `--run-tests`
+no criterion can reach `passing`, so every claim above it reads as contradicted;
+comparing those numbers against ceilings banked from a real run would make the
+gate's verdict depend on how it was invoked. The mode is checked before anything
+is measured, so a wrong-mode run leaves `quality/ac-state.json` untouched rather
+than overwriting it with an unmeasured payload.
+
+The starting ceilings are the debt as measured on 2026-08-22: **9 contradicted,
+68 unverifiable, 139 specs awaiting retrofit**, 2 orphan markers, and zero on the
+remaining three. Those are not targets — they are the line below which the
+repository may not slip while the burn-down happens.
 
 ## Criteria are written in Gherkin
 
@@ -191,7 +214,7 @@ uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check
 uv run python scripts/check-vulture-baseline.py packages/*/src \
   --min-confidence 60 --exclude '*/third_party/*'
-uv run python scripts/check-ac-state.py --run-tests   # report only
+uv run python scripts/check-ac-state.py --run-tests --ratchet
 ```
 
 `scripts/check-suite-inventory.py --update` rewrites the inventory from an
