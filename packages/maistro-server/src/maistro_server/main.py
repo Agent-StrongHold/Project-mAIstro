@@ -22,6 +22,7 @@ from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.wiring import wire_execution_spine
+from maistro.security.gate import Gate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
@@ -30,6 +31,7 @@ from maistro_server.api import (
     agents,
     canvas,
     chat_completions,
+    chat_guard,
     health,
     metrics,
     models,
@@ -163,6 +165,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.
     runs.configure_run_store(spine.run_store)
+    # `/v1/chat/completions` calls the conductor directly rather than going
+    # through `maistro.conduit` (#142), so it inherits neither the Gate nor the
+    # Run seam. Until that routing converges, it gets both here (#150) — the
+    # admitter is the one this wiring already built and discarded.
+    chat_guard.configure_chat_guard(Gate(), spine.chat_admitter)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog
@@ -208,6 +215,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Run afterwards — and without this that guard latched permanently.
     reset_task_queue()
     runs.configure_run_store(None)
+    chat_guard.configure_chat_guard(None, None)
 
     # Release the canonical spine's pool with everything else it holds.
     from maistro.persistence import close_pool
