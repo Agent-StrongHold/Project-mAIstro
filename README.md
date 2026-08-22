@@ -207,6 +207,12 @@ See [`KNOWN-GAPS.md`](KNOWN-GAPS.md) for shipped-but-limited behavior, and
 [`SECURITY.md`](SECURITY.md) / [`COMPLIANCE.md`](COMPLIANCE.md) for which security controls
 are operative versus specified.
 
+For the subsystem-by-subsystem view — who owns each subsystem's lifecycle, persistence and
+authorization today, and whether it is being kept, migrated, retired or connected — see
+[`docs/architecture/CONVERGENCE-MATRIX.md`](docs/architecture/CONVERGENCE-MATRIX.md). It is
+CI-checked against the code it describes, so a stale row fails the build rather than
+misleading a reader.
+
 ## ADRs and specs
 
 - All architectural decisions are recorded as ADRs under `docs/adr/`.
