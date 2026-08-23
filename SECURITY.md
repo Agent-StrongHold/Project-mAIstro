@@ -82,6 +82,51 @@ Real numeric caps found in the engine (grepped, not asserted from memory — eac
 | Circuit breaker defaults | N=5 failures / W=60s window / T=30s cooldown | ADR-038 §2 (implemented in `resilience/`) | Per-upstream-dependency failure isolation |
 | Secret-redaction pattern catalogue | 30+ patterns, single-pass span merge, plus a >4.0 bits/char entropy fallback for unknown key formats | `security/redact.py` (ADR-064), installed by `security/log_redaction.py` | Scrubs API keys, JWTs, private-key blocks, connection strings, etc. **Operative on both log pipelines** — every stdlib handler (Conductor + uvicorn) and the structlog processor chain (`maistro-server`), covering `%`-args and exception tracebacks. `/health` reports `log_redaction_active`. It does **not** cover anything that bypasses logging — `print()`, an HTTP response body, or a value written straight to disk |
 
+### Configurable limits and their enforced floors
+
+Six of the caps above are deployment policy rather than code constants
+(`SPEC-082226-2a10`, `security/resource_policy.py`). **The shipped default and the
+enforced floor are the same number** — the value the engine has always shipped is
+also the weakest one it will accept. Tightening is always allowed; crossing the
+floor in the weakening direction fails `Settings` validation at startup, naming
+the setting and the override that would permit it.
+
+| Setting (env var) | Default = floor | Tighter means | Enforced by |
+|---|---|---|---|
+| `MAX_REQUEST_BODY_BYTES` | 1,048,576 | smaller | `PayloadSizeLimitMiddleware` |
+| `MAX_WEBHOOK_BODY_BYTES` | 1,048,576 | smaller | webhook routes |
+| `RATE_LIMIT_PER_MINUTE` | 60 | smaller | `security/rate_limiter.py` |
+| `RATE_LIMIT_BURST` | 10 | smaller | `security/rate_limiter.py` |
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 5 | smaller | `agents/circuit_breaker.py` (LLM provider) |
+| `CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S` | 60.0 | **larger** | `agents/circuit_breaker.py` (LLM provider) |
+
+Recovery timeout is the one that inverts: a shorter cooldown reopens the circuit
+to a failing provider sooner, so *larger* is the safer direction.
+
+`RATE_LIMIT_BURST=0` is the limiter's "no separate burst check" sentinel, not a
+limit of zero — the burst window is skipped and the per-minute limit is the only
+bound. A *nonzero* burst above the per-minute limit is capped by it for the same
+reason: the limiter checks the minute window first and returns before the burst
+window is consulted. The floor compares what the limiter enforces either way, so
+`RATE_LIMIT_PER_MINUTE=2` is accepted with a burst of 0 or 50 (both admit two a
+second, tighter than 10) while 6,000 with no burst throttle is refused.
+
+Non-finite values are refused in every mode, override included. `nan` fails
+every comparison, so it passed the floor checks and then disabled the control it
+was set on — a circuit breaker with a `nan` recovery timeout opens and never
+becomes half-open.
+
+`ALLOW_UNSAFE_RESOURCE_OVERRIDES=true` is the only way to configure a value below
+its floor, and it exists for development and deliberate unsafe deployments.
+`DEBUG` does not grant it — weakening a security limit takes its own statement,
+not a flag another subsystem might set for unrelated reasons. Non-positive values
+are rejected in every mode, unsafe included.
+
+`GET /health/ready` reports the effective values under
+`effective_resource_policy`, including `unsafe_overrides_enabled`, so what a
+process is actually enforcing can be read rather than inferred from the
+environment it was supposed to have been given.
+
 ### Gaps against Stronghold's inventory
 
 Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have an equivalent for:
@@ -155,10 +200,13 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    sandbox selector and a fake backend (`tests/sandbox/backends/test_fake.py`); a real hardware-VM
    backend passing the SPEC-190 conformance/escape suite was not found under `formal/` or
    `packages/maistro-core/tests/` at the time of writing.
-9. **Circuit-breaker and quota defaults are engine-wide, not per-deployment-tuned.** ADR-038's
-   `N=5, W=60s, T=30s` and the learning-store/rate-limiter constants above are code defaults; a
-   given deployment that needs stricter limits must override them explicitly — there is no
-   config-driven ratchet enforcing a floor.
+9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
+   body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
+   are deployment policy with an enforced floor (see *Configurable limits and their enforced
+   floors* above). Everything else in the inventory — the Warden scan window and pattern timeout,
+   skill body size, the learning-store caps, tool-result truncation, the grant TTLs, ADR-038's
+   per-dependency `N=5, W=60s, T=30s` — is still a code constant. A deployment needing a different
+   value for one of those changes code, and nothing enforces a floor on it.
 10. **This document itself is new.** It was authored as part of a Wave-1 governance pass and has
     not yet been exercised by an incident or a red-team engagement against this specific text —
     treat every "✅" above as "code review confirms this exists and is tested," not "this has
