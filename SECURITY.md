@@ -83,7 +83,7 @@ docstring for what it cannot check):
 | Rate limiter window / burst window | 60 s / 1 s | `security/rate_limiter.py` (`self._window`, `self._burst_window`) | Sliding-window + burst limiting per key |
 | Rate limiter key eviction age | 300 s | `security/rate_limiter.py` (`_KEY_EVICTION_AGE_S`) | Bounds in-memory key table growth |
 | Circuit breaker defaults | N=5 failures / W=60s window / T=30s cooldown | ADR-038 §2 (implemented in `resilience/`) | Per-upstream-dependency failure isolation |
-| Secret-redaction pattern catalogue | 30+ patterns, single-pass span merge, plus a >4.0 bits/char entropy fallback for unknown key formats | `security/redact.py` (ADR-064), installed by `security/log_redaction.py` | Scrubs API keys, JWTs, private-key blocks, connection strings, etc. **Operative on both log pipelines** — every stdlib handler (Conductor + uvicorn) and the structlog processor chain (`maistro-server`), covering `%`-args and exception tracebacks. `/health` reports `log_redaction_active`. It does **not** cover anything that bypasses logging — `print()`, an HTTP response body, or a value written straight to disk |
+| Secret-redaction entropy fallback | 4.0 bits/char, over runs of 32 chars or more | `security/redact.py` (`_ENTROPY_BITS_PER_CHAR_THRESHOLD`, `_MIN_SECRET_LENGTH`), ADR-064, installed by `security/log_redaction.py` | 30+ named patterns plus this fallback for unknown key formats, merged in a single span pass. Scrubs API keys, JWTs, private-key blocks, connection strings, etc. **Operative on both log pipelines** — every stdlib handler (Conductor + uvicorn) and the structlog processor chain (`maistro-server`), covering `%`-args and exception tracebacks. `/health` reports `log_redaction_active`. It does **not** cover anything that bypasses logging — `print()`, an HTTP response body, or a value written straight to disk |
 
 ### Gaps against Stronghold's inventory
 
@@ -92,7 +92,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | Only a **filesystem** path blocklist exists (`security/patterns.py:BLOCKED_HOST_PATHS` — `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, Docker socket paths); no URL/host-based SSRF blocklist was found in `tools/browser/client.py`, `skills/marketplace.py`, or `skills/import_pipeline.py`, all of which make outbound HTTP calls | `gap-impl` — real risk: a skill or connector fetching an attacker-controlled URL can reach `169.254.169.254` or a LAN-internal service today |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | Present at three call sites, in two divergent implementations, and enforced nowhere — see Known Limitation 1 for what each guard does and does not cover. (`security/patterns.py::BLOCKED_HOST_PATHS` is a **filesystem** path blocklist — `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, Docker socket paths — and is unrelated despite the name.) | `partial` — the guarded surfaces reject a metadata or LAN address stated up front; nothing stops a *new* caller from fetching unguarded, and nothing re-checks a redirect |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -117,13 +117,22 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **Two divergent SSRF guards, and nothing makes a new caller use either.** Every
-   caller-influenced outbound fetch that exists today *is* guarded — the skill marketplace and the
-   import pipeline call `skills/marketplace.py::_block_ssrf`, and the browser tool calls
-   `tools/net_guard.py::validate_outbound_url` — and both reject literal metadata/LAN addresses
-   (`169.254.169.254`, RFC1918) and re-check after DNS resolution, so a public-looking hostname
-   that resolves inward is caught. The limitation is that these are **two independent
-   implementations that disagree**, and that neither is enforced:
+1. **Two divergent SSRF guards, each checking one URL once, and nothing makes a new caller
+   use either.** Every caller-influenced outbound fetch that exists today reaches a guard — the
+   skill marketplace and the import pipeline call `skills/marketplace.py::_block_ssrf`, and the
+   browser tool calls `tools/net_guard.py::validate_outbound_url` — and both reject a literal
+   metadata/LAN address (`169.254.169.254`, RFC1918) and resolve the hostname before allowing it.
+   That is **less protection than "guarded" suggests**, and the gap is the same in both:
+   - Each validates the URL it is handed and then passes it to another network stack that will
+     follow its own redirects. `BrowserClient.browse` checks once before `Agent.run()`; the import
+     pipeline checks once before `http_client.get()`. A public URL that 302s to
+     `169.254.169.254` is never re-checked at the destination.
+   - The DNS answer used for the check is not the one used for the connection, so a name that
+     resolves publicly at check time and inward a moment later is admitted. The resolution step
+     raises the cost of DNS rebinding; it does not close it.
+
+   The remaining limitations are that these are **two independent implementations that
+   disagree**, and that neither is enforced:
    - `_block_ssrf` allowlists schemes (http/https only); `validate_outbound_url` denylists them
      (`file://`, `gopher://`, `ftp://`, `dict://`, `ldap://`) and so passes anything not on that
      list.
@@ -132,11 +141,15 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    - `_block_ssrf` is a private function in `skills/marketplace.py` imported across module
      boundaries by `skills/import_pipeline.py`, rather than living in the shared guard.
    - Nothing — no gate, no protocol, no wrapper — requires a *new* outbound-HTTP caller to invoke
-     either one. Measured (`measured-outbound-http`) — **29** modules under `maistro-core` import
-     an HTTP client, while only **3** call sites invoke either guard. The unguarded callers
-     (`skills/connectors.py`, `tasks/progress_webhook.py` and the rest) reach hard-coded or
-     operator-configured hosts, so none of them is currently exploitable — but that is a property
-     of what those call sites happen to fetch, not of a boundary anything enforces.
+     either one. Measured (`measured-outbound-http`) — of the **32** modules under `maistro-core`
+     that can open an outbound connection, **3** call a guard. Both figures come from one census,
+     which an earlier revision of this line did not: it compared modules importing an HTTP client
+     against guard *call sites*, and those two sets turned out to have no member in common, since
+     all three guarded modules fetch through an injected client or a browser rather than by
+     importing a library. The unguarded callers (`skills/connectors.py`,
+     `tasks/progress_webhook.py` and the rest) reach hard-coded or operator-configured hosts, so
+     none of them is currently exploitable — but that is a property of what those call sites
+     happen to fetch, not of a boundary anything enforces.
 
    Consolidating on `tools/net_guard.py` and enforcing it at the HTTP-client boundary is the open
    work. `security/patterns.py::BLOCKED_HOST_PATHS` is a *filesystem*-path blocklist and is

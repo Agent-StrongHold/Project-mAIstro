@@ -175,8 +175,8 @@ def test_an_unseeded_control_class_is_not_guessed_at(gate):
 
 
 def test_a_tagged_count_that_disagrees_with_the_code_fails(gate, monkeypatch):
-    monkeypatch.setitem(gate.__dict__, "_http_client_modules", lambda: 25)
-    monkeypatch.setitem(gate.__dict__, "_ssrf_guard_call_sites", lambda: 3)
+    monkeypatch.setitem(gate.__dict__, "_outbound_fetch_modules", lambda: 25)
+    monkeypatch.setitem(gate.__dict__, "_guarded_fetch_modules", lambda: 3)
 
     text = _limitations(
         """
@@ -193,8 +193,8 @@ def test_a_tagged_count_that_disagrees_with_the_code_fails(gate, monkeypatch):
 
 
 def test_a_tagged_count_that_matches_the_code_passes(gate, monkeypatch):
-    monkeypatch.setitem(gate.__dict__, "_http_client_modules", lambda: 25)
-    monkeypatch.setitem(gate.__dict__, "_ssrf_guard_call_sites", lambda: 3)
+    monkeypatch.setitem(gate.__dict__, "_outbound_fetch_modules", lambda: 25)
+    monkeypatch.setitem(gate.__dict__, "_guarded_fetch_modules", lambda: 3)
 
     text = _limitations(
         """
@@ -236,10 +236,10 @@ def test_guard_call_sites_are_counted_as_calls_not_as_text(gate):
     assert gate._ssrf_guard_call_sites() == 3
 
 
-def test_the_http_client_census_finds_the_modules_that_open_connections(gate):
+def test_the_outbound_fetch_census_finds_the_modules_that_open_connections(gate):
     """A census that returned zero would make every count trivially checkable
     and completely uninformative."""
-    assert gate._http_client_modules() > 20
+    assert gate._outbound_fetch_modules() > 20
 
 
 # --------------------------------------------------------------------------
@@ -320,3 +320,118 @@ def test_the_shipped_document_passes(gate):
     """The gate is only worth wiring into CI if the document it guards is
     currently in the state it demands."""
     assert gate.main() == 0
+
+
+# --------------------------------------------------------------------------
+# Review round: seven ways the gate could pass while the document was wrong.
+# Five of them were holes in this gate itself, which is the failure mode a
+# gate is least able to report on its own.
+# --------------------------------------------------------------------------
+
+
+class TestTheGateCannotPassWhileTheDocumentIsWrong:
+    def test_a_falsehood_outside_known_limitations_is_still_caught(self, gate):
+        """The first version read only `## Known Limitations` — and the same
+        commit that corrected the limitation left the identical falsehood in the
+        Stronghold gaps table, where the gate could not see it. A gate that
+        chooses its scope by section heading is one heading away from being
+        decorative."""
+        text = (
+            "### Gaps against Stronghold's inventory\n\n"
+            "| Stronghold had | Engine has | Status |\n"
+            "| SSRF blocklist | no URL/host SSRF blocklist was found in "
+            "`tools/browser/client.py` | `gap-impl` |\n"
+        )
+        findings = gate.Findings()
+        gate.check_absence_claims(text, findings)
+
+        assert len(findings.contradicted_absences) == 1
+        assert "tools/browser/client.py" in findings.contradicted_absences[0]
+
+    def test_an_accurate_clause_does_not_clear_a_false_one(self, gate):
+        """A sentence can make two claims at once. Skipping the whole sentence
+        let the correctly-named browser guard exonerate the false marketplace
+        claim before either path was inspected."""
+        text = _limitations(
+            """
+            1. **Gaps.** `skills/marketplace.py` has no SSRF guard, while
+               `tools/browser/client.py` calls `validate_outbound_url`.
+            """
+        )
+        findings = gate.Findings()
+        gate.check_absence_claims(text, findings)
+
+        named = " ".join(findings.contradicted_absences)
+        assert "skills/marketplace.py" in named
+        assert "tools/browser/client.py" not in named
+
+    def test_a_row_that_checks_nothing_fails(self, gate):
+        """`_CONSTANT` matched only a bare identifier, so five of sixteen rows
+        extracted no name — and a row that compares nothing still counted toward
+        "16 inventory rows match the code"."""
+        text = _inventory("| Something | 5 s | `security/warden/detector.py` (prose only) | — |")
+        findings = gate.Findings()
+        gate.check_inventory(text, findings)
+
+        assert len(findings.unchecked_rows) == 1
+        assert "cites no symbol" in findings.unchecked_rows[0]
+
+    @pytest.mark.parametrize(
+        ("citation", "name"),
+        [
+            ("`window_size = 50 * 1024`", "window_size"),
+            ("`max_results: int = 10`", "max_results"),
+            ("`self._window`", "_window"),
+            ("`MAX_LEARNINGS`", "MAX_LEARNINGS"),
+        ],
+    )
+    def test_every_cited_symbol_form_is_parsed(self, gate, citation: str, name: str):
+        """All four forms appear in the shipped inventory and all four cite a
+        real binding. The scan window, both learning-store defaults and both
+        rate-limiter windows were the values not being checked, which is most of
+        what a resource-limits inventory is for."""
+        assert name in gate._CONSTANT.findall(citation)
+
+    def test_a_scaled_value_is_only_admitted_for_a_binary_cell(self, gate):
+        """Offering the scaled form unconditionally made every row accept two
+        values, and the second was occasionally a real regression: a `0.5 s`
+        timeout that drifted to `512` would have passed, because 0.5 * 1024 is
+        512. A gate that accepts a thousandfold change in a security timeout is
+        worse than no gate on that row."""
+        assert 512.0 not in gate._documented_numbers("0.5 s")
+        assert 51200.0 in gate._documented_numbers("50 KiB")
+
+    @pytest.mark.parametrize(
+        "citation",
+        [
+            "`packages/hive-conductor/backend/tests/test_auth_password_storage.py`",
+            "`check-security-inventory.py`",
+            "`security/patterns.py:BLOCKED_HOST_PATHS`",
+        ],
+    )
+    def test_the_citation_forms_the_document_already_uses_are_matched(self, gate, citation: str):
+        """Four cited paths went unchecked in the first version — hyphens were
+        excluded from the path class and the single-colon symbol form matched
+        neither alternative. Renaming any of those files would have left
+        `check_paths` green, which is the one thing it exists to prevent."""
+        assert gate._CITATION.findall(citation), f"{citation} is not recognised as a citation"
+
+    def test_the_two_counted_figures_come_from_one_census(self, gate):
+        """The first version compared modules importing an HTTP client against
+        guard *call sites*, and those sets turned out to be disjoint: all three
+        guarded modules fetch through an injected client or a browser. The ratio
+        looked like coverage and measured nothing."""
+        census = {path for path, _calls in gate._outbound_fetch_census()}
+        guarded = {path for path, calls in gate._outbound_fetch_census() if calls}
+
+        assert guarded, "a census with no guarded member cannot measure coverage"
+        assert guarded <= census, "the numerator must be drawn from the denominator"
+        assert gate._guarded_fetch_modules() == len(guarded)
+        assert gate._outbound_fetch_modules() == len(census)
+
+    def test_a_module_fetching_through_an_injected_client_is_in_the_census(self, gate):
+        """`skills/marketplace.py` imports no HTTP library at all — it takes an
+        `HTTPClient` protocol. Missing it is what made the two figures disjoint."""
+        census = {path.name for path, _calls in gate._outbound_fetch_census()}
+
+        assert {"marketplace.py", "import_pipeline.py", "client.py"} <= census
