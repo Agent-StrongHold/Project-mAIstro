@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from maistro.protocols.scorer import Scorer
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
+    from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
@@ -852,7 +853,7 @@ def build_node_resolver(
     usage_log: InMemoryUsageLog | None = None,
     a2a_delegator: Any = None,
     guest_peers: Any = None,
-    run_store: Any = None,
+    run_store: RunStore | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -861,6 +862,17 @@ def build_node_resolver(
     DagRegistry callers are projected onto canonical Graph at their product
     boundary. Dependency-injected node kinds and plain registry nodes share
     the same resolution path in either representation.
+
+    ``run_store`` is the **canonical** `maistro.runs.store.RunStore`
+    (``get_run``/``create_run``/``transition_run``), not the durable executor's
+    `DurableRunStore` (``get``/``create``/``update``). The two names are close
+    enough to swap by accident, they share no method, and the parameter was
+    typed ``Any``: passing the executor's `InMemoryDurableRunStore` type-checked
+    and then raised `AttributeError` on the first accepted delegation, after the
+    work had already been dispatched. The annotation is the fix -- there is no
+    adapter here, because a `DurableRunRecord` is a checkpoint of one graph
+    execution and a `Run` is the execution's canonical identity, and pretending
+    either can stand in for the other is what produced the confusion.
     """
     from maistro.graph.definitions import Graph
     from maistro.graph.nodes import get_node
