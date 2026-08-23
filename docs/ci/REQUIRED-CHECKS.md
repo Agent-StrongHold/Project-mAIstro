@@ -78,6 +78,7 @@ which ones carry the hazard.
 | Workflow | Check name | Runs on |
 |---|---|---|
 | CI | `docker-build` | every PR |
+| CI | `durable-stores` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
