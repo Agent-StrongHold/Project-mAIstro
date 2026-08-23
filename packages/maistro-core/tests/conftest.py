@@ -10,7 +10,11 @@ import pytest
 # Force dry-run mode in tests to avoid real LLM calls
 os.environ.setdefault("MAISTRO_DRY_RUN", "1")
 
-# High rate limits in tests to avoid 429s
+# High rate limits in tests to avoid 429s. Both sit above their declared
+# security floor (SPEC-082226-2a10), so the suite has to say out loud that it is
+# an unsafe/dev configuration — which is exactly what the override is for. Set
+# before the limits so `Settings` never sees a weakened value without it.
+os.environ.setdefault("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "true")
 os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "6000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 

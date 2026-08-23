@@ -846,6 +846,7 @@
         "packages/maistro-core/src/maistro/config/presets.py::unused function 'preset_to_config'",
         "packages/maistro-core/src/maistro/config/presets.py::unused function 'resolve_preset'",
         "packages/maistro-core/src/maistro/config/settings.py::unused class 'OllamaSettings'",
+        "packages/maistro-core/src/maistro/config/settings.py::unused method '_enforce_resource_security_floors'",
         "packages/maistro-core/src/maistro/config/settings.py::unused method '_refuse_to_pretend_to_disable'",
         "packages/maistro-core/src/maistro/constants.py::unused variable 'SANDBOX_MAX_OUTPUT'",
         "packages/maistro-core/src/maistro/constants.py::unused variable 'WS_POLL_INTERVAL'",

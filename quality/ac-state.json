@@ -9,16 +9,16 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 174,
-    "specs_with_ac_heading": 166,
-    "specs_with_ac_ids": 28,
+    "specs": 177,
+    "specs_with_ac_heading": 169,
+    "specs_with_ac_ids": 31,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 462,
-    "criteria_annotated": 191,
-    "markers_found": 180,
+    "criteria_declared": 478,
+    "criteria_annotated": 207,
+    "markers_found": 196,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 215,
+    "gherkin_criteria": 231,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 9,
@@ -4306,6 +4306,286 @@
             "Persona cannot manufacture authorization"
           ],
           "rung": "declared"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082126-3c9d",
+      "file": "docs/specs/SPEC-082126-3c9d-pii-evasion-normalization.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-073"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 4,
+      "annotated": 4,
+      "gherkin_criteria": 4,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 4
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082126-3c9d/AC-1",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Canonical Unicode normalization defeats compatibility and invisible evasions"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-2",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Common representation evasions do not hide real PII"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-3",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Detection views do not create generic encoding or non-Latin false positives"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-4",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Applicable runtime output paths use the hardened filter"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082126-5f6a",
+      "file": "docs/specs/SPEC-082126-5f6a-warden-llm-judge-failure-semantics.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-073"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 6,
+      "annotated": 6,
+      "gherkin_criteria": 6,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 6
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082126-5f6a/AC-1",
+          "claimed": false,
+          "module": "maistro.security.warden.detector",
+          "covered_by": [
+            "packages/maistro-core/tests/security/warden/test_detector.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Exact safe output clears the optional judge"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-5f6a/AC-2",
+          "claimed": false,
+          "module": "maistro.security.warden.detector",
+          "covered_by": [
+            "packages/maistro-core/tests/security/warden/test_detector.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Provider failure fails closed"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-5f6a/AC-3",
+          "claimed": false,
+          "module": "maistro.security.warden.detector",
+          "covered_by": [
+            "packages/maistro-core/tests/security/warden/test_detector.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Malformed output fails closed"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-5f6a/AC-4",
+          "claimed": false,
+          "module": "maistro.security.warden.detector",
+          "covered_by": [
+            "packages/maistro-core/tests/security/warden/test_detector.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Partial classification is not treated as safe"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-5f6a/AC-5",
+          "claimed": false,
+          "module": "maistro.security.warden.detector",
+          "covered_by": [
+            "packages/maistro-core/tests/security/warden/test_detector.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "No configured judge preserves deterministic behavior"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-5f6a/AC-6",
+          "claimed": false,
+          "module": "maistro.security.warden.detector",
+          "covered_by": [
+            "packages/maistro-core/tests/security/warden/test_detector.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A judge that cannot be consulted fails closed"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082126-7a31",
+      "file": "docs/specs/SPEC-082126-7a31-tool-argument-resource-limits.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-073"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 6,
+      "annotated": 6,
+      "gherkin_criteria": 6,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 6
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082126-7a31/AC-1",
+          "claimed": false,
+          "module": "maistro.security.sentinel.policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_argument_limits.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Ordinary arguments preserve behavior"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-7a31/AC-2",
+          "claimed": false,
+          "module": "maistro.security.sentinel.policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_argument_limits.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Oversized arguments are denied before execution"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-7a31/AC-3",
+          "claimed": false,
+          "module": "maistro.security.sentinel.argument_limits",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_argument_limits.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Excessive depth is denied before serialization"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-7a31/AC-4",
+          "claimed": false,
+          "module": "maistro.security.sentinel.argument_limits",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_argument_limits.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Encoded content cannot evade the byte ceiling"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-7a31/AC-5",
+          "claimed": false,
+          "module": "maistro.security.sentinel.argument_limits",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_argument_limits.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Deployment overrides are explicit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-7a31/AC-6",
+          "claimed": false,
+          "module": "maistro.security.sentinel.argument_limits",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_argument_limits.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Non-JSON arguments fail closed"
+          ],
+          "rung": "reachable"
         }
       ]
     },
@@ -10074,13 +10354,17 @@
       "id": "ADR-073",
       "file": "docs/adr/ADR-073-warden-sentinel.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
+      "specs": [
+        "SPEC-082126-3c9d",
+        "SPEC-082126-5f6a",
+        "SPEC-082126-7a31"
+      ],
+      "measurable_specs": 3,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-073126-c4e1",
@@ -10411,18 +10695,6 @@
       "id": "ADR-082226-5104",
       "file": "docs/adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
-      "scenarios_without_ac_tag": [],
-      "gherkin_parse_errors": [],
-      "tier": "unmeasured"
-    },
-    {
-      "id": "ADR-082226-c126",
-      "file": "docs/adr/ADR-082226-c126-chat-turn-run-granularity-and-retention.md",
-      "declared_status": "Proposed",
       "specs": [],
       "measurable_specs": 0,
       "own_criteria": 0,
