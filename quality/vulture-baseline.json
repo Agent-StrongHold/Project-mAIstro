@@ -1109,7 +1109,6 @@
         "packages/maistro-core/src/maistro/prompts/store.py::unused class 'InMemoryPromptManager'",
         "packages/maistro-core/src/maistro/protocols/agents.py::unused method 'export_gitagent'",
         "packages/maistro-core/src/maistro/protocols/agents.py::unused method 'import_gitagent'",
-        "packages/maistro-core/src/maistro/protocols/archive.py::unused class 'ArchiveStore'",
         "packages/maistro-core/src/maistro/protocols/archive.py::unused class 'RecordArchivedError'",
         "packages/maistro-core/src/maistro/protocols/archive.py::unused method 'list_keys'",
         "packages/maistro-core/src/maistro/protocols/embeddings.py::unused method 'embed_batch'",
