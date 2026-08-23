@@ -20,7 +20,7 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
-from maistro.runs.wiring import wire_execution_spine
+from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # exists yet (#122), so Runs do not survive a restart here. Said out loud
     # rather than left to be discovered, because a run_id that silently stops
     # resolving is worse than one that was never promised.
-    _scope_store, run_store, admitter = await wire_execution_spine(
+    scope_store, run_store, admitter = await wire_execution_spine(
         None, workspace_id=settings.workspace_id
     )
     await logger.awarning(
@@ -124,6 +124,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.
     runs.configure_run_store(run_store)
+    # The OpenAI-compatible door gets the same Run spine (#150). Its Gate is
+    # left at the default: a bare `Gate()` self-wires a Warden, and this app
+    # builds no Container, so there is no shared Warden or strike tracker to
+    # hand it — configuring None here would be the same object with an extra
+    # step, and a way to accidentally configure nothing.
+    chat_completions.configure_chat_admission(
+        wire_chat_admission(run_store, scope_store, workspace_id=settings.workspace_id),
+        run_store,
+    )
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog
