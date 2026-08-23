@@ -17,7 +17,7 @@ is available without callers having to discover modules manually.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
 
 from .base import (
     BaseNode,
@@ -32,8 +32,22 @@ from .capability_effect import invoke_capability_effect
 
 _REGISTRY: dict[str, type[BaseNode[Any, Any]]] = {}
 
+#: Bound to the *concrete* node class, so the decorator below is typed as the
+#: identity function it is.
+#:
+#: It used to be annotated `(type[BaseNode[Any, Any]]) -> type[BaseNode[Any, Any]]`,
+#: which erased the class it was handed: after decoration a node was only known
+#: to be *some* `BaseNode`, whose `__init__` takes none of the dependencies the
+#: concrete ones declare. Every wiring site in `container.py` that injects a
+#: node's dependencies was then a type error — `AgentSpawnHarnessNode(adapters=…)`,
+#: `RsiQuotaPaceTriggerNode(usage_log)`, `AgentDelegateRemoteNode(a2a_delegator=…)`
+#: — six of them, reported against the callers rather than the cause. mypy was
+#: silent because it does not check those calls this way; the pyright ratchet
+#: caught it when #147's delegation wiring added the sixth.
+_NodeClass = TypeVar("_NodeClass", bound=type[BaseNode[Any, Any]])
 
-def register_node(node_cls: type[BaseNode[Any, Any]]) -> type[BaseNode[Any, Any]]:
+
+def register_node(node_cls: _NodeClass) -> _NodeClass:
     """Register a node class by its `kind` identifier. Usable as a decorator.
 
     Raises ``ValueError`` on:
