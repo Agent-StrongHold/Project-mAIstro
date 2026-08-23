@@ -337,14 +337,11 @@
       "id": "persistence-postgres",
       "subsystem": "Relational persistence",
       "disposition": "CONNECT",
-      "rationale": "The PostgreSQL half of the persistence layer. ADR-082226-5104 makes PostgreSQL the durable system of record, so these are the canonical stores and the container simply does not wire them \u2014 see #122, which also covers the silent in-memory fallback.",
-      "root": "maistro.container, for a postgresql:// database_url (#122, ADR-082226-5104)",
+      "rationale": "The PostgreSQL half of the persistence layer. ADR-082226-5104 makes PostgreSQL the durable system of record. #122 wired the memory, outcome, session and quota stores, so those are reachable now; the audit log and prompt store are still unwired. Neither has a consumer on the container's path yet -- the audit log is written through security.gate's own sink and the prompt store through maistro.prompts -- so connecting them is a separate change with a separate seam, not a line in the same branch.",
+      "root": "maistro.container wires the durable stores for a postgresql:// database_url (#122); pg_audit and pg_prompts still await theirs",
       "modules": [
         "maistro.persistence.pg_audit",
-        "maistro.persistence.pg_learnings",
-        "maistro.persistence.pg_outcomes",
-        "maistro.persistence.pg_prompts",
-        "maistro.persistence.pg_sessions"
+        "maistro.persistence.pg_prompts"
       ]
     },
     {
