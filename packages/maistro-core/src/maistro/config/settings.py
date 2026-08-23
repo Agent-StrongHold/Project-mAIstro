@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.quota.rate_profile import LimitUnit, LimitWindow
+from maistro.security.resource_policy import (
+    BASELINE_CIRCUIT_FAILURE_THRESHOLD,
+    BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S,
+    BASELINE_MAX_REQUEST_BODY_BYTES,
+    BASELINE_MAX_WEBHOOK_BODY_BYTES,
+    BASELINE_RATE_LIMIT_BURST,
+    BASELINE_RATE_LIMIT_PER_MINUTE,
+    EffectiveResourcePolicy,
+    validate_resource_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +188,10 @@ class Settings(BaseSettings):
 
     app_name: str = "maistro-engine"
     debug: bool = False
+    # This is intentionally separate from ``debug``. Weakening a security
+    # resource limit requires an explicit operator statement, not an incidental
+    # development flag that another subsystem may set for unrelated reasons.
+    allow_unsafe_resource_overrides: bool = False
     # Default to loopback so a careless dev-server start doesn't expose the
     # API on every interface. Container deployments override this via the
     # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).
@@ -224,15 +238,17 @@ class Settings(BaseSettings):
     tier_3_model: str = ""
     tier_4_model: str = ""
 
-    max_webhook_body_bytes: int = 1_048_576
+    max_webhook_body_bytes: int = BASELINE_MAX_WEBHOOK_BODY_BYTES
     max_request_body_bytes: int = Field(
-        default=1_048_576,
+        default=BASELINE_MAX_REQUEST_BODY_BYTES,
         description="Global HTTP request body size limit enforced by PayloadSizeLimitMiddleware "
         "(distinct from max_webhook_body_bytes, which the webhook routes enforce specifically).",
     )
 
-    rate_limit_per_minute: int = 60
-    rate_limit_burst: int = 10
+    rate_limit_per_minute: int = BASELINE_RATE_LIMIT_PER_MINUTE
+    rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
+    circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
+    circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the
@@ -256,6 +272,23 @@ class Settings(BaseSettings):
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     ntfy: NtfySettings = Field(default_factory=NtfySettings)
+
+    @model_validator(mode="after")
+    def _enforce_resource_security_floors(self) -> Self:
+        validate_resource_policy(self.effective_resource_policy())
+        return self
+
+    def effective_resource_policy(self) -> EffectiveResourcePolicy:
+        """Expose the exact values enforced by runtime resource boundaries."""
+        return EffectiveResourcePolicy(
+            max_request_body_bytes=self.max_request_body_bytes,
+            max_webhook_body_bytes=self.max_webhook_body_bytes,
+            rate_limit_per_minute=self.rate_limit_per_minute,
+            rate_limit_burst=self.rate_limit_burst,
+            circuit_breaker_failure_threshold=self.circuit_breaker_failure_threshold,
+            circuit_breaker_recovery_timeout_s=self.circuit_breaker_recovery_timeout_s,
+            unsafe_overrides_enabled=self.allow_unsafe_resource_overrides,
+        )
 
 
 class RoutingConfig(BaseModel):
