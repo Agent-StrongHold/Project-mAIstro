@@ -53,6 +53,11 @@ class RegistryEntry:
     contracts: list[str]
     tests: list[str]
     owners: list[str]
+    # The stated reason a spec declares no acceptance criteria (#164). It is
+    # the *only* audit evidence that criteria debt was retired deliberately
+    # rather than never recorded, so a registry that dropped it would leave
+    # consumers unable to tell a reviewed waiver from a missing field.
+    non_measurable: str | None = None
     # Computed back-references
     superseded_by: list[str] = field(default_factory=list)
     blocked_by_inverse: list[str] = field(default_factory=list)
@@ -79,6 +84,7 @@ class RegistryEntry:
             contracts=[c.value for c in fm.contracts],
             tests=list(fm.tests),
             owners=list(fm.owners),
+            non_measurable=fm.non_measurable,
         )
 
 

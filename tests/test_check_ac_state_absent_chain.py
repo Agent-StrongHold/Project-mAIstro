@@ -57,6 +57,7 @@ def corpus(gate, tmp_path, monkeypatch):
         non_measurable: str | None = None,
         criteria: int = 0,
         ac_heading: bool = True,
+        inline_implements: bool = False,
     ) -> None:
         # Built line by line rather than with a dedented f-string: interpolating
         # a multi-line block into a dedented literal destroys the common indent
@@ -70,12 +71,15 @@ def corpus(gate, tmp_path, monkeypatch):
             "status: Proposed",
             "created: 2026-08-23",
         ]
-        if implements:
+        if implements and inline_implements:
+            refs = ", ".join(f"maistro-engine#{ref}" for ref in implements)
+            lines.append(f"implements: [{refs}]")
+        elif implements:
             lines.append("implements:")
             lines += [f"  - maistro-engine#{ref}" for ref in implements]
         else:
             lines.append("implements: []")
-        if non_measurable:
+        if non_measurable is not None:
             lines.append(f"non-measurable: {non_measurable}")
         lines += ["layer: Foundation", "---", "", f"# {spec_id}", ""]
         if ac_heading:
@@ -278,3 +282,77 @@ def test_the_shipped_report_enumerates_and_not_only_counts(gate):
     for name in ("specs_implementing_nothing", "decided_adrs_without_spec", "specs_owing_criteria"):
         assert len(payload[name]) == payload["totals"][name]
         assert all(isinstance(entry, str) for entry in payload[name])
+
+
+# --------------------------------------------------------------------------
+# Review round: five ways the first version could be satisfied without the
+# link it was counting actually existing.
+# --------------------------------------------------------------------------
+
+
+class TestTheCounterCannotBeSatisfiedWithoutTheLink:
+    def test_every_decided_status_is_owed_a_spec(self, gate):
+        """`Fully Specced` *means* every child spec has acceptance criteria, so
+        an ADR carrying it with no child spec at all is precisely the absent
+        link this counter exists to catch. None of the three states between
+        Accepted and Implemented sits on any ADR today, which is exactly why
+        leaving them out would have been invisible."""
+        assert {"Accepted", "Fully Specced", "In Progress", "Tests Passing", "Implemented"} <= (
+            gate.DECIDED
+        )
+
+    def test_a_decision_not_to_do_is_not_owed_a_spec(self, gate):
+        """A spec implementing a denied or superseded ADR would contradict the
+        decision, so counting them would push work in the wrong direction."""
+        for status in ("Proposed", "Denied", "Will Not Implement", "Deferred"):
+            assert status not in gate.DECIDED
+        for retired in ("Superseded", "Deprecated"):
+            assert retired not in gate.DECIDED
+
+    @pytest.mark.parametrize("status", ["Fully Specced", "In Progress", "Tests Passing"])
+    def test_an_adr_in_a_mid_lifecycle_state_with_no_spec_is_counted(self, corpus, status: str):
+        corpus.adr("ADR-001", status=status)
+
+        assert corpus.measure()["decided_adrs_without_spec"] == ["ADR-001"]
+
+    def test_implementing_only_a_spec_is_not_implementing_a_decision(self, corpus):
+        """The schema admits SPEC references in every relationship field, so a
+        spec naming only another spec passed registry validation and made the
+        list non-empty while pointing at no ADR at all."""
+        corpus.spec("SPEC-001", implements=["SPEC-002"])
+
+        assert corpus.measure()["specs_implementing_nothing"] == ["SPEC-001"]
+
+    def test_an_inline_implements_list_still_names_its_adr(self, corpus):
+        """`implements: [maistro-engine#ADR-001]` is valid YAML and passes
+        registry validation. The first version returned the whole bracketed
+        expression as one entry, so the id read as `ADR-001]` and the ADR it
+        named looked unimplemented — a spec written in the inline style would
+        have failed the ratchet for a link it had correctly made."""
+        corpus.adr("ADR-001")
+        corpus.spec("SPEC-001", implements=["ADR-001"], criteria=1, inline_implements=True)
+        measured = corpus.measure()
+
+        assert measured["specs_implementing_nothing"] == []
+        assert measured["decided_adrs_without_spec"] == []
+
+    @pytest.mark.parametrize("token", ["null", "~", "Null", "NULL", "''"])
+    def test_a_yaml_null_is_not_a_waiver(self, corpus, token: str):
+        """The schema parses these to `None`, so the field is absent as far as
+        the registry is concerned — but raw-text extraction saw a truthy token.
+        The debt would have been retired with a value the schema considers no
+        waiver, and the only counter that rose is not ratcheted."""
+        corpus.spec("SPEC-001", implements=["ADR-001"], criteria=0, non_measurable=token)
+        measured = corpus.measure()
+
+        assert measured["specs_owing_criteria"] == ["SPEC-001"]
+        assert measured["specs_waiving_criteria"] == []
+
+    def test_a_reason_below_the_schema_floor_is_not_a_waiver(self, corpus, gate):
+        """The schema refuses it, so accepting it here would let a spec retire
+        its debt in this gate and fail Registry CI instead — two gates
+        disagreeing about the same document."""
+        corpus.spec("SPEC-001", implements=["ADR-001"], criteria=0, non_measurable="n/a")
+
+        assert corpus.measure()["specs_owing_criteria"] == ["SPEC-001"]
+        assert gate._MIN_WAIVER_REASON == 20

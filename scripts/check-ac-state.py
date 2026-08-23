@@ -87,9 +87,34 @@ LAYER_RE = re.compile(r"^layer:\s*(.+?)\s*$", re.MULTILINE)
 IMPLEMENTS_RE = re.compile(r"^implements:\s*(.*)$((?:\n  - .*)*)", re.MULTILINE)
 # `non-measurable: <reason>` (#164) — the front-matter waiver that separates
 # "this spec has no criteria, and here is why" from "nobody has written them
-# yet". Both used to read as the same absence. The registry schema enforces
-# that the reason is a reason; this only needs to know one was given.
+# yet". Both used to read as the same absence.
 NON_MEASURABLE_RE = re.compile(r"^non-measurable:\s*(\S.*?)\s*$", re.MULTILINE)
+
+#: YAML spellings of "no value". The schema parses these to `None`, so the
+#: field is absent as far as the registry is concerned — but raw-text extraction
+#: sees a truthy token. `non-measurable: null` therefore retired a spec's
+#: criteria debt using a value the schema considers no waiver at all, and the
+#: only counter it raised (`specs_waiving_criteria`) is not ratcheted.
+_YAML_NULLS = frozenset({"null", "Null", "NULL", "~", "''", '""'})
+
+#: The schema's floor for a waiver reason (`_MIN_WAIVER_REASON`). Restated here
+#: rather than imported because this script must run without the registry
+#: package installed; the schema is still the enforcing copy, and a spec that
+#: passes here but not there fails Registry CI instead of slipping through.
+_MIN_WAIVER_REASON = 20
+
+
+def _waiver_reason(fm: str) -> str | None:
+    """The stated reason a spec declares no criteria, or `None` if there is none."""
+    match = NON_MEASURABLE_RE.search(fm)
+    if match is None:
+        return None
+    reason = match.group(1).strip()
+    if reason in _YAML_NULLS or len(reason) < _MIN_WAIVER_REASON:
+        return None
+    return reason
+
+
 AC_MODULES_RE = re.compile(r"^ac[-_]modules:\s*$((?:\n  \S+:\s*\S+)*)", re.MULTILINE)
 
 
@@ -229,11 +254,21 @@ def _ac_section(text: str) -> str:
 
 
 def _list_field(fm: str, pattern: re.Pattern[str]) -> list[str]:
+    """The entries of a front-matter list, block or inline.
+
+    `implements: [maistro-engine#ADR-001]` is valid YAML and passes registry
+    validation, and the first version returned the whole bracketed expression as
+    a single entry — so `ref.split("#")[-1]` produced `ADR-001]` and the ADR it
+    named looked unimplemented. Splitting the inline form is the fix; the block
+    form was always correct.
+    """
     m = pattern.search(fm)
     if not m:
         return []
     inline = m.group(1).strip()
-    if inline and inline != "[]":
+    if inline.startswith("[") and inline.endswith("]"):
+        return [item.strip().strip("'\"") for item in inline[1:-1].split(",") if item.strip()]
+    if inline:
         return [inline]
     return [ln.strip().lstrip("- ").strip() for ln in m.group(2).splitlines() if ln.strip()]
 
@@ -422,7 +457,7 @@ def collect_specs(
                 "layer": (LAYER_RE.search(fm) or [None, "?"])[1],
                 "declared_status": (STATUS_RE.search(fm) or [None, "?"])[1],
                 "implements": _list_field(fm, IMPLEMENTS_RE),
-                "non_measurable": (NON_MEASURABLE_RE.search(fm) or [None, None])[1],
+                "non_measurable": _waiver_reason(fm),
                 "has_ac_heading": bool(AC_HEADING_RE.search(text)),
                 "criteria_total": len(criteria),
                 "annotated": sum(1 for c in criteria if c.module),
@@ -515,6 +550,11 @@ def collect_adrs(
     return adrs
 
 
+def _names_an_adr(ref: str) -> bool:
+    """Whether a relationship reference points at an ADR rather than a spec."""
+    return ref.split("#")[-1].startswith("ADR-")
+
+
 def absent_chain(specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> dict[str, list[Any]]:
     """The links the chain never made, as document ids (#164).
 
@@ -539,7 +579,14 @@ def absent_chain(specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> dic
     # decisions.
     implementing = {ref.split("#")[-1] for s in specs for ref in s["implements"]}
     return {
-        "specs_implementing_nothing": [s["id"] for s in specs if not s["implements"]],
+        # A non-empty `implements:` is not the same as naming a decision. The
+        # schema admits SPEC references in every relationship field, so
+        # `implements:\n  - maistro-engine#SPEC-001` passed registry validation
+        # and made the list non-empty while pointing at no ADR at all — the spec
+        # still implemented no decision, which is the thing being counted.
+        "specs_implementing_nothing": [
+            s["id"] for s in specs if not any(_names_an_adr(ref) for ref in s["implements"])
+        ],
         "decided_adrs_without_spec": [
             a["id"] for a in adrs if a["declared_status"] in DECIDED and a["id"] not in implementing
         ],
@@ -587,12 +634,28 @@ RATCHETED = (
     "specs_owing_criteria",
 )
 
-#: Statuses in which a decision has been taken, so an implementing spec is owed.
-#: `Proposed` is exempt by definition — a decision not yet made cannot be owed an
-#: implementation. `Implemented` is included alongside `Accepted` because it is
-#: the strictly stronger claim: an ADR asserting the work is done, with no spec
-#: naming it, is a worse version of the same hole.
-DECIDED = {"Accepted", "Implemented"}
+#: Statuses in which a decision has been taken *and still stands*, so an
+#: implementing spec is owed. Everything else is exempt for a stated reason:
+#:
+#:   - `Proposed` — not yet decided, so nothing can be owed.
+#:   - `Denied`, `Will Not Implement`, `Deferred` — decided *not* to do, or not
+#:     yet; a spec would contradict the decision.
+#:   - `Superseded`, `Deprecated` — retired. The successor carries the debt.
+#:
+#: `Implemented` is included alongside `Accepted` because it is the strictly
+#: stronger claim: an ADR asserting the work is done, with no spec naming it, is
+#: a worse version of the same hole. So are the three ADR-097 states between
+#: them — `Fully Specced` in particular *means* every child spec has acceptance
+#: criteria, so an ADR carrying it with no child spec at all is precisely the
+#: absent link this counter exists to catch. None of the three sits on any ADR
+#: today, which is exactly why leaving them out would have been invisible.
+DECIDED = {
+    "Accepted",
+    "Fully Specced",
+    "In Progress",
+    "Tests Passing",
+    "Implemented",
+}
 
 
 def _mode_mismatch(run_tests: bool) -> str | None:

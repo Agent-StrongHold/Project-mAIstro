@@ -174,3 +174,43 @@ def test_registry_entry_serializes_optional_dates() -> None:
     assert entry.accepted is None
     assert entry.implemented is None
     assert entry.created == "2026-05-07"
+
+
+# --------------------------------------------------------------------------
+# The waiver reason reaches the canonical registry (#164)
+# --------------------------------------------------------------------------
+
+
+_WAIVER = "A governance narrative with no runtime surface to assert on"
+
+
+def _waived_spec() -> FrontMatter:
+    fm = _make_fm("SPEC-030")
+    payload = fm.model_dump(mode="json", by_alias=True)
+    payload.update({"kind": "spec", "status": "Proposed", "non-measurable": _WAIVER})
+    return FrontMatter.model_validate(payload)
+
+
+def test_the_waiver_reason_reaches_the_registry_entry() -> None:
+    """The reason is the only audit evidence that criteria debt was retired
+    deliberately rather than never recorded. A registry that dropped it would
+    leave consumers unable to tell a reviewed waiver from a missing field."""
+    entry = RegistryEntry.from_front_matter(_waived_spec())
+
+    assert entry.non_measurable == _WAIVER
+
+
+def test_the_waiver_reason_survives_serialization() -> None:
+    registry = Registry()
+    registry.add(_waived_spec())
+
+    payload = json.loads(registry.to_json())
+
+    assert payload["maistro-engine#SPEC-030"]["non_measurable"] == _WAIVER
+
+
+def test_a_record_without_a_waiver_carries_none() -> None:
+    """Present-and-null must stay distinguishable from a reason nobody wrote."""
+    entry = RegistryEntry.from_front_matter(_make_fm("ADR-030"))
+
+    assert entry.non_measurable is None
