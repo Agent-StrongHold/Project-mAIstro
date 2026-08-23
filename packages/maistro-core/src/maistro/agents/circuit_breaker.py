@@ -16,7 +16,12 @@ from enum import StrEnum
 
 import structlog
 
+from maistro.config.settings import Settings, get_settings
 from maistro.observability.metrics import maistro_circuit_state
+from maistro.security.resource_policy import (
+    BASELINE_CIRCUIT_FAILURE_THRESHOLD,
+    BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S,
+)
 
 logger = structlog.get_logger()
 
@@ -40,8 +45,8 @@ class CircuitBreaker:
 
     def __init__(
         self,
-        failure_threshold: int = 5,
-        recovery_timeout: float = 60.0,
+        failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD,
+        recovery_timeout: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S,
         name: str = "llm",
     ) -> None:
         self.name = name
@@ -107,5 +112,16 @@ class CircuitOpenError(Exception):
         )
 
 
-# Global circuit breaker for the LLM provider
-llm_circuit = CircuitBreaker(name="llm_provider")
+def circuit_breaker_from_settings(settings: Settings | None = None) -> CircuitBreaker:
+    """Construct the process LLM circuit from validated deployment policy."""
+    effective = settings or get_settings()
+    return CircuitBreaker(
+        name="llm_provider",
+        failure_threshold=effective.circuit_breaker_failure_threshold,
+        recovery_timeout=effective.circuit_breaker_recovery_timeout_s,
+    )
+
+
+# Global circuit breaker for the LLM provider. Settings validation enforces the
+# security floor before these values can become runtime behavior.
+llm_circuit = circuit_breaker_from_settings()
