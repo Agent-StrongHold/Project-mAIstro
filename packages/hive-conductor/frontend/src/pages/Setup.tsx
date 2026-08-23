@@ -22,6 +22,7 @@ export default function Setup() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [preset, setPreset] = useState<string | null>(null);
   const [presets, setPresets] = useState<Record<string, Preset>>({});
+  const [presetsUnavailable, setPresetsUnavailable] = useState(false);
   const [modules, setModules] = useState<string[]>([]);
   const [adminUsername, setAdminUsername] = useState("admin");
   const [adminPassword, setAdminPassword] = useState("");
@@ -125,7 +126,12 @@ export default function Setup() {
         if (active) setPresets(data.presets);
       })
       .catch(() => {
-        /* pre-login 401 expected — the wizard renders without presets */
+        // Pre-login 401 is expected here, so an empty `presets` is a normal
+        // state rather than only a failure — which is exactly why the Hardware
+        // step must not hard-require a selection. Flagged so the step can say
+        // what happened instead of rendering an empty list with a dead Next
+        // button (#129).
+        if (active) setPresetsUnavailable(true);
       });
     return () => {
       active = false;
@@ -294,6 +300,18 @@ export default function Setup() {
           {step === 1 && (
             <div>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Pick your hardware tier</div>
+              {Object.keys(presets).length === 0 && (
+                <div className="card" style={{ marginBottom: 10, borderLeft: "3px solid var(--pencil)" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+                    {presetsUnavailable ? "HARDWARE PROFILES UNAVAILABLE" : "LOADING HARDWARE PROFILES"}
+                  </div>
+                  <div style={{ fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.4 }}>
+                    {presetsUnavailable
+                      ? "Could not load the hardware profiles — this endpoint requires a session, and setup runs before login. You can continue; the server applies its own default."
+                      : "Fetching available profiles…"}
+                  </div>
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {Object.values(presets).map((p) => (
                   <div key={p.name} onClick={() => setPreset(p.name)} style={{ padding: 10, border: `1.4px solid ${preset === p.name ? "var(--accent)" : "var(--ink)"}`, borderRadius: 6, cursor: "pointer", background: preset === p.name ? "var(--honey-light)" : "transparent" }}>
@@ -393,13 +411,18 @@ export default function Setup() {
           {step < steps.length - 1 ? (
             <button className="btn btn-accent" onClick={() => setStep(step + 1)} disabled={
               (step === 0 && !conductorName.trim()) ||
-              (step === 1 && !preset) ||
+              // Only require a hardware choice when there is one to make.
+              // POC mode used to select "laptop" locally and skip this step
+              // entirely, so retiring it exposed a pre-existing dead end: no
+              // presets means no cards, and requiring a selection then blocks
+              // first-run provisioning with no error and no retry (#129).
+              (step === 1 && !preset && Object.keys(presets).length > 0) ||
               (step === 2 && (!adminPassword || !userUsername || !userPassword))
             }>
               next {"\u2192"}
             </button>
           ) : (
-            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || !preset}>
+            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || (!preset && Object.keys(presets).length > 0)}>
               {loading ? "configuring..." : "launch the hive \uD83D\uDC1D"}
             </button>
           )}

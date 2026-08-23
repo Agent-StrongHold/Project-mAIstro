@@ -10,6 +10,7 @@ import { PersonaWizard } from "./PersonaWizard";
 import {
   MessageCircle,
   LayoutDashboard,
+  Target,
   Brain,
   Plug,
   KeyRound,
@@ -29,6 +30,11 @@ const fullNav = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
+  // Missions was reachable only from `pocNav`, so retiring POC mode left a
+  // live route with no entry point anywhere in the app — the page still
+  // renders, `App.tsx` still registers it, and a repo-wide search finds no
+  // other Link or NavLink to it (#129).
+  { to: "/missions", icon: Target, label: "Missions" },
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
