@@ -27,10 +27,12 @@ wait for it.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import structlog
 from fastapi import APIRouter, HTTPException
@@ -41,7 +43,7 @@ from maistro.agents.conductor import run_task
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
 from maistro.runs.chat_admission import ChatRunAdmitter
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
 from maistro.security.gate import Gate
@@ -56,6 +58,19 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 #: OpenAI's own finish_reason for a refusal, so a client that already handles
 #: moderation needs no Maistro-specific case.
 CONTENT_FILTER = "content_filter"
+
+#: Response header naming a streamed turn's canonical Run. Listed in the app's
+#: CORS `expose_headers`, without which a browser client is sent it and then
+#: cannot read it.
+RUN_ID_HEADER = "X-Maistro-Run-Id"
+
+#: What a failed turn records on its Run. The exception text goes to the log
+#: only: `/runs/{run_id}` returns `Run.error` verbatim to anyone holding the
+#: run_id, and the SSE and HTTP responses already refuse to echo provider
+#: detail — a Run that carried it would be the same leak by a slower route.
+UPSTREAM_FAILURE = "upstream_error"
+INTERNAL_FAILURE = "internal_error"
+TIMEOUT_FAILURE = "timeout"
 
 _gate: Gate | None = None
 _chat_admitter: ChatRunAdmitter | None = None
@@ -247,38 +262,109 @@ async def _close_turn(
         logger.exception("chat_completions_run_close_failed", run_id=run.run_id)
 
 
+def _failure_category(exc: BaseException) -> str:
+    """The failure a Run may record, with no provider detail in it."""
+    if isinstance(exc, TimeoutError):
+        return TIMEOUT_FAILURE
+    if isinstance(exc, LLMProviderError):
+        return UPSTREAM_FAILURE
+    return INTERNAL_FAILURE
+
+
 async def _conduct(user_msg: str, run: Run | None) -> str:
     """Run the conductor, terminalizing the turn's Run either way.
 
-    The Run is closed here rather than when the stream ends, and that is the
-    whole answer to "what if the client disconnects mid-stream": by the time
-    any content chunk is written the Run is already terminal, so a reader who
-    leaves cannot strand it. It also stays true — the work did finish.
+    The Run records a failure *category*, never the exception text. Both
+    response paths already sanitize upstream detail, and `/runs/{run_id}`
+    returns `Run.error` verbatim to anyone holding the run_id — which the
+    streaming path hands out in a header — so a Run carrying the raw message
+    would leak provider URLs and diagnostics by a slower route. The detail
+    stays in the log, where the handlers below already put it.
     """
     try:
         response_text = await _run_conductor(user_msg)
     except BaseException as exc:
-        await _close_turn(run, error=f"{type(exc).__name__}: {exc}")
+        await _close_turn(run, error=_failure_category(exc))
         raise
     await _close_turn(run)
     return response_text
 
 
-def _text_chunks(chunk_id: str, model: str, text: str) -> list[str]:
-    """The SSE content chunks for one answer, in small pieces."""
-    return [
-        "data: "
-        + ChatCompletionChunk(
+def _text_chunks(chunk_id: str, model: str, text: str) -> Iterator[str]:
+    """The SSE content chunks for one answer, one at a time.
+
+    A generator, not a list: each frame carries `STREAM_CHUNK_SIZE`
+    characters, so a long answer becomes thousands of separate Pydantic models
+    and JSON strings. Building them all before yielding the first one holds
+    many times the answer's own size in memory and delays the first frame for
+    no reason.
+    """
+    for i in range(0, len(text), STREAM_CHUNK_SIZE):
+        chunk = ChatCompletionChunk(
             id=chunk_id,
             model=model,
             choices=[StreamChoice(delta=DeltaMessage(content=text[i : i + STREAM_CHUNK_SIZE]))],
-        ).model_dump_json()
-        + "\n\n"
-        for i in range(0, len(text), STREAM_CHUNK_SIZE)
-    ]
+        )
+        yield f"data: {chunk.model_dump_json()}\n\n"
+
+
+#: What an abandoned turn's Run records. Cancelled, not failed: nothing went
+#: wrong with the work, the reader left before it was done.
+ABANDONED = "stream abandoned before the turn completed"
+
+#: Strong references to in-flight cleanup writes, so the loop cannot collect
+#: one mid-write. Discarded as each finishes.
+_pending_closes: set[asyncio.Task[None]] = set()
+
+
+async def _close_if_open(run: Run) -> None:
+    """Terminalize a Run nothing else closed.
+
+    Idempotent by design: every ordinary path closes its own Run, so this reads
+    the Run back and does nothing when it is already terminal.
+    """
+    if _run_store is None:
+        return
+    try:
+        current = await _run_store.get_run(run.run_id)
+        if current is None or current.status in TERMINAL_RUN_STATUSES:
+            return
+        await _run_store.transition_run(run.run_id, RunStatus.CANCELLED, error=ABANDONED)
+    except Exception:
+        logger.exception("chat_completions_abandoned_run_close_failed", run_id=run.run_id)
 
 
 async def _stream_conductor_response(
+    request: ChatCompletionRequest,
+    auth: AuthenticatedPrincipal | None = None,
+    run: Run | None = None,
+) -> AsyncIterator[str]:
+    """Stream the turn, and close its Run however the stream ends.
+
+    The Run is RUNNING from before the generator starts — it is admitted in the
+    route handler so the header can carry it — which means a client that
+    disconnects at the very first `yield`, before the scan or the conductor
+    runs, would strand it there forever. `ChatRunAdmitter` refuses to sweep a
+    non-terminal Run, so repeated early disconnects would grow the store
+    without bound as well as lying about a process that died.
+
+    The cleanup is started as a task before being awaited, so it completes even
+    when this frame is torn down by `GeneratorExit`, where awaiting is not
+    allowed to suspend.
+    """
+    try:
+        async for chunk in _stream_turn(request, auth, run):
+            yield chunk
+    finally:
+        if run is not None:
+            closing = asyncio.ensure_future(_close_if_open(run))
+            _pending_closes.add(closing)
+            closing.add_done_callback(_pending_closes.discard)
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(closing)
+
+
+async def _stream_turn(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None = None,
     run: Run | None = None,
@@ -365,7 +451,7 @@ async def chat_completions(
     if request.stream:
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         if run is not None:
-            headers["X-Maistro-Run-Id"] = run.run_id
+            headers[RUN_ID_HEADER] = run.run_id
         return StreamingResponse(
             _stream_conductor_response(request, auth, run),
             media_type="text/event-stream",

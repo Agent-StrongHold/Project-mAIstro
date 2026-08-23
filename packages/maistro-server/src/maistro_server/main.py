@@ -37,6 +37,7 @@ from maistro_server.api import (
     webhooks,
     ws,
 )
+from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
 from maistro_server.api.schemas import ErrorDetail, ErrorResponse
@@ -214,6 +215,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    # Response headers a browser client may actually read. Without this the
+    # header is sent and then hidden: `response.headers` in browser JS only
+    # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
+    # an advertised correlation path that no cross-origin UI could follow.
+    expose_headers=[RUN_ID_HEADER, "X-Request-ID"],
 )
 
 # Rate limiting

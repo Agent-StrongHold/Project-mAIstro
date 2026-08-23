@@ -316,3 +316,97 @@ def test_no_run_store_means_a_null_run_id_and_a_working_endpoint(
     body = response.json()
     assert body["choices"][0]["message"]["content"] == "42"
     assert body["run_id"] is None
+
+
+# --- review findings ------------------------------------------------------
+
+
+async def test_an_abandoned_stream_still_closes_its_run(wired) -> None:
+    """A client that disconnects at the first chunk must not strand the Run.
+
+    The Run is RUNNING before the generator starts — it is admitted in the
+    route handler so the header can carry it — so a disconnect at the opening
+    `yield`, before the scan or the conductor runs, used to leave it there
+    forever. `ChatRunAdmitter` refuses to sweep a non-terminal Run, so the
+    store would grow without bound as well.
+    """
+    import asyncio
+
+    from maistro.tasks.models import TaskCreate  # noqa: F401  (import parity)
+
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    run = await chat_api._admit_turn(request, None)
+    assert run is not None
+    stream = chat_api._stream_conductor_response(request, None, run)
+
+    # Take only the opening chunk, then abandon the generator.
+    first = await stream.__anext__()
+    assert "assistant" in first
+    await stream.aclose()
+    await asyncio.sleep(0)
+
+    closed = await wired.get_run(run.run_id)
+    assert closed is not None
+    assert closed.status in TERMINAL_RUN_STATUSES
+    assert closed.status is RunStatus.CANCELLED
+    assert closed.error == chat_api.ABANDONED
+
+
+async def test_a_completed_stream_is_not_re_closed_as_abandoned(wired, client) -> None:
+    """The cleanup is idempotent: it must not overwrite a real outcome."""
+    with patch(
+        "maistro_server.api.chat_completions.run_task", AsyncMock(return_value=_output("42"))
+    ):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    run_id = response.headers[chat_api.RUN_ID_HEADER]
+    run = await wired.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    assert run.error is None
+
+
+async def test_a_failed_turn_records_a_category_not_the_exception(wired, client) -> None:
+    """`/runs/{id}` hands `Run.error` to anyone with the run_id."""
+    from maistro.agents.types import LLMProviderError
+
+    with patch(
+        "maistro_server.api.chat_completions.run_task",
+        AsyncMock(side_effect=LLMProviderError("https://provider.internal/v1 key=sk-secret")),
+    ):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 502
+    chat_runs = [r for r in wired._runs.values() if r.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]
+    assert len(chat_runs) == 1
+    assert chat_runs[0].error == chat_api.UPSTREAM_FAILURE
+    assert "provider.internal" not in (chat_runs[0].error or "")
+    assert "sk-secret" not in (chat_runs[0].error or "")
+
+
+def test_the_run_id_header_is_readable_cross_origin() -> None:
+    """Sent-but-unreadable is the same as not sent, for a browser client."""
+    from maistro_server.main import app
+
+    cors = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
+    assert cors, "the app no longer installs CORSMiddleware"
+    assert chat_api.RUN_ID_HEADER in cors[0].kwargs["expose_headers"]
+
+
+def test_content_chunks_are_produced_lazily() -> None:
+    """A long answer must not be fully serialized before the first frame."""
+    from collections.abc import Iterator
+
+    chunks = chat_api._text_chunks("id", "model", "x" * 10_000)
+
+    assert isinstance(chunks, Iterator)
+    first = next(chunks)
+    assert '"content"' in first
