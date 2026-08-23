@@ -61,24 +61,27 @@ and four shapes of corrupt hash return 401.
 ## Resource-limits inventory
 
 Real numeric caps found in the engine (grepped, not asserted from memory — each cites its
-`file:constant`):
+file and the **constant name**, never a line number: a line number rots silently on any edit
+above it, and two rows in this table had already drifted that way. `check-security-inventory.py`
+verifies every path, name and value below against the code on each PR — see that script's
+docstring for what it cannot check):
 
 | Limit | Value | File:constant | Purpose |
 |---|---|---|---|
-| Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py:81-82` (`window_size = 50 * 1024`, `overlap = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
-| Warden pattern-match timeout | 0.5 s | `security/warden/detector.py:27` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
-| Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py:32` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
-| Skill body size | 50,000 chars | `skills/parser.py:25` (`MAX_SKILL_BODY_LENGTH`) | Context-window-stuffing protection, enforced at both parse (`parser.py:116`) and import (`import_pipeline.py:210`) |
-| Learning store cap | 10,000 entries | `memory/learnings/store.py:15` (`MAX_LEARNINGS`) | OOM protection (FIFO-style bound on the in-memory store) |
-| `find_relevant` result cap | 10 results (default) | `memory/learnings/store.py:66` (`max_results: int = 10`) | Context-overflow protection |
-| Learning `list_all` page cap | 200 entries (default) | `memory/learnings/store.py:161` (`limit: int = 200`) | Bounds a single audit/listing call |
-| Tool-result truncation | 4,000 chars | `security/sentinel/token_optimizer.py:7` (`MAX_RESULT_LENGTH`) | Token-budget / context-stuffing protection on oversized tool results |
-| Task-spec description length | 50,000 chars | `constants.py:27` (`PERMISSION_MAX_INPUT`), enforced in `security/trust_boundary.py` (`TaskSpec.validate_spec`) | Prompt-stuffing prevention on cross-trust-boundary task specs |
-| Permission grant TTL | 3,600 s | `constants.py:24` (`PERMISSION_TTL`) | Time-boxes a `PermissionGrant` |
-| Self-elevation grant TTL | 300 s | `security/sentinel/elevation.py:103` (`DEFAULT_SELF_ELEVATION_TTL_SECONDS`) | Bounds a sudo-style re-auth grant (ADR-068 §D). **Not yet in force:** no surface issues grants, so nothing is bounded by this today (#346) |
-| Scoped-2FA grant TTL | 120 s | `security/sentinel/elevation.py:104` (`DEFAULT_SCOPED_2FA_TTL_SECONDS`) | Bounds an agent's owner-signed elevation request. **Not yet in force** — same reason |
-| Rate limiter window / burst window | 60 s / 1 s | `security/rate_limiter.py:30-31` (`self._window`, `self._burst_window`) | Sliding-window + burst limiting per key |
-| Rate limiter key eviction age | 300 s | `security/rate_limiter.py:16` (`_KEY_EVICTION_AGE_S`) | Bounds in-memory key table growth |
+| Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py` (`window_size = 50 * 1024`, `overlap = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
+| Warden pattern-match timeout | 0.5 s | `security/warden/detector.py` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
+| Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
+| Skill body size | 50,000 chars | `skills/parser.py` (`MAX_SKILL_BODY_LENGTH`) | Context-window-stuffing protection, enforced at both parse (`parser.py`) and import (`import_pipeline.py`) |
+| Learning store cap | 10,000 entries | `memory/learnings/store.py` (`MAX_LEARNINGS`) | OOM protection (FIFO-style bound on the in-memory store) |
+| `find_relevant` result cap | 10 results (default) | `memory/learnings/store.py` (`max_results: int = 10`) | Context-overflow protection |
+| Learning `list_all` page cap | 200 entries (default) | `memory/learnings/store.py` (`limit: int = 200`) | Bounds a single audit/listing call |
+| Tool-result truncation | 4,000 chars | `security/sentinel/token_optimizer.py` (`MAX_RESULT_LENGTH`) | Token-budget / context-stuffing protection on oversized tool results |
+| Task-spec description length | 50,000 chars | `constants.py` (`PERMISSION_MAX_INPUT`), enforced in `security/trust_boundary.py` (`TaskSpec.validate_spec`) | Prompt-stuffing prevention on cross-trust-boundary task specs |
+| Permission grant TTL | 3,600 s | `constants.py` (`PERMISSION_TTL`) | Time-boxes a `PermissionGrant` |
+| Self-elevation grant TTL | 300 s | `security/sentinel/elevation.py` (`DEFAULT_SELF_ELEVATION_TTL_SECONDS`) | Bounds a sudo-style re-auth grant (ADR-068 §D). **Not yet in force:** no surface issues grants, so nothing is bounded by this today (#346) |
+| Scoped-2FA grant TTL | 120 s | `security/sentinel/elevation.py` (`DEFAULT_SCOPED_2FA_TTL_SECONDS`) | Bounds an agent's owner-signed elevation request. **Not yet in force** — same reason |
+| Rate limiter window / burst window | 60 s / 1 s | `security/rate_limiter.py` (`self._window`, `self._burst_window`) | Sliding-window + burst limiting per key |
+| Rate limiter key eviction age | 300 s | `security/rate_limiter.py` (`_KEY_EVICTION_AGE_S`) | Bounds in-memory key table growth |
 | Circuit breaker defaults | N=5 failures / W=60s window / T=30s cooldown | ADR-038 §2 (implemented in `resilience/`) | Per-upstream-dependency failure isolation |
 | Secret-redaction pattern catalogue | 30+ patterns, single-pass span merge, plus a >4.0 bits/char entropy fallback for unknown key formats | `security/redact.py` (ADR-064), installed by `security/log_redaction.py` | Scrubs API keys, JWTs, private-key blocks, connection strings, etc. **Operative on both log pipelines** — every stdlib handler (Conductor + uvicorn) and the structlog processor chain (`maistro-server`), covering `%`-args and exception tracebacks. `/health` reports `log_redaction_active`. It does **not** cover anything that bypasses logging — `print()`, an HTTP response body, or a value written straight to disk |
 
@@ -114,12 +117,30 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **No SSRF blocklist for outbound HTTP.** Skills, connectors, and the browser tool all make
-   outbound HTTP calls (`skills/marketplace.py`, `skills/import_pipeline.py`,
-   `tools/browser/client.py`). Only a filesystem-path blocklist exists
-   (`security/patterns.py:BLOCKED_HOST_PATHS`); nothing blocks a request to
-   `169.254.169.254` (cloud metadata) or a LAN-internal address. This is the single largest gap
-   relative to Stronghold's inventory.
+1. **Two divergent SSRF guards, and nothing makes a new caller use either.** Every
+   caller-influenced outbound fetch that exists today *is* guarded — the skill marketplace and the
+   import pipeline call `skills/marketplace.py::_block_ssrf`, and the browser tool calls
+   `tools/net_guard.py::validate_outbound_url` — and both reject literal metadata/LAN addresses
+   (`169.254.169.254`, RFC1918) and re-check after DNS resolution, so a public-looking hostname
+   that resolves inward is caught. The limitation is that these are **two independent
+   implementations that disagree**, and that neither is enforced:
+   - `_block_ssrf` allowlists schemes (http/https only); `validate_outbound_url` denylists them
+     (`file://`, `gopher://`, `ftp://`, `dict://`, `ldap://`) and so passes anything not on that
+     list.
+   - `_block_ssrf` raises `ValueError`; `validate_outbound_url` raises `SSRFBlockedError`. A
+     caller that catches one does not catch the other.
+   - `_block_ssrf` is a private function in `skills/marketplace.py` imported across module
+     boundaries by `skills/import_pipeline.py`, rather than living in the shared guard.
+   - Nothing — no gate, no protocol, no wrapper — requires a *new* outbound-HTTP caller to invoke
+     either one. Measured (`measured-outbound-http`) — **29** modules under `maistro-core` import
+     an HTTP client, while only **3** call sites invoke either guard. The unguarded callers
+     (`skills/connectors.py`, `tasks/progress_webhook.py` and the rest) reach hard-coded or
+     operator-configured hosts, so none of them is currently exploitable — but that is a property
+     of what those call sites happen to fetch, not of a boundary anything enforces.
+
+   Consolidating on `tools/net_guard.py` and enforcing it at the HTTP-client boundary is the open
+   work. `security/patterns.py::BLOCKED_HOST_PATHS` is a *filesystem*-path blocklist and is
+   unrelated to SSRF despite the name.
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
