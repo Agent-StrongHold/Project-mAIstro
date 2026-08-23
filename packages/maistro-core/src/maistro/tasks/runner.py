@@ -11,6 +11,7 @@ import structlog
 
 from maistro.agents.types import ConductorOutput
 from maistro.constants import WORKER_POLL_TIMEOUT
+from maistro.tasks.execution import TaskAttemptExecutor, TaskExecutionFailed
 from maistro.tasks.lanes import Lane, LaneGate
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
 from maistro.tasks.progress_webhook import ProgressWebhookSink, payload_from_task
@@ -46,9 +47,17 @@ class TaskRunner:
         progress_webhook: ProgressWebhookSink | None = None,
         live_slots: int | None = None,
         background_slots: int | None = None,
+        attempts: TaskAttemptExecutor | None = None,
     ) -> None:
         self._queue = queue
         self._executor = executor
+        # The canonical execution seam (#143). When it is wired, every task's
+        # work runs as a physical Attempt under its Run's NodeRun. When it is
+        # not — no Run store in this process, so no Run to hang one on — the
+        # executor is called directly, exactly as it always was. That is the
+        # same shape as the queue's admitter: the runner does not fabricate an
+        # execution record it cannot back with a Run.
+        self._attempts = attempts
         self._max_workers = max_workers
         self._progress_webhook = progress_webhook
         self._running = False
@@ -224,6 +233,18 @@ class TaskRunner:
         finally:
             self._gate.release(lane)
 
+    async def _execute_work(self, run_id: str | None, request: TaskCreate) -> ConductorOutput:
+        """Run the task's work, through the Attempt seam when there is one.
+
+        `run_id` is None whenever the queue admitted without an admitter, and
+        the seam is absent whenever this process has no Run store. Either way
+        the executor is still called — a task must not stop running because
+        nothing is recording it.
+        """
+        if self._attempts is None or run_id is None:
+            return await self._executor(request)
+        return await self._attempts.execute(run_id, request, self._executor)
+
     async def _emit_progress_webhook(self, task_id: str) -> None:
         if self._progress_webhook is None:
             return
@@ -281,7 +302,13 @@ class TaskRunner:
             )
             await self._emit_progress_webhook(task_id)
 
-            result = await self._executor(request)
+            try:
+                result = await self._execute_work(task.run_id, request)
+            except TaskExecutionFailed as exc:
+                # The Attempt already recorded the failure. The receipt's own
+                # failure branch below is unchanged, so a `/tasks` caller reads
+                # what it always read.
+                result = exc.output
 
             # Phase 1 is single-pass — transition to COMPLETED or FAILED directly
             # The outcome goes to both: the Run because it is the execution

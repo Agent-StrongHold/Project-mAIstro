@@ -94,9 +94,11 @@ async def list_node_runs(
 ) -> list[NodeRunSummary]:
     """Per-node execution state under a Run.
 
-    Empty until physical execution runs through the graph (#42) rather than
-    around it — which is the honest answer for a task admitted today, and the
-    reason this endpoint exists now: the gap is visible instead of implied.
+    Empty until the Run's work actually executes, and populated once it does
+    (#143): a task's execution now goes through the canonical Attempt seam, so
+    the node it was admitted over has a real NodeRun and at least one Attempt.
+    Still empty for a Run whose work has not been picked up, which is the true
+    answer rather than an advertised gap.
     """
     await _require_visible_run(store, run_id, _owner_id(auth))
     return [

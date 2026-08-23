@@ -21,6 +21,7 @@ from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.wiring import wire_execution_spine
+from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
@@ -141,7 +142,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             api_key=settings.task_progress_webhook_api_key,
         )
 
-    _runner = TaskRunner(queue, executor=run_task, progress_webhook=progress_wh)
+    _runner = TaskRunner(
+        queue,
+        executor=run_task,
+        progress_webhook=progress_wh,
+        # Same store the admitter files Runs in, so a task's NodeRun and
+        # Attempt land under the Run `POST /tasks` already returned (#143).
+        attempts=TaskAttemptExecutor(run_store),
+    )
     await _runner.start()
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
