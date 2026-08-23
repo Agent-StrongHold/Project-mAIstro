@@ -84,12 +84,29 @@ def _require_pm(user_id: str, workspace_id: str | None) -> None:
     raise HTTPException(status_code=404, detail="Work items only available in PM POC mode")
 
 
+#: `project_id` a draft carries when it was suggested under no workspace.
+GLOBAL_PROJECT_ID = "default"
+
+
 def _resolve_project_id(user_id: str, workspace_id: str | None) -> str:
     """Same resolution as routes/program.py's _resolve_program_scope, minus
     the use_case half (work items don't run the interview script)."""
     if workspace_id and is_workspace_member(user_id, workspace_id):
         return workspace_id
-    return "default"
+    return GLOBAL_PROJECT_ID
+
+
+def _draft_workspace(draft: WorkItemDraft) -> str | None:
+    """The Workspace a draft was suggested under, or None for the global one.
+
+    A draft persists the scope it was suggested under (`project_id`), and that
+    is what its confirmation must submit into: the program context below is
+    already read back from it, so filing the Run anywhere else would put the
+    work in one Project and its context in another. `GLOBAL_PROJECT_ID` is the
+    sentinel for "no workspace", not a workspace id.
+    """
+    scope = (draft.project_id or "").strip()
+    return None if not scope or scope == GLOBAL_PROJECT_ID else scope
 
 
 def _load_draft(draft_id: str, user_id: str) -> WorkItemDraft:
@@ -239,9 +256,23 @@ async def confirm_work_item(
 ) -> dict[str, Any]:
     """User-approved post to Jira (stub) — only after clarify + edit."""
     uid = _user_id(request)
-    _require_pm(uid, workspace_id)
+    # Authorization before capability gating: `_require_pm` answers 404 for a
+    # workspace it cannot resolve, which would swallow the 403 a non-member is
+    # owed and make the refusal depend on whether the legacy PM flag is on.
     _require_submittable_workspace(uid, workspace_id)
+    _require_pm(uid, workspace_id)
     draft = _load_draft(draft_id, uid)
+    # The draft's own scope decides where the Run is filed, not the query
+    # string: the frontend confirms without one, so reading the request here
+    # would file a workspace-scoped draft in the default Project while its
+    # program context came from the workspace.
+    scope = _draft_workspace(draft)
+    if workspace_id and workspace_id != scope:
+        raise HTTPException(
+            status_code=409,
+            detail="this draft was suggested under a different workspace",
+        )
+    _require_submittable_workspace(uid, scope)
     try:
         posted, result = confirm_post_stub(draft)
     except ValueError as exc:
@@ -272,7 +303,7 @@ async def confirm_work_item(
             posted.agent_id,
             description,
             user_id=uid,
-            workspace_id=workspace_id,
+            workspace_id=scope,
             task_type=task_type,
             agent_id=agent_id,
             capability=posted.capability,

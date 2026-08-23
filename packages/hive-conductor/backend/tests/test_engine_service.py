@@ -172,6 +172,7 @@ async def test_start_with_no_router_key_uses_stub_agent_port(
         maistro_router_api_key = ""
         maistro_base_url = "http://localhost:8000"
         hive_mode = "production"
+        hive_default_workspace_id = "default"
 
     svc = EngineService()
     await svc.start(_Settings())  # type: ignore[arg-type]
@@ -191,6 +192,7 @@ async def test_start_in_demo_mode_uses_local_backend(
         maistro_router_api_key = ""
         maistro_base_url = "http://localhost:8000"
         hive_mode = "demo"
+        hive_default_workspace_id = "default"
 
     # Stub out TaskQueue/TaskRunner so .start doesn't try to spawn real ones
     class _Q:

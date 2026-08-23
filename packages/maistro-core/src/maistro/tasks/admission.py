@@ -285,7 +285,15 @@ class WorkspaceRoutingAdmitter:
 
     async def admitter_for(self, workspace_id: str | None = None) -> TaskRunAdmitter:
         """The bound admitter for one Workspace, building it on first use."""
-        resolved = (workspace_id or self._default_workspace_id).strip()
+        # `is None`, not falsiness. An empty string is a *named* Workspace that
+        # happens to be blank, and the API documents only None as meaning the
+        # default — folding the two together let `?workspace_id=` file into the
+        # default here while the HTTP backend refused the same value, and made
+        # `admitter_for("")` contradict the blank check below.
+        if workspace_id is None:
+            resolved = self._default_workspace_id.strip()
+        else:
+            resolved = workspace_id.strip()
         if not resolved:
             raise ValueError("workspace_id must be a non-empty string")
         cached = self._by_workspace.get(resolved)

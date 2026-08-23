@@ -167,3 +167,26 @@ async def test_transitions_reach_a_run_admitted_under_another_workspace(spine) -
     run = await runs.get_run(task.run_id or "")
     assert run is not None
     assert run.status.value == "completed"
+
+
+# --- review findings ------------------------------------------------------
+
+
+async def test_an_empty_workspace_is_not_the_same_as_an_omitted_one(spine) -> None:
+    """`?workspace_id=` is a named Workspace that happens to be blank.
+
+    Folding it into the default let the local backend file it there while the
+    HTTP backend refused the same non-None value, and contradicted the blank
+    check the admitter documents.
+    """
+    _projects, _runs, router = spine
+
+    with pytest.raises(ValueError):
+        await router.admitter_for("")
+
+
+async def test_omitting_the_workspace_still_means_the_default(spine) -> None:
+    _projects, _runs, router = spine
+
+    assert (await router.admitter_for(None)).workspace_id == "default"
+    assert (await router.admitter_for()).workspace_id == "default"

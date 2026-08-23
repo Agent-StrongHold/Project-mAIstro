@@ -18,6 +18,10 @@ from adapters.task_backend import TaskRecord
 
 logger = logging.getLogger("hive.engine")
 
+#: The Workspace name both this app and maistro-core default to. Only a
+#: deployment that changed it needs the warning below.
+DEFAULT_WORKSPACE_ID = "default"
+
 if TYPE_CHECKING:
     from config import Settings
 
@@ -77,11 +81,12 @@ class EngineService:
                 self._agent_port = bridge
                 self._configured = True
             except Exception as exc:
-                import logging
-
-                logging.getLogger("hive.engine").warning(
-                    "maistro-core bridge failed (%s) — falling back to stub", exc
-                )
+                # The module logger, not a function-local `import logging`:
+                # that import bound `logging` as a local for the whole
+                # function, so the later handler's `logging.getLogger(...)`
+                # raised UnboundLocalError whenever this branch was not taken —
+                # turning any failure below into a different, wrong error.
+                logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
                 self._agent_port = StubAgentPort()
         else:
             self._agent_port = StubAgentPort()
@@ -133,14 +138,26 @@ class EngineService:
                     base_url=settings.maistro_base_url,
                     api_key=settings.maistro_router_api_key,
                 )
+                if settings.hive_default_workspace_id != DEFAULT_WORKSPACE_ID:
+                    # This deployment's tasks are admitted by a separate
+                    # maistro-server, which reads its own WORKSPACE_ID. A Hive
+                    # that customized its default without an identical remote
+                    # setting silently files every unscoped submission outside
+                    # the Workspace it thinks it configured -- said out loud,
+                    # because the symptom is a correct-looking Run in the wrong
+                    # Project rather than an error.
+                    logger.warning(
+                        "hive_default_workspace_id=%s is not applied to the remote task "
+                        "server; set the same WORKSPACE_ID there or unscoped submissions "
+                        "will land in its own default",
+                        settings.hive_default_workspace_id,
+                    )
                 logger.info(
                     "MaistroServerTaskBackend wired — production tasks via %s",
                     settings.maistro_base_url,
                 )
         except Exception as exc:
-            logging.getLogger("hive.engine").warning(
-                "TaskBackend setup failed (%s) — mission dispatch disabled", exc
-            )
+            logger.warning("TaskBackend setup failed (%s) — mission dispatch disabled", exc)
 
     def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and

@@ -147,20 +147,6 @@ def _ready_draft(client, ws_id: str | None) -> str:
     return draft_id
 
 
-def test_confirm_carries_the_workspace_it_was_scoped_to(admin_client, monkeypatch) -> None:
-    import routes.work_items as work_items_routes
-
-    engine = _CapturingEngine()
-    ws_id = _create_workspace(admin_client)
-    draft_id = _ready_draft(admin_client, ws_id)
-    monkeypatch.setattr(work_items_routes, "get_engine", lambda: engine)
-
-    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm?workspace_id={ws_id}")
-
-    assert r.status_code == 200
-    assert engine.calls[0]["workspace_id"] == ws_id
-
-
 def test_confirm_without_a_workspace_still_succeeds(admin_client, monkeypatch) -> None:
     import routes.work_items as work_items_routes
 
@@ -240,3 +226,67 @@ async def test_the_http_backend_still_accepts_an_unscoped_submission(monkeypatch
 
     assert rec.id == "t-1"
     assert posted["url"].endswith("/tasks")
+
+
+# --- review findings ------------------------------------------------------
+
+
+def test_confirm_files_the_run_where_the_draft_was_suggested(admin_client, monkeypatch) -> None:
+    """The frontend confirms without a query parameter.
+
+    Reading the scope from the request would file a workspace-scoped draft in
+    the default Project while its program context came from the workspace.
+    """
+    import routes.work_items as work_items_routes
+
+    engine = _CapturingEngine()
+    ws_id = _create_workspace(admin_client)
+    draft_id = _ready_draft(admin_client, ws_id)
+    monkeypatch.setattr(work_items_routes, "get_engine", lambda: engine)
+
+    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
+
+    assert r.status_code == 200
+    assert engine.calls[0]["workspace_id"] == ws_id
+    assert engine.calls[0]["program_context"]["project_id"] == ws_id
+
+
+def test_confirm_refuses_a_workspace_the_draft_was_not_suggested_under(
+    admin_client, monkeypatch
+) -> None:
+    import routes.work_items as work_items_routes
+
+    engine = _CapturingEngine()
+    first = _create_workspace(admin_client)
+    second = _create_workspace(admin_client)
+    draft_id = _ready_draft(admin_client, first)
+    monkeypatch.setattr(work_items_routes, "get_engine", lambda: engine)
+
+    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm?workspace_id={second}")
+
+    assert r.status_code == 409
+    assert engine.calls == []
+
+
+def test_confirm_refuses_a_non_member_before_the_pm_gate(
+    authed_client, admin_client, monkeypatch
+) -> None:
+    """403, not the 404 the capability gate would have answered first."""
+    ws_id = _create_workspace(admin_client)
+
+    r = authed_client.post(f"/v1/work-items/does-not-matter/confirm?workspace_id={ws_id}")
+
+    assert r.status_code == 403
+
+
+def test_confirm_without_a_workspace_still_submits_unscoped(admin_client, monkeypatch) -> None:
+    import routes.work_items as work_items_routes
+
+    engine = _CapturingEngine()
+    draft_id = _ready_draft(admin_client, None)
+    monkeypatch.setattr(work_items_routes, "get_engine", lambda: engine)
+
+    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
+
+    assert r.status_code == 200
+    assert engine.calls[0]["workspace_id"] is None
