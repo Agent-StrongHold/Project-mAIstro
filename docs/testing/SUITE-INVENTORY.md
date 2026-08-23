@@ -109,7 +109,6 @@ for the acceptance and same-length homoglyph-offset invariants, then five from
 adversarial review covering Base64 SSNs, percent-encoded connection strings,
 form-encoded phones, encoded-span absorption/idempotence, and partial-overlap
 refusal.
-
 Four more maistro-core node IDs close #68's deployment-policy gap: raising the
 byte or depth ceiling now fails without the explicit unsafe-resource override,
 the explicit override is covered, and malformed override values fail startup
@@ -117,7 +116,7 @@ instead of silently selecting a policy.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6434 | `ci.yml` |
+| `packages/maistro-core/tests` | 6436 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 189 | `ci.yml` |
