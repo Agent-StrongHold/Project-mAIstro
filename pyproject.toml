@@ -83,6 +83,15 @@ browser = ["playwright>=1.49"]
 bootstrap = [
     "maistro-bootstrap",
 ]
+# Passthrough to maistro-core's own `[s3]` extra, so `uv sync --extra s3` at the
+# workspace root works — `uv sync --all-extras` here does NOT pull a member
+# package's extras (the same trap that left CI without google-re2; see the
+# note on that dependency in the dev extra). CI's `archive` job uses this to
+# install the optional SDK for the MinIO leg; the *absence* case is covered by
+# tests/memory/archive/test_optional_dependency.py in the same environment.
+s3 = [
+    "maistro-core[s3]",
+]
 
 [dependency-groups]
 dev = [
@@ -209,6 +218,16 @@ omit = ["*/third_party/*"]
 
 [tool.coverage.report]
 omit = ["*/third_party/*"]
+# `maistro_canvas/canvas/` has no `__init__.py`, and coverage.py skips
+# namespace-package directories when it walks `--source` for files that were
+# never imported. A new untested module there was therefore absent from
+# coverage.xml entirely, so diff-cover had no record to compare against and let
+# it through — the one hole that defeats the point of a diff gate (#163).
+#
+# It is a `[report]` option, not `[run]`, which is easy to get wrong: under
+# `[run]` coverage warns "Unrecognized option" on stderr and carries on with the
+# default, so the setting looks applied and is not.
+include_namespace_packages = true
 
 [tool.mypy]
 python_version = "3.12"
@@ -234,6 +253,15 @@ ignore_missing_imports = true
 # install — drop it if bip-utils ever ships types.
 [[tool.mypy.overrides]]
 module = ["bip_utils"]
+ignore_missing_imports = true
+
+# aioboto3/botocore ship no py.typed marker. Same shape as the bip-utils note
+# above: this covers missing *stubs*, not a missing install. Deliberately not
+# reaching for `types-aiobotocore` — its stubs are generated per-service and
+# enormous, and the surface used here is four client calls behind a Protocol
+# the rest of the codebase types against. If that surface grows, revisit.
+[[tool.mypy.overrides]]
+module = ["aioboto3", "aioboto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
 # Vendored upstream benchmark graders (see the ruff exclude above and each
