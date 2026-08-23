@@ -28,10 +28,24 @@ validated. That inverts the failure mode. Forgetting to allow a real endpoint
 is a refusal on the first request, loud and immediate; forgetting to guard a
 call site is a hole nobody sees. Only one of those is safe to get wrong.
 
-Allowed origins are seeded from settings — the LiteLLM base, the Ollama base,
-the ntfy base, a Home Assistant URL handed to its client — rather than from a
-hand-maintained list, so moving a gateway moves its allowance with it instead
-of leaving a stale entry behind and a working deployment broken.
+Where allowances come from
+--------------------------
+Two places, and both are derived rather than listed here, so moving a gateway
+moves its allowance with it instead of leaving a stale entry behind and a
+working deployment broken:
+
+* `configured_endpoints(settings)` reads the endpoints a settings object names
+  — the LiteLLM base, the Ollama base, the ntfy base, the task progress
+  webhook — and the container and the server pass it at startup.
+* A client whose endpoint is **not** in settings registers its own origin when
+  it is constructed, because that is the only place the URL exists.
+  `HomeAssistantIntegration` takes its URL as a constructor argument
+  (defaulting to `http://localhost:8123`), and `OAuthService` takes a provider
+  map that may name a self-hosted issuer; both call
+  `configure_outbound_policy` in `__init__`. Without that, a real Home
+  Assistant request is refused on a deployment that never touched settings —
+  and the refusal hides behind `MockTransport` in the tests, which is how it
+  went unnoticed the first time.
 
 What an allowance does and does not widen
 -----------------------------------------
@@ -49,11 +63,17 @@ URL and lands on a private one is validated at the hop that matters, with no
 call-site change. That is the main reason the policy lives at the transport
 rather than in `shared_client`'s wrapper.
 
+Proxies
+-------
+A deployment that egresses through an HTTP proxy is guarded and still reaches
+its proxy. `maistro.http` lets httpx build its own proxy mounts from
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` and then wraps each of them, rather than
+handing httpx a pre-built transport — which would have switched the environment
+proxy lookup off entirely and left those deployments with no egress at all.
+See `_guard_built_transports` for why the wrapping happens after construction.
+
 Known limitations, stated rather than implied
 ---------------------------------------------
-* **Proxy mounts.** A client configured to reach the internet through an HTTP
-  proxy sends matching requests through httpx's own proxy transport, which this
-  seam does not wrap. Deployments that egress via a proxy are not covered here.
 * **The rebinding window** #154 described is unchanged: this guard resolves the
   name and httpx resolves it again to connect. Pinning the resolved address
   into the connection is a deeper change and is still not done.
@@ -70,11 +90,46 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from maistro.security.ssrf import avalidate_outbound_url
+from maistro.security.ssrf import SSRFBlockedError, avalidate_outbound_url
 
 #: Ports that need not be written out, so `http://host` and `http://host:80`
 #: are one origin rather than two.
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+class OutboundBlockedError(SSRFBlockedError, httpx.TransportError):
+    """A refusal that satisfies both contracts the callers already rely on.
+
+    `SSRFBlockedError` derives from `ToolError`. That is right for a call site
+    that asked the guard a question directly, and wrong for one that only ever
+    sees the guard through an `httpx.AsyncClient` — because those call sites
+    catch what a client is documented to raise::
+
+        except httpx.HTTPError:      # OAuth token exchange -> OAuthExchangeError
+        except httpx.TransportError: # HTTP harness -> HarnessUnavailableError
+
+    Moving the guard into the transport put a `ToolError` on a path where those
+    handlers stand, so a refusal escaped them: the OAuth exchange lost its
+    typed error, the harness lost its fallback, and the quota CLI lost its exit
+    code. None of them are wrong to catch what they catch — the transport is
+    wrong to raise something a transport cannot raise.
+
+    Inheriting from both fixes it without asking every caller to learn a new
+    exception: `except SSRFBlockedError` still catches this, and so does
+    `except httpx.TransportError`. The MRO is well-formed because `AgentError`
+    and `httpx.HTTPError` are siblings under `Exception`, and
+    `AgentError.__init__`'s `super().__init__(message)` lands on
+    `httpx.RequestError.__init__`, which takes exactly that positional message.
+    """
+
+    def __init__(self, detail: str = "", *, request: httpx.Request | None = None) -> None:
+        super().__init__(detail)
+        if request is not None:
+            # httpx's own property setter rather than the private attribute
+            # behind it, so `.request` stays exactly the accessor httpx
+            # documents. `RequestError.__init__` has already defaulted it to
+            # `None`, which is what a caller that has no request gets.
+            self.request = request
 
 
 def outbound_origin(url: str) -> str:
@@ -169,6 +224,11 @@ def configured_endpoints(settings: object) -> list[str]:
         str(getattr(settings, "ollama_base_url", "") or ""),
         str(getattr(ntfy_settings, "base_url", "") or ""),
         str(getattr(settings, "maistro_base_url", "") or ""),
+        # Configured in the same breath as the LLM base and just as likely to
+        # be an address on the operator's own network — a receiver on the
+        # legacy conductor-router host is the usual case. Left out, the first
+        # task progress POST of a real deployment is refused.
+        str(getattr(settings, "task_progress_webhook_url", "") or ""),
     ]
 
 
@@ -195,7 +255,15 @@ class GuardedTransport(httpx.AsyncBaseTransport):
         return self._inner
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        await enforce_outbound_policy(str(request.url))
+        try:
+            await enforce_outbound_policy(str(request.url))
+        except SSRFBlockedError as exc:
+            # Re-raised as the dual-contract error so the handlers that already
+            # stand on this path keep working — see `OutboundBlockedError`. The
+            # translation belongs here rather than in `enforce_outbound_policy`,
+            # which is also called directly by code that is not inside a client
+            # and has no reason to see an httpx type.
+            raise OutboundBlockedError(exc.detail, request=request) from exc
         return await self._inner.handle_async_request(request)
 
     async def aclose(self) -> None:
@@ -217,6 +285,7 @@ def guarded(transport: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
 
 __all__ = [
     "GuardedTransport",
+    "OutboundBlockedError",
     "OutboundPolicy",
     "configure_outbound_policy",
     "configured_endpoints",

@@ -8,12 +8,20 @@ is covered by routing through the shared pool rather than by remembering.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 import pytest
 
-from maistro.http import aclose_shared_clients, get_shared_client, shared_client
+from maistro.http import (
+    aclose_shared_clients,
+    get_shared_client,
+    override_transport,
+    shared_client,
+)
 from maistro.security.outbound import (
     GuardedTransport,
+    OutboundBlockedError,
     OutboundPolicy,
     configure_outbound_policy,
     configured_endpoints,
@@ -43,6 +51,23 @@ class _Recording(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.seen.append(str(request.url))
         return httpx.Response(200, request=request)
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _Answering(httpx.AsyncBaseTransport):
+    """A real-looking transport that delegates to a handler, like `_Recording`.
+
+    Deliberately not `httpx.MockTransport`: `guarded()` returns that one
+    unwrapped, so a test built on it never reaches the policy at all.
+    """
+
+    def __init__(self, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+        self._handler = handler
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return self._handler(request)
 
     async def aclose(self) -> None:
         return None
@@ -216,7 +241,7 @@ def test_endpoints_are_read_off_the_settings_not_listed_here() -> None:
 
 
 def test_seeding_tolerates_a_settings_object_missing_every_field() -> None:
-    assert configured_endpoints(object()) == ["", "", "", "", ""]
+    assert configured_endpoints(object()) == ["", "", "", "", "", ""]
 
 
 # --- what is and is not wrapped -------------------------------------------
@@ -295,3 +320,162 @@ async def test_the_ntfy_client_uses_the_pool_so_it_is_guarded() -> None:
 
     transport = client._client._transport  # type: ignore[attr-defined]
     assert isinstance(transport, GuardedTransport)
+
+
+# --- proxy mounts keep working, and are guarded too ------------------------
+#
+# The first draft of this seam passed `transport=guarded(...)` to
+# `httpx.AsyncClient`. httpx 0.28.1 reads `allow_env_proxies = trust_env and
+# transport is None`, so that argument switched environment-proxy support off
+# for the whole engine: a deployment egressing through `HTTPS_PROXY` would have
+# lost outbound connectivity entirely. These pin the fix in both directions —
+# the mounts exist, and they are guarded.
+
+
+def test_env_proxy_mounts_survive_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    client = get_shared_client(timeout=1.0)
+
+    patterns = [p.pattern for p in client._mounts]  # type: ignore[attr-defined]
+
+    assert "https://" in patterns, f"environment proxy mounts were dropped: {patterns}"
+
+
+def test_every_proxy_mount_is_guarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.internal:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    client = get_shared_client(timeout=1.0)
+
+    mounted = [t for t in client._mounts.values() if t is not None]  # type: ignore[attr-defined]
+    assert mounted, "expected at least one proxy transport to guard"
+    assert all(isinstance(t, GuardedTransport) for t in mounted)
+
+
+def test_httpx_still_exposes_the_transports_this_guards() -> None:
+    """An upgrade that renames these must fail here, not silently un-guard.
+
+    `_guard_built_transports` reaches into two private attributes because the
+    public constructor cannot express "build your own proxy mounts, then let me
+    wrap them". That is a deliberate trade, and this is the alarm on it.
+    """
+    client = get_shared_client(timeout=1.0)
+
+    assert isinstance(getattr(client, "_transport", None), httpx.AsyncBaseTransport)
+    assert isinstance(getattr(client, "_mounts", None), dict)
+
+
+# --- a refusal is catchable by the handlers already on the path ------------
+
+
+async def test_a_refusal_is_an_httpx_transport_error() -> None:
+    """Callers catch what a client is documented to raise.
+
+    The OAuth token exchange wraps `httpx.HTTPError` into `OAuthExchangeError`,
+    the HTTP harness turns `httpx.TransportError` into `HarnessUnavailableError`
+    and falls back, and the quota CLI maps it to an exit code. A `ToolError`
+    from inside the transport walked past all three.
+    """
+    inner = _Recording()
+
+    with pytest.raises(httpx.TransportError):
+        await _get("http://169.254.169.254/latest/meta-data/", inner)
+
+    assert inner.seen == []
+
+
+async def test_a_refusal_is_still_an_ssrf_blocked_error() -> None:
+    """The dual contract is additive — nothing that caught it before stops."""
+    with pytest.raises(SSRFBlockedError):
+        await _get("http://169.254.169.254/", _Recording())
+
+
+async def test_a_refusal_carries_the_request_httpx_promises() -> None:
+    with pytest.raises(OutboundBlockedError) as caught:
+        await _get("http://127.0.0.1:9/", _Recording())
+
+    assert caught.value.request.url.host == "127.0.0.1"
+
+
+def test_the_dual_contract_error_reports_both_ancestries() -> None:
+    err = OutboundBlockedError("blocked")
+
+    assert isinstance(err, SSRFBlockedError)
+    assert isinstance(err, httpx.HTTPError)
+    assert err.detail == "blocked"
+
+
+# --- endpoints that live in a constructor, not in settings -----------------
+
+
+async def test_home_assistant_registers_its_own_url() -> None:
+    """Its URL is a constructor argument defaulting to `http://localhost:8123`.
+
+    Nothing in settings names it, so without the registration in `__init__`
+    every real Home Assistant call is refused — and `MockTransport` hides that
+    from the rest of the suite, which is how it went unnoticed.
+    """
+    from maistro.integrations.home_assistant import HomeAssistantIntegration
+
+    HomeAssistantIntegration()
+
+    assert current_outbound_policy().allows("http://localhost:8123/api/states")
+
+
+async def test_home_assistant_reaches_its_configured_host_through_the_guard() -> None:
+    from maistro.integrations.home_assistant import HomeAssistantIntegration
+
+    seen: list[str] = []
+
+    def _answer(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=[], request=request)
+
+    integration = HomeAssistantIntegration(url="http://10.0.0.7:8123", token="t")
+
+    # A *real* transport, not `MockTransport` — the guard leaves that one
+    # unwrapped, which is exactly why the suite could not see this refusal.
+    with override_transport(_Answering(_answer)):
+        await integration.get_states()
+
+    assert seen == ["http://10.0.0.7:8123/api/states"]
+
+
+def test_an_oauth_provider_registers_its_issuer() -> None:
+    """A self-hosted issuer is an RFC1918 address that settings never saw."""
+    from maistro.auth.oauth import InMemoryStateStore, OAuth2Client, OAuthProviderConfig
+
+    OAuth2Client(
+        providers={
+            "keycloak": OAuthProviderConfig(
+                name="keycloak",
+                authorization_url="https://10.1.2.3:8443/realms/m/protocol/openid-connect/auth",
+                token_url="https://10.1.2.3:8443/realms/m/protocol/openid-connect/token",
+                client_id="maistro",
+                jwks_url="https://10.1.2.3:8443/realms/m/protocol/openid-connect/certs",
+            )
+        },
+        state_store=InMemoryStateStore(),
+        http=get_shared_client(timeout=1.0),
+        secret_resolver=lambda _name: "secret",
+    )
+
+    policy = current_outbound_policy()
+    assert policy.allows("https://10.1.2.3:8443/realms/m/protocol/openid-connect/token")
+    assert not policy.allows("https://10.1.2.3:9443/anything")
+
+
+def test_the_progress_webhook_endpoint_is_seeded_from_settings() -> None:
+    """It is configured beside the LLM base and is just as likely to be local."""
+
+    class _Settings:
+        task_progress_webhook_url = "http://10.9.9.9:8080/progress"
+
+    origins = OutboundPolicy().with_origins(configured_endpoints(_Settings())).origins
+
+    assert origins == frozenset({"http://10.9.9.9:8080"})

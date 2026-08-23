@@ -64,6 +64,14 @@ import httpx
 
 from maistro.security.outbound import guarded
 
+#: The real class, captured before any test can rebind the name. Ten test
+#: modules replace `httpx.AsyncClient` with a double that answers requests
+#: without a socket, and `get_shared_client` deliberately still resolves the
+#: patched name so those keep working — so the guard needs a way to tell a real
+#: client from a stand-in that has no transports to guard. Nothing in production
+#: can install one, exactly as with `httpx.MockTransport`.
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
 # Generous by design — see "Pool size is not admission control" above. These are
 # ceilings that stop a runaway fan-out exhausting file descriptors, not a
 # throttle. Overridable per call site and via `configure_shared_http`.
@@ -170,27 +178,51 @@ def override_transport(transport: httpx.AsyncBaseTransport) -> Iterator[None]:
         set_test_transport(previous)
 
 
-def _guarded_transport(
-    transport: httpx.AsyncBaseTransport | None,
-    *,
-    verify: bool,
-) -> httpx.AsyncBaseTransport:
-    """The transport this client will use, with the outbound policy in front.
+def _guard_built_transports(client: httpx.AsyncClient) -> httpx.AsyncClient:
+    """Put the outbound policy in front of every transport `client` will use.
 
     Every module that reaches the network through this pool is guarded here at
     once (#155) — which is the point, because the same control as a function
     each call site had to remember reached three sites out of twenty-five.
     Redirect hops are covered for free: httpx re-enters the transport per hop.
 
-    When the caller passed no transport, the real one is built here rather than
-    left to httpx, because it has to exist before it can be wrapped. It is
-    built with the same `verify` and pool limits httpx would have used, so the
-    only difference is the guard.
+    Why this runs *after* construction rather than passing `transport=guarded(...)`
+    ------------------------------------------------------------------------------
+    Because a non-`None` `transport=` argument silently disables proxy support.
+    httpx 0.28's client reads::
+
+        allow_env_proxies = trust_env and transport is None
+
+    so handing it any transport — including a wrapper around the transport it
+    would have built itself — makes it skip `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+    entirely. An earlier draft of this module did exactly that, and the effect
+    on a deployment that egresses through a proxy is not a weaker guard but no
+    connectivity at all: every request goes direct and every request fails.
+
+    Rebuilding the proxy map here instead would mean reimplementing httpx's
+    environment parsing — per-scheme variables, `ALL_PROXY`, `NO_PROXY` suffix
+    matching, the `all://` pattern — and drifting from it on the next release.
+    So httpx builds exactly what it always builds, and the guard is applied to
+    each of the transports it chose. `_transport_for_url` picks between the
+    default transport and the mounted proxy ones; both are wrapped, so the
+    policy holds whichever it picks. A `None` mount means "use the default
+    transport for this pattern" and is left alone — the default is guarded.
+
+    `test_env_proxy_mounts_survive_the_guard` pins this, and
+    `test_httpx_still_exposes_the_transports_this_guards` fails loudly if an
+    httpx upgrade moves the attributes rather than letting the guard silently
+    become a no-op — a real client that stopped exposing them would fail those
+    two, and the `_REAL_ASYNC_CLIENT` check below cannot mask it because a real
+    client always passes it.
     """
-    inner = transport
-    if inner is None:
-        inner = httpx.AsyncHTTPTransport(verify=verify, limits=_limits)
-    return guarded(inner)
+    if not isinstance(client, _REAL_ASYNC_CLIENT):
+        return client
+    client._transport = guarded(client._transport)
+    client._mounts = {
+        pattern: None if mounted is None else guarded(mounted)
+        for pattern, mounted in client._mounts.items()
+    }
+    return client
 
 
 def _current_loop() -> asyncio.AbstractEventLoop | None:
@@ -245,14 +277,16 @@ def get_shared_client(
         client = _clients.get(key)
         if client is not None and not client.is_closed:
             return client
-        client = httpx.AsyncClient(
-            base_url=base_url,
-            headers=dict(headers or {}),
-            timeout=timeout,
-            transport=_guarded_transport(transport, verify=verify),
-            follow_redirects=follow_redirects,
-            verify=verify,
-            limits=_limits,
+        client = _guard_built_transports(
+            httpx.AsyncClient(
+                base_url=base_url,
+                headers=dict(headers or {}),
+                timeout=timeout,
+                transport=transport,
+                follow_redirects=follow_redirects,
+                verify=verify,
+                limits=_limits,
+            )
         )
         _clients[key] = client
         if transport is not None:

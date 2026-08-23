@@ -134,7 +134,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing when the name cannot be resolved at all. Applied at `maistro.http`'s pooled transport (`security/outbound.py`, ADR-082326-5386), so every module that reaches the network through the shared pool is covered, including redirect hops. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at the seam; a deployment that egresses through an HTTP proxy uses httpx's proxy transport, which this seam does not wrap, and the rebinding window between the guard's lookup and the client's remains open |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing when the name cannot be resolved at all. Applied at `maistro.http`'s pooled transport (`security/outbound.py`, ADR-082326-5386), so every module that reaches the network through the shared pool is covered, including redirect hops. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at the seam, proxy mounts included; the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -178,12 +178,14 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    gateway. An allowance names one endpoint; it does not widen to other ports on that host or to
    private addresses generally.
 
-   Three limits, stated rather than implied: a deployment that egresses through an HTTP proxy
-   sends matching requests through httpx's own proxy transport, which this seam does not wrap;
-   the guard resolves the name and the HTTP client resolves it again when it connects, so a name
-   that answers differently between those two lookups is not caught; and a transport that
-   fabricates responses (`httpx.MockTransport`, which is how the test suite avoids the network)
-   is not wrapped, because it opens no socket.
+   Proxy egress is covered: httpx builds its own mounts from `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+   and each of them is wrapped, so a deployment behind a proxy is both guarded and still able to
+   reach its proxy.
+
+   Two limits, stated rather than implied: the guard resolves the name and the HTTP client
+   resolves it again when it connects, so a name that answers differently between those two
+   lookups is not caught; and a transport that fabricates responses (`httpx.MockTransport`, which
+   is how the test suite avoids the network) is not wrapped, because it opens no socket.
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.

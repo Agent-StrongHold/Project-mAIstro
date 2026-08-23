@@ -105,10 +105,26 @@ nothing. Nothing in production can install one. This is deliberately *not* an
   settings the clients read.
 
 ### Negative / Trade-offs
-- **Proxy mounts are not covered.** A deployment that egresses through an HTTP
-  proxy sends matching requests through httpx's own proxy transport, which this
-  seam does not wrap. Stated rather than implied; closing it means reproducing
-  httpx's proxy resolution, which is worth its own change.
+- **The guard is applied to httpx's transports after the client is built,
+  reaching into two private attributes** (`_transport`, `_mounts`). The obvious
+  alternative — passing `transport=guarded(...)` — was the first draft of this
+  ADR and was wrong in a way worth recording, because it looks harmless: httpx
+  0.28 reads `allow_env_proxies = trust_env and transport is None`, so supplying
+  any transport switches environment-proxy support off for the whole engine.
+  The result on a deployment that egresses through `HTTPS_PROXY` is not a weaker
+  guard but no egress at all. Rebuilding the proxy map here instead would mean
+  reimplementing httpx's environment parsing — per-scheme variables, `ALL_PROXY`,
+  `NO_PROXY` suffix matching — and drifting from it on the next release. So httpx
+  builds what it always builds and each transport it chose is wrapped, guarded by
+  a test that fails if those attributes move.
+- **A refusal from inside a transport inherits from two hierarchies.**
+  `OutboundBlockedError` is both an `SSRFBlockedError` (hence a `ToolError`) and
+  an `httpx.TransportError`, because eleven call sites already catch the httpx
+  contracts — the OAuth exchange, the HTTP harness's fallback, the quota CLI's
+  exit code — and a transport that raises something a transport cannot raise
+  walks straight past all of them. Multiple inheritance for an exception is a
+  cost; asking every caller to learn a new exception, or leaving their handlers
+  silently bypassed, is a larger one.
 - **The rebinding window from #154 is unchanged.** This guard resolves the name
   and httpx resolves it again to connect. Pinning the resolved address into the
   connection is still not done.

@@ -13,6 +13,7 @@ import httpx
 
 from maistro.events.bus import Event, EventBus, EventCategory
 from maistro.http import shared_client
+from maistro.security.outbound import configure_outbound_policy
 
 logger = logging.getLogger("maistro.integrations.ha")
 
@@ -25,6 +26,13 @@ class HomeAssistantIntegration:
         event_bus: EventBus | None = None,
     ) -> None:
         self._url = url.rstrip("/")
+        # This URL exists nowhere else. The outbound policy (#155) is seeded
+        # from settings, and a Home Assistant address is a constructor argument
+        # — default `http://localhost:8123`, which is precisely the shape the
+        # guard refuses. Registering it here is what keeps a real deployment
+        # working; without it every request below is blocked, and the suite
+        # cannot see that because `MockTransport` never reaches the guard.
+        configure_outbound_policy(self._url)
         self._token = token
         self._bus = event_bus
         self._controllable_domains: set[str] = {
