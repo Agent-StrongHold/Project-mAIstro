@@ -62,19 +62,17 @@ _chat_admitter: ChatRunAdmitter | None = None
 _run_store: RunStore | None = None
 
 
-def configure_gate(gate: Gate | None) -> None:
-    """Install the Gate this endpoint scans with, from the app lifespan.
-
-    None restores the default. There is no "no Gate" state: `get_gate()` builds
-    a plain one on first use, because a deployment that forgot to configure this
-    must still be scanned. Configuring one only adds what a bare Gate lacks —
-    strike tracking, and a Warden the rest of the process shares.
-    """
-    global _gate
-    _gate = gate
-
-
 def get_gate() -> Gate:
+    """The Gate this endpoint scans with, built on first use.
+
+    There is deliberately no way to install a different one. A bare `Gate()`
+    self-wires a Warden, so the door is scanned without any deployment having
+    to remember to arm it — and this app builds no Container, so there is no
+    shared Warden or strike tracker that a configured Gate could add. Offering
+    a setter nothing calls would be an unarmed control that reads as an armed
+    one; a deployment-supplied Gate belongs with the Container work in #142,
+    where the things it would carry actually exist.
+    """
     global _gate
     if _gate is None:
         _gate = Gate()
