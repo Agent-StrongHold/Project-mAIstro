@@ -95,43 +95,32 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
-Configurable resource security floors (#75) add fifteen maistro-core node IDs
-and one maistro-server node ID. The core set is one per acceptance criterion —
-defaults equal the baseline, tightening in every direction is accepted, each of
-the six protected limits is refused when it crosses its floor the weak way,
-the unsafe override admits a weaker dev policy, and the LLM circuit is built
-from validated settings — plus three that guard the check itself: non-positive
-values are rejected even in unsafe mode, every field of
-`EffectiveResourcePolicy` has a declared floor, and the suite's own unsafe
-override would hide the refusals if the fixture that clears it were removed —
-and two on the `rate_limit_burst = 0` sentinel, which the limiter reads as "no
-burst check" rather than "allow nothing", so it is accepted under a tight
-per-minute limit and refused under a loose one, while a negative value stays
-incoherent in every mode.
-The maistro-server node ID covers the readiness diagnostic reporting the
-effective values.
+Fifteen maistro-core node IDs arrive with two security fixes on this branch.
+Sentinel argument limits (#68) contribute the larger share: a new
+`test_argument_limits.py` covering per-argument and total-payload caps.
+Warden's L3 judge (#71) contributes the rest, covering each way an inconclusive
+classifier result reaches the caller — provider error, timeout, empty body,
+malformed body, a partial answer that names no verdict, and the judge being
+unreachable altogether — since the point of the fix is that none of those may
+read as `safe`.
 
-Six more maistro-core node IDs answer the Codex review on #127. Three cover
-non-finite limits — `nan`, `+inf`, `-inf` — refused in every mode including
-under the unsafe override, plus one asserting *why*: `100.0 >= nan` is False, so
-a breaker with a `nan` recovery timeout opens and never becomes half-open. The
-remaining two cover the burst cap: a nonzero burst above the per-minute limit is
-capped rather than refused, because the limiter never consults the burst window
-when the minute check already returned — and the cap is `min`, not "ignore the
-burst", so a genuinely looser burst is still refused.
+Ten more maistro-core node IDs arrive with PII-evasion normalization (#70): five
+for the acceptance and same-length homoglyph-offset invariants, then five from
+adversarial review covering Base64 SSNs, percent-encoded connection strings,
+form-encoded phones, encoded-span absorption/idempotence, and partial-overlap
+refusal.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6430 | `ci.yml` |
+| `packages/maistro-core/tests` | 6492 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 189 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |
-| `packages/maistro-canvas/tests` | 127 | `ci.yml` |
+| `packages/maistro-canvas/tests` | 250 | `ci.yml` |
 | `packages/maistro-turing/backend/tests` | 26 | `ci.yml` (own invocation) |
-| `tests/` (root) | 860 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
 | `packages/hive-conductor/backend/tests` | 1223 | `ci.yml` (bare python) |
 | `packages/hive-conductor/tests/e2e` | 23 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
