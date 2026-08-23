@@ -261,7 +261,15 @@ jobs:
       # in artificer, a dead import in agents/factory.py.
       - name: pyright (type cross-check — ratchet)
         env:
-          PYRIGHT_BASELINE: 24
+          # 24 -> 21: `register_node` was typed
+          # `type[BaseNode[Any, Any]] -> type[BaseNode[Any, Any]]`, which erased
+          # every decorated subclass's own `__init__`, so each
+          # dependency-injected construction in `build_node_resolver` was
+          # reported as `No parameter named ...`. Making the decorator generic
+          # removed six findings (three that were in this baseline, three #147
+          # would have added). Ratcheted rather than left slack, per the note
+          # above -- 3 points of headroom is 3 regressions that land silently.
+          PYRIGHT_BASELINE: 21
         run: |
           uv run pyright --outputjson packages/maistro-core/src > pyright.json || true
           count=$(uv run python -c "import json;print(json.load(open('pyright.json'))['summary']['errorCount'])")
