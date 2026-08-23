@@ -43,6 +43,47 @@ if TYPE_CHECKING:
 #: retention refuses to sweep.
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
 
+
+def _placeholders(count: int) -> str:
+    """`count` SQL parameter marks, comma-separated.
+
+    The one thing this repo interpolates into SQL, and the reason bandit's B608
+    findings on the statements below are marked rather than fixed: the returned
+    text is `?,?,?`, derived from a length and never from a value. Every datum
+    still travels in the parameter tuple, so there is no vector to close — the
+    alternative bandit would prefer (a fixed number of marks) cannot express
+    `IN` over a variable-length list at all.
+
+    `sqlite_learnings.py` marks the identical pattern the same way.
+    """
+    return ",".join("?" * count)
+
+
+#: Held as templates rather than built inline so the interpolation sits on one
+#: line that can carry its `# nosec`, and so the SQL itself is readable next to
+#: the schema above rather than buried in a call.
+_PURGE_CANDIDATES_SQL = """SELECT run_id, payload FROM canonical_runs r
+    WHERE r.status IN ({statuses})
+      AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY json_extract(r.payload, '$.retention_expires_at')
+    LIMIT ?"""
+
+_DELETE_ATTEMPTS_SQL = """DELETE FROM canonical_attempts WHERE node_run_id IN (
+        SELECT node_run_id FROM canonical_node_runs WHERE run_id IN ({runs})
+    )"""
+
+_DELETE_NODE_RUNS_SQL = "DELETE FROM canonical_node_runs WHERE run_id IN ({runs})"
+
+_DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN ({runs})"
+
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -220,22 +261,10 @@ class SqliteRunStore:
         lexically is only correct while every one of them carries the same UTC
         offset — true today, and not something to make load-bearing.
         """
-        cursor = await self._conn.execute(
-            f"""SELECT run_id, payload FROM canonical_runs r
-                WHERE r.status IN ({",".join("?" * len(_TERMINAL_STATUS_VALUES))})
-                  AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM canonical_node_runs n
-                      JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
-                      WHERE n.run_id = r.run_id
-                  )
-                ORDER BY json_extract(r.payload, '$.retention_expires_at')
-                LIMIT ?""",
-            (*_TERMINAL_STATUS_VALUES, limit),
+        sql = _PURGE_CANDIDATES_SQL.format(  # nosec B608 — `{}` takes only `?`s, never data
+            statuses=_placeholders(len(_TERMINAL_STATUS_VALUES))
         )
+        cursor = await self._conn.execute(sql, (*_TERMINAL_STATUS_VALUES, limit))
         return [(row[0], Run.model_validate_json(row[1])) for row in await cursor.fetchall()]
 
     async def purge_expired_runs(
@@ -261,21 +290,21 @@ class SqliteRunStore:
                 doomed.append(run_id)
             if not doomed:
                 return 0
-            placeholders = ",".join("?" * len(doomed))
+            marks = _placeholders(len(doomed))
+            ids = tuple(doomed)
+            # Same reasoning as `_purge_candidates`: the only interpolated text
+            # is `marks`, and every run_id travels in the parameter tuple.
             await self._conn.execute(
-                f"""DELETE FROM canonical_attempts WHERE node_run_id IN (
-                        SELECT node_run_id FROM canonical_node_runs
-                        WHERE run_id IN ({placeholders})
-                    )""",
-                tuple(doomed),
+                _DELETE_ATTEMPTS_SQL.format(runs=marks),
+                ids,  # nosec B608
             )
             await self._conn.execute(
-                f"DELETE FROM canonical_node_runs WHERE run_id IN ({placeholders})",
-                tuple(doomed),
+                _DELETE_NODE_RUNS_SQL.format(runs=marks),
+                ids,  # nosec B608
             )
             await self._conn.execute(
-                f"DELETE FROM canonical_runs WHERE run_id IN ({placeholders})",
-                tuple(doomed),
+                _DELETE_RUNS_SQL.format(runs=marks),
+                ids,  # nosec B608
             )
             await self._conn.commit()
         return len(doomed)
