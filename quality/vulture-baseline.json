@@ -921,7 +921,6 @@
         "packages/maistro-core/src/maistro/graph/node_types.py::unused method 'canonical_type_id'",
         "packages/maistro-core/src/maistro/graph/node_types.py::unused method 'type_ids'",
         "packages/maistro-core/src/maistro/graph/node_types.py::unused method 'validate_node'",
-        "packages/maistro-core/src/maistro/graph/nodes/agent_delegate_remote.py::unused class 'AgentDelegateRemoteNode'",
         "packages/maistro-core/src/maistro/graph/nodes/agent_synth_dag.py::unused class 'AgentSynthDagNode'",
         "packages/maistro-core/src/maistro/graph/nodes/airtable_poll.py::unused class 'AirtablePollNode'",
         "packages/maistro-core/src/maistro/graph/nodes/compliance_block.py::unused class 'ComplianceBlockNode'",

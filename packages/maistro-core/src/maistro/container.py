@@ -850,6 +850,9 @@ def build_node_resolver(
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     usage_log: InMemoryUsageLog | None = None,
+    a2a_delegator: Any = None,
+    guest_peers: Any = None,
+    run_store: Any = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -861,6 +864,7 @@ def build_node_resolver(
     """
     from maistro.graph.definitions import Graph
     from maistro.graph.nodes import get_node
+    from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
@@ -887,6 +891,19 @@ def build_node_resolver(
             return AgentSpawnHarnessNode(adapters=resolved_adapters)
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
+        if kind == "agent.delegate_remote":
+            # Previously fell through to `get_node(kind)()`, which constructs
+            # the node with `a2a_delegator=None` and `guest_peers=None` -- so in
+            # the only resolver production uses, every delegation returned
+            # `status="failed"` with "no a2a_delegator configured". A returned
+            # failure reads like the target agent declining, so nothing
+            # surfaced it (#147). `run_store` is what lets the node file the
+            # delegated work as a canonical child Run.
+            return AgentDelegateRemoteNode(
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                run_store=run_store,
+            )
         return get_node(kind)()
 
     return _resolver
