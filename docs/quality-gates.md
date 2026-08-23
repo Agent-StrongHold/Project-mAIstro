@@ -48,7 +48,8 @@ later regression.
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
 | backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
-| coverage | floor | 88% line + branch, publish set | undertested code |
+| coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
+| coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
 | suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
 | enumeration coverage | identity ratchet | `scripts/check_enumerations.py` | a derived control list drifting from its source enum |
@@ -93,6 +94,81 @@ JSON diff — never edit entries by hand to match a delta. (Until 2026-08 this
 was a total-count ceiling plus a per-rule count+SHA-256 digest; the digest
 caught substitutions but failures weren't legible per identity, and the count
 ceiling held slack.)
+
+## The two coverage gates
+
+They answer different questions, and neither subsumes the other. Both run.
+
+**Aggregate (86%)** — the whole publish set. Catches the repository rotting under
+a stream of small, individually-fine PRs. Cannot see a change: a new 400-line
+module landing at 0% moves a 42,000-statement total by a fraction of a point.
+
+It moved from 88 to 86 when `include_namespace_packages` was turned on, and that
+is a widened measurement rather than a regression: 41,469 statements at 89%
+became 42,290 at 87.43%, the +821 being `maistro_canvas/canvas/` modules that
+are wholly uncovered and always were, and were invisible to this gate because
+the directory has no `__init__.py`. 86 keeps the headroom the previous choice
+had. The debt itself is [#171](https://github.com/Agent-StrongHold/Project-mAIstro/issues/171),
+not an omit pattern; raise the floor back as that lands.
+
+**Diff, per file (90% lines / 80% branch arcs)** — `scripts/check-diff-coverage.py`
+over the lines the PR touched, measured against the merge base.
+
+### Per file, not pooled
+
+The first version wrapped `diff-cover`, and review showed it could not express
+two of the rules:
+
+- **It pools every changed line before applying the threshold.** Five uncovered
+  lines in a new file plus ninety-five covered elsewhere is 95%, and passes —
+  the aggregate defect again, one scope smaller.
+- **It scores line hits, not branch arcs.** A changed conditional executed along
+  one outcome records a line hit and a missing branch, so `--branch` collected
+  arc data that nothing read.
+
+Both are per-file questions about `coverage.xml`, so the gate reads it directly.
+
+### Where 90 and 80 came from
+
+Measured over every PR merged into `develop` since `15abb9d`, **per file**:
+
+| | worst observed | floor |
+|---|---:|---:|
+| line coverage of changed lines | 94.9% | 90 |
+| branch coverage of changed arcs | 85.7% | 80 |
+
+Two numbers because the distributions differ. A single shared floor would have
+to be the lower of the two, which would stop enforcing anything on lines.
+
+Each sits under its own measured worst, for the same reason the aggregate sits
+at 88 under a measured 89.63: a gate pinned to its measurement fails the first
+PR with one awkward case. **Raise as the sample grows** — five PRs in a two-day
+repository is a thin draw, and this table is the baseline to raise from.
+
+### Scope, and the one thing it cannot catch
+
+Scope is the `--source` arguments of the coverage run. `check-diff-coverage.py`
+only scores files present in the report, so migrations, workflows and docs are
+excluded by construction rather than by a list somebody maintains.
+
+`include_namespace_packages = true` under `[tool.coverage.report]` is
+load-bearing: `maistro_canvas/canvas/` has no `__init__.py`, and without that
+setting coverage skips namespace directories when discovering never-imported
+files — a new untested module there would be absent from the report entirely and
+the gate would have nothing to check. It is a `[report]` option, not `[run]`;
+under `[run]` coverage warns "Unrecognized option" to stderr and carries on with
+the default, so the setting looks applied and is not.
+
+A file outside every `--source` path remains invisible, because coverage never
+records it.
+
+### Why the aggregate is evaluated before the diff scope widens
+
+`maistro-server` is measured for the diff gate but is not in the publish set.
+`coverage report` scopes only by `--include`/`--omit`, so appending server data
+before the 88% check would silently place it under that floor — the workflow's
+own comment and its arithmetic would disagree. The floor therefore runs on the
+publish set first, and the scope widens afterwards.
 
 ## Acceptance-criterion state
 
