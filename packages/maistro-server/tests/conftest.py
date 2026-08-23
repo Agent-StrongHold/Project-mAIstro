@@ -8,6 +8,9 @@ from collections.abc import Iterator
 import pytest
 
 os.environ.setdefault("MAISTRO_DRY_RUN", "1")
+# Above the declared security floor (SPEC-082226-2a10); the suite states the
+# unsafe/dev override rather than being exempted from the check.
+os.environ.setdefault("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "true")
 os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "6000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 
