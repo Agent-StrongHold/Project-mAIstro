@@ -40,9 +40,7 @@ def _bool_env(name: str, default: bool = False) -> bool:
         return True
     if normalized in _FALSE_VALUES:
         return False
-    raise ValueError(
-        f"{name} must be a boolean (true/false, 1/0, yes/no, on/off), got {raw!r}"
-    )
+    raise ValueError(f"{name} must be a boolean (true/false, 1/0, yes/no, on/off), got {raw!r}")
 
 
 def _protected_positive_int_env(

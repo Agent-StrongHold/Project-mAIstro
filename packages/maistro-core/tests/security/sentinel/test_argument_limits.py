@@ -129,8 +129,16 @@ def test_environment_overrides_may_tighten_without_unsafe_policy(monkeypatch: An
 @pytest.mark.parametrize(
     ("name", "value", "baseline"),
     [
-        ("MAISTRO_TOOL_ARGUMENT_MAX_BYTES", str(TOOL_ARGUMENT_MAX_BYTES + 1), TOOL_ARGUMENT_MAX_BYTES),
-        ("MAISTRO_TOOL_ARGUMENT_MAX_DEPTH", str(TOOL_ARGUMENT_MAX_DEPTH + 1), TOOL_ARGUMENT_MAX_DEPTH),
+        (
+            "MAISTRO_TOOL_ARGUMENT_MAX_BYTES",
+            str(TOOL_ARGUMENT_MAX_BYTES + 1),
+            TOOL_ARGUMENT_MAX_BYTES,
+        ),
+        (
+            "MAISTRO_TOOL_ARGUMENT_MAX_DEPTH",
+            str(TOOL_ARGUMENT_MAX_DEPTH + 1),
+            TOOL_ARGUMENT_MAX_DEPTH,
+        ),
     ],
 )
 def test_weaker_environment_limit_requires_explicit_unsafe_policy(
