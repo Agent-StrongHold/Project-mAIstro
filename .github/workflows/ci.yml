@@ -3,8 +3,17 @@ name: CI
 on:
   push:
     branches: [main, integration, develop, merge/main-into-integration]
+  # No `branches:` filter. It used to be [main, integration, develop], which
+  # matched on the PR's *base* — so a PR stacked on a feature branch ran none of
+  # this. #151 and #138 got Registry CI and Formal Conformance only: no lint, no
+  # types, no tests, no coverage, no SAST, no ratchet gates. The work was not
+  # unreviewed, it was unmeasured, and every accumulated failure arrived at once
+  # on retarget, against the branch least able to absorb it.
+  #
+  # A required-check set that silently does not apply to a whole class of PRs is
+  # worse than none: the green tick means different things depending on the base
+  # and nothing on the PR says which. #161.
   pull_request:
-    branches: [main, integration, develop]
 
 # Supersede in-flight runs for the same PR instead of letting them pile up.
 # Every push to a PR previously left the prior run's jobs burning runners —
@@ -296,3 +305,14 @@ jobs:
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
         run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install pyyaml
+      # The check-name contract #162 pins branch protection against. It lives
+      # in this job because it is a check about workflow shape, next to the
+      # other one — and because a rename is only caught if the gate runs on the
+      # PR that does the renaming, which after #161 is every PR.
+      - name: PR check contract matches the workflows
+        run: python3 scripts/check-required-checks.py
