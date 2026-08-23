@@ -95,17 +95,33 @@ node ID, covering the pause-then-resume path: the first Attempt pauses with
 durable approval provenance and the second executes the approved effect without
 a duplicate approval or Invocation. Other suite counts are unchanged.
 
-Merging `develop` into the canonical-Run branch moves three rows at once, and
-the net is `+0` — which is why the paragraph matters more than the number. The
-canonical-Run work adds nineteen maistro-core node IDs (Run retention, the
-non-finite evidence codec, chat/schedule/delegation admission, graph
-templates). Retiring the PM-demo surface removes eighteen Hive backend node IDs
-and one e2e case along with the routes and services they covered. A reader who
-only checked the total would see no change at all.
+Fifteen maistro-core node IDs arrive with two security fixes on this branch.
+Sentinel argument limits (#68) contribute the larger share: a new
+`test_argument_limits.py` covering per-argument and total-payload caps.
+Warden's L3 judge (#71) contributes the rest, covering each way an inconclusive
+classifier result reaches the caller — provider error, timeout, empty body,
+malformed body, a partial answer that names no verdict, and the judge being
+unreachable altogether — since the point of the fix is that none of those may
+read as `safe`.
+
+Ten more maistro-core node IDs arrive with PII-evasion normalization (#70): five
+for the acceptance and same-length homoglyph-offset invariants, then five from
+adversarial review covering Base64 SSNs, percent-encoded connection strings,
+form-encoded phones, encoded-span absorption/idempotence, and partial-overlap
+refusal.
+
+Merging `develop` into the canonical-Run branch moves several rows at once, so
+the paragraph matters more than the number. The canonical-Run work adds nineteen
+maistro-core node IDs (Run retention, the non-finite evidence codec,
+chat/schedule/delegation admission, graph templates). Retiring the PM-demo
+surface removes eighteen Hive backend node IDs and one e2e case along with the
+routes and services they covered — those two very nearly cancel, so a reader who
+only checked the total would have seen almost no change. The remaining `+2` on
+maistro-core comes from the replay-property work (#173) arriving via `develop`.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6669 | `ci.yml` |
+| `packages/maistro-core/tests` | 6671 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
 | `packages/maistro-server/tests` | 202 | `ci.yml` |
