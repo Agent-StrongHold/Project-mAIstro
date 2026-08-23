@@ -173,7 +173,22 @@ class TaskQueue:
         if to_remove:
             logger.info("task_store_pruned", removed=len(to_remove), remaining=len(self._tasks))
 
-    async def submit(self, request: TaskCreate, *, user_id: str = "") -> TaskResponse:
+    async def submit(
+        self,
+        request: TaskCreate,
+        *,
+        user_id: str = "",
+        workspace_id: str | None = None,
+    ) -> TaskResponse:
+        """Queue one task, admitting it as a Run when an admitter is wired.
+
+        ``workspace_id`` is the Workspace the caller submitted under, already
+        authorized by whoever accepted the request (#158). It is passed to the
+        admitter rather than stored on the task: scope is a binding, not a task
+        field, and a task row that carried its own Workspace would be a second
+        answer to a question the Run already answers. None — every caller before
+        this parameter existed — means the deployment's default Workspace.
+        """
         task_id = TaskResponse.new_id()
         owner = user_id or request.user_id or ""
         task = TaskResponse(
@@ -199,7 +214,7 @@ class TaskQueue:
             # without the task failing, because the row is a receipt; the Run
             # is the execution identity, and a task admitted without one would
             # be exactly the untracked second lifecycle #41 exists to remove.
-            task.run_id = await self._admitter.admit(task)
+            task.run_id = await self._admitter.admit(task, workspace_id=workspace_id)
         async with self._lock:
             self._tasks[task_id] = task
             self._maybe_prune()

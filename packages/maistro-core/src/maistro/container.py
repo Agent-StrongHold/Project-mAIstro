@@ -35,7 +35,7 @@ from maistro.runs.wiring import wire_execution_spine
 from maistro.security.gate import Gate
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
-from maistro.tasks.admission import TaskRunAdmitter
+from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
 
@@ -124,7 +124,10 @@ class Container:
     # directly-submitted task into a Run over a one-node Graph.
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
-    task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
+    # Routing rather than bound: one Conductor process serves every Workspace
+    # its users belong to, so the Workspace is chosen per submission (#158).
+    # `config.workspace_id` remains the default for a submission that names none.
+    task_admitter: WorkspaceRoutingAdmitter = None  # type: ignore[assignment]
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None

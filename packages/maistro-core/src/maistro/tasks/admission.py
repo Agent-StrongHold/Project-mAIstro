@@ -14,10 +14,22 @@ constructed with the Workspace it admits into, and resolves that Workspace's Roo
 Project when no Project is named. Nothing infers scope from a task field; getting
 that wrong would file work in the wrong tenant's Project, which is exactly the
 failure the scope tree exists to prevent.
+
+A process may nonetheless serve more than one Workspace — the Conductor does,
+because a Hive user belongs to several (#158). That is what
+:class:`WorkspaceRoutingAdmitter` is for: the *submission* names the Workspace,
+having been authorized by whoever accepted it, and the router hands the task to
+the :class:`TaskRunAdmitter` bound to that Workspace, building one on first use.
+Each bound admitter still knows exactly one Workspace and one Project, so the
+invariant above is intact; the routing is a layer above it, not a hole in it. A
+bound admitter handed a Workspace that is not its own refuses rather than filing
+the work anyway, because "quietly used the wrong Project" is the failure mode
+worth being loud about.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -60,11 +72,21 @@ TASK_ID_KEY = "task_id"
 SESSION_ID_KEY = "session_id"
 
 
+class WorkspaceNotAdmissible(ValueError):
+    """An admitter was asked to file work in a Workspace it is not bound to."""
+
+
 class TaskAdmitter(Protocol):
     """What :class:`~maistro.tasks.queue.TaskQueue` needs to admit a task."""
 
-    async def admit(self, task: TaskResponse) -> str:
-        """Admit one queued task and return its canonical ``run_id``."""
+    async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
+        """Admit one queued task and return its canonical ``run_id``.
+
+        ``workspace_id`` is the Workspace the *submission* named, already
+        authorized by whoever accepted it. None means "this deployment's
+        default Workspace" — the pre-#158 behaviour, and what every caller that
+        has no Workspace of its own still passes.
+        """
         ...
 
     async def record_transition(
@@ -116,8 +138,25 @@ class TaskRunAdmitter:
         self._project_id = root.project_id
         return self._project_id
 
-    async def admit(self, task: TaskResponse) -> str:
-        """Admit one queued task as a Run and return its ``run_id``."""
+    @property
+    def workspace_id(self) -> str:
+        """The single Workspace this admitter files work in."""
+        return self._workspace_id
+
+    async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
+        """Admit one queued task as a Run and return its ``run_id``.
+
+        ``workspace_id`` may name this admitter's own Workspace, redundantly,
+        or nothing at all. Any other value is refused: this admitter resolved
+        one Root Project at construction and cannot honour a different
+        Workspace, and silently filing the work in the bound one would put a
+        Run in a Project its submitter never named.
+        """
+        if workspace_id is not None and workspace_id != self._workspace_id:
+            raise WorkspaceNotAdmissible(
+                f"admitter is bound to Workspace {self._workspace_id!r} and cannot "
+                f"admit into {workspace_id!r}"
+            )
         work = resolve_direct_work(
             description=task.description,
             task_type=task.task_type,
@@ -200,6 +239,97 @@ class TaskRunAdmitter:
         return True
 
 
+class WorkspaceRoutingAdmitter:
+    """Route each submission to the :class:`TaskRunAdmitter` for its Workspace.
+
+    One Conductor process serves every Workspace its users belong to, so the
+    Workspace cannot be fixed at wiring time the way it is for a single-tenant
+    server. It is fixed per *submission* instead, and this router keeps one
+    bound admitter per Workspace so the "one Workspace, one Project" invariant
+    survives intact underneath.
+
+    Root Projects are created on first use rather than up front, because the set
+    of Workspaces is not known at startup — a Workspace created this afternoon
+    must be admittable this afternoon. The default Workspace is still primed
+    eagerly by :func:`maistro.runs.wiring.wire_execution_spine`, so a
+    misconfigured scope store fails at startup rather than on somebody's first
+    task.
+    """
+
+    def __init__(
+        self,
+        run_store: RunStore,
+        project_store: ProjectScopeStore,
+        *,
+        default_workspace_id: str,
+        intents: IntentRegistry | None = None,
+    ) -> None:
+        if not default_workspace_id.strip():
+            raise ValueError("default_workspace_id must be a non-empty string")
+        self._runs = run_store
+        self._projects = project_store
+        self._default_workspace_id = default_workspace_id
+        self._intents = intents
+        self._by_workspace: dict[str, TaskRunAdmitter] = {}
+        # Two concurrent first submissions for one Workspace would otherwise
+        # both create a Root Project. `create_root` is idempotent, so the
+        # damage would be a wasted round-trip rather than two roots — but they
+        # would also build two admitters, and the loser's cached project_id
+        # would be thrown away mid-flight.
+        self._lock = asyncio.Lock()
+
+    @property
+    def default_workspace_id(self) -> str:
+        """The Workspace a submission that names none lands in."""
+        return self._default_workspace_id
+
+    async def admitter_for(self, workspace_id: str | None = None) -> TaskRunAdmitter:
+        """The bound admitter for one Workspace, building it on first use."""
+        resolved = (workspace_id or self._default_workspace_id).strip()
+        if not resolved:
+            raise ValueError("workspace_id must be a non-empty string")
+        cached = self._by_workspace.get(resolved)
+        if cached is not None:
+            return cached
+        async with self._lock:
+            cached = self._by_workspace.get(resolved)
+            if cached is not None:
+                return cached
+            root = await self._projects.create_root(resolved)
+            admitter = TaskRunAdmitter(
+                self._runs,
+                workspace_id=resolved,
+                project_id=root.project_id,
+                intents=self._intents,
+            )
+            self._by_workspace[resolved] = admitter
+            return admitter
+
+    async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
+        """Admit one task into the Workspace the submission named."""
+        admitter = await self.admitter_for(workspace_id)
+        return await admitter.admit(task)
+
+    async def record_transition(
+        self,
+        run_id: str,
+        status: TaskStatus,
+        *,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> bool:
+        """Advance the Run to match a task transition.
+
+        Workspace-independent on purpose: by the time a task transitions, its
+        Run exists and already knows which Project it is filed in. Looking the
+        Workspace up again to reach the same run store would only invite the
+        two answers to disagree. Delegating through the default admitter keeps
+        one implementation of the refusal semantics rather than a second copy.
+        """
+        admitter = await self.admitter_for(None)
+        return await admitter.record_transition(run_id, status, result=result, error=error)
+
+
 __all__ = [
     "RUN_STATUS_BY_TASK_STATUS",
     "SESSION_ID_KEY",
@@ -207,4 +337,6 @@ __all__ = [
     "TASK_QUEUE_SOURCE",
     "TaskAdmitter",
     "TaskRunAdmitter",
+    "WorkspaceNotAdmissible",
+    "WorkspaceRoutingAdmitter",
 ]
