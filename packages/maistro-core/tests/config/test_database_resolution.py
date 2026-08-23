@@ -24,6 +24,7 @@ import pytest
 from maistro.config.database import (
     require_database_url,
     resolve_database_url,
+    to_async_url,
     to_sync_url,
 )
 from maistro.types.errors import ConfigError
@@ -39,9 +40,18 @@ DB_ENV = {
 
 @pytest.fixture(autouse=True)
 def clean_database_env(monkeypatch):
-    """No inherited database configuration — these tests set their own."""
+    """No inherited database configuration — these tests set their own.
+
+    `get_engine` is `lru_cache`d, so one test's engine would otherwise be
+    another's answer regardless of the environment it set.
+    """
+    from maistro.memory.store import reset_engine_cache
+
     for name in ("DATABASE_URL", *DB_ENV):
         monkeypatch.delenv(name, raising=False)
+    reset_engine_cache()
+    yield
+    reset_engine_cache()
 
 
 def _set(monkeypatch, **env: str) -> None:
@@ -107,49 +117,37 @@ class TestTheTwoConsumersCannotDisagree:
         assert "DatabaseSettings" not in called | imported
         assert "require_database_url" in imported
 
-    def test_the_conductor_passes_a_resolved_url_to_the_container(self) -> None:
+    def test_the_servers_engine_factory_sees_what_alembic_sees(self, monkeypatch) -> None:
         """The last mile, and the one that made the rest academic.
 
-        `hive-conductor`'s adapter constructed `AgentConfig(...)` without
-        `database_url` at all, so it took the `""` default and the Conductor ran
-        on in-memory stores regardless of what the deployment configured. Fixing
-        the resolver without this would have left the shipped app exactly as
-        broken, with a passing test suite.
-
-        Structural for the same reason as the alembic guard: `backend/` is a
-        flat application package outside `packages/*/src` and importing the
-        adapter drags in the whole FastAPI app.
+        `maistro_server.main` calls `memory.store.get_engine()` at startup, and
+        it read `DATABASE_URL` directly -- so the shipped `docker-compose.yml`,
+        which passes five `DB_*` variables and no `DATABASE_URL`, migrated the
+        composed PostgreSQL URL while the server built no engine at all. That
+        is exactly the divergence this issue is about, surviving in the real
+        server path.
         """
-        import ast
-        from pathlib import Path
+        import maistro.memory.store as store
 
-        adapter = (
-            Path(__file__).resolve().parents[4]
-            / "packages"
-            / "hive-conductor"
-            / "backend"
-            / "adapters"
-            / "maistro_core.py"
+        _set(monkeypatch, **DB_ENV)
+        captured: dict[str, str] = {}
+        monkeypatch.setattr(
+            store, "create_async_engine", lambda url, **_: captured.setdefault("url", url)
         )
-        tree = ast.parse(adapter.read_text())
 
-        agent_config_calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "AgentConfig"
-        ]
-        assert agent_config_calls, "the adapter must still construct an AgentConfig"
-        for call in agent_config_calls:
-            passed = {kw.arg: kw.value for kw in call.keywords}
-            assert "database_url" in passed, (
-                "AgentConfig without database_url takes the ephemeral default"
-            )
-            value = passed["database_url"]
-            assert isinstance(value, ast.Call), "and it must be resolved, not hardcoded"
-            assert isinstance(value.func, ast.Name)
-            assert value.func.id == "resolve_database_url"
+        store.get_engine()
+
+        assert captured["url"] == to_async_url(resolve_database_url())
+        assert "db.internal" in captured["url"], "the DB_* host, not an ambient default"
+
+    def test_the_engine_factory_still_returns_none_when_nothing_is_configured(
+        self,
+    ) -> None:
+        """Unset stays unset. The container may legitimately run ephemeral, and
+        this must not start inventing a localhost engine for it."""
+        import maistro.memory.store as store
+
+        assert store.get_engine() is None
 
 
 class TestPrecedence:
@@ -270,3 +268,101 @@ class TestSyncUrlConversion:
         url = "postgresql+asyncpg://u:postgresql+asyncpg://@h/db"
 
         assert to_sync_url(url) == "postgresql://u:postgresql+asyncpg://@h/db"
+
+
+class TestTheSchemeIsNormalisedForWhicheverEngineLoadsIt:
+    """Accepting a spelling and then failing to load it is worse than
+    rejecting it — the failure lands at connect time, in a startup traceback,
+    naming a dialect rather than a configuration mistake."""
+
+    @pytest.mark.parametrize(
+        "url",
+        ["postgresql://u:p@h/db", "postgres://u:p@h/db", "postgresql+asyncpg://u:p@h/db"],
+    )
+    def test_every_accepted_spelling_becomes_loadable_by_the_sync_engine(self, url: str) -> None:
+        """`postgres://` is the one that bit: SQLAlchemy 2 removed that dialect
+        alias, so alembic failed on dialect lookup before connecting — while
+        `_MIGRATABLE_SCHEMES` and this suite both declared it migratable."""
+        assert to_sync_url(url) == "postgresql://u:p@h/db"
+
+    @pytest.mark.parametrize(
+        "url",
+        ["postgresql://u:p@h/db", "postgres://u:p@h/db", "postgresql+asyncpg://u:p@h/db"],
+    )
+    def test_every_accepted_spelling_becomes_loadable_by_the_async_engine(self, url: str) -> None:
+        """`memory.store.get_engine` builds an `AsyncEngine`, which cannot
+        drive psycopg2 — so a bare `postgresql://` raised there and the
+        surrounding `except` turned a configured database into a silent
+        `None`."""
+        assert to_async_url(url) == "postgresql+asyncpg://u:p@h/db"
+
+    @pytest.mark.parametrize("converter", [to_sync_url, to_async_url])
+    def test_a_non_postgres_url_is_untouched(self, converter) -> None:
+        """Neither function's job is inventing a driver for a backend that may
+        not have one wired."""
+        assert converter("sqlite:///var/lib/maistro.db") == "sqlite:///var/lib/maistro.db"
+        assert converter("memory://") == "memory://"
+
+    @pytest.mark.parametrize("converter", [to_sync_url, to_async_url])
+    def test_only_the_scheme_is_rewritten(self, converter) -> None:
+        """A password containing the literal scheme must not be mangled — the
+        rewrite is anchored at position 0, not a substring replace."""
+        rewritten = converter("postgresql://u:postgres://@h/db")
+
+        assert rewritten.endswith("://u:postgres://@h/db")
+
+
+class TestTheSuppliedMappingIsTheOneUsed:
+    def test_db_fields_compose_from_the_argument_not_the_process_environment(
+        self, monkeypatch
+    ) -> None:
+        """`env` documents itself as "resolve against this instead of
+        `os.environ`". Detecting the supplied `DB_*` fields and then composing
+        from `os.environ` answered about a different database entirely."""
+        _set(
+            monkeypatch,
+            DB_HOST="ambient.example",
+            DB_NAME="ambient_db",
+            DB_USER="ambient",
+            DB_PASSWORD="ambient-pw",
+        )
+
+        resolved = resolve_database_url(
+            {
+                "DB_HOST": "supplied.example",
+                "DB_PORT": "6000",
+                "DB_NAME": "supplied_db",
+                "DB_USER": "supplied",
+                "DB_PASSWORD": "supplied-pw",
+            }
+        )
+
+        assert resolved == "postgresql://supplied:supplied-pw@supplied.example:6000/supplied_db"
+        assert "ambient" not in resolved
+
+
+class TestAnEmptyValueIsStillAConfiguredValue:
+    def test_a_passwordless_database_counts_as_configured(self, monkeypatch) -> None:
+        """`DB_PASSWORD=` is how a deployment spells passwordless PostgreSQL.
+        Reading it as unset sent alembic to "No database configured" while the
+        environment had explicitly named the database to use.
+
+        Only the empty variable is set, deliberately. An earlier version of
+        this test also set `DB_HOST` and friends to real values, so a
+        truthiness check passed on *those* and the empty-value bug survived
+        the mutation — the case only bites when every configured `DB_*` is
+        empty, which is exactly the "rely on the other defaults" deployment
+        Codex described.
+        """
+        monkeypatch.setenv("DB_PASSWORD", "")
+
+        resolved = resolve_database_url()
+
+        assert resolved, "an explicitly-set variable is a configured database"
+        assert resolved.startswith("postgresql://")
+        assert require_database_url() == resolved, "and it is migratable, not an error"
+
+    def test_a_truly_empty_environment_still_resolves_to_nothing(self) -> None:
+        """The counterweight: presence-based detection must not turn "no
+        database configured" into a localhost guess."""
+        assert resolve_database_url({}) == ""

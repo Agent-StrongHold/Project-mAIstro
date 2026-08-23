@@ -56,20 +56,42 @@ _MIGRATABLE_SCHEMES: Final = ("postgresql://", "postgres://", "postgresql+asyncp
 
 
 def _db_env_is_set(env: Mapping[str, str]) -> bool:
-    """True when the deployment configured any `DB_*` variable at all."""
-    return any(env.get(f"DB_{field}") for field in _DB_FIELDS)
+    """True when the deployment configured any `DB_*` variable at all.
+
+    Presence, not truthiness. `DB_PASSWORD=` is how a deployment spells
+    "passwordless PostgreSQL", and reading that as unset sent alembic to "No
+    database configured" and permissive callers to in-memory -- while the
+    environment had explicitly said which database to use.
+    """
+    return any(f"DB_{field}" in env for field in _DB_FIELDS)
 
 
-def _compose_from_db_env() -> str:
-    """Build a `postgresql://` URL from `DatabaseSettings`.
+def _compose_from_db_env(env: Mapping[str, str]) -> str:
+    """Build a `postgresql://` URL from the `DB_*` fields in `env`.
+
+    The mapping is passed through rather than left to `DatabaseSettings()`'s
+    own environment read: a caller who supplies `env` is saying "resolve
+    against this", and reading `os.environ` instead would answer about a
+    different database entirely. Fields absent from the mapping still fall back
+    to `DatabaseSettings`' resolution and defaults, which is what makes the
+    default `env is os.environ` path behave exactly as before.
 
     Imported lazily because `DatabaseSettings` pulls in pydantic-settings, and
-    this module is imported by `alembic/env.py` on a path where the failure to
+    this module is imported by `alembic/env.py` on a path where a failure to
     import would be reported as a migration error rather than a config one.
     """
     from maistro.config.settings import DatabaseSettings
 
-    return DatabaseSettings().sync_url
+    overrides = {field.lower(): env[f"DB_{field}"] for field in _DB_FIELDS if f"DB_{field}" in env}
+    if not overrides:
+        return DatabaseSettings().sync_url
+    # Re-validated rather than `DatabaseSettings(**overrides)`: pydantic-settings
+    # types `__init__`'s keyword arguments for its own `_env_*` controls, so a
+    # `**dict[str, str]` splat does not type-check. Going through
+    # `model_validate` also coerces `port` back to an int, which a raw
+    # `model_copy(update=...)` would leave as the string the environment held.
+    base = DatabaseSettings().model_dump()
+    return DatabaseSettings.model_validate({**base, **overrides}).sync_url
 
 
 def resolve_database_url(env: Mapping[str, str] | None = None) -> str:
@@ -94,7 +116,7 @@ def resolve_database_url(env: Mapping[str, str] | None = None) -> str:
     if explicit:
         return explicit
     if _db_env_is_set(environ):
-        return _compose_from_db_env()
+        return _compose_from_db_env(environ)
     return ""
 
 
@@ -129,12 +151,43 @@ def require_database_url(env: Mapping[str, str] | None = None) -> str:
 
 
 def to_sync_url(database_url: str) -> str:
-    """Strip the async driver suffix for SQLAlchemy's synchronous engine.
+    """Normalise to the spelling SQLAlchemy's synchronous engine can load.
 
-    `DatabaseSettings` exposes both `url` (`postgresql+asyncpg://`) and
-    `sync_url`, and an operator may reasonably have set either spelling in
-    `DATABASE_URL`. Alembic drives a sync engine, which cannot load asyncpg --
-    it raises `InvalidRequestError: The asyncio extension requires an async
-    driver` rather than connecting.
+    Two conversions, and both are load-bearing:
+
+    - `postgresql+asyncpg://` -> `postgresql://`. `DatabaseSettings` exposes
+      both spellings and an operator may reasonably have set either. Alembic
+      drives a sync engine, which cannot load asyncpg -- it raises
+      `InvalidRequestError: The asyncio extension requires an async driver`
+      rather than connecting.
+    - `postgres://` -> `postgresql://`. SQLAlchemy 2 removed the legacy
+      `postgres` dialect alias, so passing it through reaches
+      `create_engine` and fails on dialect lookup before any connection is
+      attempted. `_MIGRATABLE_SCHEMES` accepts `postgres://` because hosted
+      providers still hand it out; accepting it and then failing to load it
+      would be worse than rejecting it.
     """
-    return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return _normalise_postgres_scheme(database_url, "postgresql://")
+
+
+def to_async_url(database_url: str) -> str:
+    """Normalise to the spelling SQLAlchemy's *async* engine can load.
+
+    The mirror of `to_sync_url`, for `memory.store.get_engine`, which builds an
+    `AsyncEngine`. A bare `postgresql://` there selects psycopg2 and raises
+    rather than connecting, so a deployment that set the obvious spelling got a
+    silent `None` engine.
+
+    Non-PostgreSQL URLs pass through untouched: this function's job is the
+    driver suffix, not inventing an async driver for a backend that may not
+    have one wired.
+    """
+    return _normalise_postgres_scheme(database_url, "postgresql+asyncpg://")
+
+
+def _normalise_postgres_scheme(database_url: str, target: str) -> str:
+    """Rewrite whichever PostgreSQL spelling this URL uses to `target`."""
+    for scheme in ("postgresql+asyncpg://", "postgresql://", "postgres://"):
+        if database_url.startswith(scheme):
+            return target + database_url[len(scheme) :]
+    return database_url

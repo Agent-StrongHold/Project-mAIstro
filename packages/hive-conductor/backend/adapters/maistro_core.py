@@ -123,7 +123,6 @@ class MaistroCoreBridge:
         from services.secrets import maistro_llm_api_key
 
         from maistro.agents.factory import create_agents
-        from maistro.config.database import resolve_database_url
         from maistro.container import create_container
         from maistro.prompts.store import InMemoryPromptManager
         from maistro.types.config import AgentConfig
@@ -137,19 +136,6 @@ class MaistroCoreBridge:
             litellm_url=llm_base or "http://localhost:4000",
             litellm_key=llm_key,
             agents_dir=settings.maistro_agents_dir,
-            # This was omitted entirely, so `database_url` took its `""`
-            # default and the Conductor ran on in-memory stores no matter what
-            # the deployment configured -- learnings, outcomes, sessions and
-            # quota discarded on every restart, with a healthy PostgreSQL
-            # container sitting next to it (#187, #122).
-            #
-            # `resolve_database_url` rather than a new `Settings` field: this
-            # issue is about there being two spellings of "which database" and
-            # nothing reconciling them, and a third would not be an
-            # improvement. The resolver reads `DATABASE_URL`, falls back to the
-            # `DB_*` set that `docker-compose.yml` actually passes, and is the
-            # same function `alembic/env.py` calls.
-            database_url=resolve_database_url(),
         )
 
         self._container = await create_container(config)
