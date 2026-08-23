@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import { apiGet } from "../lib/api";
-import { usePmPoc } from "../context/PocMode";
-import { PM_PRODUCT_NAME } from "../lib/pmBranding";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
 
@@ -17,9 +15,8 @@ const MODULES = [
 ];
 
 export default function Setup() {
-  const pmPoc = usePmPoc();
   const [step, setStep] = useState(0);
-  const [conductorName, setConductorName] = useState(pmPoc ? PM_PRODUCT_NAME : "Hive Conductor");
+  const [conductorName, setConductorName] = useState("Hive Conductor");
   const [routerModel, setRouterModel] = useState("gemini-3.1-flash-lite");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -36,13 +33,7 @@ export default function Setup() {
   const [didKey, setDidKey] = useState<string | null>(null);
   const [mnemonicConfirmed, setMnemonicConfirmed] = useState(false);
 
-  const steps = pmPoc
-    ? ["PM Fleet", "Accounts", "Confirm"]
-    : ["Hive", "Hardware", "Accounts", "Modules", "Confirm"];
-
-  useEffect(() => {
-    if (pmPoc && !preset) setPreset("laptop");
-  }, [pmPoc, preset]);
+  const steps = ["Hive", "Hardware", "Accounts", "Modules", "Confirm"];
 
   // Load available models from the LLM gateway via Hive's
   // /v1/settings/models proxy. The user's LITELLM key stays server-side.
@@ -184,10 +175,10 @@ export default function Setup() {
       body: JSON.stringify({ username: userUsername, password: userPassword }),
     });
     if (!r.ok) throw new Error("auto-login failed");
-    // When Hive is served behind the maistro gateway at /pm/, redirecting to "/"
-    // dumps the user at the maistro catalog with no obvious way back. Use the
-    // Vite base path so they land on the Fleet page (Hive's PM-mode index
-    // auto-redirects /pm/ → /pm/agents).
+    // When Hive is served behind the maistro gateway at a sub-path,
+    // redirecting to "/" dumps the user at the maistro catalog with no obvious
+    // way back. Use the Vite base path so they land on the app index, which
+    // redirects to the dashboard.
     window.location.href = import.meta.env.BASE_URL || "/";
   }
 
@@ -230,12 +221,10 @@ export default function Setup() {
       <div style={{ width: "100%", maxWidth: 560, background: "var(--paper)", border: "2px solid var(--ink)", borderRadius: 8, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "2px solid var(--ink)", background: "var(--honey-light)" }}>
           <div style={{ fontFamily: "var(--hand)", fontSize: 30, fontWeight: 700 }}>
-            {"\uD83D\uDC1D"} {pmPoc ? PM_PRODUCT_NAME : "Hive Conductor"}
+            {"\uD83D\uDC1D"} Hive Conductor
           </div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 14, color: "var(--pencil)", marginTop: 2 }}>
-            {pmPoc
-              ? "First boot — create accounts, then start the program interview"
-              : "First boot — configure your hive before the swarm can work"}
+            First boot — configure your hive before the swarm can work
           </div>
         </div>
 
@@ -256,14 +245,8 @@ export default function Setup() {
           {step === 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600 }}>
-                {pmPoc ? "Name your program workspace" : "Name your hive"}
+                Name your hive
               </div>
-              {pmPoc && (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", lineHeight: 1.4 }}>
-                  PM POC uses six agents (Intake, Program Manager, Delivery, Risk, Reporting, Research).
-                  Hardware and crypto modules are skipped.
-                </div>
-              )}
               <div>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>CONDUCTOR NAME</div>
                 <input className="input-field" placeholder="Hive Conductor" value={conductorName} onChange={(e) => setConductorName(e.target.value)} />
@@ -308,7 +291,7 @@ export default function Setup() {
             </div>
           )}
 
-          {!pmPoc && step === 1 && (
+          {step === 1 && (
             <div>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Pick your hardware tier</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -323,7 +306,7 @@ export default function Setup() {
             </div>
           )}
 
-          {(pmPoc ? step === 1 : step === 2) && (
+          {step === 2 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600 }}>Create user accounts</div>
               <div style={{ fontFamily: "var(--hand)", fontSize: 13, color: "var(--pencil)" }}>
@@ -348,7 +331,7 @@ export default function Setup() {
             </div>
           )}
 
-          {!pmPoc && step === 3 && (
+          {step === 3 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600 }}>Optional modules</div>
               <div style={{ fontFamily: "var(--hand)", fontSize: 13, color: "var(--pencil)" }}>Enable now or later from Settings. Crypto Identity enables the BIP39 HD derivation tree.</div>
@@ -369,7 +352,7 @@ export default function Setup() {
             </div>
           )}
 
-          {(pmPoc ? step === 2 : step === 4) && (
+          {step === 4 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600 }}>Confirm configuration</div>
               <div className="card">
@@ -410,14 +393,14 @@ export default function Setup() {
           {step < steps.length - 1 ? (
             <button className="btn btn-accent" onClick={() => setStep(step + 1)} disabled={
               (step === 0 && !conductorName.trim()) ||
-              (!pmPoc && step === 1 && !preset) ||
-              ((pmPoc ? step === 1 : step === 2) && (!adminPassword || !userUsername || !userPassword))
+              (step === 1 && !preset) ||
+              (step === 2 && (!adminPassword || !userUsername || !userPassword))
             }>
               next {"\u2192"}
             </button>
           ) : (
-            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || (!pmPoc && !preset)}>
-              {loading ? "configuring..." : pmPoc ? "launch PM fleet \uD83D\uDC1D" : "launch the hive \uD83D\uDC1D"}
+            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || !preset}>
+              {loading ? "configuring..." : "launch the hive \uD83D\uDC1D"}
             </button>
           )}
         </div>

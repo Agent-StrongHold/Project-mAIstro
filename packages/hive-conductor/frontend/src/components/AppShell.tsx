@@ -7,21 +7,10 @@ import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
 import { PersonaWizard } from "./PersonaWizard";
-import { usePmPoc } from "../context/PocMode";
-import {
-  PM_NAV_CREDENTIALS,
-  PM_NAV_INTEGRATIONS,
-  PM_NAV_MISSIONS,
-  PM_NAV_PROGRAM,
-  PM_PRODUCT_NAME,
-} from "../lib/pmBranding";
-
 import {
   MessageCircle,
   LayoutDashboard,
   Brain,
-  Hexagon,
-  Target,
   Plug,
   KeyRound,
   Settings,
@@ -52,17 +41,6 @@ const fullNav = [
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 
-const pocNav = [
-  { to: "/chat", icon: MessageCircle, label: "Chat" },
-  { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/knowledge", icon: Brain, label: "Inner Temple" },
-  { to: "/decks", icon: Presentation, label: "Decks" },
-  { to: "/agents", icon: Hexagon, label: PM_NAV_PROGRAM },
-  { to: "/missions", icon: Target, label: PM_NAV_MISSIONS },
-  { to: "/mcp", icon: Plug, label: PM_NAV_INTEGRATIONS },
-  { to: "/credentials", icon: KeyRound, label: PM_NAV_CREDENTIALS },
-  { to: "/settings", icon: Settings, label: "Settings" },
-];
 
 async function logout() {
   try {
@@ -77,10 +55,9 @@ async function logout() {
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
-  const pmPoc = usePmPoc();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const nav = pmPoc ? pocNav : fullNav;
-  const shellTitle = pmPoc ? PM_PRODUCT_NAME : "Hive Conductor";
+  const nav = fullNav;
+  const shellTitle = "Hive Conductor";
 
   return (
     <div className="app-shell">
@@ -101,15 +78,9 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <AppearanceToggle />
           <button className="drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Close menu">&#x2715;</button>
         </div>
-        {pmPoc ? (
-          <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", padding: "0 12px 8px" }}>
-            PM demo · 6 agents · gated Jira drafts
-          </div>
-        ) : (
-          <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", padding: "0 12px 8px" }}>
-            Multi-agent · multi-MCP · Force Convergence sandbox
-          </div>
-        )}
+        <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", padding: "0 12px 8px" }}>
+          Multi-agent · multi-MCP · Force Convergence sandbox
+        </div>
         {user && (
           <div className="drawer-user">
             <span className="hex-badge" style={{ background: user.role === "admin" ? "var(--danger)" : "var(--accent)", color: "var(--paper)" }}>{user.role}</span>
