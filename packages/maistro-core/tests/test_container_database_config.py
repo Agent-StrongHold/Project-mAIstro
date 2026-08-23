@@ -8,6 +8,13 @@ misconfigured database gives correct answers that quietly disappear.
 
 The three cases are deliberately distinguished, and the distinction is the
 design: unset is honest, `memory://` is chosen, anything else is a mistake.
+
+`postgresql://` was in the "mistake" list until #122 gave it a backend, and it
+moved rather than being deleted: the rejection message still has to name it, or
+an operator reading it learns that the durable system of record is unsupported.
+The PostgreSQL path's own credential redaction is exercised against a live
+server in `tests/migrations/test_pg_store_wiring.py`, where a refused
+connection is a real error rather than a DNS timeout.
 """
 
 from __future__ import annotations
@@ -28,8 +35,6 @@ def _config(url: str) -> AgentConfig:
 @pytest.mark.parametrize(
     "url",
     [
-        "postgresql://user:pw@host:5432/maistro",
-        "postgres://host/db",
         "mysql://host/db",
         "redis://host:6379",
         "not-a-url",
@@ -43,12 +48,20 @@ async def test_a_database_that_cannot_be_wired_is_a_config_error(url: str) -> No
     assert "sqlite://" in message and "memory://" in message, "and the supported alternatives"
 
 
+async def test_the_error_names_postgresql_among_the_supported_backends() -> None:
+    """PostgreSQL is the durable system of record (ADR-082226-5104). An error
+    that lists only sqlite tells an operator the opposite of what is true."""
+    with pytest.raises(ConfigError) as excinfo:
+        await create_container(_config("mysql://host/db"))
+
+    assert "postgresql://" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     ("url", "leaked"),
     [
-        ("postgresql://user:pw@host:5432/maistro", "pw"),
-        ("postgresql://user:pw@host:5432/maistro", "user"),
         ("mysql://root:hunter2@db/app", "hunter2"),
+        ("mysql://alice:pw@host:3306/app", "alice"),
         ("redis://:onlyapassword@cache:6379", "onlyapassword"),
     ],
 )
@@ -67,15 +80,15 @@ async def test_a_rejected_url_stays_diagnosable() -> None:
     """Redaction that removed the scheme and host would trade one unusable
     error for another."""
     with pytest.raises(ConfigError) as excinfo:
-        await create_container(_config("postgresql://user:pw@db.internal:5432/maistro"))
+        await create_container(_config("mysql://user:pw@db.internal:3306/maistro"))
 
     message = str(excinfo.value)
-    assert "postgresql" in message
-    assert "db.internal:5432" in message
+    assert "mysql" in message
+    assert "db.internal:3306" in message
     assert "/maistro" in message
 
 
-@pytest.mark.parametrize("url", ["postgresql://host/db", "mysql://host/db", "redis://host:6379"])
+@pytest.mark.parametrize("url", ["mysql://host/db", "redis://host:6379"])
 async def test_a_url_without_credentials_is_reported_intact(url: str) -> None:
     with pytest.raises(ConfigError) as excinfo:
         await create_container(_config(url))

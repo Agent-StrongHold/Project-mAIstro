@@ -135,15 +135,24 @@ async def test_store_inserts_new_learning_when_no_existing_match(
     assert insert_call.method == "fetchrow"
     assert "INSERT INTO learnings" in insert_call.query
     assert "RETURNING id" in insert_call.query
+    # `trigger_keys` goes out as JSON text, not as a list: the column is JSONB
+    # and asyncpg's codec for it is text in both directions, so a list raised.
+    # `source_query`, `team_id` and `hit_count` are here because migration 001
+    # declares all three NOT NULL with no DDL default -- SQLAlchemy's `default=`
+    # is applied by the ORM and this is a raw INSERT, so omitting them was a
+    # NotNullViolation on every write (#122).
     assert insert_call.args == (
         "general",
-        ["foo", "bar"],
+        '["foo", "bar"]',
         "do not do X",
         "bash",
+        "",
         "scribe",
         "u1",
         "",
+        "",
         MemoryScope.AGENT,
+        0,
         "active",
         None,
         "",

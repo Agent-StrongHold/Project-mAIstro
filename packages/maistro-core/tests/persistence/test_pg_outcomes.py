@@ -90,6 +90,7 @@ def make_outcome(**overrides: Any) -> Outcome:
         "success": True,
         "error_type": "",
         "response_time_ms": 1200,
+        "org_id": "org-a",
         "team_id": "team-a",
         "user_id": "u1",
         "agent_id": "scribe",
@@ -119,15 +120,25 @@ async def test_record_inserts_with_all_fields_and_returns_id(
     assert call.method == "fetchrow"
     assert "INSERT INTO outcomes" in call.query
     assert "RETURNING id" in call.query
+    # This tuple used to pin `"[{'name': 'bash'}]"` -- the Python repr, with
+    # single quotes, which PostgreSQL rejects as JSONB. The test asserted the
+    # defect rather than catching it, because a FakeConnection accepts any
+    # string. `json.dumps` is what the column actually takes.
+    #
+    # `org_id` was missing from the INSERT entirely, and is NOT NULL in
+    # migration 001 with no DDL default, so every insert was a
+    # NotNullViolation -- and a default would only have traded that for a row
+    # that silently lost the org scope `ix_outcomes_org_task` keys on (#122).
     assert call.args == (
         "req-1",
         "coding",
         "claude-opus",
         "anthropic",
-        "[{'name': 'bash'}]",
+        '[{"name": "bash"}]',
         True,
         "",
         1200,
+        "org-a",
         "team-a",
         "u1",
         "scribe",
@@ -146,7 +157,7 @@ async def test_record_defaults_missing_agent_id_to_empty_string(
     await store.record(make_outcome(agent_id=None))
 
     call = conn.calls[0]
-    assert call.args[10] == ""  # agent_id position
+    assert call.args[11] == ""  # agent_id position (org_id shifted it by one)
 
 
 async def test_record_returns_zero_when_no_row(store: PgOutcomeStore, conn: FakeConnection) -> None:

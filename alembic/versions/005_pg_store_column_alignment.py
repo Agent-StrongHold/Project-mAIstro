@@ -58,15 +58,11 @@ def upgrade() -> None:
     )
     op.add_column(
         "learnings",
-        sa.Column(
-            "success_after_use", sa.Integer, nullable=False, server_default=sa.text("0")
-        ),
+        sa.Column("success_after_use", sa.Integer, nullable=False, server_default=sa.text("0")),
     )
     op.add_column(
         "learnings",
-        sa.Column(
-            "failure_after_use", sa.Integer, nullable=False, server_default=sa.text("0")
-        ),
+        sa.Column("failure_after_use", sa.Integer, nullable=False, server_default=sa.text("0")),
     )
 
     # ── outcomes: the billing fields (PgOutcomeStore) ──────────────────
