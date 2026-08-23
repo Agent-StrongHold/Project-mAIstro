@@ -154,7 +154,6 @@ behaviour on an unresolvable host and on a URL with no parseable hostname.
 <<<<<<< HEAD
 | `tests/` (root) | 838 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 =======
-| `tests/` (root) | 838 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 >>>>>>> origin/fix/issue-154-one-ssrf-validator
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
 | `packages/hive-conductor/backend/tests` | 1223 | `ci.yml` (bare python) |
