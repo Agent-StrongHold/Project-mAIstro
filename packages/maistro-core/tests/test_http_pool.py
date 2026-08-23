@@ -50,22 +50,41 @@ class TestSharing:
 
     async def test_limits_are_applied(self):
         client = get_shared_client(timeout=1.0)
-        limits = client._transport._pool._max_connections  # type: ignore[attr-defined]
+        # Through the guard (#155): the real transport is one layer in now.
+        inner = client._transport.inner  # type: ignore[attr-defined]
+        limits = inner._pool._max_connections  # type: ignore[attr-defined]
         assert limits == shared_client_stats()["max_connections"]
+
+    async def test_every_pooled_client_is_guarded(self):
+        """The outbound policy is not optional, so this is not a spot check.
+
+        If httpx ever stops using the transport we hand it, this fails rather
+        than the control silently ceasing to apply (#155).
+        """
+        from maistro.security.outbound import GuardedTransport
+
+        client = get_shared_client(timeout=1.0)
+
+        assert isinstance(client._transport, GuardedTransport)  # type: ignore[attr-defined]
 
 
 class TestEventLoopIsolation:
     """The property that made per-request construction look necessary."""
 
     def test_each_loop_gets_its_own_client(self):
-        seen: list[int] = []
+        # The clients are held, not their `id()`s. The first client is dropped
+        # from the cache as soon as the second call prunes its closed loop, so
+        # comparing addresses compares one live object against one freed one —
+        # and CPython reuses those addresses. That made this assertion depend
+        # on the allocator rather than on the property it names.
+        seen: list[httpx.AsyncClient] = []
 
         async def grab() -> None:
-            seen.append(id(get_shared_client(timeout=5.0)))
+            seen.append(get_shared_client(timeout=5.0))
 
         asyncio.run(grab())
         asyncio.run(grab())
-        assert seen[0] != seen[1], "a client leaked across event loops"
+        assert seen[0] is not seen[1], "a client leaked across event loops"
 
     def test_a_client_from_a_dead_loop_is_never_handed_out(self):
         """Reusing one would raise deep inside httpx on first request."""

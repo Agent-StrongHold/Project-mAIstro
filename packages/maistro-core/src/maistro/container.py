@@ -29,6 +29,7 @@ from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.security.gate import Gate
+from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.config import AgentConfig
@@ -387,6 +388,17 @@ async def create_container(
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
         raise ConfigError(msg)
+
+    # The outbound guard is on for every request this process makes (#155), so
+    # the endpoints it is *supposed* to reach have to be named before the first
+    # one. Seeded from configuration rather than a list kept here, so moving a
+    # gateway moves its allowance with it.
+    from maistro.config.settings import get_settings
+
+    configure_outbound_policy(
+        *configured_endpoints(config),
+        *configured_endpoints(get_settings()),
+    )
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()

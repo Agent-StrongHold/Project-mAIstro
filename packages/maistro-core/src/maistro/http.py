@@ -62,6 +62,8 @@ from contextlib import asynccontextmanager, contextmanager
 
 import httpx
 
+from maistro.security.outbound import guarded
+
 # Generous by design — see "Pool size is not admission control" above. These are
 # ceilings that stop a runaway fan-out exhausting file descriptors, not a
 # throttle. Overridable per call site and via `configure_shared_http`.
@@ -168,6 +170,29 @@ def override_transport(transport: httpx.AsyncBaseTransport) -> Iterator[None]:
         set_test_transport(previous)
 
 
+def _guarded_transport(
+    transport: httpx.AsyncBaseTransport | None,
+    *,
+    verify: bool,
+) -> httpx.AsyncBaseTransport:
+    """The transport this client will use, with the outbound policy in front.
+
+    Every module that reaches the network through this pool is guarded here at
+    once (#155) — which is the point, because the same control as a function
+    each call site had to remember reached three sites out of twenty-five.
+    Redirect hops are covered for free: httpx re-enters the transport per hop.
+
+    When the caller passed no transport, the real one is built here rather than
+    left to httpx, because it has to exist before it can be wrapped. It is
+    built with the same `verify` and pool limits httpx would have used, so the
+    only difference is the guard.
+    """
+    inner = transport
+    if inner is None:
+        inner = httpx.AsyncHTTPTransport(verify=verify, limits=_limits)
+    return guarded(inner)
+
+
 def _current_loop() -> asyncio.AbstractEventLoop | None:
     try:
         return asyncio.get_running_loop()
@@ -224,7 +249,7 @@ def get_shared_client(
             base_url=base_url,
             headers=dict(headers or {}),
             timeout=timeout,
-            transport=transport,
+            transport=_guarded_transport(transport, verify=verify),
             follow_redirects=follow_redirects,
             verify=verify,
             limits=_limits,
