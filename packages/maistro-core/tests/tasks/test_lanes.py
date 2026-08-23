@@ -199,59 +199,104 @@ class TestWakeupCorrectness:
 
 
 class TestEndToEnd:
-    #: Interactive requests in the flood scenario. Four fit the LIVE floor
-    #: immediately; the rest must be served on the first release round, which is
-    #: the property under test.
+    #: Batch tasks in the flood. Eight fit the gate (2 background-reserved + 6
+    #: shared); the other 112 queue at P5 with nothing but priority holding
+    #: them behind the interactive work.
+    BATCH = 120
+    BATCH_ADMITTED = 8
+    #: Interactive requests. Four fit the LIVE floor immediately; the other four
+    #: must win the first four release wake-ups, which is the property tested.
     INTERACTIVE = 8
+    LIVE_FLOOR = 4
+
+    @staticmethod
+    async def _until(predicate, *, what: str, limit: int = 10_000) -> None:
+        """Yield to the loop until `predicate()` holds.
+
+        A bounded spin rather than a sleep: the whole point of this test is to
+        have no timing in it, and `sleep(0)` simply lets every currently-ready
+        callback run. The limit turns a wrong expectation into a named failure
+        instead of a hang.
+        """
+        for _ in range(limit):
+            if predicate():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"timed out waiting for {what}")
 
     async def test_batch_flood_serves_interactive_before_queued_batch(self):
-        """The measured scenario, in miniature: a wide batch fan-out plus
-        interactive requests.
+        """A wide batch fan-out plus interactive requests, with the ordering
+        forced by barriers rather than by the clock.
 
-        Asserted on **acquisition order**, not on wall-clock latency, because
-        the guarantee is about priority and the clock is about the scheduler.
-        The previous version asserted `max(latency) < CALL * 2.5`, which flaked
-        roughly 1 run in 18 under CPU contention (#184): four latencies landed a
-        whole `CALL` late, tightly clustered rather than scattered, because the
-        waiting requests missed one release round. Whether they catch that round
-        is decided by sub-millisecond ordering between the `gather` starting
-        these coroutines and the batch `sleep` callbacks firing — so the old
-        threshold measured scheduler luck and reported it as a fairness result.
-        CI runners are contended, which is exactly where that luck runs out.
+        Two rewrites, and the second one matters as much as the first.
 
-        What `_wake_one` actually promises is that a P0 `LIVE` waiter is served
-        ahead of the P5 `BACKGROUND` waiters queued behind it. That is what this
-        checks, and it holds at any CPU speed.
+        The original asserted `max(latency) < CALL * 2.5` and flaked about 1 run
+        in 18 under CPU contention (#184) — it measured a wall-clock round
+        alignment while claiming to measure fairness.
+
+        The first rewrite asserted grant *order* but still used sleeps to stage
+        the scenario, which left a subtler race (Codex review on #185): if
+        contention lands the `CALL/2` timer and the batch `CALL` timers in one
+        loop iteration, the already-ready batch tasks release *before* the
+        freshly-created interactive coroutines reach `acquire`. The wake-ups
+        then go to queued P5 waiters because no P0 waiter exists yet, and the
+        assertion fails though `_wake_one` did exactly the right thing. Same
+        class of defect as the one being fixed, one level down.
+
+        So there are no timers here at all. Explicit barriers hold the batch
+        permits until the interactive waiters are provably queued — read off
+        `gate.stats()`, not inferred from elapsed time — and only then are the
+        releases allowed. What remains is the guarantee itself: a P0 `LIVE`
+        waiter is served ahead of the P5 `BACKGROUND` waiters queued before it.
         """
-        CALL = 0.05
         ARRIVED = "interactive-arrived"
-        gate = LaneGate(12, live_reserved=4, background_reserved=2)
-        # Appended at the moment a permit is granted, so this is the order the
-        # gate handed permits out in — the thing the guarantee is about.
+        gate = LaneGate(12, live_reserved=self.LIVE_FLOOR, background_reserved=2)
+        # Appended the moment a permit is granted, so this is the order the gate
+        # handed permits out in — the thing the guarantee is about.
         granted: list[str] = []
+        release_batch = asyncio.Event()
+        release_live = asyncio.Event()
 
         async def batch_node():
             async with gate.hold(Lane.BACKGROUND, "P5"):
                 granted.append("batch")
-                await asyncio.sleep(CALL)
+                await release_batch.wait()
 
         async def interactive():
             async with gate.hold(Lane.LIVE, "P0"):
                 granted.append("live")
-                await asyncio.sleep(CALL)
+                await release_live.wait()
 
-        batch = [asyncio.create_task(batch_node()) for _ in range(120)]
-        await asyncio.sleep(CALL / 2)  # let batch saturate first
+        batch = [asyncio.create_task(batch_node()) for _ in range(self.BATCH)]
+        queued_batch = self.BATCH - self.BATCH_ADMITTED
+        await self._until(
+            lambda: gate.stats()["waiting"] == queued_batch,
+            what=f"{queued_batch} batch tasks queued",
+        )
+
         granted.append(ARRIVED)
-        await asyncio.gather(*[interactive() for _ in range(self.INTERACTIVE)])
-        await asyncio.gather(*batch)
+        live = [asyncio.create_task(interactive()) for _ in range(self.INTERACTIVE)]
+        queued_live = self.INTERACTIVE - self.LIVE_FLOOR
+        await self._until(
+            lambda: gate.stats()["waiting"] == queued_batch + queued_live,
+            what=f"{queued_live} interactive requests queued behind the LIVE floor",
+        )
 
-        # Every interactive request is granted before any batch request that was
-        # still queued when they arrived: 112 batch tasks are waiting at P5 with
-        # nothing but priority keeping them behind.
+        # Only now may the batch holders release. Every wake-up from here on has
+        # a P0 waiter available to serve, so anything other than "live" in the
+        # next four grants is a priority failure and nothing else.
+        release_batch.set()
+        await self._until(
+            lambda: granted.count("live") == self.INTERACTIVE,
+            what="every interactive request granted",
+        )
+
         arrival = granted.index(ARRIVED)
         served_next = granted[arrival + 1 : arrival + 1 + self.INTERACTIVE]
         assert served_next == ["live"] * self.INTERACTIVE, granted[arrival : arrival + 20]
+
+        release_live.set()
+        await asyncio.gather(*live, *batch)
 
     async def test_batch_flood_does_not_stall_interactive_work(self):
         """A loose wall-clock net, deliberately far from the edge.
