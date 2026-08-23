@@ -135,7 +135,14 @@ class PgLearningStore:
         text_lower = user_text.lower()
         scored: list[tuple[float, Learning]] = []
         for row in rows:
-            keys: list[str] = row["trigger_keys"] or []
+            # `_load_keys`, not the raw column. asyncpg hands JSONB back as
+            # text, so iterating it scored one *character* at a time: a
+            # learning keyed ["timeout"] matched the query "cat" on the shared
+            # letter `t`, and since almost every key shares a letter with
+            # almost every query, nearly every learning scored above zero and
+            # was injected into the agent's system prompt. The annotation said
+            # list[str] and the value was a str, which is why it type-checked.
+            keys = _load_keys(row["trigger_keys"])
             score = sum(1 for k in keys if k.lower() in text_lower)
             if score > 0:
                 scored.append((float(score), _row_to_learning(row)))

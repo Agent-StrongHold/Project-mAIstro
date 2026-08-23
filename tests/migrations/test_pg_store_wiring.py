@@ -334,3 +334,232 @@ class TestUnmigratedDatabaseFailsLoudly:
         with pytest.raises(asyncpg.UndefinedTableError) as caught:
             await create_container(AgentConfig(router_api_key="test-key", database_url=url))
         assert "learnings" in str(caught.value)
+
+    async def test_a_failed_startup_does_not_strand_its_connections(self, migrated_url) -> None:
+        """The pool exists before `ensure_schema` runs, and the caller only
+        learns about it through the return value -- so an exception in between
+        stranded every connection it had opened. Invisible in a one-shot
+        process, compounding in the two places it happens: a supervised startup
+        that retries, and a test suite that builds containers in a loop.
+
+        Counted through `pg_stat_activity` rather than by inspecting the pool
+        object, because a pool that looks closed while leaving server-side
+        backends alive is exactly the failure this is about.
+        """
+        import asyncpg
+
+        from maistro.container import create_container
+
+        bare = "maistro_pg_wiring_leak"
+        admin = await asyncpg.connect(urlsplit(migrated_url)._replace(path="/postgres").geturl())
+        try:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{bare}"')
+            await admin.execute(f'CREATE DATABASE "{bare}"')
+            url = urlsplit(migrated_url)._replace(path=f"/{bare}").geturl()
+
+            for _ in range(3):
+                with pytest.raises(asyncpg.UndefinedTableError):
+                    await create_container(AgentConfig(router_api_key="test-key", database_url=url))
+
+            # `pool.close()` returns before PostgreSQL has reaped the backends,
+            # so poll rather than sampling once and calling it a leak.
+            leaked = -1
+            for _ in range(50):
+                leaked = await admin.fetchval(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = $1", bare
+                )
+                if leaked == 0:
+                    break
+                await asyncio.sleep(0.02)
+            assert leaked == 0, f"{leaked} connection(s) left open by failed startups"
+        finally:
+            await admin.close()
+
+
+class TestScopeIsEnforcedByTheDatabase:
+    """Every read took an `org_id` and filtered on nothing (#122 review).
+
+    These run against a real server because the defect was invisible to a
+    `FakeConnection`: the argument was accepted, the SQL simply never
+    mentioned it, and a fake that records calls cannot tell you that rows you
+    were not entitled to came back.
+    """
+
+    @staticmethod
+    def _outcome(**kw):
+        base = {
+            "request_id": "r",
+            "task_type": "code",
+            "model_used": "m",
+            "provider": "p",
+            "tool_calls": [],
+            "success": True,
+            "org_id": "org-a",
+            "team_id": "t",
+            "user_id": "u",
+            "agent_id": "a",
+        }
+        base.update(kw)
+        return Outcome(**base)
+
+    async def test_a_read_scoped_to_one_org_cannot_see_another(self, container) -> None:
+        await container.outcome_store.record(self._outcome(org_id="org-a"))
+        await container.outcome_store.record(self._outcome(org_id="org-b"))
+
+        scoped = await container.outcome_store.get_task_completion_rate("code", org_id="org-a")
+        unscoped = await container.outcome_store.get_task_completion_rate("code")
+
+        assert scoped["total"] == 1, "one org's rows only"
+        assert unscoped["total"] == 2, "and no org named still means all of them"
+
+    async def test_a_project_scoped_narrative_cannot_come_from_another_project(
+        self, container
+    ) -> None:
+        """The sharp end of the scope bug: this text is injected verbatim into
+        an agent's system prompt, so an unfiltered read is one project's
+        failure being presented as another's experience."""
+        await container.outcome_store.record(
+            self._outcome(success=False, error_type="from-p1", project_id="p1")
+        )
+        await container.outcome_store.record(
+            self._outcome(success=False, error_type="from-p2", project_id="p2")
+        )
+
+        narrative = await container.outcome_store.get_experience_context(
+            "code", org_id="org-a", project_id="p1"
+        )
+
+        assert "from-p1" in narrative
+        assert "from-p2" not in narrative
+
+    async def test_the_tool_filter_matches_the_tool_and_not_its_prefix(self, container) -> None:
+        """A JSONB containment check, not a string match: `grep` must not
+        match a call to `grep_all`."""
+        await container.outcome_store.record(
+            self._outcome(success=False, error_type="real-grep", tool_calls=[{"name": "grep"}])
+        )
+        await container.outcome_store.record(
+            self._outcome(success=False, error_type="other-tool", tool_calls=[{"name": "grep_all"}])
+        )
+
+        narrative = await container.outcome_store.get_experience_context("code", tool_name="grep")
+
+        assert "real-grep" in narrative
+        assert "other-tool" not in narrative
+
+
+class TestTheDurableStoreMatchesTheInMemoryOne:
+    """`InMemoryOutcomeStore` is the protocol's reference implementation.
+
+    Asserting equality against it, rather than against a string this test
+    writes down, is what stops the two drifting: a change to either that does
+    not change the other fails here.
+    """
+
+    async def test_the_experience_narrative_is_byte_identical(self, container) -> None:
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        reference = InMemoryOutcomeStore()
+        rows = [
+            Outcome(
+                request_id="f1",
+                task_type="code",
+                model_used="m",
+                provider="p",
+                tool_calls=[{"name": "grep"}],
+                success=False,
+                error_type="boom",
+                org_id="org-a",
+                project_id="p1",
+            ),
+            Outcome(
+                request_id="f2",
+                task_type="code",
+                model_used="m2",
+                provider="p",
+                tool_calls=[],
+                success=False,
+                error_type="crash",
+                org_id="org-a",
+                project_id="p1",
+            ),
+            Outcome(
+                request_id="t1",
+                task_type="code",
+                model_used="m",
+                provider="p",
+                tool_calls=[],
+                success=True,
+                thumb="down",
+                thumb_comment="wrong file",
+                node_id="n7",
+                org_id="org-a",
+                project_id="p1",
+            ),
+        ]
+        for row in rows:
+            await container.outcome_store.record(row)
+            await reference.record(row)
+
+        durable = await container.outcome_store.get_experience_context(
+            "code", org_id="org-a", project_id="p1"
+        )
+        expected = await reference.get_experience_context("code", org_id="org-a", project_id="p1")
+
+        assert durable == expected
+        # Named explicitly so a reference implementation that stopped
+        # surfacing thumbs-down could not make this test pass by agreeing.
+        assert "## User Thumbs-Down Patterns" in durable
+        assert "node=n7" in durable
+
+    async def test_a_timestamp_read_does_not_raise(self, container) -> None:
+        """`outcomes.created_at` was TIMESTAMP WITHOUT TIME ZONE while every
+        read compares against an aware `datetime.now(UTC)`, so the store could
+        write and then fail every read with a `DataError`. Migration 006 makes
+        it TIMESTAMPTZ; these are the five reads that were broken."""
+        await container.outcome_store.record(
+            Outcome(request_id="r", task_type="code", model_used="m", provider="p")
+        )
+
+        assert await container.outcome_store.get_task_completion_rate("code") is not None
+        assert await container.outcome_store.get_usage_breakdown() is not None
+        assert await container.outcome_store.get_daily_timeseries() is not None
+        assert await container.outcome_store.get_experience_context("code") is not None
+        assert await container.outcome_store.list_outcomes() is not None
+
+
+class TestLearningRelevanceScoresKeys:
+    async def test_an_unrelated_query_does_not_match_on_a_shared_letter(self, container) -> None:
+        """`find_relevant` iterated the raw JSONB text, scoring one character
+        at a time: a learning keyed ["timeout"] matched the query "cat" on the
+        letter `t`. Since almost every key shares a letter with almost every
+        query, nearly every learning was injected into the system prompt."""
+        await container.learning_store.store(
+            Learning(
+                trigger_keys=["timeout"],
+                tool_name="http_get",
+                learning="raise the deadline",
+                source_query="q",
+                org_id="org-a",
+            )
+        )
+
+        assert await container.learning_store.find_relevant("cat", org_id="org-a") == []
+        matched = await container.learning_store.find_relevant(
+            "the call hit a timeout", org_id="org-a"
+        )
+        assert len(matched) == 1
+
+
+class TestQuotaCyclesRollOver:
+    async def test_the_key_is_the_cycle_running_now_not_its_type(self, container) -> None:
+        """`billing_cycle` is a type -- "monthly" -- and the durable trackers
+        used it as the key, so every month accumulated into one row and a
+        provider that exhausted its free tier once stayed over quota forever.
+        `InMemoryQuotaTracker` never had that bug."""
+        from maistro.quota.billing import cycle_key
+
+        totals = await container.quota_tracker.record_usage("openai", "monthly", 10, 5)
+
+        assert totals["cycle_key"] == cycle_key("monthly")
+        assert totals["cycle_key"] != "monthly"

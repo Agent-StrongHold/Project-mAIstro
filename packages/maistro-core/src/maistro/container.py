@@ -780,13 +780,27 @@ async def _wire_postgres_backend(
         msg = f"asyncpg returned no pool for {_redact_url(database_url)!r}"
         raise ConfigError(msg)
 
-    pg_learning_store = PgLearningStore(pool)
-    await pg_learning_store.ensure_schema()
+    # Anything after the pool exists has to hand it back or close it. The
+    # caller only learns about the pool through the return value, so an
+    # exception here -- `ensure_schema` against an unmigrated database being
+    # the likely one -- would strand every connection it opened. That is
+    # invisible in a one-shot process and compounding in the two places it
+    # actually happens: a supervised startup that retries, and a test suite
+    # that constructs containers in a loop until PostgreSQL refuses new
+    # connections.
+    try:
+        pg_learning_store = PgLearningStore(pool)
+        await pg_learning_store.ensure_schema()
 
-    quota_tracker: QuotaTracker = PgQuotaTracker(pool)
-    learning_store: LearningStore = pg_learning_store
-    outcome_store: OutcomeStore = PgOutcomeStore(pool)
-    session_store: SessionStore = PgSessionStore(pool)
+        quota_tracker: QuotaTracker = PgQuotaTracker(pool)
+        learning_store: LearningStore = pg_learning_store
+        outcome_store: OutcomeStore = PgOutcomeStore(pool)
+        session_store: SessionStore = PgSessionStore(pool)
+    except BaseException:
+        # BaseException, not Exception: a cancellation arriving mid-startup
+        # strands the pool exactly as an error does.
+        await pool.close()
+        raise
 
     return pool, quota_tracker, learning_store, outcome_store, session_store
 

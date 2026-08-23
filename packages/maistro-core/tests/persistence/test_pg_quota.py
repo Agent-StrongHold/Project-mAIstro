@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from maistro.persistence.pg_quota import PgQuotaTracker, cycle_key
+from maistro.quota.billing import cycle_key as canonical_cycle_key
 
 
 class FakeRecord(dict):
@@ -70,9 +71,25 @@ def tracker(conn: FakeConnection) -> PgQuotaTracker:
     return PgQuotaTracker(FakePool(conn))
 
 
-def test_cycle_key_strips_and_lowercases() -> None:
-    assert cycle_key("  2024-01  ") == "2024-01"
-    assert cycle_key("MONTHLY") == "monthly"
+def test_cycle_key_resolves_the_cycle_running_now() -> None:
+    """`billing_cycle` is a cycle *type*, not an instance (#122).
+
+    `ModelQuota.billing_cycle` defaults to `"monthly"` and
+    `QuotaBurnScheduler` passes that string straight through, so a key of
+    `"monthly"` meant every month accumulated into one row and nothing ever
+    rolled over -- a provider that exhausted its free tier once stayed over
+    quota permanently. The old assertions here pinned exactly that
+    (`cycle_key("MONTHLY") == "monthly"`).
+
+    Compared against `maistro.quota.billing.cycle_key` rather than a literal:
+    that function is the contract `InMemoryQuotaTracker` already implements,
+    and a hardcoded `"2026-08"` would start failing next month.
+    """
+    assert cycle_key("monthly") == canonical_cycle_key("monthly")
+    assert cycle_key("daily") == canonical_cycle_key("daily")
+    assert cycle_key("MONTHLY") == canonical_cycle_key("MONTHLY")
+    # Distinct keys per cycle type is the property that makes rollover work.
+    assert cycle_key("daily") != cycle_key("monthly")
 
 
 @pytest.mark.asyncio
@@ -91,10 +108,10 @@ async def test_record_usage_upserts_and_returns_row(
     call = conn.calls[0]
     assert call.method == "fetchrow"
     assert "ON CONFLICT (provider, cycle_key) DO UPDATE" in call.query
-    assert call.args == ("openai", "monthly", 100, 50, 150)
+    assert call.args == ("openai", canonical_cycle_key("monthly"), 100, 50, 150)
     assert result == {
         "provider": "openai",
-        "cycle_key": "monthly",
+        "cycle_key": canonical_cycle_key("monthly"),
         "input_tokens": 100,
         "output_tokens": 50,
         "total_tokens": 150,
@@ -110,7 +127,7 @@ async def test_record_usage_no_row_returns_zero_defaults(
     result = await tracker.record_usage("openai", "monthly", 10, 20)
     assert result == {
         "provider": "openai",
-        "cycle_key": "monthly",
+        "cycle_key": canonical_cycle_key("monthly"),
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
@@ -142,7 +159,7 @@ async def test_get_usage_pct_computes_ratio(tracker: PgQuotaTracker, conn: FakeC
     pct = await tracker.get_usage_pct("openai", "Monthly", 1000)
     assert pct == 0.25
     call = conn.calls[0]
-    assert call.args == ("openai", "monthly")
+    assert call.args == ("openai", canonical_cycle_key("monthly"))
 
 
 @pytest.mark.asyncio
@@ -162,7 +179,7 @@ async def test_get_all_usage_returns_ordered_list(
         [
             {
                 "provider": "anthropic",
-                "cycle_key": "monthly",
+                "cycle_key": canonical_cycle_key("monthly"),
                 "input_tokens": 1,
                 "output_tokens": 2,
                 "total_tokens": 3,
@@ -176,7 +193,7 @@ async def test_get_all_usage_returns_ordered_list(
     assert result == [
         {
             "provider": "anthropic",
-            "cycle_key": "monthly",
+            "cycle_key": canonical_cycle_key("monthly"),
             "input_tokens": 1,
             "output_tokens": 2,
             "total_tokens": 3,
