@@ -53,6 +53,21 @@ def _memory_decay_running(status: dict) -> bool:
     return status.get("state") == "running"
 
 
+def _task_clear_supported() -> bool:
+    """Whether this deployment's task backend can bulk-clear.
+
+    Imported inside the function like the other engine lookups here: `/health`
+    must answer even when the engine is not wired, and a module-level import
+    would make this route depend on a service that may not have started.
+    """
+    try:
+        from services.engine import get_engine
+
+        return bool(get_engine().supports_clear)
+    except Exception:
+        return False
+
+
 def _log_redaction_active() -> bool:
     """ADR-064 log-redaction state. Same defensive contract as the probes above:
     unreadable reports as inactive, because a false "secrets are scrubbed" is the
@@ -90,6 +105,9 @@ def health() -> dict:
     return {
         "status": "ok",
         "version": "0.9.0",
+        # Capability, not health: the missions UI uses it to decide whether to
+        # offer bulk-clear at all (#190 review).
+        "task_clear_supported": _task_clear_supported(),
         "uptime_seconds": uptime,
         "started_at": _STARTED_AT,
         "router_model": settings.chat_default_model,

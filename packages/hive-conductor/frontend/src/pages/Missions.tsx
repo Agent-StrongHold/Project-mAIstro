@@ -26,6 +26,13 @@ type Mission = {
   metadata: Record<string, unknown>;
 };
 
+/** The engine owns this mission's lifecycle, so every status change on it is
+ *  refused with a 409. The backend says so on the record rather than each
+ *  surface guessing from deployment mode (#190 review). */
+function isEngineBacked(m: Mission): boolean {
+  return m.metadata?.engine_backed === true;
+}
+
 type AgentOption = { id: string; name: string };
 
 type ThreadMsg = { id: number; role: "user" | "agent"; text: string; ts: number };
@@ -129,6 +136,9 @@ export default function Missions() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterTab>("All");
   const [search, setSearch] = useState("");
+  // Whether this deployment's task backend can bulk-clear at all. Defaults to
+  // false so a control that might not work is never offered before we know.
+  const [clearSupported, setClearSupported] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
@@ -172,6 +182,22 @@ export default function Missions() {
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [thread]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/health")
+      .then((r) => r.json())
+      .then((h: { task_clear_supported?: boolean }) => {
+        if (!cancelled) setClearSupported(h.task_clear_supported === true);
+      })
+      .catch(() => {
+        // A health check that cannot be read is not a reason to break the
+        // page; the bulk-clear controls simply stay hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     let list = rows;
@@ -316,12 +342,13 @@ export default function Missions() {
         helpHref="/docs#missions"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            {/* Kept unconditionally (#190). These are working bulk-clear
-                controls with real handlers; dropping the POC branch would have
-                deleted them and orphaned clearCompletedMissions /
-                clearFailedMissions. Still conditioned on there being something
-                to clear. */}
-            {rows.some((m) => m.status === "completed") && (
+            {/* Kept (#190) -- these are working bulk-clear controls with real
+                handlers, so dropping the POC branch would have deleted them
+                and orphaned clearCompletedMissions / clearFailedMissions. But
+                only offered where clearing actually works: the production task
+                backend has no bulk removal, so the handler would report
+                "Cleared 0" as a success. `/health` says which it is. */}
+            {clearSupported && rows.some((m) => m.status === "completed") && (
               <button
                 type="button"
                 className="btn"
@@ -331,7 +358,7 @@ export default function Missions() {
                 Clear completed
               </button>
             )}
-            {rows.some((m) => m.status === "failed") && (
+            {clearSupported && rows.some((m) => m.status === "failed") && (
               <button
                 type="button"
                 className="btn"
@@ -466,7 +493,7 @@ export default function Missions() {
                 {active.status === "pending" && (
                   <button onClick={() => void patchStatus(active.id, "running")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Start</button>
                 )}
-                {active.status === "running" && (
+                {!isEngineBacked(active) && active.status === "running" && (
                   <>
                     <button onClick={() => void patchStatus(active.id, "completed")} style={{ ...btnBase, background: "#5a9a4a", color: "#fff", borderColor: "#5a9a4a" }}>Complete</button>
                     <button onClick={() => void patchStatus(active.id, "failed")} style={{ ...btnBase, background: "#c4452a", color: "#fff", borderColor: "#c4452a" }}>Fail</button>
@@ -475,7 +502,9 @@ export default function Missions() {
                 )}
                 {(active.status === "completed" || active.status === "failed") && (
                   <>
-                    <button onClick={() => void patchStatus(active.id, "pending")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Restart</button>
+                    {!isEngineBacked(active) && (
+                      <button onClick={() => void patchStatus(active.id, "pending")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Restart</button>
+                    )}
                     <button onClick={() => setConfirmDelete(true)} style={{ ...btnBase, color: "#c4452a", borderColor: "#c4452a" }}>Delete</button>
                   </>
                 )}
