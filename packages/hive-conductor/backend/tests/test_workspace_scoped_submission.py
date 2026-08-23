@@ -214,7 +214,9 @@ async def test_the_http_backend_still_accepts_an_unscoped_submission(monkeypatch
                     "task_id": "t-1",
                     "status": "queued",
                     "description": "d",
-                    "workspace": "/tmp/maistro-workspace",
+                    # nosec B108 — the API contract's workspace mount root, not a
+                    # temp file this test creates.
+                    "workspace": "/tmp/maistro-workspace",  # nosec B108
                     "tier": 2,
                     "created_at": "2026-01-01T00:00:00Z",
                 }
