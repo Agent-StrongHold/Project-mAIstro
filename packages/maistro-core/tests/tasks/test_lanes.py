@@ -199,9 +199,67 @@ class TestWakeupCorrectness:
 
 
 class TestEndToEnd:
-    async def test_batch_flood_does_not_delay_interactive_work(self):
+    #: Interactive requests in the flood scenario. Four fit the LIVE floor
+    #: immediately; the rest must be served on the first release round, which is
+    #: the property under test.
+    INTERACTIVE = 8
+
+    async def test_batch_flood_serves_interactive_before_queued_batch(self):
         """The measured scenario, in miniature: a wide batch fan-out plus
-        interactive requests. Interactive latency must stay at the call floor.
+        interactive requests.
+
+        Asserted on **acquisition order**, not on wall-clock latency, because
+        the guarantee is about priority and the clock is about the scheduler.
+        The previous version asserted `max(latency) < CALL * 2.5`, which flaked
+        roughly 1 run in 18 under CPU contention (#184): four latencies landed a
+        whole `CALL` late, tightly clustered rather than scattered, because the
+        waiting requests missed one release round. Whether they catch that round
+        is decided by sub-millisecond ordering between the `gather` starting
+        these coroutines and the batch `sleep` callbacks firing — so the old
+        threshold measured scheduler luck and reported it as a fairness result.
+        CI runners are contended, which is exactly where that luck runs out.
+
+        What `_wake_one` actually promises is that a P0 `LIVE` waiter is served
+        ahead of the P5 `BACKGROUND` waiters queued behind it. That is what this
+        checks, and it holds at any CPU speed.
+        """
+        CALL = 0.05
+        ARRIVED = "interactive-arrived"
+        gate = LaneGate(12, live_reserved=4, background_reserved=2)
+        # Appended at the moment a permit is granted, so this is the order the
+        # gate handed permits out in — the thing the guarantee is about.
+        granted: list[str] = []
+
+        async def batch_node():
+            async with gate.hold(Lane.BACKGROUND, "P5"):
+                granted.append("batch")
+                await asyncio.sleep(CALL)
+
+        async def interactive():
+            async with gate.hold(Lane.LIVE, "P0"):
+                granted.append("live")
+                await asyncio.sleep(CALL)
+
+        batch = [asyncio.create_task(batch_node()) for _ in range(120)]
+        await asyncio.sleep(CALL / 2)  # let batch saturate first
+        granted.append(ARRIVED)
+        await asyncio.gather(*[interactive() for _ in range(self.INTERACTIVE)])
+        await asyncio.gather(*batch)
+
+        # Every interactive request is granted before any batch request that was
+        # still queued when they arrived: 112 batch tasks are waiting at P5 with
+        # nothing but priority keeping them behind.
+        arrival = granted.index(ARRIVED)
+        served_next = granted[arrival + 1 : arrival + 1 + self.INTERACTIVE]
+        assert served_next == ["live"] * self.INTERACTIVE, granted[arrival : arrival + 20]
+
+    async def test_batch_flood_does_not_stall_interactive_work(self):
+        """A loose wall-clock net, deliberately far from the edge.
+
+        Kept because an ordering assertion alone would pass a gate that serves
+        interactive work first and then takes a minute to do it. The bound is
+        an order of magnitude above the expected time rather than 2.5x, so it
+        catches a stall without re-introducing the round-alignment race.
         """
         CALL = 0.05
         gate = LaneGate(12, live_reserved=4, background_reserved=2)
@@ -219,12 +277,11 @@ class TestEndToEnd:
             live_latencies.append(loop.time() - t0)
 
         batch = [asyncio.create_task(batch_node()) for _ in range(120)]
-        await asyncio.sleep(CALL / 2)  # let batch saturate first
-        await asyncio.gather(*[interactive() for _ in range(8)])
+        await asyncio.sleep(CALL / 2)
+        await asyncio.gather(*[interactive() for _ in range(self.INTERACTIVE)])
         await asyncio.gather(*batch)
 
-        # Never worse than two call-times: at most one wait for a floor slot.
-        assert max(live_latencies) < CALL * 2.5, live_latencies
+        assert max(live_latencies) < CALL * 20, live_latencies
 
 
 class TestRegressions:
