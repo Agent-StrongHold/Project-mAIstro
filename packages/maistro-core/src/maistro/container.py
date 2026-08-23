@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
     from maistro.projects.store import ProjectStore
+    from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
         EpisodicStore,
@@ -731,6 +732,7 @@ def _asyncpg_dsn(database_url: str) -> str:
 
 async def _wire_postgres_backend(
     database_url: str,
+    embeddings: EmbeddingClient | None = None,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -761,6 +763,7 @@ async def _wire_postgres_backend(
     """
     import asyncpg
 
+    from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
     from maistro.persistence.pg_learnings import PgLearningStore
     from maistro.persistence.pg_outcomes import PgOutcomeStore
     from maistro.persistence.pg_quota import PgQuotaTracker
@@ -793,7 +796,16 @@ async def _wire_postgres_backend(
         await pg_learning_store.ensure_schema()
 
         quota_tracker: QuotaTracker = PgQuotaTracker(pool)
-        learning_store: LearningStore = pg_learning_store
+        # With an embedding client configured, the vector goes on the row and
+        # similarity composes with scope in one query (#188). Without one, the
+        # keyword store is the whole story -- the column stays NULL, and
+        # `find_similar` is never reached, which is the honest state for a
+        # deployment that has no embedding model rather than a degraded one.
+        learning_store: LearningStore = (
+            DurableHybridLearningStore(pg_learning_store, embeddings)
+            if embeddings is not None
+            else pg_learning_store
+        )
         outcome_store: OutcomeStore = PgOutcomeStore(pool)
         session_store: SessionStore = PgSessionStore(pool)
     except BaseException:

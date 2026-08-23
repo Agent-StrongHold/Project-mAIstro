@@ -15,6 +15,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger("maistro.persistence.learnings")
 
 
+def similarity_query(*, scoped_to_agent: bool) -> str:
+    """The SQL `find_similar` runs, built in one place.
+
+    A module function rather than an inline string so a test can `EXPLAIN` the
+    real query. The property #188 is about -- that PostgreSQL applies the scope
+    filter, rather than Python applying it after an unscoped fetch -- is only
+    visible in the plan, and a plan check against a hand-copied query proves
+    nothing about the query that actually runs.
+    """
+    agent_clause = " AND (agent_id = $3 OR agent_id = '')" if scoped_to_agent else ""
+    limit_placeholder = 4 if scoped_to_agent else 3
+    return (
+        "SELECT * FROM learnings"
+        " WHERE status = 'active'"
+        " AND org_id = $2"
+        " AND embedding IS NOT NULL"
+        f"{agent_clause}"
+        f" ORDER BY embedding <=> $1::vector LIMIT ${limit_placeholder}"
+    )
+
+
 class PgLearningStore:
     """PostgreSQL-backed learning store."""
 
@@ -162,17 +183,10 @@ class PgLearningStore:
             )
             raise ValueError(msg)
 
-        query = """
-            SELECT * FROM learnings
-            WHERE status = 'active'
-              AND org_id = $2
-              AND embedding IS NOT NULL
-        """
         params: list[Any] = [to_pgvector_literal(query_embedding), org_id]
         if agent_id:
-            query += " AND (agent_id = $3 OR agent_id = '')"
             params.append(agent_id)
-        query += f" ORDER BY embedding <=> $1::vector LIMIT ${len(params) + 1}"
+        query = similarity_query(scoped_to_agent=bool(agent_id))
         params.append(max_results)
 
         async with self._pool.acquire() as conn:
