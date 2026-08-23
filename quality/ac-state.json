@@ -9,24 +9,24 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 177,
-    "specs_with_ac_heading": 169,
-    "specs_with_ac_ids": 31,
+    "specs": 178,
+    "specs_with_ac_heading": 170,
+    "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 484,
-    "criteria_annotated": 207,
-    "markers_found": 196,
+    "criteria_declared": 491,
+    "criteria_annotated": 214,
+    "markers_found": 203,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 231,
+    "gherkin_criteria": 238,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 9,
     "completion_claims_unverifiable": 68,
     "specs_implementing_nothing": 76,
-    "adrs_without_implementing_spec": 34,
+    "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 3.9582
+    "design_coverage": 4.9683
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -949,11 +949,6 @@
       "declared_status": "Accepted"
     },
     {
-      "id": "ADR-038",
-      "file": "docs/adr/ADR-038-reliability-taxonomy.md",
-      "declared_status": "Accepted"
-    },
-    {
       "id": "ADR-039",
       "file": "docs/adr/ADR-039-external-library-adoption-policy.md",
       "declared_status": "Accepted"
@@ -1086,10 +1081,10 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 3.9582,
+    "percent": 4.9683,
     "decisions": 99,
-    "decisions_scoring_zero": 94,
-    "decisions_declaring_no_criteria": 76,
+    "decisions_scoring_zero": 93,
+    "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
         "id": "ADR-002",
@@ -1325,9 +1320,9 @@
       {
         "id": "ADR-038",
         "declared_status": "Accepted",
-        "criteria": 0,
-        "reachable": 0,
-        "percent": 0.0
+        "criteria": 7,
+        "reachable": 7,
+        "percent": 100.0
       },
       {
         "id": "ADR-039",
@@ -3059,9 +3054,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 1,
+        "covered": 0,
         "passing": 0,
-        "reachable": 7
+        "reachable": 8
       },
       "tier": "declared",
       "criteria": [
@@ -3143,7 +3138,7 @@
           "scenario": [
             "Secret payloads persist as hash and metadata only"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-7",
@@ -5956,6 +5951,123 @@
           "form": "gherkin",
           "scenario": [
             "Non-JSON arguments fail closed"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082226-2a10",
+      "file": "docs/specs/SPEC-082226-2a10-resource-security-floors.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-038"
+      ],
+      "declares_non_measurable": false,
+      "declared_unproven": [],
+      "has_ac_heading": true,
+      "criteria_total": 7,
+      "annotated": 7,
+      "gherkin_criteria": 7,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 7
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082226-2a10/AC-1",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Shipped defaults equal the declared baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-2",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Operators may tighten every protected limit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-3",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Routine configuration cannot weaken the baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-4",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Unsafe development weakening is explicit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-7",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A disabled burst throttle is read as the limiter reads it"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-5",
+          "claimed": false,
+          "module": "maistro.agents.circuit_breaker",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Circuit breaker uses deployment policy"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-6",
+          "claimed": false,
+          "module": "maistro_server.api.health",
+          "covered_by": [
+            "packages/maistro-server/tests/api/test_resource_policy_health.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Effective values are observable"
           ],
           "rung": "reachable"
         }
@@ -10102,14 +10214,16 @@
       "id": "ADR-038",
       "file": "docs/adr/ADR-038-reliability-taxonomy.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
+      "specs": [
+        "SPEC-082226-2a10"
+      ],
+      "measurable_specs": 1,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
       "declared_unproven": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-039",

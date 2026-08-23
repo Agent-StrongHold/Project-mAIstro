@@ -153,8 +153,22 @@ def adr_refs(entries: list[str]) -> list[str]:
 #: ADR statuses that mean the decision is taken, so implementation is owed.
 #: `Proposed` is excluded by definition — a decision not yet made cannot be
 #: owed an implementation, and counting it would make writing down an idea look
-#: like incurring debt.
-DECISION_TAKEN = ("Accepted", "Implemented")
+#: like incurring debt. So are the states that decide *not* to (`Denied`,
+#: `Will Not Implement`, `Deferred`) and the ones that retire a decision
+#: (`Superseded`, `Deprecated`, whose successors carry the debt instead).
+#:
+#: The three ADR-097 states between `Accepted` and `Implemented` are included,
+#: and `Fully Specced` most of all: it *means* every child spec has acceptance
+#: criteria, so an ADR carrying it with no child spec at all is precisely the
+#: absent link this counter exists to report. None of the three sits on any ADR
+#: today, which is exactly why leaving them out would have been invisible.
+DECISION_TAKEN = (
+    "Accepted",
+    "Fully Specced",
+    "In Progress",
+    "Tests Passing",
+    "Implemented",
+)
 AC_MODULES_RE = re.compile(r"^ac[-_]modules:\s*$((?:\n  \S+:\s*\S+)*)", re.MULTILINE)
 
 
