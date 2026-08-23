@@ -31,6 +31,7 @@ class DetailedHealthResponse(BaseModel):
     service: str
     version: str
     checks: dict[str, ProbeResult]
+    effective_resource_policy: dict[str, int | float | bool]
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -148,6 +149,7 @@ async def readiness(
         service="maistro-engine",
         version=APP_VERSION,
         checks=checks,
+        effective_resource_policy=settings.effective_resource_policy().as_dict(),
     )
 
     if not all_ok:
