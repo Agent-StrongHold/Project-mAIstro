@@ -384,7 +384,9 @@ async def test_submit_task_success_returns_task_record(
     monkeypatch.setattr(caps, "normalize_capability", lambda c: c)
 
     class _Backend:
-        async def submit(self, body: Any, *, user_id: str = "") -> Any:
+        async def submit(
+            self, body: Any, *, user_id: str = "", workspace_id: str | None = None
+        ) -> Any:
             return TaskRecord(_fake_task(task_id="new-task", description=body.description))
 
     svc = EngineService()

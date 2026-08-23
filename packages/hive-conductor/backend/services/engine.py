@@ -199,11 +199,19 @@ class EngineService:
         description: str,
         *,
         user_id: str = "",
+        workspace_id: str | None = None,
         task_type: str | None = None,
         agent_id: str | None = None,
         capability: str | None = None,
         program_context: dict | None = None,
     ) -> TaskRecord:
+        """Submit one task, optionally under a named Hive Workspace (#158).
+
+        `workspace_id` must already be authorized by the route that accepted the
+        request — this service does not know Hive's membership model and does
+        not check it. None means the deployment's default Workspace, which is
+        what every caller that names no Workspace still gets.
+        """
         if self._backend is None:
             raise RuntimeError("TaskQueue not available")
         from maistro.agents.pm_capabilities import is_gated, normalize_capability
@@ -235,11 +243,13 @@ class EngineService:
                 program_context=pctx,
             ),
             user_id=user_id,
+            workspace_id=workspace_id,
         )
         logger.info(
-            "task_submitted id=%s user=%s agent=%s capability=%s type=%s",
+            "task_submitted id=%s user=%s workspace=%s agent=%s capability=%s type=%s",
             rec.id,
             user_id or "-",
+            workspace_id or "-",
             agent_id or "-",
             capability or "-",
             task_type or "-",

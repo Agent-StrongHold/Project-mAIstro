@@ -22,13 +22,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import stores
+from adapters.task_backend import WORKSPACE_NOT_ROUTABLE_DETAIL, WorkspaceNotRoutable
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import program_store as prog
 from services.engine import get_engine
 from services.pm_fleet import invoke_pm_agent, is_pm_poc_mode
-from services.workspace_mode import workspace_has_pm_fleet_agents
+from services.workspace_mode import is_workspace_member, workspace_has_pm_fleet_agents
 
 from maistro.agents.pm_capabilities import WORK_ITEM_LABELS, WorkItemType
 from maistro.agents.work_items import (
@@ -52,10 +52,23 @@ def _user_id(request: Request) -> str:
     return str(uid)
 
 
+def _require_submittable_workspace(user_id: str, workspace_id: str | None) -> None:
+    """Refuse a submission that names a workspace the caller is not in (#158).
+
+    Separate from `_require_pm` on purpose. That gate answers "may this caller
+    use work items at all", and falls back to the legacy global flag for a
+    workspace it cannot resolve -- which is right for reading, and wrong for
+    naming the Workspace a Run gets filed in. Here an unresolvable or
+    non-member workspace is a refusal, in the same 403 shape `routes/agents.py`
+    uses for its own workspace-scoped writes.
+    """
+    if workspace_id and not is_workspace_member(user_id, workspace_id):
+        raise HTTPException(status_code=403, detail="only a workspace member can submit work to it")
+
+
 def _require_pm(user_id: str, workspace_id: str | None) -> None:
     if workspace_id:
-        workspace = stores.workspaces.get(workspace_id)
-        is_member = workspace is not None and any(m.user_id == user_id for m in workspace.members)
+        is_member = is_workspace_member(user_id, workspace_id)
         if is_member:
             if workspace_has_pm_fleet_agents(workspace_id):
                 return
@@ -74,10 +87,8 @@ def _require_pm(user_id: str, workspace_id: str | None) -> None:
 def _resolve_project_id(user_id: str, workspace_id: str | None) -> str:
     """Same resolution as routes/program.py's _resolve_program_scope, minus
     the use_case half (work items don't run the interview script)."""
-    if workspace_id:
-        workspace = stores.workspaces.get(workspace_id)
-        if workspace is not None and any(m.user_id == user_id for m in workspace.members):
-            return workspace_id
+    if workspace_id and is_workspace_member(user_id, workspace_id):
+        return workspace_id
     return "default"
 
 
@@ -229,6 +240,7 @@ async def confirm_work_item(
     """User-approved post to Jira (stub) — only after clarify + edit."""
     uid = _user_id(request)
     _require_pm(uid, workspace_id)
+    _require_submittable_workspace(uid, workspace_id)
     draft = _load_draft(draft_id, uid)
     try:
         posted, result = confirm_post_stub(draft)
@@ -255,15 +267,24 @@ async def confirm_work_item(
     prog_ctx = prog.context_dict(uid, posted.project_id)
     prog_ctx["confirmed"] = True
     prog_ctx["jira_issue_key"] = result.get("issue_key")
-    rec = await engine.submit_task(
-        posted.agent_id,
-        description,
-        user_id=uid,
-        task_type=task_type,
-        agent_id=agent_id,
-        capability=posted.capability,
-        program_context=prog_ctx,
-    )
+    try:
+        rec = await engine.submit_task(
+            posted.agent_id,
+            description,
+            user_id=uid,
+            workspace_id=workspace_id,
+            task_type=task_type,
+            agent_id=agent_id,
+            capability=posted.capability,
+            program_context=prog_ctx,
+        )
+    except WorkspaceNotRoutable as exc:
+        # 501, not 500: the request is well-formed and authorized, and this
+        # deployment simply cannot honour it. The Jira post above already
+        # happened, so the draft stays posted and only the task is refused --
+        # said plainly rather than rolled back, because the stub has no undo.
+        logger.warning("workspace_not_routable %s", exc)
+        raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
     log_audit(
         "work_item_confirm",
         uid,

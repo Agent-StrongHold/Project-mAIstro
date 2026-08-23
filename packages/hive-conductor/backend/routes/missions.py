@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import stores
+from adapters.task_backend import WORKSPACE_NOT_ROUTABLE_DETAIL, WorkspaceNotRoutable
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import Mission, MissionStep
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from services.workspace_mode import is_workspace_member
 
 from routes.audit import log_audit
 
 router = APIRouter(tags=["missions"])
+logger = logging.getLogger("hive.missions")
 
 
 def _now() -> datetime:
@@ -110,11 +114,37 @@ class CreateMissionBody(BaseModel):
     assigned_agents: list[str] = []
 
 
+def _user_id(request: Request) -> str:
+    user = getattr(request.state, "user", None) or {}
+    return str(user.get("id") or user.get("username") or "dev")
+
+
 @router.post("", response_model=Mission)
-async def create_mission(body: CreateMissionBody) -> Mission:
+async def create_mission(
+    body: CreateMissionBody, request: Request, workspace_id: str | None = None
+) -> Mission:
+    """Create a mission, optionally scoped to one of the caller's workspaces.
+
+    `workspace_id` decides which Workspace's Root Project the canonical Run is
+    filed in (#158). Omitted -- every caller before this parameter existed --
+    keeps the old behaviour: the deployment's default Workspace, named
+    explicitly by `AgentConfig.workspace_id` rather than inferred.
+    """
+    if workspace_id and not is_workspace_member(_user_id(request), workspace_id):
+        raise HTTPException(status_code=403, detail="only a workspace member can submit work to it")
     engine = get_engine()
     if engine.is_configured or engine._backend is not None:
-        rec = await engine.submit_task(body.name, body.description or body.name)
+        try:
+            rec = await engine.submit_task(
+                body.name, body.description or body.name, workspace_id=workspace_id
+            )
+        except WorkspaceNotRoutable as exc:
+            # 501, not 500: the request is well-formed and authorized, and this
+            # deployment simply cannot honour it. The exception text names the
+            # server it would have gone to, which belongs in the log and not in
+            # a response body.
+            logger.warning("workspace_not_routable %s", exc)
+            raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
         log_audit("mission_create", "system", target=rec.id, detail={"name": body.name})
         return _task_to_mission(rec)
 
