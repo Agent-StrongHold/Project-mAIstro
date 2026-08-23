@@ -67,17 +67,43 @@ happened and was answered, and that is the audit trail worth having.
 keeps a window of the last `MAX_RETAINED_CHAT_RUNS` (500) Runs it admitted, and
 deletes the oldest *terminal* ones as it overflows. This is enforced where the
 pressure is created, so the bound holds on any store rather than only on the one
-that happens to prune — and, critically, chat volume can no longer evict *task*
-Runs through the shared `MAX_IN_MEMORY_RUNS` bound. A non-terminal Run in the
-window is skipped rather than deleted: work in flight keeps its identity however
-old it is, and a window full of live Runs grows rather than eating them, which
-is the same failure the store's own bound already chooses and for the same
-reason.
+that happens to prune. A non-terminal Run in the window is skipped rather than
+deleted: work in flight keeps its identity however old it is, and a window full
+of live Runs grows rather than eating them, which is the same failure the
+store's own bound already chooses and for the same reason.
+
+**And the store's own bound is source-aware.** The admitter's window alone does
+not deliver "chat volume cannot evict task Runs", because the store's bound runs
+inside `create_run` — before the new Run reaches any admitter. So
+`InMemoryRunStore` evicts terminal Runs from ephemeral sources
+(`EPHEMERAL_ADMISSION_SOURCES`, today just `chat`) first, and touches Runs from
+durable sources only when it is still over its *hard* bound afterwards, never
+merely to reach the softer prune target. A task Run is the execution identity
+behind a receipt a caller still holds; a chat Run's job is to be followable for
+a while after its turn. Ordering the eviction by that difference is what makes
+the guarantee real rather than asserted.
 
 **A turn is never refused for want of a Run.** If admission fails, the turn is
 answered anyway and the response simply carries no `run_id`. The chat path has
 no receipt to fall back on, so refusing would convert "this process cannot
 record the turn" into "this process cannot answer".
+
+**The turn's answer is on the Run, bounded.** A completed turn records its
+`finish_reason` and the first `MAX_RECORDED_ANSWER_CHARS` of the assistant's
+text, flagged when truncated. That is what makes "a refused turn's answer is
+recorded" true rather than aspirational. It is a bounded projection and not the
+transcript: the conversation itself lives in `maistro.sessions`, and a chat
+Run's small size is part of why the retention window can be as generous as it
+is.
+
+**Admission does not name an agent it has not chosen.** The agent is recorded
+only when the submission named an intent the deployment knows — the one case
+where admission provably resolves what the Conduit will, because
+`_apply_intent_hint` overrides the classification with a valid hint. Otherwise
+the node's `to_agent` is empty and provenance says `agent_selection: deferred`.
+Resolving the empty hint would name the registry's fallback for work another
+agent went on to do: a canonical record that contradicts what happened, which is
+worse than one that admits the agent was not yet chosen.
 
 **`run_id` is additive on the response.** The OpenAI-compatible shape a caller
 parses is unchanged; `run_id` sits alongside `choices` and is absent when no
@@ -108,7 +134,15 @@ chat admitter is wired.
 - `RunStore` grew `delete_run`. A store with no way to forget a Run cannot
   implement any retention policy, so this is a gap being closed rather than a
   concession — but every implementation now owes it, including the PostgreSQL
-  one landing in #132.
+  one landing in #132. It refuses a Run that has child Runs: those hold foreign
+  keys into exactly the rows a delete would remove, so SQLite would fail partway
+  through and the in-memory store would silently orphan them. Refusing is the
+  one answer both can give truthfully.
+- A chat Run whose turn had no intent hint records no agent. Anything reading
+  the Graph for "who handled this turn" must read the *dispatched* agent
+  elsewhere, and today there is nowhere: binding it needs the Conduit to report
+  its selection, which is #142. Recording nothing is the honest interim state,
+  not a complete one.
 - 500 is a judgement, not a measurement. It is small enough that a busy process
   holds well under a megabyte of chat Runs and large enough that a `run_id`
   handed to a caller still resolves minutes later.

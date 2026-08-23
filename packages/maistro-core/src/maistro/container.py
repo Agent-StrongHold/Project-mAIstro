@@ -9,6 +9,7 @@ The Conduit pipeline handles the actual request flow:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,7 +31,7 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
-from maistro.runs.chat_admission import ChatRunAdmitter
+from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
@@ -259,7 +260,7 @@ class Container:
         except BaseException as exc:
             await self._close_chat_run(run, error=str(exc))
             raise
-        await self._close_chat_run(run)
+        await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
             # Additive. The OpenAI-compatible shape a caller parses is
             # untouched; `run_id` is the handle for anyone who wants to follow
@@ -290,6 +291,7 @@ class Container:
                 messages,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
             )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
@@ -302,18 +304,30 @@ class Container:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             return None
 
-    async def _close_chat_run(self, run: Run | None, *, error: str | None = None) -> None:
+    async def _close_chat_run(
+        self,
+        run: Run | None,
+        *,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
         """Terminalize a chat turn's Run, whichever way the turn ended.
 
         A Run left RUNNING is what recovery scans read as a process that died,
         so the one thing this must not do is leave the turn open — including
-        when the turn ended by raising.
+        when the turn ended by raising, and including when the request itself
+        is cancelled. The write is shielded for that last case: `CancelledError`
+        is not an `Exception`, so without the shield a client disconnecting
+        during this await would abort the transition and leave behind exactly
+        the false "died here" signal the shield exists to prevent.
         """
         if run is None:
             return
         target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
         try:
-            await self.run_store.transition_run(run.run_id, target, error=error)
+            await asyncio.shield(
+                self.run_store.transition_run(run.run_id, target, result=result, error=error)
+            )
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
 

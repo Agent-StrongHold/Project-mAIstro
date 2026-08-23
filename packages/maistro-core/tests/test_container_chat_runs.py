@@ -127,3 +127,80 @@ def _chat_runs(container: Container):
     """Every Run in the container's store. Private access on purpose: the point
     is to see the Run the caller was *not* handed, because the turn raised."""
     return list(container.run_store._runs.values())  # type: ignore[attr-defined]
+
+
+# --- review findings ------------------------------------------------------
+
+
+async def test_the_run_records_the_answer_the_turn_gave() -> None:
+    """The ADR promises a refused turn's answer is on the record."""
+    container = await _container()
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None
+    assert run.result is not None
+    assert run.result["answer"] == "hi"
+    assert run.result["finish_reason"] is None
+
+
+async def test_terminalization_survives_the_request_being_cancelled() -> None:
+    """`CancelledError` is not an `Exception`, so the write is shielded."""
+    import asyncio
+
+    container = await _container()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+
+    class _SlowStore:
+        """A store whose terminal write is slow enough to cancel mid-flight."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.terminal: list[str] = []
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def transition_run(self, run_id, target, **kwargs):
+            if target not in TERMINAL_RUN_STATUSES:
+                return await self._inner.transition_run(run_id, target, **kwargs)
+            started.set()
+            await asyncio.sleep(0.05)
+            run = await self._inner.transition_run(run_id, target, **kwargs)
+            self.terminal.append(run_id)
+            finished.set()
+            return run
+
+    store = _SlowStore(container.run_store)
+    container.run_store = store  # type: ignore[assignment]
+    container.conduit = _Conduit()
+
+    turn = asyncio.create_task(container.route_request([{"role": "user", "content": "hi"}]))
+    await started.wait()
+    turn.cancel()
+    await asyncio.gather(turn, return_exceptions=True)
+
+    # The shield detaches the write from the cancelled request rather than
+    # completing it synchronously, so the turn ends first and the write lands
+    # just after — which is the point: the Run does not stay RUNNING.
+    await asyncio.wait_for(finished.wait(), timeout=5)
+    assert len(store.terminal) == 1
+    run = await store.get_run(store.terminal[0])
+    assert run is not None
+    assert run.status in TERMINAL_RUN_STATUSES
+
+
+async def test_admission_defers_the_agent_when_no_hint_is_given() -> None:
+    from maistro.runs.chat_admission import AGENT_SELECTION_KEY, DEFERRED_AGENT_SELECTION
+
+    container = await _container()
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None
+    assert run.provenance[AGENT_SELECTION_KEY] == DEFERRED_AGENT_SELECTION

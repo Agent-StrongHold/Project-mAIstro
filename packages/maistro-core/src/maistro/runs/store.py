@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterator
 from datetime import datetime
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
@@ -21,6 +22,7 @@ from maistro.runs.model import (
     RunStatus,
     evidence_values_equal,
 )
+from maistro.runs.sources import ADMISSION_SOURCE, EPHEMERAL_ADMISSION_SOURCES
 
 
 class RunNotFound(KeyError):
@@ -178,14 +180,42 @@ class InMemoryRunStore:
         self._attempts: dict[str, Attempt] = {}
 
     def _prune_terminal_runs(self) -> None:
-        """Evict the oldest terminal Runs once the store exceeds its bound."""
+        """Evict the oldest terminal Runs once the store exceeds its bound.
+
+        Ephemeral sources first (:data:`EPHEMERAL_ADMISSION_SOURCES`). Without
+        that ordering this bound is source-agnostic, so a burst of chat turns
+        evicts the oldest *task* Runs to make room for itself — thousands of
+        task receipts left holding a `run_id` that no longer resolves, which is
+        the exact cross-eviction the chat retention policy claims to prevent
+        (ADR-082326-c126). The admitter's own window cannot prevent it either,
+        because this runs inside `create_run`, before any admitter sees the new
+        Run.
+        """
         if len(self._runs) <= self._max_runs:
             return
-        terminal = (
-            run_id for run_id, run in self._runs.items() if run.status in TERMINAL_RUN_STATUSES
-        )
-        for run_id in list(islice(terminal, len(self._runs) - self._prune_target)):
+        budget = len(self._runs) - self._prune_target
+        for run_id in list(islice(self._evictable(ephemeral_only=True), budget)):
             self._forget_run(run_id)
+        # Durable-source Runs are touched only if the store is *still* over its
+        # hard bound — never merely to reach the softer prune target. Falling
+        # through on the target would evict a task Run for every chat turn once
+        # the ephemeral supply ran out, which is the same cross-eviction by a
+        # slower route.
+        if len(self._runs) <= self._max_runs:
+            return
+        remaining = len(self._runs) - self._prune_target
+        for run_id in list(islice(self._evictable(ephemeral_only=False), remaining)):
+            self._forget_run(run_id)
+
+    def _evictable(self, *, ephemeral_only: bool) -> Iterator[str]:
+        """Terminal Run ids in admission order, oldest first."""
+        for run_id, run in self._runs.items():
+            if run.status not in TERMINAL_RUN_STATUSES:
+                continue
+            source = run.provenance.get(ADMISSION_SOURCE)
+            if ephemeral_only and source not in EPHEMERAL_ADMISSION_SOURCES:
+                continue
+            yield run_id
 
     def _forget_run(self, run_id: str) -> None:
         """Drop a Run and everything hanging off it.
@@ -284,6 +314,12 @@ class InMemoryRunStore:
         if run.status not in TERMINAL_RUN_STATUSES and not force:
             raise RunIntegrityError(
                 f"cannot delete Run {run_id!r} in non-terminal status {run.status.value!r}"
+            )
+        children = [child.run_id for child in self._runs.values() if child.parent_run_id == run_id]
+        if children:
+            raise RunIntegrityError(
+                f"cannot delete Run {run_id!r} while {len(children)} child Run(s) reference it; "
+                "delete the descendants first"
             )
         self._forget_run(run_id)
         return True
