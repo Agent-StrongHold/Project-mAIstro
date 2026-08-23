@@ -77,6 +77,7 @@ which ones carry the hazard.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
+| CI | `archive` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |

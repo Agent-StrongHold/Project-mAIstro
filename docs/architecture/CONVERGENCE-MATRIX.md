@@ -141,7 +141,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
-| Memory | `routes.memory`, `maistro.container` | `9/22` | KEEP — domain state; align provenance, then move onto pgvector | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104 | a memory write that names its producing Run, with its embedding on the same row | #64, #122 |
+| Memory | `routes.memory`, `maistro.container` | `12/25` | KEEP — domain state; align provenance, then move onto pgvector. The +3 are the Archive tier's store layer (ADR-082226-d3dd), CONNECT rather than debt: written and conformance-tested against a real MinIO, not yet wired, because the policy that decides what goes cold hangs off the memory-decay path (#133) | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104, ADR-082226-d3dd | a memory write that names its producing Run, with its embedding on the same row; an archived record that rehydrates byte-identical | #64, #122, #133 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on a Run without owning lifecycle | #64 |
 | Relational persistence | `maistro.container` (`sqlite_*` only), Alembic | `7/14` | CONNECT — the canonical Postgres half has no caller | ADR-082226-5104, ADR-087, ADR-012 | a container that wires `pg_*` for a `postgresql://` URL, and pgvector embeddings on the memory tables | #122, #33, #34 |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
@@ -155,7 +155,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
 | Core CLI | `maistro.cli` console script | `5/14` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API only | — |
-| Shared contracts and config | imported by every package | `1/44` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
+| Shared contracts and config | imported by every package | `2/45` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `3/3` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/17` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `4/67` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
