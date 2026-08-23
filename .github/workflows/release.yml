@@ -82,6 +82,14 @@ jobs:
         id: guard
         run: python scripts/release_guard.py --tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"
 
+      # The guard above proves the tag matches VERSION and that notes exist for
+      # it. This proves the surrounding story is still whole at tag time (#83):
+      # one pending release, nothing dated above VERSION, and a README that
+      # names the version being released rather than a stale one. Cheap, and it
+      # runs before anything is built.
+      - name: Release consistency (VERSION, CHANGELOG and README)
+        run: python scripts/check-release-consistency.py
+
       # ADR §2: a final tag may only point at a commit on `main`; an rc is the
       # sole exception and may point at `integration` so a candidate can soak.
       # `merge-base --is-ancestor` accepts the branch tip itself, so "the tag

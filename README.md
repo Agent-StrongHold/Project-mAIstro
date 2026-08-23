@@ -105,6 +105,17 @@ request ──► conduit ──► classifier ──► orchestrator ──► 
 
 ## v1 feature status
 
+<!-- release-status:begin -->
+> **Nothing has been released yet.** The repository carries version **0.9.0** and has no
+> tags; **1.0.0** is the release this section describes and the one `CHANGELOG.md` is
+> writing notes for. A row marked **Complete** means the code does what its name says
+> today — it does not mean you can install it. Versioning is lockstep across the
+> monorepo from the root `VERSION` file
+> ([`ADR-073126-c4e1`](docs/adr/ADR-073126-c4e1-release-and-versioning-process.md)), and
+> `scripts/check-release-consistency.py` fails CI if these two numbers stop matching the
+> files they come from.
+<!-- release-status:end -->
+
 Every row below was verified against the code, not against intent. **Status means what a
 user actually gets**, not whether a module exists — this repo has repeatedly shipped correct,
 tested modules with no call path, so "the code is there" is not the bar.
