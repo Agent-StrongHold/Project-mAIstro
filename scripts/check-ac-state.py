@@ -44,6 +44,7 @@ import sys
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,7 @@ ID_RE = re.compile(r"^id:\s*(\S+)", re.MULTILINE)
 STATUS_RE = re.compile(r"^status:\s*(.+?)\s*$", re.MULTILINE)
 LAYER_RE = re.compile(r"^layer:\s*(.+?)\s*$", re.MULTILINE)
 IMPLEMENTS_RE = re.compile(r"^implements:\s*(.*)$((?:\n  - .*)*)", re.MULTILINE)
+KIND_RE = re.compile(r"^kind:\s*spec\s*$", re.MULTILINE)
 
 #: How a spec says "this document has no acceptance criteria, on purpose".
 #:
@@ -442,13 +444,30 @@ def tier_of(rungs: list[str]) -> str:
     return min(rungs, key=RUNGS.index)
 
 
+def _spec_files() -> list[Path]:
+    """Every spec document, matching the corpus the registry validates.
+
+    `maistro_registry`'s walk is `docs/specs/**/*.md` — recursive, and not
+    keyed on the filename. A non-recursive `glob("SPEC-*.md")` accepted a
+    nested `docs/specs/subsystem/SPEC-*.md` as valid at the registry gate while
+    omitting every criterion in it here, so the mandate would report success
+    over a document it never opened. Filtering on `kind: spec` rather than the
+    filename is what makes the two corpora the same set.
+    """
+    files = []
+    for path in sorted(SPEC_DIR.rglob("*.md")):
+        if KIND_RE.search(_frontmatter(path.read_text(encoding="utf-8"))):
+            files.append(path)
+    return files
+
+
 def collect_specs(
     markers: dict[str, list[str]],
     unreachable: set[str],
     passing: set[str] | None,
 ) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
-    for path in sorted(SPEC_DIR.glob("SPEC-*.md")):
+    for path in _spec_files():
         text = path.read_text(encoding="utf-8")
         fm = _frontmatter(text)
         spec_id = (ID_RE.search(fm) or [None, path.stem])[1]
@@ -500,6 +519,7 @@ def collect_specs(
                 "declared_status": (STATUS_RE.search(fm) or [None, "?"])[1],
                 "implements": _list_field(fm, IMPLEMENTS_RE),
                 "declares_non_measurable": declares_non_measurable(text),
+                "declared_unproven": sorted(declared_unproven(text)),
                 "has_ac_heading": bool(AC_HEADING_RE.search(text)),
                 "criteria_total": len(criteria),
                 "annotated": sum(1 for c in criteria if c.module),
@@ -556,8 +576,16 @@ def collect_adrs(
         # no implementing spec — as carrying none, so it landed in
         # `adrs_without_implementing_spec` against that counter's own stated
         # exemption, and banked a debt figure that was too high.
-        own_bullets = [f"AC-{n}" for n in AC_ID_RE.findall(_ac_section(text))]
+        own_section = _ac_section(text)
+        own_bullets = [f"AC-{n}" for n in AC_ID_RE.findall(own_section)]
         own = list(dict.fromkeys(list(own) + own_bullets))
+        # The tick is the claim, on an ADR exactly as on a spec. Hard-coding
+        # this to False meant flipping an ADR criterion to [x] was invisible to
+        # `touched_since`, so the mandate passed without ever asking for the
+        # evidence — on the documents that carry the most weight.
+        own_boxes = {
+            f"AC-{n}": state.lower() == "x" for state, n in CHECKBOX_RE.findall(own_section)
+        }
         # The ADR's own ac-modules map, same as a spec's. Without it every
         # ADR-owned criterion has module=None and silently caps at `passing` —
         # the ladder would tell an ADR its work can never be proven reachable,
@@ -586,6 +614,7 @@ def collect_adrs(
                 "own_detail": [
                     {
                         "id": c.ac_id,
+                        "claimed": own_boxes.get(c.ac_id.split("/")[-1], False),
                         "module": c.module,
                         "covered_by": c.covered_by,
                         "rung": c.rung(unreachable),
@@ -594,10 +623,242 @@ def collect_adrs(
                 ],
                 "scenarios_without_ac_tag": own_untagged,
                 "gherkin_parse_errors": own_errors,
+                "declared_unproven": sorted(declared_unproven(text)),
                 "tier": tier_of(inputs) if inputs else "unmeasured",
             }
         )
     return adrs
+
+
+# ─── design coverage: how much of the decided design is proven (#166) ─────────
+#
+# Every other counter in this file measures debt — things that are wrong,
+# recorded so they cannot increase. None of them measures *distance*: how much
+# of the design the ADRs describe is implemented and proven. Without that,
+# "every green PR moves us closer to the designed future state" is an
+# aspiration CI cannot check, because there is no number that would have to go
+# up. Traceability plus non-regression is necessary and is not progress — a PR
+# that changes nothing satisfies both.
+#
+# ADR-082226-ff3c decides the shape, and the choice that matters is the
+# denominator. Measured over the criteria that *exist*, the corpus reads 30.5%;
+# measured over the decisions that have been *taken*, 3.96%. The gap is 76 of 99
+# taken ADRs that declare no acceptance criteria anywhere. The first number lets
+# a decision with nothing written vanish from its own denominator, and is
+# gameable in the wrong direction — deleting an unproven criterion raises it.
+
+#: Decimal places kept on the banked percentage.
+#:
+#: This is a float in a file of integers, so it needs a stated resolution rather
+#: than exact equality on a binary fraction. The bound to clear is the smallest
+#: move one criterion can make: proving a single criterion of the *largest*
+#: decision, spread over the count of decisions, i.e. 100/(decisions * criteria
+#: in the biggest one). Measured on today's corpus that is 100/(99 * 46) =
+#: 0.0220 percentage points. Four places resolves 0.0001 — 200x finer — and
+#: stays finer until the product of those two counts passes a million, so no
+#: real change to a single criterion can round away into a no-op.
+COVERAGE_PRECISION = 4
+
+
+def design_coverage(
+    specs: list[dict[str, Any]], adrs: list[dict[str, Any]]
+) -> tuple[float, list[dict[str, Any]]]:
+    """Mean, over taken decisions, of the fraction of their criteria at ``reachable``.
+
+    Decision-weighted per ADR-082226-ff3c: one ADR is one unit of design however
+    verbosely it was written, and one that declares no criteria contributes 0
+    rather than dropping out of the denominator. ``Proposed`` is excluded — a
+    decision not yet taken cannot be owed an implementation, and counting it
+    would make writing an idea down look like incurring debt.
+
+    ``reachable`` and not ``passing`` is the bar: a passing test whose module the
+    import graph cannot reach proves the test runs, not that the system does.
+
+    The sum is over ``Fraction`` and rounds once at the end, so the value is a
+    property of the corpus rather than of summation order. To be clear about
+    what that buys: measured against naive float accumulation the difference is
+    about 4e-16, twelve orders of magnitude below the 1e-4 the floor compares,
+    and no divergence appears at that precision over 200k randomised corpora.
+    It is insurance against a later precision increase, not a bug being fixed
+    here — worth the two lines it costs, and not worth claiming more for.
+    """
+    by_spec = {s["id"]: s for s in specs}
+    rows: list[dict[str, Any]] = []
+    for adr in adrs:
+        if adr["declared_status"] not in DECISION_TAKEN:
+            continue
+        rungs = [c["rung"] for c in adr["own_detail"]]
+        # dict.fromkeys, not the raw list: a spec whose `implements:` names one
+        # ADR twice appears twice among that ADR's children, and would weight
+        # its own criteria double inside the fraction.
+        for spec_id in dict.fromkeys(adr["specs"]):
+            spec = by_spec.get(spec_id)
+            if spec is not None:
+                rungs.extend(c["rung"] for c in spec["criteria"])
+        proven = sum(1 for rung in rungs if rung == "reachable")
+        rows.append(
+            {
+                "id": adr["id"],
+                "declared_status": adr["declared_status"],
+                "criteria": len(rungs),
+                "reachable": proven,
+                "fraction": Fraction(proven, len(rungs)) if rungs else Fraction(0),
+            }
+        )
+    if not rows:
+        return 0.0, rows
+    mean = sum((row["fraction"] for row in rows), Fraction(0)) / len(rows)
+    return round(float(mean) * 100, COVERAGE_PRECISION), rows
+
+
+# ─── the mandate: a PR must prove the criteria it declares (#165) ─────────────
+#
+# Everything above this line is a *ratchet*. A ratchet says "the repository did
+# not get worse"; it never says "this change proved what it claimed". The
+# difference is not academic: a PR could add a spec, tick a criterion
+# `Implemented`, add no marker, and pass — because the counter it lands in is a
+# counter that already permits 68 of them. The ceiling absorbs the new debt, and
+# the absorption is silent.
+#
+# So two populations, two rules. Legacy criteria stay on the ceiling and fall
+# over time. Criteria a PR *creates or touches* get zero tolerance. That split
+# is what turns "adherence to acceptance criteria" from a trend into a gate.
+
+
+#: How a spec says "this criterion is declared but deliberately not yet proven".
+#:
+#: Per-criterion, reason mandatory, and in the body so it shows up in the diff —
+#: an escape hatch nobody can see while reviewing is an unstated one. Same shape
+#: as the non-measurable marker, for the same reasons.
+UNPROVEN_RE = re.compile(
+    r"<!--\s*ac-state:\s*unproven\s+(?P<ac>AC-\d+)(?P<body>(?:(?!-->).)*)-->",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def declared_unproven(text: str) -> set[str]:
+    """The `AC-N` ids this document declares unproven, *with a reason*."""
+    found = set()
+    for match in UNPROVEN_RE.finditer(text):
+        body = match.group("body").strip()
+        if body.startswith(_REASON_DELIMITERS) and body[1:].strip():
+            found.add(match.group("ac").upper())
+    return found
+
+
+def _file_at(rev: str, path: str) -> str | None:
+    """`path` as of `rev`, or None when it did not exist there."""
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{path}"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _criteria_in(text: str, doc_id: str) -> dict[str, bool]:
+    """Every criterion the document declares, mapped to whether it claims done.
+
+    Text-only on purpose: this is run against a *past* revision, where the tests
+    cannot be executed and the module graph does not apply. Ids and tick marks
+    are all the comparison needs.
+    """
+    section = _ac_section(text)
+    scenarios, _untagged, _errors = gherkin_criteria(text)
+    boxes = {f"AC-{n}": state.lower() == "x" for state, n in CHECKBOX_RE.findall(section)}
+    shorts = dict.fromkeys([f"AC-{n}" for n in AC_ID_RE.findall(section)] + list(scenarios))
+    return {f"{doc_id}/{short}": boxes.get(short, False) for short in shorts}
+
+
+def snapshot_at(rev: str) -> dict[str, bool] | None:
+    """Every criterion in the corpus as of `rev`. None when `rev` is unreadable.
+
+    None rather than an empty dict, and the caller refuses rather than
+    proceeding: an unreadable base makes *every* criterion look new, which would
+    turn the mandate from a gate on this PR into a demand that the whole
+    corpus be retrofitted at once. A gate that fires on everything gets turned
+    off, which is worse than one that stops and says why.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", rev, "--", "docs/specs", "docs/adr"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listing.returncode != 0:
+        return None
+
+    snapshot: dict[str, bool] = {}
+    for path in listing.stdout.split():
+        if not path.endswith(".md"):
+            continue
+        text = _file_at(rev, path)
+        if text is None:
+            continue
+        fm = _frontmatter(text)
+        doc_id = (ID_RE.search(fm) or [None, Path(path).stem])[1]
+        snapshot.update(_criteria_in(text, doc_id))
+    return snapshot
+
+
+def touched_since(base: dict[str, bool], head: dict[str, bool]) -> set[str]:
+    """Criteria this change created, or newly claimed as done.
+
+    Ticking a box is the claim, so flipping one to `[x]` counts as touching the
+    criterion even when its text did not move — that is precisely the moment to
+    demand the evidence.
+    """
+    added = set(head) - set(base)
+    newly_claimed = {ac for ac, claimed in head.items() if claimed and not base.get(ac, False)}
+    return added | newly_claimed
+
+
+def _criteria_of(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """A spec's `criteria` or an ADR's `own_detail`, under one name.
+
+    The two shapes are the reason three of the mandate's four review findings
+    existed: every place that had to remember which key a document uses was a
+    place one of them could be forgotten.
+    """
+    return document.get("criteria") or document.get("own_detail") or []
+
+
+def mandate_violations(
+    documents: list[dict[str, Any]],
+    touched: set[str],
+    exempt: dict[str, set[str]],
+) -> list[dict[str, str]]:
+    """Touched criteria that are not proven and not declared unproven."""
+    violations = []
+    for doc in documents:
+        allowed = exempt.get(doc["id"], set())
+        for criterion in _criteria_of(doc):
+            ac_id = criterion["id"]
+            if ac_id not in touched or ac_id.split("/")[-1].upper() in allowed:
+                continue
+            if criterion["rung"] == "reachable":
+                continue
+            violations.append(
+                {
+                    "id": ac_id,
+                    "file": doc.get("file", ""),
+                    "rung": criterion["rung"],
+                    "module": criterion.get("module") or "-",
+                    "covered_by": ", ".join(criterion.get("covered_by") or []) or "-",
+                }
+            )
+    return violations
 
 
 CEILINGS = ROOT / "quality" / "ac-state-ceilings.json"
@@ -617,6 +878,13 @@ RATCHETED = (
     "adrs_without_implementing_spec",
     "specs_declaring_no_criteria",
 )
+
+#: Counters that may only go **up**. Design coverage is the first of these, and
+#: the direction is the whole reason it exists: a ratchet on debt says the
+#: repository did not get worse, and only a floor under progress says it got
+#: better. `_compare` handled one direction for ten counters before this, so the
+#: asymmetry is named here rather than left implicit in a comparison operator.
+FLOORED = ("design_coverage",)
 
 
 def _mode_mismatch(run_tests: bool) -> str | None:
@@ -642,7 +910,7 @@ def _mode_mismatch(run_tests: bool) -> str | None:
 
 def _bank(recorded: dict[str, Any], totals: dict[str, Any], measured: bool) -> int:
     recorded["measured_with_tests"] = measured
-    recorded["ceilings"] = {name: totals[name] for name in RATCHETED}
+    recorded["ceilings"] = {name: totals[name] for name in (*RATCHETED, *FLOORED)}
     CEILINGS.write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
     try:
         shown = CEILINGS.relative_to(ROOT)
@@ -653,6 +921,14 @@ def _bank(recorded: dict[str, Any], totals: dict[str, Any], measured: bool) -> i
 
 
 def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Split the counters into "worse than recorded" and "better than recorded".
+
+    Both lists fail the gate; they differ in what the reviewer has to do about
+    it. The two loops are the same shape with the inequality reversed, kept
+    apart rather than folded behind a sign because reading `actual > allowed`
+    and having to remember which counters that means is exactly how a
+    higher-is-better counter gets silently ratcheted the wrong way.
+    """
     regressions: list[str] = []
     improvements: list[str] = []
     for name in RATCHETED:
@@ -664,17 +940,32 @@ def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str
             regressions.append(f"{name}: {actual} exceeds the ceiling of {allowed}")
         elif actual < allowed:
             improvements.append(f"{name}: {actual}, ceiling still says {allowed}")
+    for name in FLOORED:
+        required = ceilings.get(name)
+        actual = totals[name]
+        if required is None:
+            regressions.append(f"{name}: no floor recorded (measured {actual})")
+        elif actual < required:
+            regressions.append(f"{name}: {actual} falls below the floor of {required}")
+        elif actual > required:
+            improvements.append(f"{name}: {actual}, floor still says {required}")
     return regressions, improvements
 
 
 def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
-    """Compare the measured debt against its reviewed ceilings.
+    """Compare the measured state against its reviewed bounds, in both directions.
 
-    Both directions fail. A rise is a regression: a document started claiming
-    more than its artefacts support. A fall that has not been banked is slack —
-    the same weakness a count ceiling always has, where one genuine improvement
-    silently pays for a later regression. Banking is a reviewed edit to a small
-    JSON file, so there is no reason to leave the margin sitting there.
+    Both directions fail. For the ten debt counters a rise is a regression: a
+    document started claiming more than its artefacts support. A fall that has
+    not been banked is slack — the same weakness a count ceiling always has,
+    where one genuine improvement silently pays for a later regression. Banking
+    is a reviewed edit to a small JSON file, so there is no reason to leave the
+    margin sitting there.
+
+    `design_coverage` runs the same mechanism with the inequality reversed: it
+    is the one counter where higher is better, so its recorded number is a floor
+    and a *fall* is what fails. The symmetry is deliberate — unbanked slack
+    above the floor is the same weakness as unbanked slack below a ceiling.
 
     The comparison is refused across measurement modes. Without ``--run-tests``
     no criterion can reach the ``passing`` rung, so every claim above it reads as
@@ -698,21 +989,30 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
 
     regressions, improvements = _compare(recorded["ceilings"], totals)
     if regressions:
-        print("FAIL: a completion claim now outruns its evidence\n")
+        print("FAIL: the repository moved away from its recorded state\n")
         for line in regressions:
             print(f"  - {line}")
         print(
-            "\nEither prove the claim (add an **AC-N** id and a @pytest.mark.ac test) or "
-            "correct the document's status. The ceiling does not move up."
+            "\nA ceiling exceeded: either prove the claim (add an **AC-N** id and a "
+            "@pytest.mark.ac test) or correct the document's status. The ceiling does not "
+            "move up.\nA floor undercut: design coverage fell, so a decision that was "
+            "proven no longer is — restore the evidence, or bank the fall with --bank and "
+            "justify it in the diff (retiring an ADR and accepting a new one both do this "
+            "legitimately; see ADR-082226-ff3c)."
         )
     if improvements:
-        print("FAIL: unbanked improvement — the ceiling holds slack a regression could spend\n")
+        print(
+            "FAIL: unbanked improvement — the recorded bound holds slack a regression could spend\n"
+        )
         for line in improvements:
             print(f"  - {line}")
         print("\nBank it: python scripts/check-ac-state.py --run-tests --ratchet --bank")
     if regressions or improvements:
         return 1
-    print(f"OK: every acceptance-state debt counter sits exactly on its ceiling ({len(RATCHETED)})")
+    print(
+        f"OK: {len(RATCHETED)} debt counters sit exactly on their ceilings and "
+        f"{len(FLOORED)} progress counter sits exactly on its floor"
+    )
     return 0
 
 
@@ -734,7 +1034,22 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="run the ac-marked tests to settle the passing rung (slow; off by default)",
     )
+    ap.add_argument(
+        "--mandate",
+        metavar="BASE_REV",
+        help=(
+            "fail when a criterion this change adds or newly claims is not proven "
+            "(requires --run-tests; legacy criteria stay on the ceilings)"
+        ),
+    )
     args = ap.parse_args(argv)
+
+    if args.mandate and not args.run_tests:
+        # Without a measured run nothing reaches `reachable`, so every touched
+        # criterion would look unproven. Refusing beats failing a PR for a
+        # question that was never asked.
+        print("FAIL: --mandate needs --run-tests; the passing rung is what it checks against")
+        return 1
 
     roots = configured_test_roots()
     markers = scan_markers(roots)
@@ -819,6 +1134,9 @@ def main(argv: list[str]) -> int:
         if not s["criteria_total"] and not s["has_ac_heading"] and not s["declares_non_measurable"]
     ]
 
+    # ---- distance rather than debt (#166) --------------------------------
+    coverage, coverage_rows = design_coverage(specs, adrs)
+
     payload = {
         "generated_by": "scripts/check-ac-state.py",
         "measured": passing is not None,
@@ -846,6 +1164,11 @@ def main(argv: list[str]) -> int:
             "specs_implementing_nothing": len(orphan_specs),
             "adrs_without_implementing_spec": len(uncovered_adrs),
             "specs_declaring_no_criteria": len(silent_specs),
+            # The one counter here that is a percentage and the one that may
+            # only rise. It is 0.0 without --run-tests, because `reachable`
+            # sits above `passing` and nothing can reach it in an unmeasured
+            # run; the ratchet refuses to compare across modes for that reason.
+            "design_coverage": coverage,
         },
         "markers_without_criterion": orphans,
         "criteria_claimed_but_unproven": false_claims,
@@ -854,6 +1177,27 @@ def main(argv: list[str]) -> int:
         "specs_implementing_nothing": orphan_specs,
         "adrs_without_implementing_spec": uncovered_adrs,
         "specs_declaring_no_criteria": silent_specs,
+        "design_coverage": {
+            "definition": (
+                "mean over Accepted|Implemented ADRs of the fraction of their criteria "
+                "(own, plus every implementing spec's) at the `reachable` rung; an ADR "
+                "declaring no criteria contributes 0 (ADR-082226-ff3c)"
+            ),
+            "percent": coverage,
+            "decisions": len(coverage_rows),
+            "decisions_scoring_zero": sum(1 for r in coverage_rows if not r["reachable"]),
+            "decisions_declaring_no_criteria": sum(1 for r in coverage_rows if not r["criteria"]),
+            "per_decision": [
+                {
+                    "id": r["id"],
+                    "declared_status": r["declared_status"],
+                    "criteria": r["criteria"],
+                    "reachable": r["reachable"],
+                    "percent": round(float(r["fraction"]) * 100, COVERAGE_PRECISION),
+                }
+                for r in coverage_rows
+            ],
+        },
         "specs": specs,
         "adrs": adrs,
     }
@@ -882,6 +1226,11 @@ def main(argv: list[str]) -> int:
     print(f"  specs implementing no ADR    : {t['specs_implementing_nothing']}")
     print(f"  taken ADRs with no spec      : {t['adrs_without_implementing_spec']}")
     print(f"  specs with no criteria at all: {t['specs_declaring_no_criteria']}")
+    zero = sum(1 for r in coverage_rows if not r["reachable"])
+    print(
+        f"  design coverage              : {t['design_coverage']}% "
+        f"over {len(coverage_rows)} taken decisions ({zero} at zero)"
+    )
     for rung in RUNGS:
         n = sum(1 for s in specs if s["criteria_total"] and s["tier"] == rung)
         print(f"  specs at tier {rung:<10}: {n}")
@@ -890,10 +1239,61 @@ def main(argv: list[str]) -> int:
     except ValueError:  # --out may legitimately point outside the repo
         written = args.out
     print(f"\nwrote {written}")
+    exit_code = 0
     if args.ratchet:
         print()
-        return ratchet(t, measured=passing is not None, bank=args.bank)
-    return 0
+        exit_code = ratchet(t, measured=passing is not None, bank=args.bank)
+
+    if args.mandate:
+        print()
+        exit_code = run_mandate(args.mandate, specs, adrs) or exit_code
+    return exit_code
+
+
+def run_mandate(base_rev: str, specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> int:
+    """Zero tolerance on the criteria this change created or newly claimed."""
+    base = snapshot_at(base_rev)
+    if base is None:
+        print(
+            f"FAIL: could not read the criteria corpus at {base_rev!r}.\n\n"
+            "  On a shallow clone, fetch the base first (`fetch-depth: 0`).\n"
+            "  Refusing rather than proceeding: an unreadable base makes every\n"
+            "  criterion look new, which would demand the whole corpus be\n"
+            "  retrofitted in one PR — a gate that fires on everything gets\n"
+            "  turned off."
+        )
+        return 1
+
+    head = {c["id"]: c["claimed"] for d in (*specs, *adrs) for c in _criteria_of(d)}
+    touched = touched_since(base, head)
+
+    exempt = {d["id"]: set(d.get("declared_unproven") or []) for d in (*specs, *adrs)}
+    violations = mandate_violations([*specs, *adrs], touched, exempt)
+
+    print(f"acceptance mandate (criteria touched since {base_rev}):")
+    print(f"  criteria added or newly claimed: {len(touched)}")
+    print(f"  unproven and not declared so   : {len(violations)}")
+    if not violations:
+        print("\nOK: every criterion this change declares is proven.")
+        return 0
+
+    print()
+    for violation in violations:
+        print(
+            f"  {violation['id']}  rung={violation['rung']}  "
+            f"module={violation['module']}  tests={violation['covered_by']}"
+        )
+    print(
+        "\nFAIL: a criterion this change declares is not proven by it.\n\n"
+        "  Legacy criteria are grandfathered on quality/ac-state-ceilings.json;\n"
+        "  these are not legacy — this change created them, or ticked their box.\n"
+        "  Reaching `reachable` needs an AC-N id, a module annotation the\n"
+        "  reachability graph can get to, and a passing @pytest.mark.ac test.\n\n"
+        "  To declare one deliberately unproven, put the reason in the document\n"
+        "  where a reviewer will see it:\n\n"
+        "      <!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->\n"
+    )
+    return 1
 
 
 if __name__ == "__main__":
