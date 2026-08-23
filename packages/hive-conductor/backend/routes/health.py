@@ -82,8 +82,6 @@ def health() -> dict:
         state_enabled = False
         privilege_available = False
         reactor_available = False
-    from settings_defaults import is_pm_poc_mode
-
     llm_configured, allow_stub_llm = _llm_state()
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
@@ -92,7 +90,6 @@ def health() -> dict:
     return {
         "status": "ok",
         "version": "0.9.0",
-        "pm_poc_mode": is_pm_poc_mode(),
         "uptime_seconds": uptime,
         "started_at": _STARTED_AT,
         "router_model": settings.chat_default_model,

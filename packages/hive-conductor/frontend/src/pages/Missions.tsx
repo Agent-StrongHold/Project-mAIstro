@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../lib/api";
-import { usePmPoc } from "../context/PocMode";
-import { PM_NAV_MISSIONS, PM_NAV_PROGRAM } from "../lib/pmBranding";
 import {
   Card, Hex, Modal, SearchInput, StatCard, LoadingSpinner, PageHeader, useToast,
   ConfirmDialog, EmptyState,
@@ -126,7 +123,6 @@ const inputBase: React.CSSProperties = {
 };
 
 export default function Missions() {
-  const pmPoc = usePmPoc();
   const toast = useToast();
   const [rows, setRows] = useState<Mission[]>([]);
   const [sel, setSel] = useState<Mission | null>(null);
@@ -315,21 +311,17 @@ export default function Missions() {
   return (
     <div style={{ minHeight: "calc(100vh - 60px)" }}>
       <PageHeader
-        title={pmPoc ? PM_NAV_MISSIONS : "Missions"}
-        subtitle={
-          pmPoc
-            ? "Autonomous fleet tasks (poll Jira, scan risks, research). Jira writes use Jira drafts on Program."
-            : "Multi-step tasks assigned to AI agents"
-        }
-        helpHref={pmPoc ? undefined : "/docs#missions"}
+        title="Missions"
+        subtitle="Multi-step tasks assigned to AI agents"
+        helpHref="/docs#missions"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            {pmPoc && (
-              <Link to="/agents" className="btn" style={{ fontSize: 9, padding: "2px 8px" }}>
-                {PM_NAV_PROGRAM}
-              </Link>
-            )}
-            {pmPoc && rows.some((m) => m.status === "completed") && (
+            {/* Kept unconditionally (#190). These are working bulk-clear
+                controls with real handlers; dropping the POC branch would have
+                deleted them and orphaned clearCompletedMissions /
+                clearFailedMissions. Still conditioned on there being something
+                to clear. */}
+            {rows.some((m) => m.status === "completed") && (
               <button
                 type="button"
                 className="btn"
@@ -339,7 +331,7 @@ export default function Missions() {
                 Clear completed
               </button>
             )}
-            {pmPoc && rows.some((m) => m.status === "failed") && (
+            {rows.some((m) => m.status === "failed") && (
               <button
                 type="button"
                 className="btn"
@@ -349,11 +341,9 @@ export default function Missions() {
                 Clear failed
               </button>
             )}
-            {!pmPoc && (
-              <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setShowCreate(true)}>
-                + new
-              </button>
-            )}
+            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setShowCreate(true)}>
+              + new
+            </button>
           </div>
         }
       />
@@ -471,11 +461,6 @@ export default function Missions() {
                     {active.metadata.error}
                   </div>
                 )}
-                {active.status === "failed" && pmPoc && !active.metadata?.error && (
-                  <div style={{ marginTop: 8, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>
-                    Likely from before the PM stub fix (no LLM). Use <strong>Clear failed</strong>, then invoke an agent again from Agent Fleet.
-                  </div>
-                )}
               </div>
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginLeft: 12 }}>
                 {active.status === "pending" && (
@@ -490,9 +475,7 @@ export default function Missions() {
                 )}
                 {(active.status === "completed" || active.status === "failed") && (
                   <>
-                    {!pmPoc && (
-                      <button onClick={() => void patchStatus(active.id, "pending")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Restart</button>
-                    )}
+                    <button onClick={() => void patchStatus(active.id, "pending")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Restart</button>
                     <button onClick={() => setConfirmDelete(true)} style={{ ...btnBase, color: "#c4452a", borderColor: "#c4452a" }}>Delete</button>
                   </>
                 )}
