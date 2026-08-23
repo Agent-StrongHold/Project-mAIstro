@@ -86,14 +86,43 @@ async def _recreate_scratch_database(url: str) -> None:
         await admin.close()
 
 
+#: The revision this suite exists to exercise. Named rather than `head` so the
+#: fixture does not silently acquire every future migration -- see the docstring
+#: below for why that is not hypothetical.
+_TARGET_REVISION = "004_quota_sessions"
+
+
+def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
+    """A typo'd revision name fails the whole suite with an alembic error rather
+    than a readable one, and a *stale* name -- pointing at a revision that has
+    since been renumbered -- would silently test a different migration."""
+    revisions = {
+        line.split("=", 1)[1].strip().strip("\"'")
+        for path in (REPO_ROOT / "alembic" / "versions").glob("*.py")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("revision =")
+    }
+
+    assert _TARGET_REVISION in revisions
+
+
 @pytest.fixture(scope="module")
 def migrated_url() -> str:
     """A scratch database with revision 004 applied.
 
-    `stamp 003` then `upgrade head` rather than a full `upgrade head` from
-    empty: 001 needs the `vector` extension and this revision does not depend on
-    anything 001-003 create, so walking the whole chain would couple these tests
-    to a pgvector image for no gain. #178 owns the chain-from-empty case.
+    `stamp 003` then `upgrade 004_quota_sessions` rather than a full
+    `upgrade head` from empty: 001 needs the `vector` extension and this
+    revision does not depend on anything 001-003 create, so walking the whole
+    chain would couple these tests to a pgvector image for no gain. #178 owns
+    the chain-from-empty case.
+
+    The target is the revision by name, not `head`. `head` moves: the very next
+    PR in this stack adds 005 and 006, which would then run here against a
+    database that has none of the tables 001-003 create -- and a migration that
+    alters `tasks` would fail on a `tasks` that was never made. Naming the
+    revision keeps this fixture testing the one migration whose prerequisites it
+    deliberately skipped, and leaves a later one to be covered by a fixture that
+    has the prerequisites.
     """
     url = _require_postgres()
     # asyncpg rather than psycopg2: asyncpg is a declared root dependency, and
@@ -103,7 +132,7 @@ def migrated_url() -> str:
     asyncio.run(_recreate_scratch_database(url))
 
     env = _alembic_env(url)
-    for args in (["stamp", "003"], ["upgrade", "head"]):
+    for args in (["stamp", "003"], ["upgrade", _TARGET_REVISION]):
         result = subprocess.run(
             [sys.executable, "-m", "alembic", *args],
             cwd=REPO_ROOT,
