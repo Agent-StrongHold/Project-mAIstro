@@ -86,6 +86,26 @@ async def _recreate_scratch_database(url: str) -> None:
         await admin.close()
 
 
+#: The revision this suite exists to exercise. Named rather than `head` so the
+#: fixture does not silently acquire every future migration -- see the docstring
+#: below for why that is not hypothetical.
+_TARGET_REVISION = "004_quota_sessions"
+
+
+def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
+    """A typo'd revision name fails the whole suite with an alembic error rather
+    than a readable one, and a *stale* name -- pointing at a revision that has
+    since been renumbered -- would silently test a different migration."""
+    revisions = {
+        line.split("=", 1)[1].strip().strip("\"'")
+        for path in (REPO_ROOT / "alembic" / "versions").glob("*.py")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("revision =")
+    }
+
+    assert _TARGET_REVISION in revisions
+
+
 @pytest.fixture(scope="module")
 def migrated_url() -> str:
     """A scratch database with revision 004 applied.
@@ -95,7 +115,7 @@ def migrated_url() -> str:
     001-003 create, so walking the whole chain would couple these tests to a
     pgvector image for no gain. #178 owns the chain-from-empty case.
 
-    The upgrade targets `004_quota_sessions` by name rather than `head`, because
+    The upgrade targets `_TARGET_REVISION` by name rather than `head`, because
     stamping over a prefix and then asking for `head` is a claim about every
     future revision as well as this one. #122's 005 is the first to make that
     false: it `ALTER`s `learnings`, a table 001 creates and this fixture only
@@ -111,7 +131,7 @@ def migrated_url() -> str:
     asyncio.run(_recreate_scratch_database(url))
 
     env = _alembic_env(url)
-    for args in (["stamp", "003"], ["upgrade", "004_quota_sessions"]):
+    for args in (["stamp", "003"], ["upgrade", _TARGET_REVISION]):
         result = subprocess.run(
             [sys.executable, "-m", "alembic", *args],
             cwd=REPO_ROOT,
