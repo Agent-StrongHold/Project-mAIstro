@@ -13,8 +13,10 @@ import pytest
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.admission import ADMISSION_SOURCE
 from maistro.runs.chat_admission import (
+    AGENT_SELECTION_KEY,
     CHAT_SOURCE,
     DEFAULT_TURN_NAME,
+    DEFERRED_AGENT_SELECTION,
     REQUEST_ID_KEY,
     SESSION_ID_KEY,
     ChatRunAdmitter,
@@ -247,3 +249,178 @@ async def test_deleting_a_run_takes_its_node_runs_and_attempts(spine) -> None:
     assert await runs.get_run(run.run_id) is None
     assert await runs.get_node_run(node_run.node_run_id) is None
     assert await runs.get_attempt(attempt.attempt_id) is None
+
+
+# --- review findings ------------------------------------------------------
+
+
+async def test_chat_admission_does_not_evict_task_runs(spine) -> None:
+    """The claim the whole retention policy rests on.
+
+    The store's own bound runs inside `create_run`, before any admitter sees
+    the new Run, and it used to be source-agnostic — so a burst of chat turns
+    evicted the oldest *task* Runs to make room for itself, leaving task
+    receipts holding a `run_id` that no longer resolved.
+    """
+    from maistro.runs.admission import admit_direct_work
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = InMemoryRunStore(project_store=projects, max_runs=20, prune_target=10)
+    task_runs = []
+    for index in range(10):
+        run = await admit_direct_work(
+            runs,
+            workspace_id="w1",
+            project_id=root.project_id,
+            node_type=DELEGATE_NODE_KIND,
+            name=f"task {index}",
+            source="task_queue",
+            parameters={"from_agent": "", "task": "t", "to_agent": "coder"},
+        )
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+        task_runs.append(run.run_id)
+
+    admitter = ChatRunAdmitter(
+        runs, workspace_id="w1", project_id=root.project_id, max_retained=100
+    )
+    for index in range(40):
+        run = await admitter.admit(_turn(f"turn {index}"))
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+
+    survivors = [rid for rid in task_runs if await runs.get_run(rid) is not None]
+    assert survivors == task_runs
+
+
+async def test_the_store_still_evicts_when_only_task_runs_remain(spine) -> None:
+    """Preferring chat Runs is an ordering, not an exemption."""
+    from maistro.runs.admission import admit_direct_work
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = InMemoryRunStore(project_store=projects, max_runs=5, prune_target=3)
+    admitted = []
+    for index in range(12):
+        run = await admit_direct_work(
+            runs,
+            workspace_id="w1",
+            project_id=root.project_id,
+            node_type=DELEGATE_NODE_KIND,
+            name=f"task {index}",
+            source="task_queue",
+            parameters={"from_agent": "", "task": "t", "to_agent": "coder"},
+        )
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+        admitted.append(run.run_id)
+
+    surviving = [rid for rid in admitted if await runs.get_run(rid) is not None]
+    assert len(surviving) <= 5
+
+
+async def test_concurrent_admissions_sweep_without_colliding(spine) -> None:
+    import asyncio
+
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    for index in range(6):
+        run = await admitter.admit(_turn(f"seed {index}"))
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+
+    admitted = await asyncio.gather(*(admitter.admit(_turn(f"race {i}")) for i in range(8)))
+
+    assert len({run.run_id for run in admitted}) == 8
+    for run in admitted:
+        assert await runs.get_run(run.run_id) is not None
+
+
+async def test_a_turn_with_no_intent_hint_names_no_agent(spine) -> None:
+    """Admission must not claim an agent the Conduit has not chosen."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+    run = await admitter.admit(_turn("what broke?"))
+
+    node = run.graph.materialize().nodes[0]
+    assert node.parameters["to_agent"] == ""
+    assert run.provenance[AGENT_SELECTION_KEY] == DEFERRED_AGENT_SELECTION
+
+
+async def test_a_known_intent_hint_does_name_its_agent(spine) -> None:
+    """With a valid hint, `_apply_intent_hint` makes the two resolutions agree."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+    run = await admitter.admit(
+        _turn("write the parser"), intent_hint="code", known_task_types={"code"}
+    )
+
+    node = run.graph.materialize().nodes[0]
+    assert node.parameters["to_agent"]
+    assert AGENT_SELECTION_KEY not in run.provenance
+
+
+async def test_an_unknown_intent_hint_names_no_agent_either(spine) -> None:
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+    run = await admitter.admit(
+        _turn("do a thing"), intent_hint="not-a-task-type", known_task_types={"code"}
+    )
+
+    assert run.graph.materialize().nodes[0].parameters["to_agent"] == ""
+    assert run.provenance[AGENT_SELECTION_KEY] == DEFERRED_AGENT_SELECTION
+
+
+async def test_deleting_a_run_with_a_child_is_refused(spine) -> None:
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+    parent = await admitter.admit(_turn("parent"))
+    await runs.transition_run(parent.run_id, RunStatus.QUEUED)
+    await runs.transition_run(parent.run_id, RunStatus.RUNNING)
+    child_graph = parent.graph.materialize().model_copy(
+        update={"graph_id": "child-graph"}, deep=True
+    )
+    await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="child Run"):
+        await runs.delete_run(parent.run_id)
+
+    assert await runs.get_run(parent.run_id) is not None
+
+
+def test_a_turns_outcome_records_its_answer() -> None:
+    from maistro.runs.chat_admission import MAX_RECORDED_ANSWER_CHARS, chat_turn_outcome
+
+    outcome = chat_turn_outcome(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Request blocked: injection"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+
+    assert outcome["answer"] == "Request blocked: injection"
+    assert outcome["finish_reason"] == "stop"
+    assert outcome["answer_truncated"] is False
+
+    long = chat_turn_outcome(
+        {"choices": [{"message": {"content": "x" * (MAX_RECORDED_ANSWER_CHARS + 5)}}]}
+    )
+    assert len(long["answer"]) == MAX_RECORDED_ANSWER_CHARS
+    assert long["answer_truncated"] is True
+
+
+def test_a_malformed_response_still_yields_an_outcome() -> None:
+    from maistro.runs.chat_admission import chat_turn_outcome
+
+    assert chat_turn_outcome({})["answer"] == ""
+    assert chat_turn_outcome({"choices": []})["answer"] == ""
+    assert chat_turn_outcome({"choices": [{"message": {"content": None}}]})["answer"] == ""

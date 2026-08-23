@@ -172,6 +172,13 @@ class SqliteRunStore:
         the children are removed first and explicitly rather than relying on a
         cascade the schema deliberately does not grant. One transaction, so a
         crash mid-sweep cannot leave NodeRuns whose Run is gone.
+
+        A Run with child Runs is refused rather than deleted. Those children
+        hold `parent_run_id`/`parent_node_run_id` foreign keys into exactly the
+        rows this would remove: SQLite would fail the constraint partway
+        through, and the in-memory store would silently leave the children
+        pointing at ids that no longer resolve. Refusing is the one answer both
+        can give truthfully.
         """
         run = await self.get_run(run_id)
         if run is None:
@@ -179,6 +186,15 @@ class SqliteRunStore:
         if run.status not in TERMINAL_RUN_STATUSES and not force:
             raise RunIntegrityError(
                 f"cannot delete Run {run_id!r} in non-terminal status {run.status.value!r}"
+            )
+        children = await self._fetchone(
+            "SELECT COUNT(*) FROM canonical_runs WHERE parent_run_id = ?",
+            (run_id,),
+        )
+        if children is not None and int(children[0]) > 0:
+            raise RunIntegrityError(
+                f"cannot delete Run {run_id!r} while {int(children[0])} child Run(s) reference "
+                "it; delete the descendants first"
             )
         await self._conn.execute(
             """DELETE FROM canonical_attempts WHERE node_run_id IN
