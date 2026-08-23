@@ -1,6 +1,6 @@
 {
   "generated_by": "scripts/check-ac-state.py",
-  "measured": false,
+  "measured": true,
   "rungs": [
     "declared",
     "covered",
@@ -9,19 +9,19 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 177,
-    "specs_with_ac_heading": 169,
-    "specs_with_ac_ids": 31,
+    "specs": 178,
+    "specs_with_ac_heading": 170,
+    "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 478,
-    "criteria_annotated": 207,
-    "markers_found": 196,
+    "criteria_declared": 485,
+    "criteria_annotated": 214,
+    "markers_found": 203,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 231,
+    "gherkin_criteria": 238,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
-    "completion_claims_contradicted": 12,
+    "completion_claims_contradicted": 9,
     "completion_claims_unverifiable": 68
   },
   "markers_without_criterion": [
@@ -52,38 +52,17 @@
       "file": "docs/specs/SPEC-070226-b234-events-triggers-reactor.md"
     },
     {
-      "id": "SPEC-082126-3c9d",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "covered",
-      "file": "docs/specs/SPEC-082126-3c9d-pii-evasion-normalization.md"
-    },
-    {
-      "id": "SPEC-082126-5f6a",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "covered",
-      "file": "docs/specs/SPEC-082126-5f6a-warden-llm-judge-failure-semantics.md"
-    },
-    {
-      "id": "SPEC-082126-7a31",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "covered",
-      "file": "docs/specs/SPEC-082126-7a31-tool-argument-resource-limits.md"
-    },
-    {
       "id": "SPEC-160",
       "kind": "spec",
       "declared_status": "Implemented",
-      "measured_tier": "covered",
+      "measured_tier": "passing",
       "file": "docs/specs/SPEC-160-maistro-design-acceptance-criteria.md"
     },
     {
       "id": "SPEC-201",
       "kind": "spec",
       "declared_status": "Implemented",
-      "measured_tier": "covered",
+      "measured_tier": "passing",
       "file": "docs/specs/SPEC-201-builders-dag-runtime.md"
     },
     {
@@ -1518,8 +1497,8 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 16,
-        "passing": 0,
+        "covered": 0,
+        "passing": 16,
         "reachable": 0
       },
       "tier": "declared",
@@ -1533,7 +1512,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-2",
@@ -1544,7 +1523,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-3",
@@ -1555,7 +1534,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-4",
@@ -1566,7 +1545,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-5",
@@ -1577,7 +1556,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-6",
@@ -1588,7 +1567,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-7",
@@ -1599,7 +1578,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-8",
@@ -1610,7 +1589,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-9",
@@ -1621,7 +1600,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-10",
@@ -1632,7 +1611,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-11",
@@ -1643,7 +1622,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-12",
@@ -1663,7 +1642,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-14",
@@ -1674,7 +1653,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-15",
@@ -1685,7 +1664,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-16",
@@ -1696,7 +1675,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-070126-9d37/AC-17",
@@ -1707,7 +1686,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         }
       ]
     },
@@ -1790,9 +1769,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 8,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 8
       },
       "tier": "declared",
       "criteria": [
@@ -1807,7 +1786,7 @@
           "scenario": [
             "Recorded calls carry trace context and one shared sequence"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-2",
@@ -1821,7 +1800,7 @@
           "scenario": [
             "Replay yields events in their original order"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-3",
@@ -1834,7 +1813,7 @@
           "scenario": [
             "Replay never reaches the real client"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-4",
@@ -1848,7 +1827,7 @@
           "scenario": [
             "A replay that stops matching its recording raises"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-5",
@@ -1861,7 +1840,7 @@
           "scenario": [
             "Sensitive payloads are readable only through the audited path"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-6",
@@ -1874,7 +1853,7 @@
           "scenario": [
             "Secret payloads persist as hash and metadata only"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-7",
@@ -1889,7 +1868,7 @@
             "PII in a normal-tier payload is caught",
             "The detector leaves the caller's object alone and skips sealed tiers"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-8",
@@ -1914,7 +1893,7 @@
             "Recording never blocks the hot path",
             "Submission returns without waiting for the write"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ]
     },
@@ -2089,9 +2068,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 4,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 4
       },
       "tier": "declared",
       "criteria": [
@@ -2106,7 +2085,7 @@
           "scenario": [
             "Every emitted event is persisted before any handler sees it"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-b234/AC-2",
@@ -2119,7 +2098,7 @@
           "scenario": [
             "Trigger patterns match on segments, not substrings"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-b234/AC-3",
@@ -2133,7 +2112,7 @@
           "scenario": [
             "A handler is invoked exactly once per event across a crash"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-b234/AC-4",
@@ -2146,7 +2125,7 @@
           "scenario": [
             "A failing handler is retried three times and then given up on"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-b234/AC-5",
@@ -4346,11 +4325,11 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 0,
-        "covered": 4,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 4
       },
-      "tier": "covered",
+      "tier": "reachable",
       "criteria": [
         {
           "id": "SPEC-082126-3c9d/AC-1",
@@ -4363,7 +4342,7 @@
           "scenario": [
             "Canonical Unicode normalization defeats compatibility and invisible evasions"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-3c9d/AC-2",
@@ -4376,7 +4355,7 @@
           "scenario": [
             "Common representation evasions do not hide real PII"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-3c9d/AC-3",
@@ -4389,7 +4368,7 @@
           "scenario": [
             "Detection views do not create generic encoding or non-Latin false positives"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-3c9d/AC-4",
@@ -4402,7 +4381,7 @@
           "scenario": [
             "Applicable runtime output paths use the hardened filter"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ]
     },
@@ -4422,11 +4401,11 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 0,
-        "covered": 6,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 6
       },
-      "tier": "covered",
+      "tier": "reachable",
       "criteria": [
         {
           "id": "SPEC-082126-5f6a/AC-1",
@@ -4439,7 +4418,7 @@
           "scenario": [
             "Exact safe output clears the optional judge"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-5f6a/AC-2",
@@ -4452,7 +4431,7 @@
           "scenario": [
             "Provider failure fails closed"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-5f6a/AC-3",
@@ -4465,7 +4444,7 @@
           "scenario": [
             "Malformed output fails closed"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-5f6a/AC-4",
@@ -4478,7 +4457,7 @@
           "scenario": [
             "Partial classification is not treated as safe"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-5f6a/AC-5",
@@ -4491,7 +4470,7 @@
           "scenario": [
             "No configured judge preserves deterministic behavior"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-5f6a/AC-6",
@@ -4504,7 +4483,7 @@
           "scenario": [
             "A judge that cannot be consulted fails closed"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ]
     },
@@ -4524,11 +4503,11 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 0,
-        "covered": 6,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 6
       },
-      "tier": "covered",
+      "tier": "reachable",
       "criteria": [
         {
           "id": "SPEC-082126-7a31/AC-1",
@@ -4541,7 +4520,7 @@
           "scenario": [
             "Ordinary arguments preserve behavior"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-7a31/AC-2",
@@ -4554,7 +4533,7 @@
           "scenario": [
             "Oversized arguments are denied before execution"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-7a31/AC-3",
@@ -4567,7 +4546,7 @@
           "scenario": [
             "Excessive depth is denied before serialization"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-7a31/AC-4",
@@ -4580,7 +4559,7 @@
           "scenario": [
             "Encoded content cannot evade the byte ceiling"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-7a31/AC-5",
@@ -4593,7 +4572,7 @@
           "scenario": [
             "Deployment overrides are explicit"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-082126-7a31/AC-6",
@@ -4606,7 +4585,122 @@
           "scenario": [
             "Non-JSON arguments fail closed"
           ],
-          "rung": "covered"
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082226-2a10",
+      "file": "docs/specs/SPEC-082226-2a10-resource-security-floors.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-038"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 7,
+      "annotated": 7,
+      "gherkin_criteria": 7,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 7
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082226-2a10/AC-1",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Shipped defaults equal the declared baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-2",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Operators may tighten every protected limit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-3",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Routine configuration cannot weaken the baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-4",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Unsafe development weakening is explicit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-7",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A disabled burst throttle is read as the limiter reads it"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-5",
+          "claimed": false,
+          "module": "maistro.agents.circuit_breaker",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Circuit breaker uses deployment policy"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-6",
+          "claimed": false,
+          "module": "maistro_server.api.health",
+          "covered_by": [
+            "packages/maistro-server/tests/api/test_resource_policy_health.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Effective values are observable"
+          ],
+          "rung": "reachable"
         }
       ]
     },
@@ -4626,11 +4720,11 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 0,
-        "covered": 39,
-        "passing": 0,
-        "reachable": 0
+        "covered": 0,
+        "passing": 2,
+        "reachable": 37
       },
-      "tier": "covered",
+      "tier": "passing",
       "criteria": [
         {
           "id": "SPEC-160/AC-1",
@@ -4643,7 +4737,7 @@
           "scenario": [
             "min() is monotone \u2014 trust can only decrease"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-2",
@@ -4656,7 +4750,7 @@
           "scenario": [
             "skull is the global minimum"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-3",
@@ -4669,7 +4763,7 @@
           "scenario": [
             "min() is commutative"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-4",
@@ -4682,7 +4776,7 @@
           "scenario": [
             "ordering is T0 > T1 > T2 > T3 > SKULL"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-5",
@@ -4695,7 +4789,7 @@
           "scenario": [
             "Added pattern is detected in matching content"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-6",
@@ -4708,7 +4802,7 @@
           "scenario": [
             "Non-matching content is not banned"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-7",
@@ -4721,7 +4815,7 @@
           "scenario": [
             "list_patterns returns all added patterns"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-8",
@@ -4734,7 +4828,7 @@
           "scenario": [
             "Enqueued record appears in pending()"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-9",
@@ -4747,7 +4841,7 @@
           "scenario": [
             "Resolved record is no longer pending"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-10",
@@ -4760,7 +4854,7 @@
           "scenario": [
             "Resolving unknown id raises ValueError"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-11",
@@ -4773,7 +4867,7 @@
           "scenario": [
             "load_builtins populates at least 9 skills"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-12",
@@ -4786,7 +4880,7 @@
           "scenario": [
             "All 7 SkillMode values have at least one built-in (excluding video and audio for v0)"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-13",
@@ -4799,7 +4893,7 @@
           "scenario": [
             "Featured skills have non-empty discovery forms"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-14",
@@ -4812,7 +4906,7 @@
           "scenario": [
             "t0 skill cannot be overwritten by t2 skill"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-15",
@@ -4825,7 +4919,7 @@
           "scenario": [
             "delete returns False for unknown slug"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-16",
@@ -4838,7 +4932,7 @@
           "scenario": [
             "list_by_mode returns only skills with matching mode"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-17",
@@ -4851,7 +4945,7 @@
           "scenario": [
             "Registered system is retrievable by slug"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-18",
@@ -4864,7 +4958,7 @@
           "scenario": [
             "get() returns None for unknown slug"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-19",
@@ -4877,7 +4971,7 @@
           "scenario": [
             "delete returns False for unknown slug"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-20",
@@ -4890,7 +4984,7 @@
           "scenario": [
             "list_all returns all registered systems"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-21",
@@ -4903,7 +4997,7 @@
           "scenario": [
             "from_dict with colors list populates ColorToken list"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-22",
@@ -4916,7 +5010,7 @@
           "scenario": [
             "from_dict with empty colors produces empty list"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-23",
@@ -4929,7 +5023,7 @@
           "scenario": [
             "from_markdown extracts slug from front-matter"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-24",
@@ -4942,7 +5036,7 @@
           "scenario": [
             "run_discovery returns serialisable list of field dicts"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-25",
@@ -4955,7 +5049,7 @@
           "scenario": [
             "run_discovery raises SkillNotFoundError for unknown slug"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-26",
@@ -4968,7 +5062,7 @@
           "scenario": [
             "generate returns DesignProject on happy path"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-27",
@@ -4981,7 +5075,7 @@
           "scenario": [
             "generate sets trust_tier to minimum of all inputs"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-28",
@@ -4994,7 +5088,7 @@
           "scenario": [
             "generate raises DiscoveryIncompleteError for missing required field"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-29",
@@ -5007,7 +5101,7 @@
           "scenario": [
             "generate raises DesignSystemNotFoundError for unknown system slug"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-30",
@@ -5020,7 +5114,7 @@
           "scenario": [
             "generate raises IncompatibleDesignSystemError"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-31",
@@ -5033,7 +5127,7 @@
           "scenario": [
             "generate raises SkillModeError for image-mode skill with no image_gen"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-32",
@@ -5046,7 +5140,7 @@
           "scenario": [
             "Warden-flagged discovery response raises TrustBannedError"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-33",
@@ -5059,7 +5153,7 @@
           "scenario": [
             "Every scanned input creates a TrustReviewRecord"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-34",
@@ -5072,7 +5166,7 @@
           "scenario": [
             "context_trust_tier is contaminated by t3 discovery responses"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-35",
@@ -5085,7 +5179,7 @@
           "scenario": [
             "DesignOrchestrateNode registered under correct kind"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-160/AC-36",
@@ -5098,7 +5192,7 @@
           "scenario": [
             "DesignOrchestrateNode.input_schema is a valid Pydantic model"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-160/AC-37",
@@ -5111,7 +5205,7 @@
           "scenario": [
             "InMemoryDesignSkillRegistry satisfies DesignSkillRegistry protocol"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-38",
@@ -5124,7 +5218,7 @@
           "scenario": [
             "InMemoryDesignSystemRegistry satisfies DesignSystemRegistry protocol"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-160/AC-39",
@@ -5137,7 +5231,7 @@
           "scenario": [
             "Package is importable and exposes public API"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ]
     },
@@ -5155,9 +5249,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 2,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 2
       },
       "tier": "declared",
       "criteria": [
@@ -5183,7 +5277,7 @@
           "scenario": [
             "Webhook emits compatible JSON when enabled"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-175/AC-3",
@@ -5196,7 +5290,7 @@
           "scenario": [
             "Webhook failure does not fail the task"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ]
     },
@@ -5415,8 +5509,8 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 2,
-        "covered": 1,
-        "passing": 0,
+        "covered": 0,
+        "passing": 1,
         "reachable": 0
       },
       "tier": "declared",
@@ -5430,7 +5524,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-180/AC-2",
@@ -5831,8 +5925,8 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 6,
-        "covered": 1,
-        "passing": 0,
+        "covered": 0,
+        "passing": 1,
         "reachable": 0
       },
       "tier": "declared",
@@ -5855,7 +5949,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-200/AC-3",
@@ -5920,11 +6014,11 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 0,
-        "covered": 9,
-        "passing": 0,
+        "covered": 0,
+        "passing": 9,
         "reachable": 0
       },
-      "tier": "covered",
+      "tier": "passing",
       "criteria": [
         {
           "id": "SPEC-201/AC-1",
@@ -5935,7 +6029,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-2",
@@ -5946,7 +6040,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-3",
@@ -5957,7 +6051,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-4",
@@ -5968,7 +6062,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-5",
@@ -5979,7 +6073,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-6",
@@ -5990,7 +6084,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-7",
@@ -6001,7 +6095,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-8",
@@ -6012,7 +6106,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "SPEC-201/AC-9",
@@ -6023,7 +6117,7 @@
           ],
           "form": "bullet",
           "scenario": null,
-          "rung": "covered"
+          "rung": "passing"
         }
       ]
     },
@@ -6631,9 +6725,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 6,
-        "covered": 4,
+        "covered": 0,
         "passing": 0,
-        "reachable": 0
+        "reachable": 4
       },
       "tier": "declared",
       "criteria": [
@@ -6648,7 +6742,7 @@
           "scenario": [
             "Log context is request-scoped"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-228/AC-2",
@@ -6661,7 +6755,7 @@
           "scenario": [
             "The metrics registry shares instruments by name"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-228/AC-3",
@@ -6674,7 +6768,7 @@
           "scenario": [
             "The tracing decorator degrades without OTEL"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-228/AC-4",
@@ -6687,7 +6781,7 @@
           "scenario": [
             "The event bus delivers to every subscriber"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-228/AC-5",
@@ -8517,13 +8611,15 @@
       "id": "ADR-038",
       "file": "docs/adr/ADR-038-reliability-taxonomy.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
+      "specs": [
+        "SPEC-082226-2a10"
+      ],
+      "measurable_specs": 1,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-039",
@@ -8973,7 +9069,7 @@
           "covered_by": [
             "packages/maistro-design/tests/test_design.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-062326-702b/AC-4",
@@ -8982,7 +9078,7 @@
             "packages/maistro-design/tests/test_design.py",
             "packages/maistro-design/tests/test_scan.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-062326-702b/AC-5",
@@ -8990,7 +9086,7 @@
           "covered_by": [
             "packages/maistro-design/tests/test_design.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-062326-702b/AC-6",
@@ -8998,7 +9094,7 @@
           "covered_by": [
             "packages/maistro-design/tests/test_design.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-062326-702b/AC-7",
@@ -9006,7 +9102,7 @@
           "covered_by": [
             "packages/maistro-design/tests/test_design.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ],
       "scenarios_without_ac_tag": [],
@@ -9029,7 +9125,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-2",
@@ -9037,7 +9133,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-3",
@@ -9045,7 +9141,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-4",
@@ -9053,7 +9149,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-5",
@@ -9061,7 +9157,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-6",
@@ -9069,7 +9165,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-7",
@@ -9077,7 +9173,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-8",
@@ -9085,7 +9181,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-9",
@@ -9093,7 +9189,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-10",
@@ -9101,7 +9197,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-11",
@@ -9109,7 +9205,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-12",
@@ -9117,7 +9213,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-13",
@@ -9125,7 +9221,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-14",
@@ -9133,7 +9229,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-15",
@@ -9153,7 +9249,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-18",
@@ -9161,7 +9257,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-19",
@@ -9175,7 +9271,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-21",
@@ -9183,7 +9279,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-22",
@@ -9191,7 +9287,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-23",
@@ -9199,7 +9295,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-24",
@@ -9207,7 +9303,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-25",
@@ -9215,7 +9311,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-26",
@@ -9223,7 +9319,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-27",
@@ -9231,7 +9327,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-28",
@@ -9239,7 +9335,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-29",
@@ -9247,7 +9343,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-30",
@@ -9255,7 +9351,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-31",
@@ -9263,7 +9359,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-063/AC-32",
@@ -9271,7 +9367,7 @@
           "covered_by": [
             "packages/maistro-core/tests/credentials/test_pool.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         }
       ],
       "scenarios_without_ac_tag": [],
@@ -9307,7 +9403,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-2",
@@ -9315,7 +9411,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-3",
@@ -9323,7 +9419,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-4",
@@ -9331,7 +9427,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-5",
@@ -9339,7 +9435,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-6",
@@ -9347,7 +9443,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-7",
@@ -9355,7 +9451,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-8",
@@ -9363,7 +9459,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-9",
@@ -9371,7 +9467,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-10",
@@ -9379,7 +9475,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-11",
@@ -9387,7 +9483,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-12",
@@ -9395,7 +9491,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-13",
@@ -9403,7 +9499,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-14",
@@ -9411,7 +9507,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-15",
@@ -9419,7 +9515,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-16",
@@ -9427,7 +9523,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-17",
@@ -9435,7 +9531,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-18",
@@ -9443,7 +9539,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-19",
@@ -9451,7 +9547,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-20",
@@ -9459,7 +9555,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-21",
@@ -9467,7 +9563,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-22",
@@ -9475,7 +9571,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-23",
@@ -9483,7 +9579,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-24",
@@ -9491,7 +9587,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-25",
@@ -9499,7 +9595,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-26",
@@ -9507,7 +9603,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-27",
@@ -9515,7 +9611,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-28",
@@ -9523,7 +9619,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-29",
@@ -9531,7 +9627,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-30",
@@ -9539,7 +9635,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-31",
@@ -9547,7 +9643,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-32",
@@ -9555,7 +9651,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-33",
@@ -9563,7 +9659,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-34",
@@ -9571,7 +9667,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-35",
@@ -9579,7 +9675,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-36",
@@ -9587,7 +9683,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-37",
@@ -9595,7 +9691,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-38",
@@ -9603,7 +9699,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-39",
@@ -9611,7 +9707,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-40",
@@ -9619,7 +9715,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-41",
@@ -9627,7 +9723,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-42",
@@ -9635,7 +9731,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-43",
@@ -9643,7 +9739,7 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-064/AC-44",
@@ -9651,12 +9747,12 @@
           "covered_by": [
             "packages/maistro-core/tests/security/test_redact.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         }
       ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "covered"
+      "tier": "reachable"
     },
     {
       "id": "ADR-065",
@@ -9863,7 +9959,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_depth.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-066/AC-5",
@@ -9871,7 +9967,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_depth.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-066/AC-6",
@@ -9879,7 +9975,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_depth.py"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "ADR-066/AC-7",
@@ -9899,7 +9995,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_compaction.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-10",
@@ -9913,7 +10009,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_compaction.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-12",
@@ -9945,7 +10041,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_steering.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-17",
@@ -9959,7 +10055,7 @@
           "covered_by": [
             "packages/maistro-core/tests/graph/test_steering.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-19",
@@ -9991,7 +10087,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_rate_coordination.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-24",
@@ -9999,7 +10095,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_rate_coordination.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-25",
@@ -10031,7 +10127,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_rate_coordination.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-30",
@@ -10045,7 +10141,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_retry_policy.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-32",
@@ -10053,7 +10149,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_retry_policy.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-33",
@@ -10061,7 +10157,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_retry_policy.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-34",
@@ -10075,7 +10171,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_retry_policy.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-36",
@@ -10095,7 +10191,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_context_probe.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-39",
@@ -10103,7 +10199,7 @@
           "covered_by": [
             "packages/maistro-core/tests/resilience/test_context_probe.py"
           ],
-          "rung": "covered"
+          "rung": "passing"
         },
         {
           "id": "ADR-066/AC-40",
@@ -10385,7 +10481,7 @@
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "covered"
+      "tier": "reachable"
     },
     {
       "id": "ADR-073126-c4e1",
@@ -10725,6 +10821,30 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-082226-d3dd",
+      "file": "docs/adr/ADR-082226-d3dd-s3-compatible-cold-storage-archive-tier.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082326-8194",
+      "file": "docs/adr/ADR-082326-8194-memory-embedding-column-and-dimensionality.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-083",
       "file": "docs/adr/ADR-083-skills-mcp-trust.md",
       "declared_status": "Proposed",
@@ -10830,7 +10950,7 @@
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "covered"
+      "tier": "passing"
     },
     {
       "id": "ADR-091",
