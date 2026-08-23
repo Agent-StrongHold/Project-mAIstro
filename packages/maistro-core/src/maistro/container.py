@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
     from maistro.projects.store import ProjectStore
+    from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
         EpisodicStore,
@@ -375,7 +376,10 @@ class Container:
 
 
 async def create_container(
-    config: AgentConfig, *, harness_adapters: dict[str, HarnessAdapter] | None = None
+    config: AgentConfig,
+    *,
+    harness_adapters: dict[str, HarnessAdapter] | None = None,
+    embeddings: EmbeddingClient | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -383,6 +387,17 @@ async def create_container(
     `_wire_harness_adapters` -- see that function for why this container
     cannot construct a real `RsiCycleHarnessAdapter` (`"rsi_cycle"`) on its
     own and instead leaves the map for the caller to populate.
+
+    `embeddings` turns on similarity search over durable memory (#188). It is a
+    caller-supplied object for the same reason as the harness adapters: an
+    embedding client is a deployment's choice of model and endpoint, and
+    `AgentConfig` carries no way to name one. Without it the PostgreSQL
+    learning store is keyword-only and the embedding column stays NULL, which
+    is the honest state for a deployment with no embedding model rather than a
+    degraded one.
+
+    A client whose width the schema cannot store is refused here rather than at
+    the first write -- see `memory.vectors.require_matching_dimension`.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -414,7 +429,7 @@ async def create_container(
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_postgres_backend(config.database_url)
+        ) = await _wire_postgres_backend(config.database_url, embeddings)
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
@@ -731,6 +746,7 @@ def _asyncpg_dsn(database_url: str) -> str:
 
 async def _wire_postgres_backend(
     database_url: str,
+    embeddings: EmbeddingClient | None = None,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -761,6 +777,7 @@ async def _wire_postgres_backend(
     """
     import asyncpg
 
+    from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
     from maistro.persistence.pg_learnings import PgLearningStore
     from maistro.persistence.pg_outcomes import PgOutcomeStore
     from maistro.persistence.pg_quota import PgQuotaTracker
@@ -793,7 +810,16 @@ async def _wire_postgres_backend(
         await pg_learning_store.ensure_schema()
 
         quota_tracker: QuotaTracker = PgQuotaTracker(pool)
-        learning_store: LearningStore = pg_learning_store
+        # With an embedding client configured, the vector goes on the row and
+        # similarity composes with scope in one query (#188). Without one, the
+        # keyword store is the whole story -- the column stays NULL, and
+        # `find_similar` is never reached, which is the honest state for a
+        # deployment that has no embedding model rather than a degraded one.
+        learning_store: LearningStore = (
+            DurableHybridLearningStore(pg_learning_store, embeddings)
+            if embeddings is not None
+            else pg_learning_store
+        )
         outcome_store: OutcomeStore = PgOutcomeStore(pool)
         session_store: SessionStore = PgSessionStore(pool)
     except BaseException:

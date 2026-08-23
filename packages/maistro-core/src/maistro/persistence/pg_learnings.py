@@ -6,12 +6,39 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger("maistro.persistence.learnings")
+
+#: pgvector's filtered-recall mode for HNSW. Named so the reason for
+#: `relaxed_order` over `strict_order` sits with the value rather than only
+#: in the query that uses it.
+_ITERATIVE_SCAN = "relaxed_order"
+
+
+def similarity_query(*, scoped_to_agent: bool) -> str:
+    """The SQL `find_similar` runs, built in one place.
+
+    A module function rather than an inline string so a test can `EXPLAIN` the
+    real query. The property #188 is about -- that PostgreSQL applies the scope
+    filter, rather than Python applying it after an unscoped fetch -- is only
+    visible in the plan, and a plan check against a hand-copied query proves
+    nothing about the query that actually runs.
+    """
+    agent_clause = " AND (agent_id = $3 OR agent_id = '')" if scoped_to_agent else ""
+    limit_placeholder = 4 if scoped_to_agent else 3
+    return (
+        "SELECT * FROM learnings"
+        " WHERE status = 'active'"
+        " AND org_id = $2"
+        " AND embedding IS NOT NULL"
+        f"{agent_clause}"
+        f" ORDER BY embedding <=> $1::vector LIMIT ${limit_placeholder}"
+    )
 
 
 class PgLearningStore:
@@ -100,6 +127,103 @@ class PgLearningStore:
                 learning.failure_after_use,
             )
             return int(row["id"]) if row else 0
+
+    async def text_of(self, learning_id: int) -> str:
+        """The learning text as it is actually stored.
+
+        `store` deduplicates, so the id it returns may belong to a row whose
+        text differs from the one just submitted. A caller that embeds the
+        submitted text would stamp the surviving row with a vector describing
+        content it does not hold. Reading the row back is the only way to know
+        what the vector should describe.
+        """
+        async with self._pool.acquire() as conn:
+            text = await conn.fetchval("SELECT learning FROM learnings WHERE id = $1", learning_id)
+        return str(text) if text else ""
+
+    async def set_embedding(self, learning_id: int, vector: list[float]) -> None:
+        """Attach an embedding to a stored learning.
+
+        The producer half of #188. `HybridLearningStore` kept vectors in a
+        process-local `dict[int, list[float]]`, so every restart threw away
+        every embedding and re-embedded on next read -- which is why the column
+        is the point and not an optimisation.
+
+        Refuses a vector the schema cannot store rather than letting PostgreSQL
+        raise on the cast: the error here names the learning and both widths.
+        """
+        if len(vector) != EMBEDDING_DIMENSIONS:
+            msg = (
+                f"learning {learning_id} was given a {len(vector)}-dimension embedding, "
+                f"but the column is vector({EMBEDDING_DIMENSIONS}) (ADR-082326-8194)"
+            )
+            raise ValueError(msg)
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE learnings SET embedding = $1::vector WHERE id = $2",
+                to_pgvector_literal(vector),
+                learning_id,
+            )
+
+    async def find_similar(
+        self,
+        query_embedding: list[float],
+        *,
+        org_id: str = "",
+        agent_id: str | None = None,
+        max_results: int = 10,
+    ) -> list[Learning]:
+        """Scope-filtered, similarity-ranked learnings, in one query.
+
+        This is the whole point of putting the vector on the row (#188). The
+        scope predicate is in the `WHERE` clause, so PostgreSQL applies it
+        *before* returning rows -- not afterwards in Python, which is both
+        slower and a scope-leak surface, because a filter that runs after the
+        fetch is one a caller can forget to run.
+
+        Ordering is by `<=>`, pgvector's cosine distance, matching
+        `memory/learnings/embeddings.py::cosine_similarity` and the
+        `vector_cosine_ops` index migration 007 builds. An L2-ordered query
+        against a cosine index still returns rows; it just scans instead of
+        using the index, which is the kind of regression only a plan check
+        catches.
+
+        `embedding IS NOT NULL` is not an optimisation: a row with no vector has
+        no distance to the query, and pgvector sorts NULLs last rather than
+        excluding them, so without it an unembedded corpus returns `max_results`
+        arbitrary rows that look ranked.
+        """
+        if len(query_embedding) != EMBEDDING_DIMENSIONS:
+            msg = (
+                f"query embedding is {len(query_embedding)}-dimensional, but the column "
+                f"is vector({EMBEDDING_DIMENSIONS}) (ADR-082326-8194)"
+            )
+            raise ValueError(msg)
+
+        params: list[Any] = [to_pgvector_literal(query_embedding), org_id]
+        if agent_id:
+            params.append(agent_id)
+        query = similarity_query(scoped_to_agent=bool(agent_id))
+        params.append(max_results)
+
+        # HNSW searches approximately and *then* applies the scope predicate, so
+        # on a large multi-org table the candidate set can be dominated by other
+        # scopes and this query returns too few rows -- or none -- while
+        # matching in-scope vectors exist. A small corpus never shows it,
+        # because the planner picks a sequential scan and the filter is exact.
+        #
+        # `iterative_scan` (pgvector 0.8+) makes the index keep fetching until
+        # the filtered result set is full. `relaxed_order` rather than
+        # `strict_order`: strict re-sorts every batch to guarantee global
+        # distance order and costs more for a ranking that is already
+        # approximate. `SET LOCAL` inside the transaction, so nothing outside it
+        # inherits the setting.
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(f"SET LOCAL hnsw.iterative_scan = {_ITERATIVE_SCAN}")
+            rows = await conn.fetch(query, *params)
+
+        return [_row_to_learning(row) for row in rows]
 
     async def find_relevant(
         self,
