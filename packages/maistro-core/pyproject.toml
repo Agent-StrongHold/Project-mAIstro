@@ -33,14 +33,6 @@ llm = [
     # Resolves at 3.x in the workspace lock; >=2.0 remains the true floor.
     "fastmcp>=2.0,<4",
 ]
-# Object storage for the archive tier (ADR-082226-f436). Optional on purpose:
-# maistro-core is a library other products import (ADR-019), and a transitive
-# boto3 is a large, opinionated dependency to inflict on a consumer that wanted
-# a router. `maistro.archive` imports cleanly without it and the filesystem
-# backend needs nothing — see archive/s3.py for the lazy import.
-s3 = [
-    "boto3>=1.34,<2",
-]
 # The sandbox tool drives the `docker` CLI via subprocess, not the Python SDK,
 # so it needs no pip dependency. Kept as an explicit (empty) extra for clarity.
 sandbox = []
@@ -51,6 +43,25 @@ sandbox = []
 # security/warden/_regex.py).
 re2 = [
     "google-re2>=1.1",
+]
+# The Archive tier (ADR-082226-d3dd) — cold records below durable memory, on any
+# S3-compatible store. Optional because the homelab deployment uses
+# `FilesystemArchiveStore`, which needs nothing, and because a deployment that
+# does not archive must not pay for a cloud SDK in its base install. The module
+# is imported lazily via `maistro.memory.archive.s3_archive_store`, so
+# `maistro-core` imports cleanly without this — proven by
+# tests/memory/archive/test_optional_dependency.py, not assumed.
+#
+# S3-compatible, not AWS: `endpoint_url` is configurable, so MinIO, Cloudflare
+# R2 and Backblaze B2 work. CI exercises it against a real MinIO.
+s3 = [
+    # Two archive implementations landed in parallel and both are on this tree:
+    # `maistro/memory/archive/s3.py` (ADR-082226-d3dd) uses aioboto3, and
+    # `maistro/archive/s3.py` (ADR-082226-f436) deliberately uses synchronous
+    # boto3 in a worker thread. Until one is retired, the extra has to satisfy
+    # both or `--extra s3` breaks whichever it omits.
+    "aioboto3>=13.0",
+    "boto3>=1.34,<2",
 ]
 # Vendor-neutral tracing export. The agent tracing decorators use the OpenTelemetry
 # API directly (see observability/tracing.py); installing this extra + setting an OTLP
@@ -95,8 +106,22 @@ asgi = [
     "fastapi>=0.115,<1",
     "starlette>=0.40,<2",
 ]
+# The widest extra set, and what `wheel-imports` installs before importing every
+# module in the wheel. `s3` belongs here even though the Archive tier is opt-in:
+# `maistro/memory/archive/s3.py` imports aioboto3 at module level (correctly —
+# it is a module behind an extra, not one with a fallback), so leaving it out
+# makes that sweep fail on a module that is working as designed.
+#
+# This does not weaken the base-install guarantee. `all` is the widest set, not
+# the default one; `maistro-core` with no extras still has no cloud SDK, which
+# tests/memory/archive/test_optional_dependency.py proves by hiding aioboto3
+# from the import system.
+#
+# `re2` stays out for a different reason: it is a native extension whose absence
+# is a supported configuration (Warden falls back to `re`), so importing without
+# it is a case worth keeping in the sweep.
 all = [
-    "maistro-core[llm,sandbox,observability,tui,builders,sqlite,asgi,identity]",
+    "maistro-core[llm,sandbox,observability,tui,builders,sqlite,asgi,identity,s3]",
 ]
 dev = [
     "pytest>=8.3,<10",
