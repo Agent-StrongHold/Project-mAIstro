@@ -257,7 +257,17 @@ jobs:
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
         run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin
-<<<<<<< HEAD
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install pyyaml
+      # The check-name contract #162 pins branch protection against. It lives
+      # in this job because it is a check about workflow shape, next to the
+      # other one — and because a rename is only caught if the gate runs on the
+      # PR that does the renaming, which after #161 is every PR.
+      - name: PR check contract matches the workflows
+        run: python3 scripts/check-required-checks.py
 
   # The alembic chain, applied to a real PostgreSQL server (#177).
   #
@@ -310,16 +320,3 @@ jobs:
         env:
           MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
         run: uv run pytest tests/migrations -v --tb=short
-=======
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install PyYAML
-        run: pip install pyyaml
-      # The check-name contract #162 pins branch protection against. It lives
-      # in this job because it is a check about workflow shape, next to the
-      # other one — and because a rename is only caught if the gate runs on the
-      # PR that does the renaming, which after #161 is every PR.
-      - name: PR check contract matches the workflows
-        run: python3 scripts/check-required-checks.py
->>>>>>> origin/develop
