@@ -124,7 +124,6 @@ refusal.
 <<<<<<< HEAD
 | `tests/` (root) | 845 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 =======
-| `tests/` (root) | 845 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 >>>>>>> origin/develop
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
 | `packages/hive-conductor/backend/tests` | 1223 | `ci.yml` (bare python) |
