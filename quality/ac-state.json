@@ -9,16 +9,20 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 176,
-    "specs_with_ac_heading": 168,
-    "specs_with_ac_ids": 30,
+    "specs": 177,
+    "specs_with_ac_heading": 169,
+    "specs_with_ac_ids": 31,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 474,
-    "criteria_annotated": 203,
-    "markers_found": 192,
+    "specs_implementing_nothing": 76,
+    "decided_adrs_without_spec": 35,
+    "specs_owing_criteria": 146,
+    "specs_waiving_criteria": 0,
+    "criteria_declared": 478,
+    "criteria_annotated": 207,
+    "markers_found": 196,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 227,
+    "gherkin_criteria": 231,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 9,
@@ -29,6 +33,270 @@
     "ADR-070126-6386/stage3"
   ],
   "criteria_claimed_but_unproven": [],
+  "specs_implementing_nothing": [
+    "SPEC-001",
+    "SPEC-002",
+    "SPEC-003",
+    "SPEC-004",
+    "SPEC-005",
+    "SPEC-006",
+    "SPEC-007",
+    "SPEC-008",
+    "SPEC-010",
+    "SPEC-011",
+    "SPEC-013",
+    "SPEC-014",
+    "SPEC-015",
+    "SPEC-016",
+    "SPEC-019",
+    "SPEC-020",
+    "SPEC-062126-757a",
+    "SPEC-062126-7853",
+    "SPEC-062126-971d",
+    "SPEC-062126-a05f",
+    "SPEC-062826-1924",
+    "SPEC-062826-8982",
+    "SPEC-062926-8ec5",
+    "SPEC-070126-9d37",
+    "SPEC-070126-a3f1",
+    "SPEC-070126-b2e4",
+    "SPEC-070126-c5d7",
+    "SPEC-070226-3bbd",
+    "SPEC-070226-5ce3",
+    "SPEC-070226-83bd",
+    "SPEC-070226-bfa3",
+    "SPEC-072726-3439",
+    "SPEC-080226-510f",
+    "SPEC-175",
+    "SPEC-176",
+    "SPEC-177",
+    "SPEC-178",
+    "SPEC-179",
+    "SPEC-180",
+    "SPEC-181",
+    "SPEC-184",
+    "SPEC-185",
+    "SPEC-186",
+    "SPEC-187",
+    "SPEC-188",
+    "SPEC-189",
+    "SPEC-191",
+    "SPEC-193",
+    "SPEC-194",
+    "SPEC-195",
+    "SPEC-196",
+    "SPEC-197",
+    "SPEC-200",
+    "SPEC-202",
+    "SPEC-203",
+    "SPEC-204",
+    "SPEC-205",
+    "SPEC-207",
+    "SPEC-262",
+    "SPEC-263",
+    "SPEC-264",
+    "SPEC-265",
+    "SPEC-266",
+    "SPEC-267",
+    "SPEC-268",
+    "SPEC-269",
+    "SPEC-270",
+    "SPEC-271",
+    "SPEC-272",
+    "SPEC-273",
+    "SPEC-274",
+    "SPEC-275",
+    "SPEC-276",
+    "SPEC-277",
+    "SPEC-278",
+    "SPEC-281"
+  ],
+  "decided_adrs_without_spec": [
+    "ADR-002",
+    "ADR-003",
+    "ADR-004",
+    "ADR-006",
+    "ADR-007",
+    "ADR-009",
+    "ADR-018",
+    "ADR-019",
+    "ADR-031",
+    "ADR-032",
+    "ADR-033",
+    "ADR-034",
+    "ADR-035",
+    "ADR-038",
+    "ADR-039",
+    "ADR-042",
+    "ADR-044",
+    "ADR-053",
+    "ADR-054",
+    "ADR-062",
+    "ADR-062026-9b30",
+    "ADR-062226-674b",
+    "ADR-072",
+    "ADR-073126-c4e1",
+    "ADR-075",
+    "ADR-076",
+    "ADR-077",
+    "ADR-082",
+    "ADR-082126-f69c",
+    "ADR-082226-5104",
+    "ADR-085",
+    "ADR-088",
+    "ADR-092",
+    "ADR-094",
+    "ADR-081626-f383"
+  ],
+  "specs_owing_criteria": [
+    "SPEC-002",
+    "SPEC-003",
+    "SPEC-004",
+    "SPEC-005",
+    "SPEC-006",
+    "SPEC-007",
+    "SPEC-008",
+    "SPEC-009",
+    "SPEC-010",
+    "SPEC-011",
+    "SPEC-012",
+    "SPEC-013",
+    "SPEC-014",
+    "SPEC-015",
+    "SPEC-016",
+    "SPEC-017",
+    "SPEC-018",
+    "SPEC-019",
+    "SPEC-020",
+    "SPEC-062126-5d56",
+    "SPEC-062126-6a31",
+    "SPEC-062126-757a",
+    "SPEC-062126-7853",
+    "SPEC-062126-971d",
+    "SPEC-062126-a05f",
+    "SPEC-062126-d421",
+    "SPEC-062226-fb23",
+    "SPEC-062326-7dcb",
+    "SPEC-062826-1924",
+    "SPEC-062826-8982",
+    "SPEC-062926-8ec5",
+    "SPEC-070126-a3f1",
+    "SPEC-070126-b2e4",
+    "SPEC-070126-c5d7",
+    "SPEC-070226-3bbd",
+    "SPEC-070226-5ce3",
+    "SPEC-070226-6489",
+    "SPEC-070226-8239",
+    "SPEC-070226-82ea",
+    "SPEC-070226-83bd",
+    "SPEC-070226-af02",
+    "SPEC-070226-b624",
+    "SPEC-070226-bfa3",
+    "SPEC-070226-c4f8",
+    "SPEC-070226-cb8d",
+    "SPEC-070226-fbe3",
+    "SPEC-070426-457b",
+    "SPEC-070426-6ea8",
+    "SPEC-070426-a22b",
+    "SPEC-070626-17d0",
+    "SPEC-070626-4ec8",
+    "SPEC-070626-5341",
+    "SPEC-070626-7912",
+    "SPEC-070626-9460",
+    "SPEC-070626-a675",
+    "SPEC-072726-3439",
+    "SPEC-080126-3a7c",
+    "SPEC-080126-9e42",
+    "SPEC-080226-4c1f",
+    "SPEC-080226-510f",
+    "SPEC-178",
+    "SPEC-181",
+    "SPEC-182",
+    "SPEC-183",
+    "SPEC-184",
+    "SPEC-185",
+    "SPEC-186",
+    "SPEC-187",
+    "SPEC-188",
+    "SPEC-189",
+    "SPEC-190",
+    "SPEC-191",
+    "SPEC-192",
+    "SPEC-193",
+    "SPEC-194",
+    "SPEC-195",
+    "SPEC-196",
+    "SPEC-197",
+    "SPEC-202",
+    "SPEC-203",
+    "SPEC-204",
+    "SPEC-205",
+    "SPEC-206",
+    "SPEC-207",
+    "SPEC-208",
+    "SPEC-209",
+    "SPEC-210",
+    "SPEC-211",
+    "SPEC-212",
+    "SPEC-213",
+    "SPEC-214",
+    "SPEC-215",
+    "SPEC-216",
+    "SPEC-217",
+    "SPEC-218",
+    "SPEC-219",
+    "SPEC-220",
+    "SPEC-221",
+    "SPEC-222",
+    "SPEC-223",
+    "SPEC-224",
+    "SPEC-225",
+    "SPEC-226",
+    "SPEC-227",
+    "SPEC-229",
+    "SPEC-230",
+    "SPEC-231",
+    "SPEC-232",
+    "SPEC-233",
+    "SPEC-234",
+    "SPEC-240",
+    "SPEC-241",
+    "SPEC-242",
+    "SPEC-243",
+    "SPEC-244",
+    "SPEC-245",
+    "SPEC-246",
+    "SPEC-247",
+    "SPEC-248",
+    "SPEC-249",
+    "SPEC-250",
+    "SPEC-251",
+    "SPEC-252",
+    "SPEC-253",
+    "SPEC-254",
+    "SPEC-255",
+    "SPEC-256",
+    "SPEC-257",
+    "SPEC-258",
+    "SPEC-262",
+    "SPEC-263",
+    "SPEC-264",
+    "SPEC-265",
+    "SPEC-266",
+    "SPEC-267",
+    "SPEC-268",
+    "SPEC-269",
+    "SPEC-270",
+    "SPEC-271",
+    "SPEC-272",
+    "SPEC-273",
+    "SPEC-274",
+    "SPEC-275",
+    "SPEC-276",
+    "SPEC-277",
+    "SPEC-281"
+  ],
+  "specs_waiving_criteria": [],
   "completion_claims_contradicted": [
     {
       "id": "SPEC-062326-e9c6",
@@ -579,6 +847,7 @@
       "layer": "Governance",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 7,
       "annotated": 0,
@@ -664,6 +933,7 @@
       "layer": "Connectivity",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -685,6 +955,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -706,6 +977,7 @@
       "layer": "Tools",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -727,6 +999,7 @@
       "layer": "Tools",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -748,6 +1021,7 @@
       "layer": "Reliability",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -769,6 +1043,7 @@
       "layer": "Memory",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -790,6 +1065,7 @@
       "layer": "Connectivity",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -813,6 +1089,7 @@
       "implements": [
         "- maistro-engine#ADR-020"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -834,6 +1111,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -855,6 +1133,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -878,6 +1157,7 @@
       "implements": [
         "- maistro-engine#ADR-028"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -899,6 +1179,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -920,6 +1201,7 @@
       "layer": "Agents",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -941,6 +1223,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -962,6 +1245,7 @@
       "layer": "Connectivity",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -985,6 +1269,7 @@
       "implements": [
         "- maistro-engine#ADR-025"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1008,6 +1293,7 @@
       "implements": [
         "- maistro-engine#ADR-027"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1029,6 +1315,7 @@
       "layer": "Agents",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1050,6 +1337,7 @@
       "layer": "UserClient",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1073,6 +1361,7 @@
       "implements": [
         "- maistro-engine#ADR-080"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1096,6 +1385,7 @@
       "implements": [
         "- maistro-engine#ADR-057"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1117,6 +1407,7 @@
       "layer": "Tools",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1138,6 +1429,7 @@
       "layer": "Tools",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1159,6 +1451,7 @@
       "layer": "Tools",
       "declared_status": "In Progress",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1180,6 +1473,7 @@
       "layer": "Orchestration",
       "declared_status": "Implemented",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1203,6 +1497,7 @@
       "implements": [
         "- maistro-engine#ADR-083"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1226,6 +1521,7 @@
       "implements": [
         "- maistro-engine#ADR-078"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1249,6 +1545,7 @@
       "implements": [
         "- maistro-engine#ADR-062326-702b"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1272,6 +1569,7 @@
       "implements": [
         "- maistro-engine#ADR-062326-616c"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 12,
       "annotated": 12,
@@ -1426,6 +1724,7 @@
       "layer": "Governance",
       "declared_status": "Implemented",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1447,6 +1746,7 @@
       "layer": "Governance",
       "declared_status": "Implemented",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1468,6 +1768,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1489,6 +1790,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 17,
       "annotated": 0,
@@ -1696,6 +1998,7 @@
       "layer": "Tools",
       "declared_status": "Superseded",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1717,6 +2020,7 @@
       "layer": "Tools",
       "declared_status": "Superseded",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1738,6 +2042,7 @@
       "layer": "Tools",
       "declared_status": "Superseded",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1761,6 +2066,7 @@
       "implements": [
         "- maistro-engine#ADR-055"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 9,
       "annotated": 8,
@@ -1903,6 +2209,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1924,6 +2231,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1947,6 +2255,7 @@
       "implements": [
         "- maistro-engine#ADR-084"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1970,6 +2279,7 @@
       "implements": [
         "- maistro-engine#ADR-045"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -1993,6 +2303,7 @@
       "implements": [
         "- maistro-engine#ADR-099"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2014,6 +2325,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2037,6 +2349,7 @@
       "implements": [
         "- maistro-engine#ADR-066"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2060,6 +2373,7 @@
       "implements": [
         "- maistro-engine#ADR-086"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 5,
       "annotated": 4,
@@ -2148,6 +2462,7 @@
       "implements": [
         "- maistro-engine#ADR-071"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2169,6 +2484,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2192,6 +2508,7 @@
       "implements": [
         "- maistro-engine#ADR-101"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2215,6 +2532,7 @@
       "implements": [
         "- maistro-engine#ADR-079"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2238,6 +2556,7 @@
       "implements": [
         "- maistro-engine#ADR-081"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2261,6 +2580,7 @@
       "implements": [
         "- maistro-engine#ADR-070426-f2a0"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2284,6 +2604,7 @@
       "implements": [
         "- maistro-engine#ADR-070426-f2a0"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2307,6 +2628,7 @@
       "implements": [
         "- maistro-engine#ADR-070426-f2a0"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2330,6 +2652,7 @@
       "implements": [
         "- maistro-engine#ADR-021"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2353,6 +2676,7 @@
       "implements": [
         "- maistro-engine#ADR-024"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2376,6 +2700,7 @@
       "implements": [
         "- maistro-engine#ADR-026"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2399,6 +2724,7 @@
       "implements": [
         "- maistro-engine#ADR-023"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2422,6 +2748,7 @@
       "implements": [
         "- maistro-engine#ADR-022"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2445,6 +2772,7 @@
       "implements": [
         "- maistro-engine#ADR-029"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2466,6 +2794,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2489,6 +2818,7 @@
       "implements": [
         "- maistro-engine#ADR-046"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2512,6 +2842,7 @@
       "implements": [
         "- maistro-engine#ADR-080"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2535,6 +2866,7 @@
       "implements": [
         "- maistro-engine#ADR-064"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2556,6 +2888,7 @@
       "layer": "Governance",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -2579,6 +2912,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-034b"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 10,
       "annotated": 2,
@@ -2713,6 +3047,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-69ee"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 13,
       "annotated": 12,
@@ -2880,6 +3215,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-6b46"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 12,
       "annotated": 11,
@@ -3036,6 +3372,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-6e34"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 12,
       "annotated": 12,
@@ -3192,6 +3529,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-7248"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 12,
       "annotated": 11,
@@ -3348,6 +3686,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-9944"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 9,
       "annotated": 8,
@@ -3471,6 +3810,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-a66b"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 18,
       "annotated": 18,
@@ -3693,6 +4033,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-bb3a"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 12,
       "annotated": 11,
@@ -3849,6 +4190,7 @@
       "implements": [
         "- maistro-engine#ADR-081226-e626"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 9,
       "annotated": 9,
@@ -3972,6 +4314,7 @@
       "implements": [
         "- maistro-engine#ADR-081426-1f7c"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 12,
       "annotated": 12,
@@ -4128,6 +4471,7 @@
       "implements": [
         "- maistro-engine#ADR-081426-b1d3"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 15,
       "annotated": 15,
@@ -4310,6 +4654,83 @@
       ]
     },
     {
+      "id": "SPEC-082126-3c9d",
+      "file": "docs/specs/SPEC-082126-3c9d-pii-evasion-normalization.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-073"
+      ],
+      "non_measurable": null,
+      "has_ac_heading": true,
+      "criteria_total": 4,
+      "annotated": 4,
+      "gherkin_criteria": 4,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 4
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082126-3c9d/AC-1",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Canonical Unicode normalization defeats compatibility and invisible evasions"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-2",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Common representation evasions do not hide real PII"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-3",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Detection views do not create generic encoding or non-Latin false positives"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-4",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Applicable runtime output paths use the hardened filter"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
       "id": "SPEC-082126-5f6a",
       "file": "docs/specs/SPEC-082126-5f6a-warden-llm-judge-failure-semantics.md",
       "layer": "Governance",
@@ -4317,6 +4738,7 @@
       "implements": [
         "- maistro-engine#ADR-073"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 6,
       "annotated": 6,
@@ -4419,6 +4841,7 @@
       "implements": [
         "- maistro-engine#ADR-073"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 6,
       "annotated": 6,
@@ -4521,6 +4944,7 @@
       "implements": [
         "- maistro-engine#ADR-061"
       ],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 39,
       "annotated": 39,
@@ -5050,6 +5474,7 @@
       "layer": "Orchestration",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 3,
       "annotated": 3,
@@ -5109,6 +5534,7 @@
       "layer": "Orchestration",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 4,
       "annotated": 0,
@@ -5167,6 +5593,7 @@
       "layer": "Orchestration",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 5,
       "annotated": 0,
@@ -5234,6 +5661,7 @@
       "layer": "Foundation",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5255,6 +5683,7 @@
       "layer": "UserClient",
       "declared_status": "Deprecated",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 3,
       "annotated": 0,
@@ -5310,6 +5739,7 @@
       "layer": "Orchestration",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 3,
       "annotated": 0,
@@ -5361,6 +5791,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -5384,6 +5815,7 @@
       "implements": [
         "- maistro-engine#ADR-058"
       ],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -5407,6 +5839,7 @@
       "implements": [
         "- maistro-engine#ADR-059"
       ],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -5428,6 +5861,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5449,6 +5883,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5470,6 +5905,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5491,6 +5927,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5512,6 +5949,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5533,6 +5971,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5556,6 +5995,7 @@
       "implements": [
         "- maistro-engine#ADR-093"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5577,6 +6017,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5600,6 +6041,7 @@
       "implements": [
         "- maistro-engine#ADR-060"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5621,6 +6063,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5642,6 +6085,7 @@
       "layer": "Agents",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5663,6 +6107,7 @@
       "layer": "Memory",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5684,6 +6129,7 @@
       "layer": "Agents",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -5705,6 +6151,7 @@
       "layer": "Orchestration",
       "declared_status": "Accepted",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": false,
       "criteria_total": 0,
       "annotated": 0,
@@ -5726,6 +6173,7 @@
       "layer": "Ability",
       "declared_status": "AC Defined",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 7,
       "annotated": 0,
@@ -5815,6 +6263,7 @@
       "implements": [
         "- maistro-engine#ADR-090"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 9,
       "annotated": 0,
@@ -5936,6 +6385,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5957,6 +6407,7 @@
       "layer": "Ability",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5978,6 +6429,7 @@
       "layer": "Reliability",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -5999,6 +6451,7 @@
       "layer": "Governance",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6022,6 +6475,7 @@
       "implements": [
         "- maistro-engine#ADR-074"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6043,6 +6497,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6066,6 +6521,7 @@
       "implements": [
         "- maistro-engine#ADR-061526-f383"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6089,6 +6545,7 @@
       "implements": [
         "- maistro-engine#ADR-005"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6112,6 +6569,7 @@
       "implements": [
         "- maistro-engine#ADR-008"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6135,6 +6593,7 @@
       "implements": [
         "- maistro-engine#ADR-010"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6158,6 +6617,7 @@
       "implements": [
         "- maistro-engine#ADR-011"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6181,6 +6641,7 @@
       "implements": [
         "- maistro-engine#ADR-012"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6204,6 +6665,7 @@
       "implements": [
         "- maistro-engine#ADR-013"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6227,6 +6689,7 @@
       "implements": [
         "- maistro-engine#ADR-014"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6250,6 +6713,7 @@
       "implements": [
         "- maistro-engine#ADR-015"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6273,6 +6737,7 @@
       "implements": [
         "- maistro-engine#ADR-017"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6296,6 +6761,7 @@
       "implements": [
         "- maistro-engine#ADR-036"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6319,6 +6785,7 @@
       "implements": [
         "- maistro-engine#ADR-041"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6342,6 +6809,7 @@
       "implements": [
         "- maistro-engine#ADR-040"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6365,6 +6833,7 @@
       "implements": [
         "- maistro-engine#ADR-043"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6388,6 +6857,7 @@
       "implements": [
         "- maistro-engine#ADR-063"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6411,6 +6881,7 @@
       "implements": [
         "- maistro-engine#ADR-064"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6434,6 +6905,7 @@
       "implements": [
         "- maistro-engine#ADR-065"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6457,6 +6929,7 @@
       "implements": [
         "- maistro-engine#ADR-089"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6480,6 +6953,7 @@
       "implements": [
         "- maistro-engine#ADR-096"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6503,6 +6977,7 @@
       "implements": [
         "- maistro-engine#ADR-016"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6526,6 +7001,7 @@
       "implements": [
         "- maistro-engine#ADR-037"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 10,
       "annotated": 4,
@@ -6668,6 +7144,7 @@
       "implements": [
         "- maistro-engine#ADR-067"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6691,6 +7168,7 @@
       "implements": [
         "- maistro-engine#ADR-087"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6714,6 +7192,7 @@
       "implements": [
         "- maistro-engine#ADR-095"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6737,6 +7216,7 @@
       "implements": [
         "- maistro-engine#ADR-097"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6760,6 +7240,7 @@
       "implements": [
         "- maistro-engine#ADR-098"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6783,6 +7264,7 @@
       "implements": [
         "- maistro-engine#ADR-100"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6806,6 +7288,7 @@
       "implements": [
         "- maistro-engine#ADR-080"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6829,6 +7312,7 @@
       "implements": [
         "- maistro-engine#ADR-080"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6852,6 +7336,7 @@
       "implements": [
         "- maistro-engine#ADR-080"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6875,6 +7360,7 @@
       "implements": [
         "- maistro-engine#ADR-080"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6898,6 +7384,7 @@
       "implements": [
         "- maistro-engine#ADR-091"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6921,6 +7408,7 @@
       "implements": [
         "- maistro-engine#ADR-068"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6944,6 +7432,7 @@
       "implements": [
         "- maistro-engine#ADR-068"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6967,6 +7456,7 @@
       "implements": [
         "- maistro-engine#ADR-068"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -6990,6 +7480,7 @@
       "implements": [
         "- maistro-engine#ADR-068"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7013,6 +7504,7 @@
       "implements": [
         "- maistro-engine#ADR-057"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7036,6 +7528,7 @@
       "implements": [
         "- maistro-engine#ADR-048"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7059,6 +7552,7 @@
       "implements": [
         "- maistro-engine#ADR-047"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7082,6 +7576,7 @@
       "implements": [
         "- maistro-engine#ADR-050"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7105,6 +7600,7 @@
       "implements": [
         "- maistro-engine#ADR-051"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7128,6 +7624,7 @@
       "implements": [
         "- maistro-engine#ADR-049"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7151,6 +7648,7 @@
       "implements": [
         "- maistro-engine#ADR-052"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7174,6 +7672,7 @@
       "implements": [
         "- maistro-engine#ADR-056"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7197,6 +7696,7 @@
       "implements": [
         "- maistro-engine#ADR-069"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7220,6 +7720,7 @@
       "implements": [
         "- maistro-engine#ADR-070"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7241,6 +7742,7 @@
       "layer": "Memory",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7262,6 +7764,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7283,6 +7786,7 @@
       "layer": "Governance",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7304,6 +7808,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7325,6 +7830,7 @@
       "layer": "Tools",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7346,6 +7852,7 @@
       "layer": "Governance",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7367,6 +7874,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7388,6 +7896,7 @@
       "layer": "Connectivity",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7409,6 +7918,7 @@
       "layer": "Connectivity",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7430,6 +7940,7 @@
       "layer": "Governance",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7451,6 +7962,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7472,6 +7984,7 @@
       "layer": "Orchestration",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7493,6 +8006,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7514,6 +8028,7 @@
       "layer": "Governance",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7535,6 +8050,7 @@
       "layer": "Foundation",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7556,6 +8072,7 @@
       "layer": "UserClient",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -7577,6 +8094,7 @@
       "layer": "Agents",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 10,
       "annotated": 0,
@@ -7691,6 +8209,7 @@
       "implements": [
         "- maistro-engine#ADR-070426-e8a3"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 8,
       "annotated": 0,
@@ -7787,6 +8306,7 @@
       "implements": [
         "- maistro-engine#ADR-070426-ac56"
       ],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 10,
       "annotated": 0,
@@ -7899,6 +8419,7 @@
       "layer": "Evolve",
       "declared_status": "Proposed",
       "implements": [],
+      "non_measurable": null,
       "has_ac_heading": true,
       "criteria_total": 0,
       "annotated": 0,
@@ -10279,10 +10800,11 @@
       "file": "docs/adr/ADR-073-warden-sentinel.md",
       "declared_status": "Accepted",
       "specs": [
+        "SPEC-082126-3c9d",
         "SPEC-082126-5f6a",
         "SPEC-082126-7a31"
       ],
-      "measurable_specs": 2,
+      "measurable_specs": 3,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],

@@ -1,5 +1,5 @@
 {
-  "_comment": "Reviewed ceilings for the acceptance-state debt counters (#31). Each counter is a way a completion claim can outrun its evidence, and each may only go down: a rise is a new contradiction entering the repository, and a fall that has not been banked is slack a later regression could spend. Enforced by scripts/check-ac-state.py --ratchet, which refuses to compare across measurement modes -- without --run-tests no criterion can reach the passing rung, so the counters mean something different. Bank a reviewed improvement with --ratchet --bank and read the diff; never hand-edit a number to match a delta.",
+  "_comment": "Reviewed ceilings for the acceptance-state debt counters (#31, #164). The first seven are ways a completion claim can outrun its evidence; the last three (#164) are ways the ADR -> spec -> AC chain is simply absent -- a spec implementing nothing, a decided ADR nothing implements, a spec owing criteria -- each of which was clean under every existing check, because a validator can only refuse a link that was written down wrongly. Each counter and each may only go down: a rise is a new contradiction entering the repository, and a fall that has not been banked is slack a later regression could spend. Enforced by scripts/check-ac-state.py --ratchet, which refuses to compare across measurement modes -- without --run-tests no criterion can reach the passing rung, so the counters mean something different. Bank a reviewed improvement with --ratchet --bank and read the diff; never hand-edit a number to match a delta.",
   "measured_with_tests": true,
   "ceilings": {
     "completion_claims_contradicted": 9,
@@ -8,6 +8,9 @@
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "scenarios_without_ac_tag": 0,
-    "gherkin_parse_errors": 0
+    "gherkin_parse_errors": 0,
+    "specs_implementing_nothing": 76,
+    "decided_adrs_without_spec": 35,
+    "specs_owing_criteria": 146
   }
 }

@@ -27,9 +27,12 @@ import re
 from datetime import date
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _Date = date
+
+#: Shortest waiver reason that is still a reason. See `_validate_non_measurable`.
+_MIN_WAIVER_REASON = 20
 
 
 class Status(StrEnum):
@@ -173,6 +176,17 @@ class FrontMatter(BaseModel):
     # Provenance: repo paths (packages/…, apps/…) this record governs/derives from.
     source: list[str] = Field(default_factory=list)
 
+    # Why this spec declares no acceptance criteria (#164). A spec with no
+    # criteria and a spec whose criteria have not been written yet look
+    # identical from outside, and `specs_awaiting_retrofit` absorbed both for
+    # 139 documents. This is the difference: a stated reason, reviewed in the
+    # diff that adds it, rather than an absence that reads as a backlog entry.
+    #
+    # It is not an escape hatch for "we did not get to it". `check-ac-state.py`
+    # counts a waived spec as satisfied, so the reason is the entire cost of the
+    # waiver — which is why it is a sentence and not a boolean.
+    non_measurable: str | None = Field(default=None, alias="non-measurable")
+
     # Classification
     layer: Layer
     owners: list[str] = Field(default_factory=list)
@@ -212,3 +226,41 @@ class FrontMatter(BaseModel):
             if not owner.startswith("@"):
                 raise ValueError(f"owner must start with @, got {owner!r}")
         return v
+
+    @field_validator("non_measurable")
+    @classmethod
+    def _validate_non_measurable(cls, v: str | None) -> str | None:
+        """A waiver is a reason, so an empty or token one is not a waiver.
+
+        `non-measurable: ""` and `non-measurable: "n/a"` would carry the full
+        force of the waiver — the spec stops being counted as owing criteria —
+        while saying nothing a reviewer can weigh. The floor is deliberately low
+        and deliberately non-zero: enough to stop a reflexive placeholder,
+        nowhere near enough to judge the reason, which is a person's job.
+        """
+        if v is None:
+            return None
+        reason = v.strip()
+        if len(reason) < _MIN_WAIVER_REASON:
+            raise ValueError(
+                f"non-measurable must state why, in at least {_MIN_WAIVER_REASON} characters; "
+                f"got {v!r}. Omit the field if the spec simply has no criteria yet — that is "
+                f"counted debt, not a waiver."
+            )
+        return reason
+
+    @model_validator(mode="after")
+    def _waiver_is_for_specs(self) -> FrontMatter:
+        """Only a spec owes acceptance criteria, so only a spec can waive them.
+
+        An ADR is a decision. It is owed an implementing spec (which #164 also
+        counts), not criteria of its own — the four that carry scenarios do so
+        by choice. Letting an ADR waive something it was never owed would put a
+        reason in the corpus that answers no question.
+        """
+        if self.non_measurable is not None and self.kind is not Kind.SPEC:
+            raise ValueError(
+                "non-measurable applies to specs only; an ADR is owed an implementing spec, "
+                "not acceptance criteria of its own"
+            )
+        return self

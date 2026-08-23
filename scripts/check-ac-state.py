@@ -85,6 +85,11 @@ ID_RE = re.compile(r"^id:\s*(\S+)", re.MULTILINE)
 STATUS_RE = re.compile(r"^status:\s*(.+?)\s*$", re.MULTILINE)
 LAYER_RE = re.compile(r"^layer:\s*(.+?)\s*$", re.MULTILINE)
 IMPLEMENTS_RE = re.compile(r"^implements:\s*(.*)$((?:\n  - .*)*)", re.MULTILINE)
+# `non-measurable: <reason>` (#164) — the front-matter waiver that separates
+# "this spec has no criteria, and here is why" from "nobody has written them
+# yet". Both used to read as the same absence. The registry schema enforces
+# that the reason is a reason; this only needs to know one was given.
+NON_MEASURABLE_RE = re.compile(r"^non-measurable:\s*(\S.*?)\s*$", re.MULTILINE)
 AC_MODULES_RE = re.compile(r"^ac[-_]modules:\s*$((?:\n  \S+:\s*\S+)*)", re.MULTILINE)
 
 
@@ -417,6 +422,7 @@ def collect_specs(
                 "layer": (LAYER_RE.search(fm) or [None, "?"])[1],
                 "declared_status": (STATUS_RE.search(fm) or [None, "?"])[1],
                 "implements": _list_field(fm, IMPLEMENTS_RE),
+                "non_measurable": (NON_MEASURABLE_RE.search(fm) or [None, None])[1],
                 "has_ac_heading": bool(AC_HEADING_RE.search(text)),
                 "criteria_total": len(criteria),
                 "annotated": sum(1 for c in criteria if c.module),
@@ -521,7 +527,24 @@ RATCHETED = (
     "criteria_claimed_but_unproven",
     "scenarios_without_ac_tag",
     "gherkin_parse_errors",
+    # The three absent-direction counters (#164). Everything above measures a
+    # link that exists and is wrong; these measure a link that was never made.
+    # The registry refuses dangling references, duplicate ids and cycles, so
+    # every link in the corpus is real — and a spec implementing nothing, an
+    # Accepted decision nothing implements, and a spec owing criteria were all
+    # perfectly clean. "Specs map to ADRs" read as "specs do not mis-map to
+    # ADRs", which is a much weaker claim than a green Registry CI suggested.
+    "specs_implementing_nothing",
+    "decided_adrs_without_spec",
+    "specs_owing_criteria",
 )
+
+#: Statuses in which a decision has been taken, so an implementing spec is owed.
+#: `Proposed` is exempt by definition — a decision not yet made cannot be owed an
+#: implementation. `Implemented` is included alongside `Accepted` because it is
+#: the strictly stronger claim: an ADR asserting the work is done, with no spec
+#: naming it, is a worse version of the same hole.
+DECIDED = {"Accepted", "Implemented"}
 
 
 def _mode_mismatch(run_tests: bool) -> str | None:
@@ -674,6 +697,35 @@ def main(argv: list[str]) -> int:
     claiming = [d for d in specs if d["declared_status"] in COMPLETION_CLAIMS]
     claiming += [d for d in adrs if d["declared_status"] in COMPLETION_CLAIMS]
 
+    # The absent direction (#164). Each of these was clean under every existing
+    # check, because each is a link that was never made rather than one made
+    # wrongly, and a validator can only refuse what is written down.
+    implementing_nothing = [s["id"] for s in specs if not s["implements"]]
+    # An ADR is satisfied by a spec naming it, not by carrying scenarios of its
+    # own. The seven documents that do carry their own all have an implementing
+    # spec as well, so nothing is caught by this that would not be caught
+    # anyway — and the strict form is the one that stays true if that stops
+    # being so, since the ADR/spec split exists precisely to move criteria out
+    # of decisions.
+    adrs_without_spec = [
+        a["id"] for a in adrs if a["declared_status"] in DECIDED and not a["specs"]
+    ]
+    # A waiver retires the debt; it does not hide it. `specs_waiving_criteria`
+    # is reported alongside, and the reason is in the front matter where the
+    # diff that added it had to show it.
+    waived = [s for s in specs if s["non_measurable"]]
+    owing_criteria = [s["id"] for s in specs if not s["criteria_total"] and not s["non_measurable"]]
+    # Kept distinct from `specs_owing_criteria`, which is the superset: this is
+    # the narrower "wrote a heading, wrote prose under it, never gave the
+    # bullets ids" — a document mid-conversion rather than one that never
+    # started. Waived specs leave both, so a waiver is one banked improvement
+    # rather than a fall in one counter and a stubborn number in the other.
+    awaiting_retrofit = [
+        s["id"]
+        for s in specs
+        if s["has_ac_heading"] and not s["criteria_total"] and not s["non_measurable"]
+    ]
+
     def _row(d: dict[str, Any], kind: str) -> dict[str, Any]:
         return {
             "id": d["id"],
@@ -697,9 +749,11 @@ def main(argv: list[str]) -> int:
             "specs": len(specs),
             "specs_with_ac_heading": sum(1 for s in specs if s["has_ac_heading"]),
             "specs_with_ac_ids": sum(1 for s in specs if s["criteria_total"]),
-            "specs_awaiting_retrofit": sum(
-                1 for s in specs if s["has_ac_heading"] and not s["criteria_total"]
-            ),
+            "specs_awaiting_retrofit": len(awaiting_retrofit),
+            "specs_implementing_nothing": len(implementing_nothing),
+            "decided_adrs_without_spec": len(adrs_without_spec),
+            "specs_owing_criteria": len(owing_criteria),
+            "specs_waiving_criteria": len(waived),
             "criteria_declared": len(declared_ids),
             "criteria_annotated": sum(s["annotated"] for s in specs),
             "markers_found": len(markers),
@@ -715,6 +769,14 @@ def main(argv: list[str]) -> int:
         },
         "markers_without_criterion": orphans,
         "criteria_claimed_but_unproven": false_claims,
+        # Enumerated, not just counted: a ceiling of 76 tells a reader how much
+        # debt there is and nothing about which document to pick up next.
+        "specs_implementing_nothing": implementing_nothing,
+        "decided_adrs_without_spec": adrs_without_spec,
+        "specs_owing_criteria": owing_criteria,
+        "specs_waiving_criteria": [
+            {"id": s["id"], "reason": s["non_measurable"]} for s in specs if s["non_measurable"]
+        ],
         "completion_claims_contradicted": contradicted,
         "completion_claims_unverifiable": unverifiable,
         "specs": specs,
@@ -732,6 +794,10 @@ def main(argv: list[str]) -> int:
     print(f"  ...with an AC heading        : {t['specs_with_ac_heading']}")
     print(f"  ...carrying **AC-N** ids     : {t['specs_with_ac_ids']}")
     print(f"  ...prose only, awaiting ids  : {t['specs_awaiting_retrofit']}")
+    print(f"  ...owing criteria, unwaived  : {t['specs_owing_criteria']}")
+    print(f"  ...waived as non-measurable  : {t['specs_waiving_criteria']}")
+    print(f"  specs implementing no ADR    : {t['specs_implementing_nothing']}")
+    print(f"  decided ADRs with no spec    : {t['decided_adrs_without_spec']}")
     print(f"  criteria declared            : {t['criteria_declared']}")
     print(f"  ...with a module annotation  : {t['criteria_annotated']}")
     print(f"  test markers found           : {t['markers_found']}")
