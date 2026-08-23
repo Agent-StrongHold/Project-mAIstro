@@ -204,3 +204,60 @@ def test_adr_098_extension_layers_accepted() -> None:
 def test_invalid_layer_rejected() -> None:
     with pytest.raises(ValidationError):
         FrontMatter.model_validate(_valid_dict() | {"layer": "Optimization"})
+
+
+# --------------------------------------------------------------------------
+# `non-measurable`: the waiver that separates "no criteria" from "not yet
+# written" (#164). A spec with neither criteria nor a waiver is counted debt;
+# a spec with a waiver is resolved, so the reason is the whole cost.
+# --------------------------------------------------------------------------
+
+
+def _valid_spec() -> dict[str, Any]:
+    return {**_valid_dict(), "id": "SPEC-030", "kind": "spec", "status": "Proposed"}
+
+
+_REASON = "A governance narrative with no runtime surface to assert on"
+
+
+def test_non_measurable_defaults_to_none() -> None:
+    """The field is opt-in: 176 existing specs must keep parsing unchanged."""
+    assert FrontMatter.model_validate(_valid_spec()).non_measurable is None
+
+
+def test_non_measurable_accepts_a_reason() -> None:
+    fm = FrontMatter.model_validate({**_valid_spec(), "non-measurable": _REASON})
+    assert fm.non_measurable == _REASON
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "n/a", "TODO", "not measurable"])
+def test_a_token_reason_is_not_a_reason(reason: str) -> None:
+    """These carry the full force of the waiver — the spec stops being counted
+    as owing criteria — while saying nothing a reviewer can weigh."""
+    with pytest.raises(ValidationError, match="non-measurable must state why"):
+        FrontMatter.model_validate({**_valid_spec(), "non-measurable": reason})
+
+
+def test_the_stored_reason_is_stripped() -> None:
+    fm = FrontMatter.model_validate({**_valid_spec(), "non-measurable": f"  {_REASON}  "})
+    assert fm.non_measurable == _REASON
+
+
+def test_an_adr_cannot_waive_criteria_it_was_never_owed() -> None:
+    """An ADR is a decision. #164 asks it for an implementing spec, not for
+    criteria of its own, so a waiver on one would answer no question."""
+    with pytest.raises(ValidationError, match="non-measurable applies to specs only"):
+        FrontMatter.model_validate({**_valid_dict(), "non-measurable": _REASON})
+
+
+def test_the_waiver_survives_a_roundtrip_under_its_yaml_name() -> None:
+    fm = FrontMatter.model_validate({**_valid_spec(), "non-measurable": _REASON})
+    dumped = fm.model_dump(by_alias=True)
+
+    assert dumped["non-measurable"] == _REASON
+    assert FrontMatter.model_validate(dumped).non_measurable == _REASON
+
+
+def test_the_waiver_does_not_relax_extra_forbid() -> None:
+    with pytest.raises(ValidationError):
+        FrontMatter.model_validate({**_valid_spec(), "non-measurable": _REASON, "nope": 1})

@@ -36,7 +36,8 @@ kind: spec
 status: Proposed
 created: <YYYY-MM-DD>
 substrate: []        # ADRs/SPECs this builds on, e.g. maistro-engine#ADR-031
-implements: []       # ADRs this realizes
+implements: []       # ADRs this realizes -- REQUIRED to be non-empty (#164);
+                     # a spec naming no ADR raises specs_implementing_nothing
 related: []          # loosely related, e.g. maistro-engine#SPEC-184
 supersedes: []
 blocks: []
@@ -67,6 +68,16 @@ owners:
 <The design. Interfaces, data shapes, control flow.>
 
 ## Acceptance criteria
+
+<REQUIRED (#164). A spec with no criteria raises `specs_owing_criteria` past
+its ceiling and fails the AC ratchet. If this spec genuinely cannot be
+measured -- a naming convention, a narrative, a decision record with no
+runtime surface -- say so in the front matter instead:
+
+    non-measurable: <why, in a sentence a reviewer can weigh>
+
+That retires the debt; leaving the section empty does not. The schema
+refuses an empty or token reason, and refuses the field on an ADR.>
 
 -
 

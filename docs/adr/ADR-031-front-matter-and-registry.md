@@ -65,6 +65,9 @@ contracts: [boundary | behavioral | cross-service]
 tests:
   - path/to/test_file.py::test_func
 
+# Acceptance-criteria waiver (added by #164; specs only)
+non-measurable: <why this spec declares no acceptance criteria>   # optional
+
 # Classification
 # (Evolve/Crypto/Connectivity/Ability/Identity added by ADR-098.)
 layer: Foundation | Orchestration | Agents | Tools | Memory | Observability | Reliability | Governance | UserClient | Evolve | Crypto | Connectivity | Ability | Identity
@@ -74,6 +77,15 @@ owners:
 ```
 
 All fields are required. Empty lists (`[]`) are valid for relationship and contracts/tests fields.
+
+`non-measurable` is the one optional field, and it exists because an empty list
+was *too* valid. `implements: []` and an absent acceptance-criteria section were
+both clean under this contract, so a spec implementing nothing and a spec owing
+criteria were indistinguishable from ones that had been examined and found not
+to need either. The waiver is that distinction: a reason, reviewed in the diff
+that adds it, which `scripts/check-ac-state.py` accepts in place of criteria.
+The schema refuses an empty or token reason, and refuses the field on an ADR —
+a decision is owed an implementing spec, not criteria of its own.
 
 ### 2. Status lifecycle
 

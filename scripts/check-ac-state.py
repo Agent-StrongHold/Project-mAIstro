@@ -515,6 +515,54 @@ def collect_adrs(
     return adrs
 
 
+def absent_chain(specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    """The links the chain never made, as document ids (#164).
+
+    Everything else in this script measures a link that exists and is wrong.
+    These four measure absence, which no validator can catch: `implements: []`
+    is valid front matter, so a spec need not name any ADR; nothing asks whether
+    an ADR has any spec implementing it; nothing asks whether a spec has any
+    criteria. All three were clean under `maistro_registry validate` and `lint`,
+    which is why "specs map to ADRs" read as "specs do not *mis*-map to ADRs".
+
+    The index runs off `spec["implements"]`, which `collect_adrs` reads out of
+    each spec's own front matter on every run. There is no generated reverse
+    index to fall out of date, which matters under `ADR-062026-9b30` date-based
+    ids: two concurrent PRs can add specs implementing the same ADR without
+    colliding, and neither has to regenerate anything for the other to count.
+    """
+    # An ADR is satisfied by a spec naming it, not by carrying scenarios of its
+    # own. The seven documents that do carry their own all have an implementing
+    # spec as well, so this catches nothing that would not be caught anyway —
+    # and the strict form is the one that stays true if that stops being so,
+    # since the ADR/spec split exists precisely to move criteria out of
+    # decisions.
+    implementing = {ref.split("#")[-1] for s in specs for ref in s["implements"]}
+    return {
+        "specs_implementing_nothing": [s["id"] for s in specs if not s["implements"]],
+        "decided_adrs_without_spec": [
+            a["id"] for a in adrs if a["declared_status"] in DECIDED and a["id"] not in implementing
+        ],
+        # A waiver retires the debt; it does not hide it. The waived specs are
+        # reported alongside with their reasons, which live in the front matter
+        # where the diff that added them had to show them.
+        "specs_owing_criteria": [
+            s["id"] for s in specs if not s["criteria_total"] and not s["non_measurable"]
+        ],
+        # The narrower "wrote a heading, wrote prose under it, never gave the
+        # bullets ids" — a document mid-conversion rather than one that never
+        # started, and a subset of the above. Waived specs leave both, so a
+        # waiver is one banked improvement rather than a fall in one counter and
+        # a stubborn number in the other.
+        "specs_awaiting_retrofit": [
+            s["id"]
+            for s in specs
+            if s["has_ac_heading"] and not s["criteria_total"] and not s["non_measurable"]
+        ],
+        "specs_waiving_criteria": [s for s in specs if s["non_measurable"]],
+    }
+
+
 CEILINGS = ROOT / "quality" / "ac-state-ceilings.json"
 
 #: Counters that may only go down. Each is a way a completion claim can outrun
@@ -697,34 +745,12 @@ def main(argv: list[str]) -> int:
     claiming = [d for d in specs if d["declared_status"] in COMPLETION_CLAIMS]
     claiming += [d for d in adrs if d["declared_status"] in COMPLETION_CLAIMS]
 
-    # The absent direction (#164). Each of these was clean under every existing
-    # check, because each is a link that was never made rather than one made
-    # wrongly, and a validator can only refuse what is written down.
-    implementing_nothing = [s["id"] for s in specs if not s["implements"]]
-    # An ADR is satisfied by a spec naming it, not by carrying scenarios of its
-    # own. The seven documents that do carry their own all have an implementing
-    # spec as well, so nothing is caught by this that would not be caught
-    # anyway — and the strict form is the one that stays true if that stops
-    # being so, since the ADR/spec split exists precisely to move criteria out
-    # of decisions.
-    adrs_without_spec = [
-        a["id"] for a in adrs if a["declared_status"] in DECIDED and not a["specs"]
-    ]
-    # A waiver retires the debt; it does not hide it. `specs_waiving_criteria`
-    # is reported alongside, and the reason is in the front matter where the
-    # diff that added it had to show it.
-    waived = [s for s in specs if s["non_measurable"]]
-    owing_criteria = [s["id"] for s in specs if not s["criteria_total"] and not s["non_measurable"]]
-    # Kept distinct from `specs_owing_criteria`, which is the superset: this is
-    # the narrower "wrote a heading, wrote prose under it, never gave the
-    # bullets ids" — a document mid-conversion rather than one that never
-    # started. Waived specs leave both, so a waiver is one banked improvement
-    # rather than a fall in one counter and a stubborn number in the other.
-    awaiting_retrofit = [
-        s["id"]
-        for s in specs
-        if s["has_ac_heading"] and not s["criteria_total"] and not s["non_measurable"]
-    ]
+    absent = absent_chain(specs, adrs)
+    implementing_nothing = absent["specs_implementing_nothing"]
+    adrs_without_spec = absent["decided_adrs_without_spec"]
+    owing_criteria = absent["specs_owing_criteria"]
+    awaiting_retrofit = absent["specs_awaiting_retrofit"]
+    waived = absent["specs_waiving_criteria"]
 
     def _row(d: dict[str, Any], kind: str) -> dict[str, Any]:
         return {

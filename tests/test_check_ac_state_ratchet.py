@@ -26,6 +26,10 @@ TOTALS = {
     "criteria_claimed_but_unproven": 0,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
+    # The absent-direction counters (#164).
+    "specs_implementing_nothing": 76,
+    "decided_adrs_without_spec": 35,
+    "specs_owing_criteria": 146,
 }
 
 
@@ -52,6 +56,14 @@ def ceilings(gate, tmp_path, monkeypatch):
 
     write.path = path
     return write
+
+
+def test_every_ratcheted_counter_is_exercised(gate) -> None:
+    """`_compare` reads `totals[name]` for every name in RATCHETED, so a counter
+    missing from this fixture is a KeyError in the gate rather than a test that
+    skips it. Adding a counter without adding it here would leave that counter
+    untested while every case below still passed."""
+    assert set(TOTALS) == set(gate.RATCHETED)
 
 
 def test_sitting_exactly_on_the_ceilings_passes(gate, ceilings) -> None:
