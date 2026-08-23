@@ -391,7 +391,14 @@ async def create_container(
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
     db_pool: Any = None
+    # `db_pool` alone cannot say which backend is live -- it holds an
+    # `aiosqlite.Connection` on one path and an `asyncpg.Pool` on the other,
+    # and the durable-event wiring below issues SQLite DDL against whatever it
+    # is handed. Naming the backend keeps that dispatch explicit instead of
+    # inferring it from a truthy handle.
+    backend = "InMemory"
     if config.database_url.startswith("sqlite:"):
+        backend = "SQLite"
         (
             db_pool,
             quota_tracker,
@@ -399,6 +406,15 @@ async def create_container(
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
+    elif config.database_url.startswith(_POSTGRES_SCHEMES):
+        backend = "PostgreSQL"
+        (
+            db_pool,
+            quota_tracker,
+            learning_store,
+            outcome_store,
+            session_store,
+        ) = await _wire_postgres_backend(config.database_url)
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
@@ -474,13 +490,27 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
-    if db_pool is not None:
+    if backend == "SQLite":
         (
             durable_event_log,
             trigger_store,
             invocation_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
+        # PostgreSQL lands here too, deliberately. The durable-event stores
+        # have no PostgreSQL implementation on this branch -- that is #135,
+        # in flight as PR #181 -- and the SQLite ones issue SQLite DDL, so
+        # handing them an asyncpg pool would fail at wiring time. Until #181
+        # lands, a Postgres deployment gets durable memory and ephemeral
+        # events; the warning says so rather than leaving an operator to
+        # infer it from a restart.
+        if backend == "PostgreSQL":
+            logger.warning(
+                "Durable events have no PostgreSQL backend yet (issue #135), so the "
+                "event log, triggers and invocations are in-memory and will not "
+                "survive a restart -- even though memory, outcomes, sessions and "
+                "quota are durable."
+            )
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
@@ -601,13 +631,23 @@ async def create_container(
         identity_linker=identity_linker,
     )
 
-    backend = "SQLite" if db_pool is not None else "InMemory"
     logger.info("Container wired (%s stores)", backend)
     return container
 
 
 #: Schemes that deliberately select ephemeral in-memory stores.
 _EPHEMERAL_SCHEMES: Final = ("memory://",)
+
+#: Schemes that select the PostgreSQL backend.
+#:
+#: `postgres://` is the historical spelling and still what several hosted
+#: providers hand out, so rejecting it would fail deployments that are
+#: correctly configured. The SQLAlchemy-style `postgresql+asyncpg://` is
+#: accepted because `alembic/env.py` and this container read the same
+#: deployment's configuration and a driver suffix is a reasonable thing to
+#: find there; `_asyncpg_dsn` strips it, since asyncpg's own parser does not
+#: understand it.
+_POSTGRES_SCHEMES: Final = ("postgresql://", "postgres://", "postgresql+asyncpg://")
 
 
 def _redact_url(database_url: str) -> str:
@@ -668,12 +708,87 @@ def _require_ephemeral_is_deliberate(database_url: str) -> None:
         return
     msg = (
         f"database_url {_redact_url(database_url)!r} names a backend this build "
-        "cannot wire. Supported: sqlite:///path/to/file.db (durable), sqlite:// "
-        "(in-memory) and memory:// (explicitly ephemeral). Falling back to "
-        "in-memory would discard the data you configured a database to keep -- "
-        "see issue #122."
+        "cannot wire. Supported: postgresql://user:pass@host/db (durable), "
+        "sqlite:///path/to/file.db (durable), sqlite:// (in-memory) and "
+        "memory:// (explicitly ephemeral). Falling back to in-memory would "
+        "discard the data you configured a database to keep -- see issue #122."
     )
     raise ConfigError(msg)
+
+
+def _asyncpg_dsn(database_url: str) -> str:
+    """Normalise a configured URL into something asyncpg's parser accepts.
+
+    asyncpg understands `postgresql://` and `postgres://` and nothing else, so
+    a `postgresql+asyncpg://` URL -- the SQLAlchemy spelling an operator may
+    reasonably have set for alembic -- raises `ValueError: invalid DSN` rather
+    than connecting. Stripping the driver suffix is the whole conversion; the
+    userinfo, host, port, database and query string all mean the same thing to
+    both parsers.
+    """
+    return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+async def _wire_postgres_backend(
+    database_url: str,
+) -> tuple[
+    Any,
+    QuotaTracker,
+    LearningStore,
+    OutcomeStore,
+    SessionStore,
+]:
+    """Open an asyncpg pool and wire the canonical durable stores (#122).
+
+    PostgreSQL is the durable system of record (ADR-082226-5104), and until
+    this branch existed a `postgresql://` URL fell through to in-memory stores:
+    learnings, outcomes, sessions and quota were discarded on every restart,
+    with nothing in the log saying the configured database had been ignored.
+
+    **Schema ownership stays with alembic.** Nothing here issues CREATE TABLE.
+    `PgLearningStore.ensure_schema` is called because it is ALTER-only and
+    idempotent by construction -- it adds a scope column whose absence would
+    otherwise turn a filtered read into a cross-org one -- but the tables
+    themselves come from `alembic upgrade head`, and a deployment that has not
+    run it gets an `UndefinedTableError` naming the missing table. That is the
+    correct failure: it is loud, it is specific, and it does not silently
+    substitute a database this container invented for the one the migrations
+    describe.
+
+    The connection error is re-raised with the URL redacted. A PostgreSQL DSN
+    carries `user:password@` as a matter of course, and asyncpg's own
+    exceptions do not always keep it out of the message.
+    """
+    import asyncpg
+
+    from maistro.persistence.pg_learnings import PgLearningStore
+    from maistro.persistence.pg_outcomes import PgOutcomeStore
+    from maistro.persistence.pg_quota import PgQuotaTracker
+    from maistro.persistence.pg_sessions import PgSessionStore
+
+    try:
+        pool = await asyncpg.create_pool(_asyncpg_dsn(database_url))
+    except (OSError, asyncpg.PostgresError) as exc:
+        msg = (
+            f"Could not connect to database_url {_redact_url(database_url)!r}: "
+            f"{type(exc).__name__}. PostgreSQL is the durable system of record, so "
+            "this is a startup failure rather than a reason to fall back to "
+            "in-memory stores -- see issue #122."
+        )
+        raise ConfigError(msg) from exc
+    if pool is None:  # pragma: no cover - asyncpg only returns None on a bad loop
+        msg = f"asyncpg returned no pool for {_redact_url(database_url)!r}"
+        raise ConfigError(msg)
+
+    pg_learning_store = PgLearningStore(pool)
+    await pg_learning_store.ensure_schema()
+
+    quota_tracker: QuotaTracker = PgQuotaTracker(pool)
+    learning_store: LearningStore = pg_learning_store
+    outcome_store: OutcomeStore = PgOutcomeStore(pool)
+    session_store: SessionStore = PgSessionStore(pool)
+
+    return pool, quota_tracker, learning_store, outcome_store, session_store
 
 
 async def _wire_sqlite_backend(

@@ -90,10 +90,18 @@ async def _recreate_scratch_database(url: str) -> None:
 def migrated_url() -> str:
     """A scratch database with revision 004 applied.
 
-    `stamp 003` then `upgrade head` rather than a full `upgrade head` from
-    empty: 001 needs the `vector` extension and this revision does not depend on
-    anything 001-003 create, so walking the whole chain would couple these tests
-    to a pgvector image for no gain. #178 owns the chain-from-empty case.
+    `stamp 003` then upgrade rather than a full `upgrade head` from empty: 001
+    needs the `vector` extension and this revision does not depend on anything
+    001-003 create, so walking the whole chain would couple these tests to a
+    pgvector image for no gain. #178 owns the chain-from-empty case.
+
+    The upgrade targets `004_quota_sessions` by name rather than `head`, because
+    stamping over a prefix and then asking for `head` is a claim about every
+    future revision as well as this one. #122's 005 is the first to make that
+    false: it `ALTER`s `learnings`, a table 001 creates and this fixture only
+    ever stamped, so `head` walked into `UndefinedTable` on a revision these
+    tests are not about. Naming the revision under test keeps this suite's
+    failures its own.
     """
     url = _require_postgres()
     # asyncpg rather than psycopg2: asyncpg is a declared root dependency, and
@@ -103,7 +111,7 @@ def migrated_url() -> str:
     asyncio.run(_recreate_scratch_database(url))
 
     env = _alembic_env(url)
-    for args in (["stamp", "003"], ["upgrade", "head"]):
+    for args in (["stamp", "003"], ["upgrade", "004_quota_sessions"]):
         result = subprocess.run(
             [sys.executable, "-m", "alembic", *args],
             cwd=REPO_ROOT,
