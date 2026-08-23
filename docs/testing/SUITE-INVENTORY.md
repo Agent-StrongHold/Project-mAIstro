@@ -118,12 +118,21 @@ on another branch, so this tree had never been seen by `check-suite-inventory`
 at all — and that number is precisely what would otherwise absorb a suite
 silently dropping out of collection.
 
+The chat guard adds twenty-one maistro-server node IDs on top of the refreshed
+base: the endpoint's own Gate/Run coverage from #150, plus the seven answering
+the Codex review — the admitted Graph naming the conductor rather than the
+intent table's default, a turn attributed to its authenticated principal, a
+blocked *streaming* turn getting the cancelled Run its non-streaming twin
+already had (and naming it), a streaming caller able to resolve its Run at all,
+a client that stops at the finish chunk completing rather than failing, and a
+turn abandoned during admission being cancelled rather than left open.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
 | `packages/maistro-core/tests` | 7055 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 427 | `ci.yml` |
-| `packages/maistro-server/tests` | 202 | `ci.yml` |
+| `packages/maistro-server/tests` | 223 | `ci.yml` |
 | `packages/maistro-turing/tests` | 177 | `ci.yml` |
 | `packages/maistro-design/tests` | 161 | `ci.yml` |
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |
