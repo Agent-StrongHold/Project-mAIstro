@@ -136,6 +136,8 @@ class RunStore(Protocol):
         fencing_token: str | None = None,
     ) -> Attempt: ...
 
+    async def delete_run(self, run_id: str) -> bool: ...
+
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
 #: admission that this store is used by long-lived processes: maistro-server
@@ -265,6 +267,26 @@ class InMemoryRunStore:
         updated = transition_run(run, target, at=at, result=result, error=error)
         self._runs[run_id] = updated
         return updated.model_copy(deep=True)
+
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
+        """Forget one terminal Run and everything hanging off it.
+
+        False when the Run does not exist, so a retention sweep that races
+        another sweep is a no-op rather than an error. Refuses a non-terminal
+        Run: deleting the execution identity of work that is still running
+        would leave the work itself running with nothing recording it, which is
+        worse than the memory it reclaims. ``force`` is for a caller that has
+        already established the Run is abandoned.
+        """
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        if run.status not in TERMINAL_RUN_STATUSES and not force:
+            raise RunIntegrityError(
+                f"cannot delete Run {run_id!r} in non-terminal status {run.status.value!r}"
+            )
+        self._forget_run(run_id)
+        return True
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = self._require_run(run_id)

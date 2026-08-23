@@ -30,8 +30,10 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.chat_admission import ChatRunAdmitter
+from maistro.runs.model import Run, RunStatus
 from maistro.runs.store import RunStore
-from maistro.runs.wiring import wire_execution_spine
+from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
 from maistro.security.gate import Gate
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
@@ -125,6 +127,10 @@ class Container:
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
+    #: The seam a chat turn is admitted through (#131). Separate from the task
+    #: admitter because the two have different retention: a task's Run is kept
+    #: as long as its receipt, a chat turn's is swept behind a small window.
+    chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -237,13 +243,79 @@ class Container:
             )
             raise AgentError(msg)
 
-        result: dict[str, Any] = await self.conduit.route_request(
+        run = await self._admit_chat_turn(
             messages,
             auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
         )
+        try:
+            result: dict[str, Any] = await self.conduit.route_request(
+                messages,
+                auth=auth,
+                session_id=session_id,
+                intent_hint=intent_hint,
+            )
+        except BaseException as exc:
+            await self._close_chat_run(run, error=str(exc))
+            raise
+        await self._close_chat_run(run)
+        if run is not None:
+            # Additive. The OpenAI-compatible shape a caller parses is
+            # untouched; `run_id` is the handle for anyone who wants to follow
+            # the turn through the canonical spine, and is simply absent for a
+            # container with no chat admitter wired.
+            result["run_id"] = run.run_id
         return result
+
+    async def _admit_chat_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        auth: Any = None,
+        session_id: str | None = None,
+        intent_hint: str = "",
+    ) -> Run | None:
+        """Admit this turn as a canonical Run, or None when none is wired.
+
+        A turn is never refused for want of a Run. The chat path has no receipt
+        to fall back on — refusing here would turn "this process cannot record
+        the turn" into "this process cannot answer", which is a worse failure
+        than an unrecorded answer and not the one #41 asked for.
+        """
+        if self.chat_admitter is None:
+            return None
+        try:
+            run = await self.chat_admitter.admit(
+                messages,
+                session_id=session_id,
+                intent_hint=intent_hint,
+                actor_principal_id=getattr(auth, "user_id", None) or None,
+            )
+            # Two hops: a Run is born CREATED and the lifecycle has no edge
+            # from there to RUNNING. Queued is momentarily true here — the turn
+            # is admitted and about to be dispatched — rather than a fiction
+            # invented to satisfy the table.
+            await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except Exception:
+            logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+            return None
+
+    async def _close_chat_run(self, run: Run | None, *, error: str | None = None) -> None:
+        """Terminalize a chat turn's Run, whichever way the turn ended.
+
+        A Run left RUNNING is what recovery scans read as a process that died,
+        so the one thing this must not do is leave the turn open — including
+        when the turn ended by raising.
+        """
+        if run is None:
+            return
+        target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
+        try:
+            await self.run_store.transition_run(run.run_id, target, error=error)
+        except Exception:
+            logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
 
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
@@ -450,6 +522,12 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
     )
+    chat_admitter = wire_chat_admission(
+        run_store,
+        project_scope_store,
+        workspace_id=config.workspace_id,
+        intents=intent_registry,
+    )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
@@ -624,6 +702,7 @@ async def create_container(
         project_scope_store=project_scope_store,
         run_store=run_store,
         task_admitter=task_admitter,
+        chat_admitter=chat_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,

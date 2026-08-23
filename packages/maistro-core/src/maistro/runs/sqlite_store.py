@@ -165,6 +165,31 @@ class SqliteRunStore:
         )
         return Run.model_validate_json(row[0]) if row is not None else None
 
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
+        """Forget one terminal Run and everything hanging off it.
+
+        The schema declares ``ON DELETE RESTRICT`` between the three tables, so
+        the children are removed first and explicitly rather than relying on a
+        cascade the schema deliberately does not grant. One transaction, so a
+        crash mid-sweep cannot leave NodeRuns whose Run is gone.
+        """
+        run = await self.get_run(run_id)
+        if run is None:
+            return False
+        if run.status not in TERMINAL_RUN_STATUSES and not force:
+            raise RunIntegrityError(
+                f"cannot delete Run {run_id!r} in non-terminal status {run.status.value!r}"
+            )
+        await self._conn.execute(
+            """DELETE FROM canonical_attempts WHERE node_run_id IN
+               (SELECT node_run_id FROM canonical_node_runs WHERE run_id = ?)""",
+            (run_id,),
+        )
+        await self._conn.execute("DELETE FROM canonical_node_runs WHERE run_id = ?", (run_id,))
+        await self._conn.execute("DELETE FROM canonical_runs WHERE run_id = ?", (run_id,))
+        await self._conn.commit()
+        return True
+
     async def transition_run(
         self,
         run_id: str,
