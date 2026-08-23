@@ -1769,9 +1769,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 0,
+        "covered": 1,
         "passing": 0,
-        "reachable": 8
+        "reachable": 7
       },
       "tier": "declared",
       "criteria": [
@@ -1853,7 +1853,7 @@
           "scenario": [
             "Secret payloads persist as hash and metadata only"
           ],
-          "rung": "reachable"
+          "rung": "covered"
         },
         {
           "id": "SPEC-070226-2b70/AC-7",
