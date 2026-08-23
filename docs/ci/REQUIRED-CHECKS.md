@@ -94,6 +94,7 @@ let it be silently neither.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
+| CI | `archive` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |

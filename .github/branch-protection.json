@@ -47,7 +47,8 @@
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "docker-build",
+          "archive",
+        "docker-build",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",
@@ -92,7 +93,8 @@
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "docker-build",
+          "archive",
+        "docker-build",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",
@@ -144,7 +146,8 @@
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "docker-build",
+          "archive",
+        "docker-build",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",
