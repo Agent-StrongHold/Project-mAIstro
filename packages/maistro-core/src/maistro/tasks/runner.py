@@ -28,6 +28,11 @@ DEFAULT_MAX_WORKERS = 4
 DEFAULT_LIVE_SLOTS = 2
 DEFAULT_BACKGROUND_SLOTS = 1
 
+#: How long shutdown waits for one cancelled worker to terminalize its Attempt
+#: before giving up on it. Short: this runs after the drain timeout has already
+#: expired, and the work itself is over — only its bookkeeping is outstanding.
+CANCELLED_SETTLE_TIMEOUT = 5.0
+
 # Type for the injected executor — takes a TaskCreate, returns ConductorOutput
 TaskExecutor = Callable[[TaskCreate], Coroutine[Any, Any, ConductorOutput]]
 
@@ -114,9 +119,8 @@ class TaskRunner:
         if active:
             await logger.ainfo("draining_active_tasks", count=len(active))
             _, pending = await asyncio.wait(active, timeout=drain_timeout)
-            for t in pending:
-                t.cancel()
             if pending:
+                await self._settle_cancelled(pending)
                 await logger.awarning("tasks_cancelled_on_shutdown", count=len(pending))
 
         if self._progress_webhook:
@@ -136,9 +140,8 @@ class TaskRunner:
         active = set(self._active_tasks)
         if active:
             _, pending = await asyncio.wait(active, timeout=timeout)
-            for t in pending:
-                t.cancel()
             if pending:
+                await self._settle_cancelled(pending)
                 await logger.awarning("task_runner_drain_timeout", cancelled=len(pending))
 
         if self._worker_task:
@@ -232,6 +235,30 @@ class TaskRunner:
             await self._emit_progress_webhook(task_id)
         finally:
             self._gate.release(lane)
+
+    async def _settle_cancelled(self, pending: set[asyncio.Task[None]]) -> None:
+        """Cancel workers and wait for their cleanup to actually finish.
+
+        Cancelling and returning was enough while a worker's cleanup was purely
+        in-memory. It is not now: each in-flight task holds a persisted Attempt,
+        and the `CancelledError` handler is what terminalizes it. Returning
+        before those handlers run lets the caller close the Run store — or the
+        process exit — with an Attempt still recorded as running, which is
+        exactly the false "a worker died here" signal recovery reads (#143).
+
+        Bounded, because a worker that ignores cancellation must not hold
+        shutdown open forever; what it leaves behind is then a genuine orphan
+        for reconciliation rather than one this method created.
+        """
+        for task in pending:
+            task.cancel()
+        settled = await asyncio.gather(
+            *(asyncio.wait_for(asyncio.shield(t), CANCELLED_SETTLE_TIMEOUT) for t in pending),
+            return_exceptions=True,
+        )
+        stuck = sum(1 for outcome in settled if isinstance(outcome, TimeoutError))
+        if stuck:
+            await logger.awarning("task_cancellation_did_not_settle", count=stuck)
 
     async def _execute_work(self, run_id: str | None, request: TaskCreate) -> ConductorOutput:
         """Run the task's work, through the Attempt seam when there is one.

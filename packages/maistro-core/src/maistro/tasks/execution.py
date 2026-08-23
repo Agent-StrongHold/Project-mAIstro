@@ -59,6 +59,11 @@ class TaskExecutionFailed(Exception):
     def __init__(self, output: ConductorOutput) -> None:
         super().__init__(output.final_answer or "task execution failed")
         self.output = output
+        # The same JSON-safe summary a successful Attempt keeps. A failed task
+        # can still have changed files, and an Attempt that recorded only the
+        # error text would drop that evidence exactly where a retry or an audit
+        # goes looking for it.
+        self.attempt_evidence = attempt_result(output)
 
 
 def attempt_result(output: ConductorOutput) -> dict[str, Any]:
@@ -89,6 +94,12 @@ class TaskAttemptExecutor:
         runtime: ExecutionRuntime | None = None,
         timeout_s: float | None = None,
     ) -> None:
+        if timeout_s is not None and timeout_s <= 0:
+            # Rejected here rather than by `AttemptExecutionService`, which
+            # would only see it after the NodeRun exists — leaving a created
+            # NodeRun with no Attempt under it, an execution record that is
+            # incomplete rather than absent.
+            raise ValueError("timeout_s must be > 0")
         self._runs = run_store
         self._service = RunExecutionService(
             store=run_store,

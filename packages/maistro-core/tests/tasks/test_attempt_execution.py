@@ -324,3 +324,73 @@ async def test_shutdown_leaves_no_non_terminal_attempt(wired) -> None:
     node_run = await runs.get_node_run(node_runs[0].node_run_id)
     assert node_run is not None
     assert node_run.status is not RunStatus.RUNNING
+
+
+# --- review findings ------------------------------------------------------
+
+
+async def test_a_failed_attempt_keeps_the_work_it_did(wired) -> None:
+    """A failed task can still have changed files; the Attempt must say so."""
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    partial = ConductorOutput(
+        success=False,
+        final_answer="tests still red",
+        code=CodeOutput(description="partial", files_changed=["half.py"]),
+    )
+
+    await _runner(queue, runs, _Executor(partial))._execute_task(task.task_id)
+
+    node_runs = await runs.list_node_runs(task.run_id or "")
+    attempt = (await runs.list_attempts(node_runs[0].node_run_id))[0]
+    assert attempt.status is AttemptStatus.FAILED
+    assert attempt.error == "tests still red"
+    assert attempt.result == {
+        "success": False,
+        "final_answer": "tests still red",
+        "files_changed": ["half.py"],
+    }
+
+
+async def test_a_non_positive_timeout_is_refused_before_any_node_run(wired) -> None:
+    _queue, runs = wired
+
+    with pytest.raises(ValueError, match="timeout_s"):
+        TaskAttemptExecutor(runs, timeout_s=0)
+    with pytest.raises(ValueError, match="timeout_s"):
+        TaskAttemptExecutor(runs, timeout_s=-1.0)
+
+
+async def test_shutdown_waits_for_a_cancelled_attempt_to_terminalize(wired) -> None:
+    """`stop()` used to cancel and return, so the CancelledError handler that
+    terminalizes the Attempt could lose the race with the process exiting."""
+    import asyncio
+
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    started = asyncio.Event()
+    settled = asyncio.Event()
+
+    async def _slow(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            # Stand in for the terminalization work the real handler does.
+            await asyncio.sleep(0)
+            settled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    runner = _runner(queue, runs, _slow)
+    await runner.start()
+    # Generous: this only guards against a hang, and a thin bound here would
+    # be its own wall-clock race under CI contention.
+    await asyncio.wait_for(started.wait(), timeout=30)
+
+    await runner.stop(drain_timeout=0.05)
+
+    assert settled.is_set()
+    node_runs = await runs.list_node_runs(task.run_id or "")
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [a.status for a in attempts] == [AttemptStatus.CANCELLED]

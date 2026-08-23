@@ -157,3 +157,60 @@ async def test_parent_child_run_correlation_reloads(tmp_path: Path) -> None:
     assert reloaded.parent_run_id == parent.run_id
     assert reloaded.parent_node_run_id == parent_node.node_run_id
     await second_conn.close()
+
+
+# --- concurrency (#143 review) ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_attempt_creation_does_not_collide(tmp_path: Path) -> None:
+    """One connection, several workers.
+
+    `create_attempt` opens an explicit BEGIN IMMEDIATE. Two of those
+    interleaving on one aiosqlite connection raises "cannot start a transaction
+    within a transaction", and a third caller's commit lands inside somebody
+    else's transaction. The task runner drives four workers against this store,
+    so the store serializes its own mutations.
+    """
+    import asyncio
+
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+
+    node_run_ids = []
+    for _ in range(8):
+        run = await store.create_run(_graph(project_id))
+        await store.transition_run(run.run_id, RunStatus.QUEUED)
+        await store.transition_run(run.run_id, RunStatus.RUNNING)
+        node_run = await store.create_node_run(run.run_id, node_id="node-1")
+        node_run_ids.append(node_run.node_run_id)
+
+    attempts = await asyncio.gather(
+        *(store.create_attempt(node_run_id) for node_run_id in node_run_ids)
+    )
+
+    assert len({a.attempt_id for a in attempts}) == 8
+    assert all(a.ordinal == 1 for a in attempts)
+    for node_run_id in node_run_ids:
+        assert len(await store.list_attempts(node_run_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_transitions_do_not_interleave(tmp_path: Path) -> None:
+    """Each transition is a read-then-write; two must not split each other."""
+    import asyncio
+
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    runs = [await store.create_run(_graph(project_id)) for _ in range(8)]
+
+    await asyncio.gather(*(store.transition_run(r.run_id, RunStatus.QUEUED) for r in runs))
+
+    for run in runs:
+        reloaded = await store.get_run(run.run_id)
+        assert reloaded is not None
+        assert reloaded.status is RunStatus.QUEUED

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
@@ -85,6 +87,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_attempts_one_active
 """
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _serialized(
+    method: Callable[Concatenate[SqliteRunStore, _P], Awaitable[_R]],
+) -> Callable[Concatenate[SqliteRunStore, _P], Coroutine[Any, Any, _R]]:
+    """Run one mutation at a time against the store's single connection.
+
+    Every method this wraps either opens an explicit transaction or is a
+    read-then-write whose halves must not be split by another caller's commit.
+    Both are safe on one caller and neither is on several, which is what the
+    task runner became (#143).
+    """
+
+    async def _locked(self: SqliteRunStore, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        async with self._write_lock:
+            return await method(self, *args, **kwargs)
+
+    return _locked
+
+
 class SqliteRunStore:
     """Durable reference store for canonical execution identity and lifecycle."""
 
@@ -96,11 +120,21 @@ class SqliteRunStore:
     ) -> None:
         self._conn = conn
         self._project_store = project_store
+        # One connection, and now more than one caller: the task runner drives
+        # four workers against this store (#143), and `create_attempt` opens an
+        # explicit BEGIN IMMEDIATE. Two of those interleaving on one aiosqlite
+        # connection raises "cannot start a transaction within a transaction",
+        # and every other mutation here is a read-then-write whose two halves
+        # must not be split. The connection is serial anyway — one thread — so
+        # serializing the *operations* costs nothing and is what makes the
+        # read-modify-write pairs atomic rather than merely usually atomic.
+        self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
 
+    @_serialized
     async def create_run(
         self,
         graph: Graph,
@@ -165,6 +199,7 @@ class SqliteRunStore:
         )
         return Run.model_validate_json(row[0]) if row is not None else None
 
+    @_serialized
     async def transition_run(
         self,
         run_id: str,
@@ -181,6 +216,7 @@ class SqliteRunStore:
         )
         return updated
 
+    @_serialized
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = await self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
@@ -228,6 +264,7 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [NodeRun.model_validate_json(row[0]) for row in rows]
 
+    @_serialized
     async def transition_node_run(
         self,
         node_run_id: str,
@@ -261,6 +298,7 @@ class SqliteRunStore:
         )
         return updated
 
+    @_serialized
     async def create_attempt(
         self,
         node_run_id: str,
@@ -361,6 +399,7 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [Attempt.model_validate_json(row[0]) for row in rows]
 
+    @_serialized
     async def transition_attempt(
         self,
         attempt_id: str,
