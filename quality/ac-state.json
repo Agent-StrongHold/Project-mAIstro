@@ -9,16 +9,16 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 176,
-    "specs_with_ac_heading": 168,
-    "specs_with_ac_ids": 30,
+    "specs": 178,
+    "specs_with_ac_heading": 170,
+    "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 474,
-    "criteria_annotated": 203,
-    "markers_found": 192,
+    "criteria_declared": 485,
+    "criteria_annotated": 214,
+    "markers_found": 203,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 227,
+    "gherkin_criteria": 238,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 9,
@@ -4310,6 +4310,82 @@
       ]
     },
     {
+      "id": "SPEC-082126-3c9d",
+      "file": "docs/specs/SPEC-082126-3c9d-pii-evasion-normalization.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-073"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 4,
+      "annotated": 4,
+      "gherkin_criteria": 4,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 4
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082126-3c9d/AC-1",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Canonical Unicode normalization defeats compatibility and invisible evasions"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-2",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Common representation evasions do not hide real PII"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-3",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Detection views do not create generic encoding or non-Latin false positives"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082126-3c9d/AC-4",
+          "claimed": false,
+          "module": "maistro.security.sentinel.pii_filter",
+          "covered_by": [
+            "packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Applicable runtime output paths use the hardened filter"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
       "id": "SPEC-082126-5f6a",
       "file": "docs/specs/SPEC-082126-5f6a-warden-llm-judge-failure-semantics.md",
       "layer": "Governance",
@@ -4508,6 +4584,121 @@
           "form": "gherkin",
           "scenario": [
             "Non-JSON arguments fail closed"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082226-2a10",
+      "file": "docs/specs/SPEC-082226-2a10-resource-security-floors.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-038"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 7,
+      "annotated": 7,
+      "gherkin_criteria": 7,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 7
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082226-2a10/AC-1",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Shipped defaults equal the declared baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-2",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Operators may tighten every protected limit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-3",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Routine configuration cannot weaken the baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-4",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Unsafe development weakening is explicit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-7",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A disabled burst throttle is read as the limiter reads it"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-5",
+          "claimed": false,
+          "module": "maistro.agents.circuit_breaker",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Circuit breaker uses deployment policy"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-6",
+          "claimed": false,
+          "module": "maistro_server.api.health",
+          "covered_by": [
+            "packages/maistro-server/tests/api/test_resource_policy_health.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Effective values are observable"
           ],
           "rung": "reachable"
         }
@@ -8420,13 +8611,15 @@
       "id": "ADR-038",
       "file": "docs/adr/ADR-038-reliability-taxonomy.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
+      "specs": [
+        "SPEC-082226-2a10"
+      ],
+      "measurable_specs": 1,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-039",
@@ -10279,10 +10472,11 @@
       "file": "docs/adr/ADR-073-warden-sentinel.md",
       "declared_status": "Accepted",
       "specs": [
+        "SPEC-082126-3c9d",
         "SPEC-082126-5f6a",
         "SPEC-082126-7a31"
       ],
-      "measurable_specs": 2,
+      "measurable_specs": 3,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
