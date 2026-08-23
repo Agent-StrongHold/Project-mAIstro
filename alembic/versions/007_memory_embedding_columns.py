@@ -33,11 +33,22 @@ down_revision = "006_outcome_scope_feedback"
 branch_labels = None
 depends_on = None
 
-#: Tables gaining a vector, with the scope columns their similarity reads filter
-#: on. The scope columns are not indexed *with* the vector: pgvector's HNSW is a
-#: single-column index, so a composite is not available, and the planner is left
-#: to combine the vector index with the existing scope indexes 001 created.
-_EMBEDDED_TABLES = ("learnings", "outcomes", "episodic_memories")
+#: Tables gaining a vector. `learnings` alone, deliberately.
+#:
+#: The first version of this migration also gave `outcomes` and
+#: `episodic_memories` a column and an index. Both would have stayed empty:
+#: `PgOutcomeStore` never references the column and the container wires
+#: `InMemoryEpisodicStore` even on PostgreSQL, so the indexes would exist,
+#: cost write time, and index nothing. That is precisely the
+#: accepted-design-with-no-caller shape #188 asks this change not to create --
+#: satisfying it for one table out of three is not satisfying it.
+#:
+#: Their columns land with their producers, in the change that writes them.
+#:
+#: The scope columns are not indexed *with* the vector: pgvector's HNSW is a
+#: single-column index, so a composite is not available, and the planner
+#: combines the vector index with the scope indexes 001 created.
+_EMBEDDED_TABLES = ("learnings",)
 
 #: `ADR-082326-8194`. Kept as a literal rather than imported from
 #: `maistro.memory` -- a migration must describe the schema at its own revision,

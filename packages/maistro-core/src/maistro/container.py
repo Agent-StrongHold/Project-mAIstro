@@ -376,7 +376,10 @@ class Container:
 
 
 async def create_container(
-    config: AgentConfig, *, harness_adapters: dict[str, HarnessAdapter] | None = None
+    config: AgentConfig,
+    *,
+    harness_adapters: dict[str, HarnessAdapter] | None = None,
+    embeddings: EmbeddingClient | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -384,6 +387,17 @@ async def create_container(
     `_wire_harness_adapters` -- see that function for why this container
     cannot construct a real `RsiCycleHarnessAdapter` (`"rsi_cycle"`) on its
     own and instead leaves the map for the caller to populate.
+
+    `embeddings` turns on similarity search over durable memory (#188). It is a
+    caller-supplied object for the same reason as the harness adapters: an
+    embedding client is a deployment's choice of model and endpoint, and
+    `AgentConfig` carries no way to name one. Without it the PostgreSQL
+    learning store is keyword-only and the embedding column stays NULL, which
+    is the honest state for a deployment with no embedding model rather than a
+    degraded one.
+
+    A client whose width the schema cannot store is refused here rather than at
+    the first write -- see `memory.vectors.require_matching_dimension`.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -415,7 +429,7 @@ async def create_container(
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_postgres_backend(config.database_url)
+        ) = await _wire_postgres_backend(config.database_url, embeddings)
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()

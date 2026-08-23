@@ -42,20 +42,28 @@ class DurableHybridLearningStore:
         self._embeddings = embeddings
 
     async def store(self, learning: Learning) -> int:
-        """Store a learning and persist its embedding alongside it.
+        """Store a learning and persist an embedding of the row that resulted.
 
-        An embedding failure is logged and swallowed. The learning itself is
-        already committed by then, and losing it because the vector could not be
-        computed would trade a degraded search for no memory at all — the row
-        stays findable by keyword, and `find_similar` skips it because its
-        embedding is NULL.
+        The vector is computed from the **persisted** text, not from the text
+        that was handed in. `PgLearningStore.store` deduplicates: a learning
+        that overlaps an existing row's trigger keys increments that row's hit
+        count and returns its id, leaving the existing text in place. Embedding
+        the incoming text would then stamp the surviving row with a vector
+        describing content it does not contain, so every later ranking would be
+        about text no caller can see.
+
+        An embedding failure is logged and swallowed. The row is already
+        committed by then, and losing it because the vector could not be
+        computed would trade degraded search for no memory at all -- it stays
+        keyword-searchable, and `find_similar` skips it because its embedding
+        is NULL.
         """
         learning_id = await self._store.store(learning)
-        if not learning.learning:
-            return learning_id
         try:
-            vector = await self._embeddings.embed(learning.learning)
-            await self._store.set_embedding(learning_id, vector)
+            persisted = await self._store.text_of(learning_id)
+            if persisted:
+                vector = await self._embeddings.embed(persisted)
+                await self._store.set_embedding(learning_id, vector)
         except Exception:
             logger.warning(
                 "embedding failed for learning %s; it stays keyword-searchable", learning_id
@@ -70,28 +78,43 @@ class DurableHybridLearningStore:
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Similarity-ranked within scope, falling back to keyword search.
+        """Similarity-ranked within scope, **merged with** keyword results.
 
-        The fallback is not a nicety: a corpus written before the column
-        existed has no vectors at all, so `find_similar` would return nothing
-        and the memory would look empty rather than un-embedded.
+        Not similarity-then-fallback. An early return on any similarity hit is
+        wrong for the corpus this feature actually meets: a scope upgraded from
+        before the column existed holds legacy rows with `embedding IS NULL`
+        beside newly embedded ones, and one embedded row was enough to hide
+        every legacy row for good -- including a query that matched a legacy
+        row exactly. The same happens to any row whose embedding failed during
+        `store`, which the docstring above promises stays keyword-searchable.
+
+        Similarity leads because it is the better ranking when it applies;
+        keyword results follow, de-duplicated by id, so the unembedded portion
+        of the corpus remains reachable at every point of the migration.
         """
+        found: list[Learning] = []
         try:
             vector = await self._embeddings.embed(user_text)
-        except Exception:
-            logger.debug("query embedding failed; falling back to keyword search")
-            return await self._store.find_relevant(
-                user_text, agent_id=agent_id, org_id=org_id, max_results=max_results
+            found = await self._store.find_similar(
+                vector, org_id=org_id, agent_id=agent_id, max_results=max_results
             )
+        except Exception:
+            logger.debug("query embedding failed; keyword results only")
 
-        found = await self._store.find_similar(
-            vector, org_id=org_id, agent_id=agent_id, max_results=max_results
-        )
-        if found:
-            return found
-        return await self._store.find_relevant(
+        keyword = await self._store.find_relevant(
             user_text, agent_id=agent_id, org_id=org_id, max_results=max_results
         )
+
+        seen = {learning.id for learning in found if learning.id is not None}
+        for learning in keyword:
+            if len(found) >= max_results:
+                break
+            if learning.id is not None and learning.id in seen:
+                continue
+            found.append(learning)
+            if learning.id is not None:
+                seen.add(learning.id)
+        return found[:max_results]
 
     # The rest of `LearningStore` is pass-through. Spelled out rather than
     # delegated through `__getattr__`: the protocol is what the container type

@@ -39,7 +39,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 SCRATCH_DB = "maistro_embedding_test"
 
-_EMBEDDED_TABLES = ("learnings", "outcomes", "episodic_memories")
+#: Only `learnings` gets a column in this change. `outcomes` and
+#: `episodic_memories` land theirs with the producers that write them --
+#: an index over a column nothing populates is the no-caller shape #188 rejects.
+_EMBEDDED_TABLES = ("learnings",)
 
 
 # --------------------------------------------------------------------------
@@ -438,3 +441,180 @@ class TestTheVectorsHaveAProducerAndAConsumer:
         assert learning_id > 0
         found = await hybrid.find_relevant("kept", org_id="org-1")
         assert [lr.learning for lr in found] == ["kept"], "keyword search must still find it"
+
+
+class TestTheReviewFindings:
+    """Six ways the first version was wrong, each pinned by the case that
+    would have caught it."""
+
+    @staticmethod
+    def _client():
+        class Client:
+            dimension = EMBEDDING_DIMENSIONS
+
+            async def embed(self, text: str) -> list[float]:
+                return _vector(float(len(text)))
+
+            async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+                return [await self.embed(t) for t in texts]
+
+        return Client()
+
+    async def test_a_deduplicated_row_keeps_a_vector_of_its_own_text(self, store) -> None:
+        """`store` deduplicates by trigger-key overlap and returns the *existing*
+        row's id without replacing its text. Embedding the submitted text then
+        stamped the surviving row with a vector describing content it does not
+        hold, so every later ranking was about text no caller can see."""
+        from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+
+        hybrid = DurableHybridLearningStore(store, self._client())
+        first = await hybrid.store(_learning("original", org_id="org-1"))
+
+        duplicate = Learning(
+            category="general",
+            trigger_keys=["original"],
+            learning="a completely different and much much longer sentence",
+            tool_name="tool-original",
+            source_query="q",
+            org_id="org-1",
+        )
+        second = await hybrid.store(duplicate)
+
+        assert second == first, "the fixture must actually exercise the dedup path"
+        persisted = await store.text_of(first)
+        expected = await self._client().embed(persisted)
+        stored = await store._pool.fetchval(
+            "SELECT embedding = $1::vector FROM learnings WHERE id = $2",
+            to_pgvector_literal(expected),
+            first,
+        )
+        assert stored is True, "the row's vector describes text the row does not contain"
+
+    async def test_a_legacy_row_stays_reachable_beside_an_embedded_one(self, store) -> None:
+        """The P1. One embedded row in scope used to hide every unembedded row
+        for good -- including a query that matched a legacy row exactly."""
+        from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+
+        await store.store(_learning("legacy", org_id="org-1"))
+        hybrid = DurableHybridLearningStore(store, self._client())
+        await hybrid.store(_learning("embedded", org_id="org-1"))
+
+        found = await hybrid.find_relevant("legacy", org_id="org-1")
+
+        assert "legacy" in [lr.learning for lr in found]
+
+    async def test_a_row_whose_embedding_failed_stays_reachable(self, store) -> None:
+        """The docstring promises it stays keyword-searchable; before the merge
+        it was reachable only while no other row in scope had a vector."""
+        from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+
+        class SometimesFailing:
+            dimension = EMBEDDING_DIMENSIONS
+
+            def __init__(self) -> None:
+                self.fail_for = "unembeddable"
+
+            async def embed(self, text: str) -> list[float]:
+                if self.fail_for in text:
+                    raise RuntimeError("model unavailable")
+                return _vector(float(len(text)))
+
+            async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+                return [await self.embed(t) for t in texts]  # pragma: no cover - unused
+
+        hybrid = DurableHybridLearningStore(store, SometimesFailing())
+        await hybrid.store(_learning("unembeddable", org_id="org-1"))
+        await hybrid.store(_learning("fine", org_id="org-1"))
+
+        found = await hybrid.find_relevant("unembeddable", org_id="org-1")
+
+        assert "unembeddable" in [lr.learning for lr in found]
+
+    async def test_merged_results_do_not_repeat_a_row(self, store) -> None:
+        """Similarity and keyword search overlap; a row in both must appear
+        once, or `max_results` silently returns fewer distinct learnings."""
+        from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+
+        hybrid = DurableHybridLearningStore(store, self._client())
+        await hybrid.store(_learning("shared", org_id="org-1"))
+
+        found = await hybrid.find_relevant("shared", org_id="org-1")
+
+        ids = [lr.id for lr in found]
+        assert len(ids) == len(set(ids))
+
+    async def test_the_similarity_read_enables_filtered_recall(self) -> None:
+        """HNSW applies the scope predicate *after* its approximate scan, so
+        without iterative scan a large multi-org table can return nothing while
+        matching in-scope vectors exist.
+
+        Asserted by recording what the connection was actually asked to run.
+        The first version of this test set the GUC itself in a transaction of
+        its own and read it back, which is true of any database and says
+        nothing about `find_similar` -- it stayed green when the setting was
+        turned off, which is how it was caught.
+        """
+        from maistro.persistence.pg_learnings import _ITERATIVE_SCAN, PgLearningStore
+
+        executed: list[str] = []
+
+        class FakeConn:
+            async def execute(self, statement: str, *args: object) -> None:
+                executed.append(statement)
+
+            async def fetch(self, statement: str, *args: object) -> list[object]:
+                executed.append(statement)
+                return []
+
+            def transaction(self):
+                return _NullContext()
+
+        class _NullContext:
+            async def __aenter__(self) -> None:
+                return None
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        class FakePool:
+            def acquire(self):
+                return _ConnContext()
+
+        class _ConnContext:
+            async def __aenter__(self) -> FakeConn:
+                return FakeConn()
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        store = PgLearningStore(FakePool())  # type: ignore[arg-type]
+        await store.find_similar(_vector(1.0), org_id="org-1")
+
+        assert any("hnsw.iterative_scan" in statement for statement in executed), (
+            f"the similarity read did not configure filtered recall: {executed}"
+        )
+        assert _ITERATIVE_SCAN != "off", "iterative scan disabled is the bug, not the fix"
+
+
+class TestOnlyTheTableWithAProducerGetsAColumn:
+    async def test_outcomes_and_episodic_are_left_alone(self, migrated_url) -> None:
+        """`PgOutcomeStore` never reads the column and the container wires
+        `InMemoryEpisodicStore` even on PostgreSQL, so a column and index on
+        either would exist, cost write time, and index nothing -- the
+        no-caller shape #188 asks this change not to create."""
+        import asyncpg
+
+        conn = await asyncpg.connect(migrated_url)
+        try:
+            for table in ("outcomes", "episodic_memories"):
+                present = await conn.fetchval(
+                    """SELECT count(*) FROM pg_attribute a
+                       JOIN pg_class c ON c.oid = a.attrelid
+                       WHERE c.relname = $1 AND a.attname = 'embedding'""",
+                    table,
+                )
+                assert present == 0, (
+                    f"{table} has an embedding column but nothing writes or reads it"
+                )
+        finally:
+            await conn.close()

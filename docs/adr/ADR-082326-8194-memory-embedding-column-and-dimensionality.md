@@ -105,11 +105,30 @@ a 1536-dimension column and discover it at the first `INSERT`.
    nobody will tune. HNSW builds eagerly, needs no training data, and its recall
    is governed by query-time `ef_search` rather than a build-time guess.
 
-5. **Producer and consumer land together.** No table gets a column that only
-   writes accumulate in. The migration, the write path that populates the
-   vector, and the scope-filtered similarity read all ship in one change, or
+5. **Producer and consumer land together, per table.** No table gets a column
+   that only writes accumulate in. The migration, the write path that populates
+   the vector, and the scope-filtered similarity read ship in one change, or
    none of them does — otherwise this becomes another accepted design with no
    caller, which is what `quality/reachability-baseline.json` exists to count.
+
+   This binds per *table*, not per change. `learnings` has a producer and a
+   consumer and gets its column now; `outcomes` and `episodic_memories` do not
+   — `PgOutcomeStore` never reads the column and the container wires
+   `InMemoryEpisodicStore` even on PostgreSQL — so their columns wait for the
+   change that writes them. Giving all three a column because one was ready
+   would have been the rule satisfied in aggregate and broken in two places
+   out of three.
+
+6. **Filtered recall is configured, not assumed.** HNSW searches approximately
+   and applies the scope predicate *after* its candidate scan, so on a large
+   multi-org table the candidates can be dominated by other scopes and a scoped
+   query returns too few rows — or none — while matching in-scope vectors
+   exist. A small corpus never shows it, because the planner picks a sequential
+   scan and the filter is exact. `hnsw.iterative_scan = relaxed_order`
+   (pgvector 0.8+) is set per transaction on the similarity read: the index
+   keeps fetching until the filtered set is full. `relaxed_order` over
+   `strict_order` because strict re-sorts every batch to guarantee global
+   distance order, at a cost, for a ranking that is already approximate.
 
 ## Consequences
 
@@ -126,9 +145,23 @@ a 1536-dimension column and discover it at the first `INSERT`.
 ### Negative / Trade-offs
 - 1536 floats per row is roughly 6 KB before compression, wider than a
   homelab corpus needs. Matching `memory_entries` was chosen over right-sizing.
-- Changing N later rewrites every stored vector across four tables. That is the
-  price of a fixed-width column, and the reason this ADR exists.
+- Changing N later rewrites every stored vector. That is the price of a
+  fixed-width column, and the reason this ADR exists.
 - HNSW indexes are slower to build and larger on disk than IVFFlat.
+- **The width is checked; the model is not.** Two different models can both
+  emit 1536 dimensions and occupy entirely different coordinate spaces, so a
+  deployment that switches between them passes every check here while its
+  stored vectors and its queries stop meaning the same thing — and nothing
+  surfaces it, because approximate rankings always return *something*. The
+  schema stores no model identity, so there is no predicate that could exclude
+  stale vectors and no trigger that could re-embed them.
+
+  Not fixed here, deliberately: a stamp is only useful if something acts on it,
+  and the acting part is a re-embedding path this change does not have. Naming
+  the gap is the honest half that can ship now. **Until a stamp exists,
+  changing embedding model requires clearing the column** — `UPDATE learnings
+  SET embedding = NULL` — so the corpus re-embeds on next write rather than
+  ranking against a space it no longer shares.
 
 ### Neutral
 - The `EmbeddingClient` protocol is unchanged; only its reconciliation with the

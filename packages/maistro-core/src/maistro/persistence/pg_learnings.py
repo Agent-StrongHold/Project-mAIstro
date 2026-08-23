@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maistro.persistence.learnings")
 
+#: pgvector's filtered-recall mode for HNSW. Named so the reason for
+#: `relaxed_order` over `strict_order` sits with the value rather than only
+#: in the query that uses it.
+_ITERATIVE_SCAN = "relaxed_order"
+
 
 def similarity_query(*, scoped_to_agent: bool) -> str:
     """The SQL `find_similar` runs, built in one place.
@@ -123,6 +128,19 @@ class PgLearningStore:
             )
             return int(row["id"]) if row else 0
 
+    async def text_of(self, learning_id: int) -> str:
+        """The learning text as it is actually stored.
+
+        `store` deduplicates, so the id it returns may belong to a row whose
+        text differs from the one just submitted. A caller that embeds the
+        submitted text would stamp the surviving row with a vector describing
+        content it does not hold. Reading the row back is the only way to know
+        what the vector should describe.
+        """
+        async with self._pool.acquire() as conn:
+            text = await conn.fetchval("SELECT learning FROM learnings WHERE id = $1", learning_id)
+        return str(text) if text else ""
+
     async def set_embedding(self, learning_id: int, vector: list[float]) -> None:
         """Attach an embedding to a stored learning.
 
@@ -189,7 +207,20 @@ class PgLearningStore:
         query = similarity_query(scoped_to_agent=bool(agent_id))
         params.append(max_results)
 
-        async with self._pool.acquire() as conn:
+        # HNSW searches approximately and *then* applies the scope predicate, so
+        # on a large multi-org table the candidate set can be dominated by other
+        # scopes and this query returns too few rows -- or none -- while
+        # matching in-scope vectors exist. A small corpus never shows it,
+        # because the planner picks a sequential scan and the filter is exact.
+        #
+        # `iterative_scan` (pgvector 0.8+) makes the index keep fetching until
+        # the filtered result set is full. `relaxed_order` rather than
+        # `strict_order`: strict re-sorts every batch to guarantee global
+        # distance order and costs more for a ranking that is already
+        # approximate. `SET LOCAL` inside the transaction, so nothing outside it
+        # inherits the setting.
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(f"SET LOCAL hnsw.iterative_scan = {_ITERATIVE_SCAN}")
             rows = await conn.fetch(query, *params)
 
         return [_row_to_learning(row) for row in rows]
