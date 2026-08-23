@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -24,18 +25,29 @@ class PgOutcomeStore:
                 """INSERT INTO outcomes
                    (request_id, task_type, model_used, provider,
                     tool_calls, success, error_type, response_time_ms,
-                    team_id, user_id, agent_id,
+                    org_id, team_id, user_id, agent_id,
                     input_tokens, output_tokens, charged_microchips, pricing_version)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
                 outcome.model_used,
                 outcome.provider,
-                str(outcome.tool_calls),
+                # `json.dumps`, not `str`. asyncpg's JSONB codec takes text and
+                # does not serialise Python objects, and `str([{"a": 1}])` is
+                # `"[{'a': 1}]"` -- single quotes, not JSON. Every outcome that
+                # actually recorded a tool call was an InvalidTextRepresentation
+                # error; only the empty-list case, whose repr happens to be
+                # valid JSON, ever got through.
+                json.dumps(outcome.tool_calls),
                 outcome.success,
                 outcome.error_type,
                 outcome.response_time_ms,
+                # `org_id` is NOT NULL with no DDL default and was omitted
+                # entirely, so every insert was a NotNullViolation -- and had it
+                # had a default, the row would have silently lost the org scope
+                # that `ix_outcomes_org_task` and `by_org` both key on.
+                outcome.org_id,
                 outcome.team_id,
                 outcome.user_id,
                 outcome.agent_id or "",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -55,7 +56,7 @@ class PgLearningStore:
                 learning.org_id or "",
             )
             for row in existing:
-                existing_keys = set(row["trigger_keys"])
+                existing_keys = set(_load_keys(row["trigger_keys"]))
                 new_keys = set(learning.trigger_keys)
                 if new_keys and existing_keys:
                     overlap = len(new_keys & existing_keys) / len(new_keys)
@@ -68,21 +69,30 @@ class PgLearningStore:
 
             row = await conn.fetchrow(
                 """INSERT INTO learnings
-                   (category, trigger_keys, learning, tool_name,
-                    agent_id, user_id, org_id, scope, status,
+                   (category, trigger_keys, learning, tool_name, source_query,
+                    agent_id, user_id, org_id, team_id, scope, hit_count, status,
                     rca_category, rca_prevention,
                     success_after_use, failure_after_use)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                           $10, $11, $12, $13)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                           $13, $14, $15, $16)
                    RETURNING id""",
                 learning.category,
-                list(learning.trigger_keys),
+                _dump_keys(learning.trigger_keys),
                 learning.learning,
                 learning.tool_name,
+                # `source_query` and `team_id` are NOT NULL in migration 001
+                # with no DDL default -- SQLAlchemy's `default=` is applied by
+                # the ORM, and this is a raw INSERT. Omitting them was a
+                # NotNullViolation, and omitting `team_id` in particular
+                # dropped the row's team scope on a column the store then
+                # filters on.
+                learning.source_query,
                 learning.agent_id or "",
                 learning.user_id,
                 learning.org_id or "",
+                learning.team_id,
                 learning.scope,
+                learning.hit_count,
                 learning.status,
                 learning.rca_category,
                 learning.rca_prevention,
@@ -204,16 +214,61 @@ class PgLearningStore:
             return [_row_to_learning(r) for r in rows]
 
 
+def _dump_keys(keys: list[str]) -> str:
+    """Encode `trigger_keys` for the JSONB column migration 001 declares.
+
+    asyncpg's default JSONB codec is `str` in both directions -- it does not
+    serialise Python objects. Passing a `list` raised, and reading a row back
+    with `list(row["trigger_keys"])` split the raw JSON *text* into single
+    characters, so a stored `["timeout", "retry"]` came back as
+    `['[', '"', 't', 'i', ...]`. The write half failed loudly and the read half
+    corrupted silently.
+
+    The conversion lives here rather than in a pool-level `set_type_codec`
+    because a store whose correctness depends on how someone else constructed
+    the pool is the same class of hidden coupling that produced #122. This one
+    is right however it is wired.
+    """
+    return json.dumps(list(keys))
+
+
+def _load_keys(raw: object) -> list[str]:
+    """Decode `trigger_keys`, tolerating a pool that *does* register a codec.
+
+    Returns `[]` for NULL or for text that is not a JSON array of strings,
+    rather than raising: a malformed row should cost that one learning, not
+    every query that happens to touch it.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(k) for k in raw]
+    if isinstance(raw, str | bytes | bytearray):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(decoded, list):
+            return [str(k) for k in decoded]
+    return []
+
+
 def _row_to_learning(row: asyncpg.Record) -> Learning:
     return Learning(
         id=row["id"],
         category=row.get("category", ""),
-        trigger_keys=list(row.get("trigger_keys", [])),
+        trigger_keys=_load_keys(row.get("trigger_keys")),
         learning=row["learning"],
         tool_name=row.get("tool_name", ""),
+        # `source_query` and `team_id` are stored and were never read back, so
+        # every `Learning` this store returned carried the dataclass default
+        # rather than the row's value -- a round-trip that loses the team scope
+        # it filters on, and the query the learning was derived from.
+        source_query=row.get("source_query", ""),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),
         org_id=row.get("org_id") or "",
+        team_id=row.get("team_id") or "",
         scope=row.get("scope", "agent"),
         hit_count=row.get("hit_count", 0),
         status=row.get("status", "active"),
