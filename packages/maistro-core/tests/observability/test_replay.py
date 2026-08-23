@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from maistro.observability.replay import (
@@ -52,6 +51,11 @@ class TestCanonicalHash:
         h = canonical_request_hash({"a": 1})
         assert len(h) == 64
         int(h, 16)
+
+
+#: Distinctive enough that it cannot occur in a repr by accident — which is
+#: the property the generated strings did not have (#173).
+CANARY = "SECRET-CANARY-9c2e77"
 
 
 class TestTierRouting:
@@ -125,13 +129,66 @@ class TestTierRouting:
             max_size=5,
         )
     )
+    # The exact value that made the old assertion fire: `asyncio.Lock.__repr__`
+    # ends `[unlocked]`, and this is 8 characters, so it cleared the length
+    # filter. Pinned so the regression stays covered without depending on a
+    # search finding it again (#173).
+    @example(payload={"lock_state": "unlocked"})
     @pytest.mark.ac("SPEC-070226-2b70/AC-6")
-    async def test_property_secret_tier_persists_no_payload_bytes(
+    async def test_property_secret_tier_state_does_not_vary_with_the_payload(
         self, payload: dict[str, Any]
     ) -> None:
-        """For any payload, secret tier persists no payload bytes anywhere in the store."""
+        """For any payload, what SECRET tier persists is a function of the hash alone.
+
+        This is the same claim as "no payload bytes are stored", stated so it
+        can be checked exactly. The previous version searched
+        ``repr(store.__dict__)`` for every generated string of 8+ characters,
+        which was wrong in both directions (#173):
+
+        - **False positives.** The store holds an ``asyncio.Lock``, whose repr
+          ends ``[unlocked]``. Hypothesis eventually generates the 8-character
+          value ``"unlocked"``, and the assertion fired on structural text
+          having proved nothing. It passed in CI only because a fresh runner
+          starts with an empty example database and the search rarely gets that
+          lucky — a red build waiting for an unrelated PR to inherit.
+        - **False negatives.** A substring scan cannot see a leak that is
+          encoded, truncated, or reordered, and skips short values entirely.
+
+        Recording two different payloads under one identical hash and demanding
+        byte-identical state covers all of those: anything that varies with the
+        payload — including its length — fails. Comparison is over the state
+        attributes only, because the lock's repr carries a memory address that
+        differs between instances for reasons that are not leaks.
+        """
+        # The control is empty, sharing nothing with the left side — not even
+        # the canary. An earlier version put CANARY in both, which meant a
+        # regression persisting a *transformed* canary (base64, truncated) left
+        # the two states equal, while the literal-canary test below searches
+        # only for the untransformed text. Encoded leaks were uncovered by a
+        # pair that claimed to cover them.
+        assert await self._secret_state({"canary": CANARY, **payload}) == await self._secret_state(
+            {}
+        ), "SECRET-tier state varied with the payload"
+
+    #: Store attributes that cannot carry payload bytes: two injected callables
+    #: and a lock. Named rather than filtered by type so that a *new* attribute
+    #: fails `_secret_state` until someone classifies it — an unclassified
+    #: attribute is exactly where a leak would land unnoticed.
+    _INERT_ATTRS = frozenset({"_encryptor", "_decryptor", "_lock"})
+    _STATE_ATTRS = ("_audit", "_events", "_sealed")
+
+    async def _secret_state(
+        self, payload: dict[str, Any], tier: SensitivityTier = SensitivityTier.SECRET
+    ) -> str:
+        """Everything a record of `tier` leaves behind, with the hash masked.
+
+        `tier` is a parameter so the anti-vacuity control below can run through
+        *this* helper rather than reimplementing it. A control that builds its
+        own representation still passes if this one is changed to return a
+        constant — and then the property test it is meant to protect has gone
+        vacuous with nothing to say so.
+        """
         store = InMemoryRecordStore()
-        payload = {"canary": "SECRET-CANARY-9c2e77", **payload}
         args = {"data": payload}
         event = ReplayEvent(
             trace_id="t",
@@ -140,17 +197,53 @@ class TestTierRouting:
             kind="tool",
             request_hash=canonical_request_hash(args),
             payload={"request": args, "response": {"output": payload}},
-            tier=SensitivityTier.SECRET,
+            tier=tier,
         )
         await store.record(event)
-        # Scan every internal structure for payload content.
-        internals = repr(store.__dict__)
-        for value in payload.values():
-            if isinstance(value, str) and len(value) >= 8:
-                assert value not in internals
-        assert json.dumps(payload, default=str) not in internals
-        [stored] = await store.events_for_trace("t")
-        assert stored.payload is None
+
+        if tier is SensitivityTier.SECRET:
+            [stored] = await store.events_for_trace("t")
+            assert stored.payload is None
+
+        unclassified = set(store.__dict__) - self._INERT_ATTRS - set(self._STATE_ATTRS)
+        assert not unclassified, (
+            f"InMemoryRecordStore grew attribute(s) {sorted(unclassified)}; classify each as "
+            f"state or inert before this test can speak for them"
+        )
+        # The hash is derived from the payload and is stored on purpose, so it
+        # is the one value allowed to differ. Masking it is what leaves the
+        # comparison meaning "nothing *else* varied".
+        state = repr({name: store.__dict__[name] for name in self._STATE_ATTRS})
+        return state.replace(event.request_hash, "<request-hash>")
+
+    async def test_the_property_check_would_catch_a_payload_that_reached_the_store(self) -> None:
+        """The property above passes if `_secret_state` compares nothing.
+
+        So this drives the **same helper**, at NORMAL tier, where the payload is
+        kept: two different payloads must produce different state. Route it
+        through a hand-built copy of the extraction instead and a
+        constant-returning `_secret_state` passes everything — the property, the
+        canary check, and this control — which is the failure this exists to
+        make impossible.
+        """
+        first = await self._secret_state({"x": "one"}, tier=SensitivityTier.NORMAL)
+        second = await self._secret_state({"x": "two"}, tier=SensitivityTier.NORMAL)
+        assert first != second, (
+            "_secret_state() cannot see payload content at all, so the property "
+            "test above is comparing nothing"
+        )
+
+    @pytest.mark.ac("SPEC-070226-2b70/AC-6")
+    async def test_the_literal_canary_never_appears_in_the_stored_state(self) -> None:
+        """The readable half, kept as its own test.
+
+        A distinctive canary cannot collide with structural text, so this states
+        the intent directly without the false-positive rate that made the
+        substring scan unusable over arbitrary generated strings.
+        """
+        state = await self._secret_state({"canary": CANARY, "ssn": "123-45-6789"})
+        assert CANARY not in state
+        assert "123-45-6789" not in state
 
 
 class TestReplaySession:
