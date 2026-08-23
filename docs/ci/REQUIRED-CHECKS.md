@@ -81,6 +81,9 @@ which ones carry the hazard.
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
+| CI | `object storage (MinIO)` | every PR |
+| CI | `postgres (pg17)` | every PR |
+| CI | `postgres (pg18)` | every PR |
 | CI | `security` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
