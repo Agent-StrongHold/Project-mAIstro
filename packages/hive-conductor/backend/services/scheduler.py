@@ -162,12 +162,23 @@ class _ScheduleRunner:
         for fire in decision.fires:
             self._in_flight.add(sid)
             try:
-                await self._fire_schedule(sid, schedule, scheduled_for=fire.scheduled_for)
+                # `catchup` was evaluated and then dropped here. A backfill
+                # after downtime and an on-time fire mean different things, and
+                # once the Run exists there is nothing left to tell them apart
+                # (#145).
+                await self._fire_schedule(
+                    sid, schedule, scheduled_for=fire.scheduled_for, catchup=fire.catchup
+                )
             finally:
                 self._in_flight.discard(sid)
 
     async def _fire_schedule(
-        self, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+        self,
+        sid: str,
+        schedule: Any,
+        *,
+        scheduled_for: datetime | None = None,
+        catchup: bool = False,
     ) -> None:
         import stores
 
@@ -190,6 +201,7 @@ class _ScheduleRunner:
                 # The nominal occurrence, not the moment the tick noticed it,
                 # so a Run that started late is still attributable.
                 "scheduled_for": (scheduled_for or t).isoformat(),
+                "catchup": catchup,
             },
         )
 
@@ -201,6 +213,30 @@ class _ScheduleRunner:
         from services.dag_agents import get_registry, run_registered_dag
 
         if get_registry().get(str(template_id)) is None:
+            # Was a bare `return`. `last_run` is stamped above, so an
+            # unregistered template left a schedule that looked like it had
+            # fired: no warning, no audit line, no Run. `DagRegistry` is an
+            # in-process dict, so this is the normal state after a restart
+            # until something re-registers the DAG -- exactly when an operator
+            # most needs to be told (#145). The cursor is deliberately left
+            # advanced: rewinding it would re-fire every missed occurrence the
+            # moment the DAG came back, which is a different and worse
+            # surprise. Scope item 3 moves that ordering into the core
+            # admitter, where the retry semantics can be chosen rather than
+            # inherited.
+            logger.warning(
+                "Schedule %s targets mission template %s, which is not registered; "
+                "no Run was created. The in-process DAG registry is empty until "
+                "something re-registers it, which is the usual state after a restart.",
+                sid,
+                template_id,
+            )
+            log_audit(
+                "schedule_run",
+                "system",
+                target=sid,
+                detail={"dag_id": str(template_id), "error": "template_not_registered"},
+            )
             return
 
         scope_id = f"hive:schedule:{sid}"
@@ -211,6 +247,21 @@ class _ScheduleRunner:
                 workspace_id=scope_id,
                 project_id=scope_id,
                 user_id=user_id,
+                # On the Run, not beside it. #46 asks for schedule provenance
+                # "retained on the Run"; it lived only in the `schedule_run`
+                # audit line, so a scheduled Run was indistinguishable from one
+                # a person started. Tasks (#41) and chat turns (#131) both
+                # carry theirs on the Run; scheduling was the outlier.
+                provenance={
+                    "admission_source": "schedule",
+                    "schedule_id": sid,
+                    "schedule_name": schedule.name,
+                    # The nominal occurrence, not the tick that noticed it, so
+                    # a Run that started late is still attributable to the
+                    # occurrence it belongs to.
+                    "scheduled_for": (scheduled_for or t).isoformat(),
+                    "catchup": catchup,
+                },
             )
         except Exception as exc:
             logger.warning("Schedule %s run failed: %s", sid, exc)
