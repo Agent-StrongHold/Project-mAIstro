@@ -206,7 +206,6 @@
         "packages/maistro-core/src/maistro/graph/node.py::unused variable 'duration_s'",
         "packages/maistro-core/src/maistro/graph/node.py::unused variable 'retry_count'",
         "packages/maistro-core/src/maistro/graph/node_types.py::unused variable 'owner_package'",
-        "packages/maistro-core/src/maistro/graph/nodes/agent_delegate_remote.py::unused variable 'subgraph'",
         "packages/maistro-core/src/maistro/graph/nodes/agent_synth_dag.py::unused variable 'run_output'",
         "packages/maistro-core/src/maistro/graph/nodes/agent_synth_dag.py::unused variable 'synthesized_nodes'",
         "packages/maistro-core/src/maistro/graph/nodes/airtable_poll.py::unused variable 'created_time'",
@@ -687,7 +686,6 @@
       "message_regex": "unused (function|class|method|variable|attribute)",
       "rationale": "maistro-core exports package APIs consumed by downstream products and sibling repos, so package-local vulture cannot distinguish all public consumers.",
       "findings": [
-        "packages/maistro-core/src/maistro/a2a/delegate.py::unused method 'get_task_status'",
         "packages/maistro-core/src/maistro/a2a/delegate.py::unused method 'register_agent_capability'",
         "packages/maistro-core/src/maistro/a2a/delegate.py::unused method 'update_task_status'",
         "packages/maistro-core/src/maistro/a2a/guest_peers.py::unused method 'list_peers'",
@@ -696,7 +694,6 @@
         "packages/maistro-core/src/maistro/a2a/lifecycle.py::unused method 'dequeue'",
         "packages/maistro-core/src/maistro/a2a/lifecycle.py::unused method 'get_active_tasks'",
         "packages/maistro-core/src/maistro/a2a/lifecycle.py::unused method 'get_queue_status'",
-        "packages/maistro-core/src/maistro/a2a/lifecycle.py::unused method 'get_task_status'",
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_architecture_update'",
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_bundled_changes'",
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_hardcoded_secrets'",
