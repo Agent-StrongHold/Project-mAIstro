@@ -55,6 +55,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = REPO_ROOT / "docs" / "testing" / "SUITE-INVENTORY.md"
+NOTES = REPO_ROOT / "docs" / "testing" / "inventory-notes"
 
 #: Env every collection runs under. Matches ci.yml's pytest steps — without it,
 #: suites that build a settings object at import time raise on a missing secret.
@@ -181,6 +182,33 @@ def _rewrite_count(line: str, actual: int) -> str:
     return head[: m.start(2) - m.start(0)] + str(actual) + head[m.end(2) - m.start(0) :] + rest
 
 
+def notes_problems() -> list[str]:
+    """Check the notes directory the inventory points at is actually there.
+
+    The prose explaining *why* a count moved lives in ``inventory-notes/``
+    rather than in the inventory itself, because a shared prose block made
+    every test-adding branch conflict with every other one (#208). That split
+    only works while the pointer and the directory agree, so a rename or an
+    accidental deletion should be loud rather than leaving a dead link.
+
+    This deliberately does not require a note per change. Such a mandate would
+    fail every PR already open when it landed, and the AC gate is where
+    per-change requirements belong.
+    """
+    problems = []
+    if not NOTES.is_dir():
+        problems.append(f"{NOTES.relative_to(REPO_ROOT)}/ is missing")
+        return problems
+    if not (NOTES / "README.md").is_file():
+        problems.append(f"{NOTES.relative_to(REPO_ROOT)}/README.md is missing")
+    link = f"]({NOTES.name}/)"
+    if link not in INVENTORY.read_text(encoding="utf-8"):
+        problems.append(
+            f"{INVENTORY.relative_to(REPO_ROOT)} no longer links to {NOTES.relative_to(REPO_ROOT)}/"
+        )
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--suite", action="append", help="check only this suite path (repeatable)")
@@ -190,6 +218,11 @@ def main() -> int:
         help="rewrite SUITE-INVENTORY.md's counts from the current tree",
     )
     args = ap.parse_args()
+
+    if problems := notes_problems():
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 2
 
     text = INVENTORY.read_text(encoding="utf-8")
     try:

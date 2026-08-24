@@ -159,16 +159,26 @@ def _shannon_entropy(s: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
+#: Shannon entropy above which a mixed-charset run of 32+ characters is treated
+#: as a secret. Named rather than inlined because SECURITY.md's resource-limits
+#: inventory cites it, and `scripts/check-security-inventory.py` can only check
+#: a value that has a name -- a bare literal in a return expression is a claim
+#: the gate has to take on trust (#157).
+_ENTROPY_BITS_PER_CHAR_THRESHOLD = 4.0
+
+#: Shortest run this fallback will consider. Below it, entropy is noise.
+_MIN_SECRET_LENGTH = 32
+
+
 def _looks_like_secret(s: str) -> bool:
     """Heuristic: high entropy + mixed case + digits = likely a secret."""
-    if len(s) < 32:
+    if len(s) < _MIN_SECRET_LENGTH:
         return False
     entropy = _shannon_entropy(s)
     has_upper = any(c.isupper() for c in s)
     has_lower = any(c.islower() for c in s)
     has_digit = any(c.isdigit() for c in s)
-    # Entropy > 4.0 bits/char with mixed charset = almost certainly a key
-    return entropy > 4.0 and has_upper and has_lower and has_digit
+    return entropy > _ENTROPY_BITS_PER_CHAR_THRESHOLD and has_upper and has_lower and has_digit
 
 
 # ─── Merge-spans redaction (fix #10: no order-dependent overlaps) ─────────────

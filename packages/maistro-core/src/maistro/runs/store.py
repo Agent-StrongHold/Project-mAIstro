@@ -66,6 +66,36 @@ class StaleExecutionFence(RunIntegrityError):
     pass
 
 
+def validate_child_scope(
+    parent: Run,
+    *,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool = False,
+) -> None:
+    """Refuse a child Run that escapes its parent's scope.
+
+    Split out of `create_run` so a caller can run the same check *before* it
+    causes a side effect it cannot take back. `agent.delegate_remote` is the
+    case that made this necessary: it dispatched over HTTP (or queued an
+    `A2ATask`) and only then asked for a child Run, so a delegation naming a
+    foreign Workspace was refused *after* the remote work had already been
+    handed over — the node reported failure while unauthorized work carried on
+    somewhere else, and a retry dispatched it again.
+
+    Duplicating the two conditions at the call site would have been the smaller
+    diff and the worse one: the guard and its pre-flight would drift, and the
+    pre-flight is exactly the copy that must not be weaker.
+    """
+    if parent.workspace_id != workspace_id:
+        raise RunIntegrityError("child Run cannot cross Workspace boundaries")
+    if parent.project_id != project_id and not allow_cross_project:
+        raise RunIntegrityError(
+            "child Run cannot implicitly cross Project boundaries; "
+            "caller must authorize and request the destination Project"
+        )
+
+
 @runtime_checkable
 class RunStore(Protocol):
     async def create_run(
@@ -223,13 +253,12 @@ class InMemoryRunStore:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         if parent_run_id is not None:
             parent = self._require_run(parent_run_id)
-            if parent.workspace_id != graph.workspace_id:
-                raise RunIntegrityError("child Run cannot cross Workspace boundaries")
-            if parent.project_id != graph.project_id and not allow_cross_project:
-                raise RunIntegrityError(
-                    "child Run cannot implicitly cross Project boundaries; "
-                    "caller must authorize and request the destination Project"
-                )
+            validate_child_scope(
+                parent,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                allow_cross_project=allow_cross_project,
+            )
             if parent_node_run_id is not None:
                 parent_node_run = self._require_node_run(parent_node_run_id)
                 if parent_node_run.run_id != parent_run_id:
@@ -445,4 +474,5 @@ __all__ = [
     "RunStore",
     "StaleExecutionFence",
     "validate_accepted_outcome_against_attempt",
+    "validate_child_scope",
 ]
