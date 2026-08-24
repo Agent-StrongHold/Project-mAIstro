@@ -6,11 +6,12 @@ from collections.abc import Iterable
 from copy import deepcopy
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from maistro.graph.definitions import Graph
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.graph.definitions import Graph
 
 
 def _id() -> str:
@@ -200,6 +201,14 @@ class GraphSnapshot(BaseModel):
         )
 
     def materialize(self) -> Graph:
+        # Imported here, not at module scope: `maistro.graph`'s package __init__
+        # imports `maistro.graph.traversal_commit`, which imports this module.
+        # Binding Graph at import time made `import maistro.runs` fail outright
+        # whenever `maistro.graph` had not already been imported — the canonical
+        # execution spine was unimportable from its own front door. Graph is only
+        # ever needed inside a method body, so the edge does not need to exist.
+        from maistro.graph.definitions import Graph
+
         return Graph.model_validate_json(self.definition_json)
 
     @model_validator(mode="after")

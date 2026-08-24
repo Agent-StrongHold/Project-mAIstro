@@ -30,7 +30,8 @@ class PgSessionStore:
     ) -> list[dict[str, str]]:
         """Retrieve conversation history, pruning expired messages."""
         max_msg = max_messages or self._max_messages
-        ttl = ttl_seconds or self._ttl_seconds
+        # `or` here would swallow an explicit 0; see purge_expired below.
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
         cutoff = time.time() - ttl
 
         async with self._pool.acquire() as conn:
@@ -87,7 +88,12 @@ class PgSessionStore:
 
     async def purge_expired(self, ttl_seconds: int | None = None) -> int:
         """Delete messages older than the TTL. Returns the number removed."""
-        ttl = ttl_seconds or self._ttl_seconds
+        # `ttl_seconds or self._ttl_seconds` treated an explicit 0 as "not
+        # supplied" and fell back to the default TTL, so the one call that means
+        # "purge everything" was the one call that purged nothing. Same shape as
+        # the `task.user_id and ...` scope bug: a falsy but meaningful value
+        # swallowed by `or`.
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
         async with self._pool.acquire() as conn:
             status = await conn.execute(
                 "DELETE FROM sessions WHERE timestamp <= to_timestamp($1)",

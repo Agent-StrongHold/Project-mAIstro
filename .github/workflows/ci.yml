@@ -62,6 +62,113 @@ jobs:
           packages/maistro-rsi/src
           packages/maistro-design/src
 
+  postgres:
+    # A real PostgreSQL, because the alternative was proving nothing. Every
+    # `test_pg_*.py` module mocks the connection and asserts on the SQL string,
+    # which cannot catch a missing table, a column the store writes and the
+    # schema lacks, or a naive/aware timestamp mismatch — and #122 found all
+    # three once a server was actually there.
+    #
+    # Matrixed over the supported majors so "PostgreSQL 17-19" is a tested
+    # claim rather than a README line. 19 is absent only because no pgvector
+    # image ships for it yet; add it here the day one does.
+    name: postgres (pg${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["17", "18"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      # The migration chain is itself under test here: it could not run to
+      # completion against a clean database before this change.
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+      - name: Migrations are reversible
+        run: |
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Persistence conformance
+        run: uv run pytest packages/maistro-core/tests/persistence -v --tb=short
+      - name: Container wires the PostgreSQL backend
+        run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short
+
+  object-storage:
+    # MinIO, not moto. The default `test` job already runs the archive suite
+    # against an in-process moto server, which is a real HTTP S3 implementation
+    # and enough to catch our own mistakes. MinIO is what people actually run,
+    # so it is what catches the difference between "S3-compatible" and
+    # "compatible with the parts moto implements" (ADR-082226-f436 decision 3).
+    name: object storage (MinIO)
+    runs-on: ubuntu-latest
+    env:
+      MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: maistro
+      AWS_SECRET_ACCESS_KEY: maistro-secret
+      AWS_DEFAULT_REGION: us-east-1
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev --extra s3
+      # `docker run`, not a `services:` container. MinIO's own image needs an
+      # explicit `server /data` command and service containers cannot set one,
+      # which is why this used `bitnami/minio` — a repackaging that starts the
+      # server by default. Bitnami withdrew that tag and the job began failing
+      # on `manifest unknown`, so the dependency on someone else's repackaging
+      # is gone: the upstream image, pinned, started here.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=maistro \
+            -e MINIO_ROOT_PASSWORD=maistro-secret \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "minio ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "minio did not become ready" >&2
+          docker logs minio >&2 || true
+          exit 1
+      - name: Archive conformance against MinIO
+        run: uv run pytest packages/maistro-core/tests/archive -v --tb=short
+
   test:
     runs-on: ubuntu-latest
     steps:

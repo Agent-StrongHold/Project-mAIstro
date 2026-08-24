@@ -196,18 +196,34 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --extra dev --extra s3
+      # Both archive tiers, and therefore both credential spellings. The two
+      # implementations landed in parallel and read their S3 credentials
+      # differently: `tests/memory/archive` (aioboto3, ADR-082226-d3dd) reads
+      # `MAISTRO_TEST_S3_ACCESS_KEY`/`_SECRET_KEY`, while `tests/archive`
+      # (boto3, ADR-082226-f436) lets botocore resolve `AWS_ACCESS_KEY_ID`/
+      # `AWS_SECRET_ACCESS_KEY` in the ordinary way. Setting one pair and not
+      # the other is how this job first failed: thirteen boto3 cases errored
+      # with `InvalidAccessKeyId` against a MinIO that was running fine.
+      #
+      # One server, one credential pair, two spellings — rather than two MinIO
+      # containers. The duplication is in the code, not here, and it goes away
+      # when one of the two tiers is retired.
       - name: Archive conformance against MinIO (under coverage)
         env:
           MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
           MAISTRO_TEST_S3_ACCESS_KEY: minioadmin
           MAISTRO_TEST_S3_SECRET_KEY: minioadmin
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
           # A skipped leg is untested, not passing. Without this a broken MinIO
           # would leave the job green and quietly drop these lines from the
           # denominator.
           MAISTRO_REQUIRE_S3_LEGS: "1"
         run: |
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
-            -m pytest packages/maistro-core/tests/memory/archive -v --tb=short
+            -m pytest packages/maistro-core/tests/memory/archive \
+            packages/maistro-core/tests/archive -v --tb=short
       - name: upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -218,34 +234,58 @@ jobs:
           retention-days: 1
 
 
-  # The PostgreSQL producer (#135). Same reason `coverage-archive` exists: the
-  # durable-event stores under `events/pg_stores.py` only execute against a real
-  # server, so a run with no services scores every line of them as uncovered and
-  # the diff gate then rejects the file for being untestable in a job that could
-  # never have tested it. Measuring them here puts the lines the PG legs DO
-  # cover into the combined database, where the gate can see them.
+  # The PostgreSQL producer, for both families of PG-only code. Everything
+  # under `persistence/pg_*`, `container.py`'s backend wiring and
+  # `events/pg_stores.py` executes only against a real server, so the run with
+  # no services scores every one of those lines as uncovered — and the diff
+  # gate, which is per file, then rejects them for being untestable in a job
+  # that could never have tested them.
   #
-  # `ci.yml`'s `durable-events` job runs the same suites for their pass/fail
-  # verdict; this one runs them for their coverage. Splitting the two costs a
-  # duplicate run and buys a producer that can fail without turning the
-  # conformance verdict into a coverage question.
+  # `ci.yml`'s `postgres` matrix and `durable-events` job run these suites for
+  # their pass/fail verdict; this runs them once more for their coverage, so
+  # the combined report describes the code as it is actually exercised.
+  #
+  # One job rather than two, and one version rather than the pg17/pg18 matrix:
+  # coverage is about which lines run, and both majors run the same ones.
+  # Matrixing would upload artifacts with identical arcs for double the
+  # wall-clock.
+  #
+  # `pgvector/pgvector:pg17`, not plain `postgres:17`: migration 001 opens with
+  # `CREATE EXTENSION IF NOT EXISTS vector`, and this job walks the whole chain
+  # rather than stamping partway. The stock image answers
+  # `extension "vector" is not available`.
   coverage-postgres:
     name: coverage (PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:17
+        image: pgvector/pgvector:pg17
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
           POSTGRES_DB: maistro_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U maistro"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      # A skipped leg is untested, not passing. Without this a broken service
+      # container would leave the job green and quietly drop these lines from
+      # the denominator — the exact failure `coverage-archive` names.
+      MAISTRO_REQUIRE_PG_LEGS: "1"
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -253,18 +293,22 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --extra dev
-      - name: Durable-event conformance against PostgreSQL (under coverage)
-        env:
-          MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
-          # A skipped leg is untested, not passing. Without this a broken service
-          # container would leave the job green and quietly drop these lines from
-          # the denominator — the exact failure `coverage-archive` names.
-          MAISTRO_REQUIRE_PG_LEGS: "1"
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
+      # `tests/migrations` drives alembic itself — stamping, upgrading and
+      # downgrading — so it runs against a database this job has NOT already
+      # migrated. Applying the chain first and then asking those tests to apply
+      # it again is a different scenario from the one they were written for.
+      - name: Migration suites against an unmigrated database (under coverage)
         run: |
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
-            -m pytest packages/maistro-core/tests/events tests/migrations -v --tb=short
+            -m pytest tests/migrations -v --tb=short
+      - name: Apply the chain, then the suites that need a schema (under coverage)
+        run: |
+          uv run alembic upgrade head
+          uv run coverage run --append --branch \
+            --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests/persistence \
+            packages/maistro-core/tests/test_container_postgres.py \
+            packages/maistro-core/tests/events -v --tb=short
       - name: upload coverage data
         uses: actions/upload-artifact@v4
         with:

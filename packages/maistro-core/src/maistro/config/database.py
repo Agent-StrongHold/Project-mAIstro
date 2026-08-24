@@ -52,7 +52,16 @@ _DB_FIELDS: Final = ("HOST", "PORT", "NAME", "USER", "PASSWORD")
 #: Schemes alembic can migrate. `memory://` and `sqlite:` are legitimate
 #: `database_url` values for the container and meaningless to a migration that
 #: writes JSONB and depends on the `vector` extension.
-_MIGRATABLE_SCHEMES: Final = ("postgresql://", "postgres://", "postgresql+asyncpg://")
+#: Spellings `require_database_url` accepts as "this is PostgreSQL". All four
+#: reach alembic through `to_sync_url`, which rewrites whichever arrived to
+#: the one driver that is actually declared — so accepting a spelling here is
+#: a claim that it can be *loaded*, not merely parsed.
+_MIGRATABLE_SCHEMES: Final = (
+    "postgresql://",
+    "postgres://",
+    "postgresql+asyncpg://",
+    "postgresql+psycopg://",
+)
 
 
 def _db_env_is_set(env: Mapping[str, str]) -> bool:
@@ -160,14 +169,23 @@ def to_sync_url(database_url: str) -> str:
       drives a sync engine, which cannot load asyncpg -- it raises
       `InvalidRequestError: The asyncio extension requires an async driver`
       rather than connecting.
-    - `postgres://` -> `postgresql://`. SQLAlchemy 2 removed the legacy
+    - `postgres://` -> `postgresql+psycopg://`. SQLAlchemy 2 removed the legacy
       `postgres` dialect alias, so passing it through reaches
       `create_engine` and fails on dialect lookup before any connection is
       attempted. `_MIGRATABLE_SCHEMES` accepts `postgres://` because hosted
       providers still hand it out; accepting it and then failing to load it
       would be worse than rejecting it.
+    - **`postgresql://` -> `postgresql+psycopg://`.** A bare scheme is not
+      neutral: SQLAlchemy resolves it to psycopg2, which is not in `uv.lock`
+      and is not installed by `uv sync --locked`, so `create_engine` raises
+      `ModuleNotFoundError` before connecting. The declared sync driver is
+      psycopg 3, and naming it is the only spelling that loads. This target
+      used to be the bare scheme, which made `DatabaseSettings.sync_url` —
+      already `postgresql+psycopg://` — the one path into alembic that worked
+      and every other path a ModuleNotFoundError waiting for a server to be
+      configured. Nothing ran that path in CI, so nothing said so.
     """
-    return _normalise_postgres_scheme(database_url, "postgresql://")
+    return _normalise_postgres_scheme(database_url, "postgresql+psycopg://")
 
 
 def to_async_url(database_url: str) -> str:
@@ -187,7 +205,12 @@ def to_async_url(database_url: str) -> str:
 
 def _normalise_postgres_scheme(database_url: str, target: str) -> str:
     """Rewrite whichever PostgreSQL spelling this URL uses to `target`."""
-    for scheme in ("postgresql+asyncpg://", "postgresql://", "postgres://"):
+    for scheme in (
+        "postgresql+asyncpg://",
+        "postgresql+psycopg://",
+        "postgresql://",
+        "postgres://",
+    ):
         if database_url.startswith(scheme):
             return target + database_url[len(scheme) :]
     return database_url

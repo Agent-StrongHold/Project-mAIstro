@@ -61,7 +61,13 @@
         "PostgreSQL legs were skipping — which is how 'durable events' stayed",
         "in-memory on PostgreSQL unnoticed. A skipped leg is untested, not",
         "passing, so the job that makes those legs run is part of the merge",
-        "contract rather than a signal to glance at."
+        "contract rather than a signal to glance at.",
+        "",
+        "`postgres (pg17/pg18)` and `object storage (MinIO)` join them on the same",
+        "grounds, and the list now covers all three service-backed families: the",
+        "PostgreSQL stores, the durable-event stores and the archive tiers. Every",
+        "one of those suites was green while skipping the leg that mattered, which",
+        "is the property that makes a check required rather than advisory."
       ],
       "required_status_checks": {
         "strict": true,
@@ -86,7 +92,10 @@
           "Coverage gate (publish-set floor + diff coverage)",
           "strike-ladder",
           "durable-events",
-          "coverage (PostgreSQL)"
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)"
         ]
       },
       "enforce_admins": false,
@@ -137,7 +146,10 @@
           "Coverage gate (publish-set floor + diff coverage)",
           "strike-ladder",
           "durable-events",
-          "coverage (PostgreSQL)"
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)"
         ]
       },
       "enforce_admins": false,
@@ -199,7 +211,10 @@
           "Coverage gate (publish-set floor + diff coverage)",
           "strike-ladder",
           "durable-events",
-          "coverage (PostgreSQL)"
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)"
         ]
       },
       "enforce_admins": false,

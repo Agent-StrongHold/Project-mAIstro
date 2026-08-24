@@ -99,6 +99,9 @@ let it be silently neither.
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
+| CI | `object storage (MinIO)` | every PR |
+| CI | `postgres (pg17)` | every PR |
+| CI | `postgres (pg18)` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
