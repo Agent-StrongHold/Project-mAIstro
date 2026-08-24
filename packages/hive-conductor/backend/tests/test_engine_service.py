@@ -200,7 +200,7 @@ async def test_start_in_demo_mode_uses_local_backend(
             self.admitter = admitter
 
     class _R:
-        def __init__(self, q: Any, executor: Any) -> None:
+        def __init__(self, q: Any, executor: Any, attempts: Any = None) -> None:
             pass
 
         async def start(self) -> None:
