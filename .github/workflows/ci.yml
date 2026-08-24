@@ -141,6 +141,47 @@ jobs:
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
+  strike-ladder:
+    # The PostgreSQL leg of the strike conformance suite (#134) skips without a
+    # server, and the plain `test` job has none — so the suite that exists to
+    # prove `PgStrikeTracker` matches the protocol was only ever exercising
+    # `InMemoryStrikeTracker`. A skipped leg is untested, not passing, and that
+    # is precisely how the original defect survived: `PgStrikeTracker` returned
+    # `dict` from both methods and nothing ran it against `Gate`'s expectations.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: strike_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/strike_test
+      # Turns "no server, skip" into a failure, in this job only. Without it a
+      # misconfigured service container leaves the job green with the durable
+      # leg skipped — reporting the absence of the gap rather than its closure.
+      MAISTRO_REQUIRE_PG_LEGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Strike ladder conforms on both in-memory and PostgreSQL
+        run: uv run pytest packages/maistro-core/tests/security/test_strike_tracker_conformance.py -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+
   hive-conductor-e2e-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -237,6 +278,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Fetch the base images first, retrying (#204). This job used to fail on a
+      # registry reset before touching a line of repository content — a red
+      # required check that nobody could re-run, because the GitHub App gets
+      # `403 Resource not accessible by integration` on `rerun-failed-jobs`.
+      #
+      # Only the fetch is retried. A genuine build failure still fails on its
+      # first attempt below, so this buys reliability without hiding breakage.
+      # The image list is parsed from the Dockerfiles rather than written here,
+      # so it cannot drift from what is actually built.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+
       - run: docker build -t maistro-engine:test .
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
 
@@ -268,3 +322,4 @@ jobs:
       # PR that does the renaming, which after #161 is every PR.
       - name: PR check contract matches the workflows
         run: python3 scripts/check-required-checks.py
+
