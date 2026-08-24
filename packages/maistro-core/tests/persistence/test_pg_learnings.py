@@ -97,6 +97,8 @@ def make_learning(**overrides: Any) -> Learning:
         "trigger_keys": ["foo", "bar"],
         "learning": "do not do X",
         "tool_name": "bash",
+        "source_query": "why did X fail",
+        "team_id": "team-a",
         "agent_id": "scribe",
         "user_id": "u1",
         "scope": MemoryScope.AGENT,
@@ -137,20 +139,23 @@ async def test_store_inserts_new_learning_when_no_existing_match(
     assert "RETURNING id" in insert_call.query
     # `trigger_keys` goes out as JSON text, not as a list: the column is JSONB
     # and asyncpg's codec for it is text in both directions, so a list raised.
-    # `source_query`, `team_id` and `hit_count` are here because migration 001
-    # declares all three NOT NULL with no DDL default -- SQLAlchemy's `default=`
-    # is applied by the ORM and this is a raw INSERT, so omitting them was a
-    # NotNullViolation on every write (#122).
+    # `source_query`, `team_id` and `hit_count` are written rather than omitted
+    # because all three are columns the read paths select, and a column the
+    # writer skips always reads back as its default (#122). `hit_count` in
+    # particular is what `find_relevant` orders by, so a caller that supplies
+    # one — a re-import, a merge — must get it back.
     assert insert_call.args == (
         "general",
         '["foo", "bar"]',
         "do not do X",
         "bash",
-        "",
+        # source_query and team_id, which the insert used to omit while the read
+        # paths selected them — see #122.
+        "why did X fail",
         "scribe",
         "u1",
         "",
-        "",
+        "team-a",
         MemoryScope.AGENT,
         0,
         "active",
@@ -213,7 +218,13 @@ async def test_store_defaults_missing_agent_id_to_empty_string(
     await store.store(make_learning(agent_id=None))
 
     insert_call = conn.calls[1]
-    assert insert_call.args[4] == ""  # agent_id position
+    # Position derived from the query's own column list, not hardcoded: this
+    # assertion silently moved onto source_query when the insert gained it
+    # (#122), which is the failure mode of asserting on argument tuples.
+    columns = insert_call.query.split("(", 1)[1].split(")", 1)[0]
+    position = [c.strip() for c in columns.split(",")].index("agent_id")
+
+    assert insert_call.args[position] == ""
 
 
 async def test_store_returns_zero_when_insert_returns_no_row(

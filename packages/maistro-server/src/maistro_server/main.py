@@ -20,9 +20,10 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
+from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
-from maistro.tasks.queue import get_task_queue
+from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro_server.api import (
@@ -32,10 +33,12 @@ from maistro_server.api import (
     health,
     metrics,
     models,
+    runs,
     tasks,
     webhooks,
     ws,
 )
+from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
 from maistro_server.api.schemas import ErrorDetail, ErrorResponse
@@ -111,7 +114,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     get_engine()
 
-    queue = get_task_queue()
+    # Canonical execution identity (#41): every task submitted through /tasks
+    # gets a Run over a one-node Graph, and the response carries its run_id.
+    # In-process store: this app talks to Postgres, and no Postgres Run store
+    # exists yet (#122), so Runs do not survive a restart here. Said out loud
+    # rather than left to be discovered, because a run_id that silently stops
+    # resolving is worse than one that was never promised.
+    scope_store, run_store, admitter = await wire_execution_spine(
+        None, workspace_id=settings.workspace_id
+    )
+    await logger.awarning(
+        "run_store_in_process_only",
+        workspace_id=settings.workspace_id,
+        detail="Runs admitted by /tasks are lost on restart until a durable store is wired (#122)",
+    )
+    queue = configure_task_queue(admitter=admitter)
+    # The run_id POST /tasks returns has to resolve somewhere, or it is an
+    # advertised handle with nothing behind it.
+    runs.configure_run_store(run_store)
+    # The OpenAI-compatible door gets the same Run spine (#150). Its Gate is
+    # left at the default: a bare `Gate()` self-wires a Warden, and this app
+    # builds no Container, so there is no shared Warden or strike tracker to
+    # hand it — configuring None here would be the same object with an extra
+    # step, and a way to accidentally configure nothing.
+    chat_completions.configure_chat_admission(
+        wire_chat_admission(run_store, scope_store, workspace_id=settings.workspace_id),
+        run_store,
+    )
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog
@@ -143,6 +172,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Graceful shutdown: drain tasks → cleanup containers → flush observability
     if _runner:
         await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+
+    # Drop the queue singleton after draining, so a later lifespan in the same
+    # interpreter can install a fresh one. Startup refuses to replace a queue
+    # that has accepted tasks — correctly, since a queued task cannot be given a
+    # Run afterwards — and without this that guard latched permanently.
+    reset_task_queue()
+    runs.configure_run_store(None)
 
     await cleanup_all_containers()
 
@@ -186,6 +222,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    # Response headers a browser client may actually read. Without this the
+    # header is sent and then hidden: `response.headers` in browser JS only
+    # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
+    # an advertised correlation path that no cross-origin UI could follow.
+    expose_headers=[RUN_ID_HEADER, "X-Request-ID"],
 )
 
 # Rate limiting
@@ -252,6 +293,7 @@ app.include_router(metrics.router)
 # API v1 — all business endpoints under /v1 prefix for versioning
 API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
+app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(agents.router, prefix=f"{API_V1_PREFIX}/maistro")
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
@@ -266,6 +308,7 @@ app.include_router(canvas.router)
 
 # Backward compatibility — also mount at root (will be removed in v2)
 app.include_router(tasks.router)
+app.include_router(runs.router)
 app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)

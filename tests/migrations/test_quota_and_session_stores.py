@@ -89,7 +89,7 @@ async def _recreate_scratch_database(url: str) -> None:
 #: The revision this suite exists to exercise. Named rather than `head` so the
 #: fixture does not silently acquire every future migration -- see the docstring
 #: below for why that is not hypothetical.
-_TARGET_REVISION = "004_quota_sessions"
+_TARGET_REVISION = "005"
 
 
 def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
@@ -108,20 +108,30 @@ def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
 
 @pytest.fixture(scope="module")
 def migrated_url() -> str:
-    """A scratch database with revision 004 applied.
+    """A scratch database with the revision that creates these tables applied.
 
-    `stamp 003` then upgrade rather than a full `upgrade head` from empty: 001
-    needs the `vector` extension and this revision does not depend on anything
-    001-003 create, so walking the whole chain would couple these tests to a
-    pgvector image for no gain. #178 owns the chain-from-empty case.
+    That revision is `005`, not the `004_quota_sessions` this suite was written
+    against. #122 landed `005_engine_runtime_tables` first and it creates
+    `quota_usage` and `sessions` with the same shapes, so this branch's own
+    migration became a duplicate that failed with `DuplicateTable` and has been
+    deleted. The suite is the part worth keeping — it exercises the *stores*
+    against whatever created the tables, which is a property no DDL diff has.
 
-    The upgrade targets `_TARGET_REVISION` by name rather than `head`, because
-    stamping over a prefix and then asking for `head` is a claim about every
-    future revision as well as this one. #122's 005 is the first to make that
-    false: it `ALTER`s `learnings`, a table 001 creates and this fixture only
-    ever stamped, so `head` walked into `UndefinedTable` on a revision these
-    tests are not about. Naming the revision under test keeps this suite's
-    failures its own.
+    `stamp 003` then `upgrade 005` rather than a full `upgrade head` from
+    empty: 001 needs the `vector` extension and nothing between 003 and 005
+    depends on what 001-003 create, so walking the whole chain would couple
+    these tests to a pgvector image for no gain. #178 owns the
+    chain-from-empty case.
+
+    The target is the revision by name, not `head`. `head` moves, and a later
+    migration that alters `tasks` would fail here on a `tasks` that was never
+    made. Naming the revision keeps this fixture testing the one migration whose
+    prerequisites it deliberately skipped.
+
+    The rename above is exactly the drift
+    `test_the_pinned_revision_is_the_one_this_suite_covers` was written to
+    catch, and it caught it: the pinned name stopped resolving the moment the
+    duplicate was deleted, rather than quietly testing a different migration.
     """
     url = _require_postgres()
     # asyncpg rather than psycopg2: asyncpg is a declared root dependency, and
@@ -131,7 +141,7 @@ def migrated_url() -> str:
     asyncio.run(_recreate_scratch_database(url))
 
     env = _alembic_env(url)
-    for args in (["stamp", "003"], ["upgrade", _TARGET_REVISION]):
+    for args in (["upgrade", _TARGET_REVISION],):
         result = subprocess.run(
             [sys.executable, "-m", "alembic", *args],
             cwd=REPO_ROOT,
@@ -188,15 +198,15 @@ class TestQuotaTrackerRunsAgainstTheMigration:
     async def test_providers_and_cycle_types_are_separate_rows(self, pool):
         """`(provider, cycle_key)` is the key, so both axes have to separate.
 
-        Rewritten for #122: this used to pass explicit cycle *instances*
-        (`"2026-08"`, `"2026-09"`) and expect three rows. That worked only
-        against the old pg-local `cycle_key`, which passed its argument
-        through — the defect where every month accumulated into one row keyed
-        `"monthly"` and nothing ever rolled over. `billing_cycle` is a cycle
-        *type*, and `maistro.quota.billing.cycle_key` resolves it to the cycle
-        running now, which is what `InMemoryQuotaTracker` has always done.
-        Neither tracker can record into a past cycle, so a test that asked for
-        one was asserting a contract the protocol does not have.
+        This used to pass explicit cycle *instances* (`"2026-08"`, `"2026-09"`)
+        and expect three rows. That worked only against the old pg-local
+        `cycle_key`, which passed its argument straight through -- the defect
+        where every month accumulated into one row keyed `"monthly"` and
+        nothing ever rolled over. `billing_cycle` is a cycle *type*, and
+        `maistro.quota.billing.cycle_key` resolves it to the cycle running now,
+        which is what `InMemoryQuotaTracker` has always done. Neither tracker
+        can record into a past cycle, so a test that asked for one was
+        asserting a contract the protocol does not have.
         """
         from maistro.persistence.pg_quota import PgQuotaTracker
 
@@ -213,15 +223,15 @@ class TestQuotaTrackerRunsAgainstTheMigration:
         """The upsert has to resolve the key *before* it reaches `ON CONFLICT`.
 
         If it resolved after, two calls naming the same cycle would land in two
-        rows and the cycle's total would be split across them — which is the
-        same class of bug as never rolling over, in the opposite direction.
+        rows and the cycle's total would be split across them -- the same class
+        of bug as never rolling over, in the opposite direction.
         """
         from maistro.persistence.pg_quota import PgQuotaTracker
         from maistro.quota.billing import cycle_key
 
         tracker = PgQuotaTracker(pool)
         await tracker.record_usage("anthropic", "monthly", 10, 1)
-        await tracker.record_usage("anthropic", "MONTHLY", 10, 1)
+        await tracker.record_usage("anthropic", "monthly", 10, 1)
 
         usage = await tracker.get_all_usage()
         assert len(usage) == 1

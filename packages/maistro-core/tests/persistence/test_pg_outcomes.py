@@ -90,7 +90,7 @@ def make_outcome(**overrides: Any) -> Outcome:
         "success": True,
         "error_type": "",
         "response_time_ms": 1200,
-        "org_id": "org-a",
+        "org_id": "org-1",
         "team_id": "team-a",
         "project_id": "proj-a",
         "dag_id": "dag-a",
@@ -145,7 +145,9 @@ async def test_record_inserts_with_all_fields_and_returns_id(
         True,
         "",
         1200,
-        "org-a",
+        # org_id, which the insert used to omit while every read path filtered
+        # on it — see #122.
+        "org-1",
         "team-a",
         "u1",
         "scribe",
@@ -176,7 +178,14 @@ async def test_record_defaults_missing_agent_id_to_empty_string(
     await store.record(make_outcome(agent_id=None))
 
     call = conn.calls[0]
-    assert call.args[11] == ""  # agent_id position (org_id shifted it by one)
+    # Positional index derived from the query's own column list rather than
+    # hardcoded: this assertion silently pointed at user_id once the insert
+    # gained org_id (#122), which is the failure mode of asserting on argument
+    # tuples at all.
+    columns = call.query.split("(", 1)[1].split(")", 1)[0]
+    position = [c.strip() for c in columns.split(",")].index("agent_id")
+
+    assert call.args[position] == ""
 
 
 async def test_record_returns_zero_when_no_row(store: PgOutcomeStore, conn: FakeConnection) -> None:

@@ -27,6 +27,7 @@ from maistro.config.database import (
     to_async_url,
     to_sync_url,
 )
+from maistro.config.settings import DatabaseSettings
 from maistro.types.errors import ConfigError
 
 DB_ENV = {
@@ -68,7 +69,7 @@ class TestTheTwoConsumersCannotDisagree:
         _set(monkeypatch, **DB_ENV)
 
         assert resolve_database_url() == (
-            "postgresql://maistro:s3cret@db.internal:5433/maistro_prod"
+            "postgresql+psycopg://maistro:s3cret@db.internal:5433/maistro_prod"
         )
 
     def test_the_loader_sees_what_alembic_sees(self, monkeypatch) -> None:
@@ -167,7 +168,7 @@ class TestPrecedence:
         _set(monkeypatch, **DB_ENV, DATABASE_URL="")
 
         assert resolve_database_url() == (
-            "postgresql://maistro:s3cret@db.internal:5433/maistro_prod"
+            "postgresql+psycopg://maistro:s3cret@db.internal:5433/maistro_prod"
         )
 
     @pytest.mark.parametrize("field", list(DB_ENV))
@@ -178,7 +179,7 @@ class TestPrecedence:
         set nothing at all."""
         _set(monkeypatch, **{field: DB_ENV[field]})
 
-        assert resolve_database_url().startswith("postgresql://")
+        assert resolve_database_url().startswith("postgresql+psycopg://")
 
     def test_nothing_configured_resolves_to_empty(self) -> None:
         """Not an error here. The container may legitimately run with no
@@ -252,22 +253,30 @@ class TestRequireIsStricterThanResolve:
 
 
 class TestSyncUrlConversion:
-    def test_the_async_driver_suffix_is_stripped(self) -> None:
+    def test_the_async_driver_suffix_becomes_the_sync_one(self) -> None:
         """Alembic drives a synchronous engine, which cannot load asyncpg: it
         raises `InvalidRequestError: The asyncio extension requires an async
         driver` rather than connecting. `DatabaseSettings` exposes both
         spellings, so either may reach `DATABASE_URL`."""
-        assert to_sync_url("postgresql+asyncpg://u:p@h/db") == "postgresql://u:p@h/db"
+        assert to_sync_url("postgresql+asyncpg://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
 
-    def test_a_plain_url_is_unchanged(self) -> None:
-        assert to_sync_url("postgresql://u:p@h/db") == "postgresql://u:p@h/db"
+    def test_a_bare_scheme_is_rewritten_rather_than_left_alone(self) -> None:
+        """This used to assert the bare URL came back unchanged, and that was
+        the bug wearing a test. `postgresql://` is not driver-neutral:
+        SQLAlchemy resolves it to psycopg2, which is not in `uv.lock` and is
+        not installed by `uv sync --locked`, so `create_engine` raises
+        ModuleNotFoundError. psycopg 3 is the declared sync driver."""
+        assert to_sync_url("postgresql://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+
+    def test_an_already_correct_url_is_a_fixed_point(self) -> None:
+        assert to_sync_url("postgresql+psycopg://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
 
     def test_only_the_scheme_is_rewritten(self) -> None:
         """A password or database name containing the literal suffix must not be
-        mangled — `replace(..., 1)` anchors on the scheme by position."""
+        mangled — the rewrite anchors on the scheme by position."""
         url = "postgresql+asyncpg://u:postgresql+asyncpg://@h/db"
 
-        assert to_sync_url(url) == "postgresql://u:postgresql+asyncpg://@h/db"
+        assert to_sync_url(url) == "postgresql+psycopg://u:postgresql+asyncpg://@h/db"
 
 
 class TestTheSchemeIsNormalisedForWhicheverEngineLoadsIt:
@@ -277,17 +286,30 @@ class TestTheSchemeIsNormalisedForWhicheverEngineLoadsIt:
 
     @pytest.mark.parametrize(
         "url",
-        ["postgresql://u:p@h/db", "postgres://u:p@h/db", "postgresql+asyncpg://u:p@h/db"],
+        [
+            "postgresql://u:p@h/db",
+            "postgres://u:p@h/db",
+            "postgresql+asyncpg://u:p@h/db",
+            "postgresql+psycopg://u:p@h/db",
+        ],
     )
     def test_every_accepted_spelling_becomes_loadable_by_the_sync_engine(self, url: str) -> None:
-        """`postgres://` is the one that bit: SQLAlchemy 2 removed that dialect
-        alias, so alembic failed on dialect lookup before connecting — while
-        `_MIGRATABLE_SCHEMES` and this suite both declared it migratable."""
-        assert to_sync_url(url) == "postgresql://u:p@h/db"
+        """`postgres://` is the one that bit first: SQLAlchemy 2 removed that
+        dialect alias, so alembic failed on dialect lookup before connecting —
+        while `_MIGRATABLE_SCHEMES` and this suite both declared it migratable.
+
+        The bare `postgresql://` is the same failure one step later: the
+        dialect resolves, and then the DBAPI import does not."""
+        assert to_sync_url(url) == "postgresql+psycopg://u:p@h/db"
 
     @pytest.mark.parametrize(
         "url",
-        ["postgresql://u:p@h/db", "postgres://u:p@h/db", "postgresql+asyncpg://u:p@h/db"],
+        [
+            "postgresql://u:p@h/db",
+            "postgres://u:p@h/db",
+            "postgresql+asyncpg://u:p@h/db",
+            "postgresql+psycopg://u:p@h/db",
+        ],
     )
     def test_every_accepted_spelling_becomes_loadable_by_the_async_engine(self, url: str) -> None:
         """`memory.store.get_engine` builds an `AsyncEngine`, which cannot
@@ -337,7 +359,9 @@ class TestTheSuppliedMappingIsTheOneUsed:
             }
         )
 
-        assert resolved == "postgresql://supplied:supplied-pw@supplied.example:6000/supplied_db"
+        assert resolved == (
+            "postgresql+psycopg://supplied:supplied-pw@supplied.example:6000/supplied_db"
+        )
         assert "ambient" not in resolved
 
 
@@ -359,10 +383,60 @@ class TestAnEmptyValueIsStillAConfiguredValue:
         resolved = resolve_database_url()
 
         assert resolved, "an explicitly-set variable is a configured database"
-        assert resolved.startswith("postgresql://")
+        assert resolved.startswith("postgresql+psycopg://")
         assert require_database_url() == resolved, "and it is migratable, not an error"
 
     def test_a_truly_empty_environment_still_resolves_to_nothing(self) -> None:
         """The counterweight: presence-based detection must not turn "no
         database configured" into a localhost guess."""
         assert resolve_database_url({}) == ""
+
+
+class TestDatabaseSettingsNamesItsDriver:
+    """Both URL spellings name a driver explicitly, and each names a different
+    one on purpose.
+
+    A bare `postgresql://` is not neutral: SQLAlchemy resolves it to psycopg2,
+    which this project has never declared as a dependency, so
+    `alembic upgrade head` — the schema-evolution path ADR-087 documents —
+    died with ModuleNotFoundError on any clean install. The async side has the
+    mirror-image failure: a synchronous driver under `AsyncEngine` raises
+    `InvalidRequestError` at connect time rather than at configuration time.
+
+    Neither property needs a server, so nothing here is a database test; they
+    are string construction, and they were the only lines in this module that
+    no test read.
+    """
+
+    def test_the_async_url_names_asyncpg(self) -> None:
+        settings = DatabaseSettings(
+            host="db.internal", port=6543, name="maistro_prod", user="svc", password="pw"
+        )
+
+        assert settings.url == "postgresql+asyncpg://svc:pw@db.internal:6543/maistro_prod"
+
+    def test_the_sync_url_names_psycopg_rather_than_defaulting_to_psycopg2(self) -> None:
+        settings = DatabaseSettings(
+            host="db.internal", port=6543, name="maistro_prod", user="svc", password="pw"
+        )
+
+        assert settings.sync_url == "postgresql+psycopg://svc:pw@db.internal:6543/maistro_prod"
+        assert not settings.sync_url.startswith("postgresql://"), (
+            "a bare scheme is what reached for psycopg2 and broke alembic"
+        )
+
+    def test_the_two_spellings_differ_only_in_the_driver(self) -> None:
+        """The host, port, database and credentials must be identical — a
+        migration that runs against a different database from the one the app
+        opens is worse than one that fails to run."""
+        settings = DatabaseSettings(host="h", port=1234, name="n", user="u", password="p")
+
+        assert settings.url.split("://", 1)[1] == settings.sync_url.split("://", 1)[1]
+
+    def test_alembic_can_load_the_sync_url_as_written(self) -> None:
+        """`to_sync_url` is the normaliser every other entry point goes
+        through; `sync_url` must already be a fixed point of it, or the two
+        paths into alembic disagree about the driver."""
+        settings = DatabaseSettings()
+
+        assert to_sync_url(settings.sync_url) == settings.sync_url

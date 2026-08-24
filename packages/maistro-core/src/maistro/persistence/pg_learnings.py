@@ -50,19 +50,18 @@ class PgLearningStore:
     async def ensure_schema(self) -> None:
         """Add the `org_id` column and its index if they are missing.
 
-        Deliberately ALTER-only, with no CREATE TABLE. Unlike the SQLite store,
-        nothing in this repository defines the Postgres `learnings` table —
-        `grep -rn "CREATE TABLE .*learnings"` finds only `sqlite_learnings.py`.
-        The table is therefore owned by whatever provisions the deployment's
-        database, and inventing a full definition here would risk diverging
-        from it. Adding one nullable-with-default column is a safe, idempotent
-        upgrade that does not claim that ownership.
+        ALTER-only, with no CREATE TABLE, because the table has an owner:
+        `alembic/versions/` defines `learnings` and every column this class
+        reads. (An earlier version of this docstring said nothing in the
+        repository defined the table. That was already wrong when written —
+        migration 001 creates it — and acting on it is part of how the schema
+        drifted from the stores until #122 ran the two against each other.)
 
-        This exists because the queries in this class now name `org_id`; a
-        deployment that never runs it would get "column does not exist" rather
-        than the unfiltered results it used to get. Failing loudly on a missing
-        scope column is the correct direction for a filter whose absence is a
-        cross-scope read.
+        What remains here is a belt-and-braces upgrade for a database migrated
+        before `org_id` existed: idempotent, cheap, and safe to run at startup.
+        Failing loudly on a missing scope column is the right direction for a
+        filter whose absence is a cross-scope read — but the migration is what
+        should be relied on, not this.
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -95,6 +94,12 @@ class PgLearningStore:
                         return int(row["id"])
 
             row = await conn.fetchrow(
+                # source_query, team_id and hit_count are written, not
+                # omitted: all three are columns the read paths select, and a
+                # column the writer skips is a column that always reads back as
+                # its default. `hit_count` is usually 0 on a new learning, but
+                # a caller that supplies one — a re-import, a merge — must get
+                # it back, and `find_relevant` orders by it.
                 """INSERT INTO learnings
                    (category, trigger_keys, learning, tool_name, source_query,
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
@@ -107,17 +112,11 @@ class PgLearningStore:
                 _dump_keys(learning.trigger_keys),
                 learning.learning,
                 learning.tool_name,
-                # `source_query` and `team_id` are NOT NULL in migration 001
-                # with no DDL default -- SQLAlchemy's `default=` is applied by
-                # the ORM, and this is a raw INSERT. Omitting them was a
-                # NotNullViolation, and omitting `team_id` in particular
-                # dropped the row's team scope on a column the store then
-                # filters on.
                 learning.source_query,
                 learning.agent_id or "",
                 learning.user_id,
                 learning.org_id or "",
-                learning.team_id,
+                learning.team_id or "",
                 learning.scope,
                 learning.hit_count,
                 learning.status,

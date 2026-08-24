@@ -6,6 +6,12 @@ sessions and quota that vanish on restart, and nothing said so — no error, no
 warning, no log line. A misconfigured model gives visibly wrong answers; a
 misconfigured database gives correct answers that quietly disappear.
 
+`postgresql://` now has a real backend, so it is no longer one of the schemes
+this guard refuses — `test_container_postgres.py` owns that branch, including
+its own refusals. What remains here is the fall-through: schemes with no wiring
+behind them at all, and the near-misses (`postgres:/db` with one slash) that a
+typo produces. Those must still fail rather than silently become ephemeral.
+
 The three cases are deliberately distinguished, and the distinction is the
 design: unset is honest, `memory://` is chosen, anything else is a mistake.
 
@@ -38,6 +44,10 @@ def _config(url: str) -> AgentConfig:
         "mysql://host/db",
         "redis://host:6379",
         "not-a-url",
+        # One slash, not two. Close enough to the supported spelling that the
+        # scheme test above passes it over, and far enough that nothing wires
+        # it — exactly the shape a typo takes.
+        "postgres:/maistro",
     ],
 )
 async def test_a_database_that_cannot_be_wired_is_a_config_error(url: str) -> None:
@@ -45,7 +55,8 @@ async def test_a_database_that_cannot_be_wired_is_a_config_error(url: str) -> No
         await create_container(_config(url))
     message = str(excinfo.value)
     assert _redact_url(url) in message, "the message must name the offending value"
-    assert "sqlite://" in message and "memory://" in message, "and the supported alternatives"
+    for supported in ("postgresql://", "sqlite://", "memory://"):
+        assert supported in message, "and the supported alternatives"
 
 
 async def test_the_error_names_postgresql_among_the_supported_backends() -> None:
@@ -61,14 +72,14 @@ async def test_the_error_names_postgresql_among_the_supported_backends() -> None
     ("url", "leaked"),
     [
         ("mysql://root:hunter2@db/app", "hunter2"),
-        ("mysql://alice:pw@host:3306/app", "alice"),
+        ("mysql://root:hunter2@db/app", "root"),
         ("redis://:onlyapassword@cache:6379", "onlyapassword"),
     ],
 )
 async def test_rejected_urls_do_not_leak_credentials(url: str, leaked: str) -> None:
     """This error is uncaught at startup, so it lands in process logs and
-    whatever collects them. PostgreSQL URLs carry `user:password@` as a matter
-    of course — the first version of this check put them in the logs of every
+    whatever collects them. Database URLs carry `user:password@` as a matter of
+    course — the first version of this check put them in the logs of every
     deployment that hit it, while fixing a different silent-failure bug."""
     with pytest.raises(ConfigError) as excinfo:
         await create_container(_config(url))
@@ -94,6 +105,19 @@ async def test_a_url_without_credentials_is_reported_intact(url: str) -> None:
         await create_container(_config(url))
 
     assert url in str(excinfo.value)
+
+
+def test_redaction_strips_postgres_credentials() -> None:
+    """`postgresql://` no longer reaches the refusal above, but `_redact_url` is
+    the shared redactor and PostgreSQL is the scheme that carries `user:pass@`
+    as a matter of course. Keep it covered where the function is, so a later
+    caller that does interpolate a PG URL inherits a tested guarantee."""
+    redacted = _redact_url("postgresql://maistro:hunter2@db.internal:5432/maistro")
+
+    assert "hunter2" not in redacted
+    assert "***:***@" in redacted, "both halves of the userinfo, not just the password"
+    assert "db.internal:5432" in redacted
+    assert redacted.endswith("/maistro")
 
 
 def test_an_unparseable_url_is_not_echoed() -> None:
@@ -149,3 +173,14 @@ async def test_the_error_advertises_a_form_that_is_actually_durable() -> None:
         await create_container(_config("mysql://host/db"))
 
     assert "sqlite:///path/to/file.db" in str(excinfo.value)
+
+
+async def test_the_error_names_postgresql_now_that_it_has_a_backend() -> None:
+    """This message once said the supported set was sqlite and memory only.
+    That was true when it was written and is false now: an operator who typo'd
+    a PostgreSQL URL would read it as "PostgreSQL is unsupported" and go
+    configure SQLite instead."""
+    with pytest.raises(ConfigError) as excinfo:
+        await create_container(_config("mysql://host/db"))
+
+    assert "postgresql://" in str(excinfo.value)

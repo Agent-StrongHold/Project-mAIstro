@@ -61,27 +61,9 @@ The line between shared runtime and product-specific code is defined in [`ADR-01
 uv sync                               # install every package in the workspace
 uv sync --extra bootstrap             # optional: maistro-install TUI / answers-file planner
 uv run pytest                         # run the test suite
+uv run alembic upgrade head           # apply DB migrations (needs Postgres)
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
-
-Then apply the migrations. The two environment settings are not optional:
-
-```bash
-set -a; . ./.env; set +a              # compose reads .env itself; your shell does not
-DB_PORT=5433 uv run alembic upgrade head
-```
-
-`docker-compose.yml` publishes Postgres on **host port 5433** (`127.0.0.1:5433:5432`),
-while `DatabaseSettings` defaults to 5432 — so a bare `alembic upgrade head`
-either fails to connect or, if some other PostgreSQL is listening on 5432,
-migrates the wrong database. `DB_PASSWORD` comes from `.env`, which Compose
-interpolates for the container but does not export to your shell.
-
-`alembic` reads `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`,
-not `DATABASE_URL` — the two are separate configuration paths today, which is
-[#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122), and the
-reason this needs spelling out at all. `DB_USER` and `DB_NAME` default to
-`maistro`, matching Compose; only the port and password differ.
 
 The repo is a `uv` workspace: **nine Python packages**, plus the **`packages/hive-conductor`** reference app (frontend + backend + Docker).
 

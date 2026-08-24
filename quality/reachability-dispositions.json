@@ -337,10 +337,9 @@
       "id": "persistence-postgres",
       "subsystem": "Relational persistence",
       "disposition": "CONNECT",
-      "rationale": "The PostgreSQL half of the persistence layer. ADR-082226-5104 makes PostgreSQL the durable system of record. #122 wired the memory, outcome, session and quota stores, so those are reachable now; the audit log and prompt store are still unwired. Neither has a consumer on the container's path yet -- the audit log is written through security.gate's own sink and the prompt store through maistro.prompts -- so connecting them is a separate change with a separate seam, not a line in the same branch.",
-      "root": "maistro.container wires the durable stores for a postgresql:// database_url (#122); pg_audit and pg_prompts still await theirs",
+      "rationale": "The PostgreSQL half of the persistence layer. #122 wired the four the container selects for a postgresql:// database_url \u2014 learnings, outcomes, sessions and audit \u2014 so only the prompt manager is left. It stays CONNECT rather than RETIRE because ADR-082226-5104 makes PostgreSQL the durable system of record and prompts belong there for the same reasons the rest do; nothing has replaced it, the container simply has no prompt-manager wiring on either backend (sqlite_prompts is unwired too, in the persistence-sqlite-homelab group).",
+      "root": "maistro.container prompt-manager wiring, for a postgresql:// database_url",
       "modules": [
-        "maistro.persistence.pg_audit",
         "maistro.persistence.pg_prompts"
       ]
     },
@@ -516,7 +515,6 @@
       "root": "the canonical Run store's scope enforcement (#37, #38)",
       "modules": [
         "maistro.projects.authorization",
-        "maistro.projects.sqlite_scope_store",
         "maistro.workspaces",
         "maistro.workspaces.model",
         "maistro.workspaces.store"

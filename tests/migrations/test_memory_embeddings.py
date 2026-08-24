@@ -55,7 +55,7 @@ class TestTheDeclaredWidth:
         """A constant that drifted from the DDL would be a check that passes
         while every write fails."""
         migration = (
-            REPO_ROOT / "alembic" / "versions" / "007_memory_embedding_columns.py"
+            REPO_ROOT / "alembic" / "versions" / "011_memory_embedding_columns.py"
         ).read_text(encoding="utf-8")
 
         assert f"_DIMENSIONS = {EMBEDDING_DIMENSIONS}" in migration

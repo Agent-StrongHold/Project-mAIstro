@@ -130,17 +130,30 @@ def migrated_url() -> str:
 
 @pytest.fixture
 async def container(migrated_url):
-    """A container wired from a `postgresql://` URL, torn down with its pool."""
-    from maistro.container import create_container
+    """A container wired from a `postgresql://` URL, torn down with its pool.
 
+    `pg_pool`, not `db_pool`: the container keeps the asyncpg pool and the
+    SQLite connection in separate fields precisely because they are different
+    objects with different APIs, and code branching on "is a database
+    configured" needs to know which.
+
+    Closed through `close_pool` rather than on the pool object, because
+    `maistro.persistence.get_pool` is a process-wide singleton. Closing the
+    handle without clearing the registry leaves the next test asking for a pool
+    and getting this one, bound to an event loop that has since closed.
+    """
+    from maistro.container import create_container
+    from maistro.persistence import close_pool
+
+    await close_pool()
     wired = await create_container(
         AgentConfig(router_api_key="test-key", database_url=migrated_url)
     )
     try:
-        await wired.db_pool.execute("TRUNCATE learnings, outcomes, sessions, quota_usage")
+        await wired.pg_pool.execute("TRUNCATE learnings, outcomes, sessions, quota_usage")
         yield wired
     finally:
-        await wired.db_pool.close()
+        await close_pool()
 
 
 class TestContainerSelectsPostgres:
@@ -171,13 +184,15 @@ class TestContainerSelectsPostgres:
         first two — so the suffix has to be stripped rather than passed through.
         """
         from maistro.container import create_container
+        from maistro.persistence import close_pool
 
         url = migrated_url.replace("postgresql://", f"{scheme}://", 1)
+        await close_pool()
         wired = await create_container(AgentConfig(router_api_key="test-key", database_url=url))
         try:
             assert type(wired.learning_store).__name__ == "PgLearningStore"
         finally:
-            await wired.db_pool.close()
+            await close_pool()
 
     async def test_an_unreachable_server_fails_without_leaking_the_password(
         self,
@@ -283,7 +298,7 @@ class TestStoresRunAgainstTheMigratedSchema:
             )
         )
         assert recorded > 0
-        row = await container.db_pool.fetchrow(
+        row = await container.pg_pool.fetchrow(
             "SELECT org_id, tool_calls, charged_microchips, pricing_version "
             "FROM outcomes WHERE request_id = 'req-1'"
         )
@@ -314,13 +329,18 @@ class TestUnmigratedDatabaseFailsLoudly:
 
     async def test_a_database_with_no_tables_names_the_missing_one(self, migrated_url) -> None:
         """The container issues no CREATE TABLE, so an operator who skipped
-        `alembic upgrade head` gets `UndefinedTableError: relation "learnings"
-        does not exist` — loud, specific, and not a database this container
-        invented in place of the one the migrations describe.
+        `alembic upgrade head` is told so — loud, specific, and not a database
+        this container invented in place of the one the migrations describe.
+
+        A startup preflight names every missing table at once rather than
+        letting the first query raise `UndefinedTableError` on whichever table
+        it happened to touch: one run of `alembic upgrade head` fixes all of
+        them, so reporting them one restart at a time helps nobody.
         """
         import asyncpg
 
         from maistro.container import create_container
+        from maistro.types.errors import ConfigError
 
         bare = "maistro_pg_wiring_bare"
         admin = await asyncpg.connect(urlsplit(migrated_url)._replace(path="/postgres").geturl())
@@ -331,9 +351,10 @@ class TestUnmigratedDatabaseFailsLoudly:
             await admin.close()
 
         url = urlsplit(migrated_url)._replace(path=f"/{bare}").geturl()
-        with pytest.raises(asyncpg.UndefinedTableError) as caught:
+        with pytest.raises(ConfigError) as caught:
             await create_container(AgentConfig(router_api_key="test-key", database_url=url))
         assert "learnings" in str(caught.value)
+        assert "alembic upgrade head" in str(caught.value)
 
     async def test_a_failed_startup_does_not_strand_its_connections(self, migrated_url) -> None:
         """The pool exists before `ensure_schema` runs, and the caller only
@@ -349,6 +370,7 @@ class TestUnmigratedDatabaseFailsLoudly:
         import asyncpg
 
         from maistro.container import create_container
+        from maistro.types.errors import ConfigError
 
         bare = "maistro_pg_wiring_leak"
         admin = await asyncpg.connect(urlsplit(migrated_url)._replace(path="/postgres").geturl())
@@ -358,7 +380,7 @@ class TestUnmigratedDatabaseFailsLoudly:
             url = urlsplit(migrated_url)._replace(path=f"/{bare}").geturl()
 
             for _ in range(3):
-                with pytest.raises(asyncpg.UndefinedTableError):
+                with pytest.raises(ConfigError):
                     await create_container(AgentConfig(router_api_key="test-key", database_url=url))
 
             # `pool.close()` returns before PostgreSQL has reaped the backends,

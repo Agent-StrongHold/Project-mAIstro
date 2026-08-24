@@ -20,12 +20,36 @@ second and point its `down_revision` at the other, so the chain is linear again.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = REPO_ROOT / "alembic" / "versions"
+
+
+def _declared_revisions() -> list[tuple[Path, str]]:
+    """Every revision id declared on disk, read from the file that declares it.
+
+    Not from the filename. `004_task_run_id.py` declares `004_task_run_id`
+    while its stem's first underscore-delimited field is `004` — a *different*
+    revision, in a *different* file. Deriving the id from the name therefore
+    resolved two files to one revision and would have let the stranded one pass
+    unnoticed, which is the exact defect the caller is checking for.
+    """
+    pattern = re.compile(r"^revision\s*[:=]", re.MULTILINE)
+    found = []
+    for path in sorted(VERSIONS.glob("*.py")):
+        if path.name.startswith("__"):
+            continue
+        for line in path.read_text().splitlines():
+            if pattern.match(line):
+                found.append((path, line.split("=", 1)[1].strip().strip("\"'")))
+                break
+        else:  # pragma: no cover - a versions file with no revision id
+            raise AssertionError(f"{path.name} declares no revision id")
+    return found
 
 
 @pytest.fixture(scope="module")
@@ -52,11 +76,7 @@ def test_every_revision_is_reachable_from_the_head(script_directory):
     half of the same defect, where the chain is linear but incomplete."""
     head = script_directory.get_current_head()
     walked = {revision.revision for revision in script_directory.walk_revisions("base", head)}
-    on_disk = {
-        script_directory.get_revision(path.stem.split("_")[0]).revision
-        for path in VERSIONS.glob("*.py")
-        if not path.name.startswith("__")
-    }
+    on_disk = {revision for _path, revision in _declared_revisions()}
 
     assert on_disk <= walked, f"revisions off the chain: {sorted(on_disk - walked)}"
 

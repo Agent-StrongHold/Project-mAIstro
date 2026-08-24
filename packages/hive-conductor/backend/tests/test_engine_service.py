@@ -172,6 +172,7 @@ async def test_start_with_no_router_key_uses_stub_agent_port(
         maistro_router_api_key = ""
         maistro_base_url = "http://localhost:8000"
         hive_mode = "production"
+        hive_default_workspace_id = "default"
 
     svc = EngineService()
     await svc.start(_Settings())  # type: ignore[arg-type]
@@ -191,10 +192,12 @@ async def test_start_in_demo_mode_uses_local_backend(
         maistro_router_api_key = ""
         maistro_base_url = "http://localhost:8000"
         hive_mode = "demo"
+        hive_default_workspace_id = "default"
 
     # Stub out TaskQueue/TaskRunner so .start doesn't try to spawn real ones
     class _Q:
-        pass
+        def __init__(self, *, admitter: Any = None) -> None:
+            self.admitter = admitter
 
     class _R:
         def __init__(self, q: Any, executor: Any) -> None:
@@ -383,7 +386,9 @@ async def test_submit_task_success_returns_task_record(
     monkeypatch.setattr(caps, "normalize_capability", lambda c: c)
 
     class _Backend:
-        async def submit(self, body: Any, *, user_id: str = "") -> Any:
+        async def submit(
+            self, body: Any, *, user_id: str = "", workspace_id: str | None = None
+        ) -> Any:
             return TaskRecord(_fake_task(task_id="new-task", description=body.description))
 
     svc = EngineService()

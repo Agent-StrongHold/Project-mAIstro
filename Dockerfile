@@ -23,16 +23,10 @@ COPY packages/maistro-core   packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
 # Non-editable install so the venv is fully self-contained (nothing from the
 # source trees is needed on sys.path at runtime).
-# psycopg2-binary is here for alembic, not for the application. Alembic reaches
-# PostgreSQL through SQLAlchemy's default *sync* dialect, which imports psycopg2
-# — the app path uses asyncpg and never touches it. This image copies `alembic/`
-# and installs alembic, so without the driver `alembic upgrade head` in the
-# shipped container stops at ModuleNotFoundError before touching the schema.
 RUN pip install --no-cache-dir \
       "./packages/maistro-core[llm,sandbox,observability]" \
       "./packages/maistro-server" \
       "alembic>=1.14" \
-      "psycopg2-binary>=2.9" \
       "pydantic-ai-slim[openai]>=0.1" \
       "openai>=1.40,<2" \
       "httpx>=0.27.0"

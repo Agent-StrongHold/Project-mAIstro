@@ -1,8 +1,8 @@
 """Embedding vectors on the memory rows, at one declared dimension.
 
-Revision ID: 007_memory_embeddings
-Revises: 006_outcome_scope_feedback
-Create Date: 2026-08-23
+Revision ID: 011_memory_embeddings
+Revises: 010_outcome_scope_feedback
+Create Date: 2026-08-24
 
 `ADR-082226-5104` chose pgvector as the vector store and migration 001 carried
 that out for `memory_entries` alone. `learnings`, `outcomes` and
@@ -28,8 +28,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "007_memory_embeddings"
-down_revision = "006_outcome_scope_feedback"
+revision = "011_memory_embeddings"
+down_revision = "010_outcome_scope_feedback"
 branch_labels = None
 depends_on = None
 
