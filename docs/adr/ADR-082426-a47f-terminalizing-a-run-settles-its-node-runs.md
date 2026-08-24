@@ -3,8 +3,14 @@ id: ADR-082426-a47f
 title: "Terminalizing a Run settles its open NodeRuns, and closes them to further movement"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-24
+accepted: 2026-08-24
+history:
+  - status: Proposed
+    date: 2026-08-24
+  - status: Accepted
+    date: 2026-08-24
 substrate:
   - maistro-engine#ADR-081226-a66b
 implements: []
