@@ -103,13 +103,18 @@ canvas app. What goes is the claim that the Container offers one — the part th
 
 ### Negative / Trade-offs
 
-- **The dead code stays invisible to the ratchet, and this makes that plainer.** I expected
+- **The two ratchets see different things, and only one of them noticed.** I expected
   retiring the wiring to push `a2a/broker.py` into the unreachable set and cost a baseline
   row. It does not: `maistro/a2a/__init__.py` re-exports `A2ABroker`, so the module stays
-  reachable through the package's own public API whatever the Container does. So the
-  retirement removes a misleading surface and buys **no** new visibility — the code is now
-  exported-but-uncalled instead of wired-but-unread, and `check-reachability.py` reads both
-  as reachable.
+  reachable through the package's own public API whatever the Container does, and
+  `check-reachability.py` reads exported-but-uncalled exactly as it reads wired-but-unread.
+
+  The **vulture** ledger did notice, immediately: `AgentCard.from_identity` was called only
+  by the retired resolver, and the exact-debt-ledger gate flagged it as a new identity on the
+  first push. So the two gates answer different questions — *is this module imported from an
+  entry point* versus *is this symbol called* — and it is the second that catches the debris
+  a retirement leaves. Neither answers *is this exported symbol called by anyone*, which is
+  the question that would have found the broker itself.
 - `delegation_chain` is carried in memory and on whatever record chooses to persist it. It is
   not itself durable execution identity, and a caller wanting delegation history across a
   restart still has only the Attempt's single agent name. That is the accepted cost of (1).
