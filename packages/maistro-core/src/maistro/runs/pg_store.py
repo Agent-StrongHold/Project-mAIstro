@@ -54,17 +54,26 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
+    DuplicateOccurrence,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
     validate_accepted_outcome_against_attempt,
+    validate_child_scope,
 )
+
+#: The unique index migration 015 creates. Compared against
+#: `UniqueViolationError.constraint_name` so a violation on any *other*
+#: constraint keeps its own identity instead of being reported as a duplicate
+#: firing.
+OCCURRENCE_INDEX = "ix_canonical_runs_occurrence"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -120,13 +129,15 @@ class PgRunStore:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         if parent_run_id is not None:
             parent = await self._require_run(parent_run_id)
-            if parent.workspace_id != graph.workspace_id:
-                raise RunIntegrityError("child Run cannot cross Workspace boundaries")
-            if parent.project_id != graph.project_id and not allow_cross_project:
-                raise RunIntegrityError(
-                    "child Run cannot implicitly cross Project boundaries; "
-                    "caller must authorize and request the destination Project",
-                )
+            # The shared check, not a second copy of its two conditions. Its own
+            # docstring says duplicating them at a call site is "the smaller diff
+            # and the worse one", and this store was that duplicate.
+            validate_child_scope(
+                parent,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                allow_cross_project=allow_cross_project,
+            )
             if parent_node_run_id is not None:
                 parent_node_run = await self._require_node_run(parent_node_run_id)
                 if parent_node_run.run_id != parent_run_id:
@@ -148,23 +159,29 @@ class PgRunStore:
         # which a process death leaves a CREATED Run whose receipt was queued.
         run = admit_in_state(run, initial_status)
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO canonical_runs
+            try:
+                await conn.execute(
+                    """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
                     parent_node_run_id, status, payload, retention_expires_at)
                    VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
-                run.run_id,
-                run.workspace_id,
-                run.project_id,
-                run.parent_run_id,
-                run.parent_node_run_id,
-                run.status.value,
-                json_of(run),
-                # Duplicated out of the payload so the retention sweep can use
-                # an index (migration 012). Written once at creation and never
-                # transitioned, so the two cannot drift the way `status` could.
-                run.retention_expires_at,
-            )
+                    run.run_id,
+                    run.workspace_id,
+                    run.project_id,
+                    run.parent_run_id,
+                    run.parent_node_run_id,
+                    run.status.value,
+                    json_of(run),
+                    # Duplicated out of the payload so the retention sweep can use
+                    # an index (migration 012). Written once at creation and never
+                    # transitioned, so the two cannot drift the way `status` could.
+                    run.retention_expires_at,
+                )
+            except _integrity_errors() as exc:
+                conflict = _occurrence_conflict(exc, run)
+                if conflict is None:
+                    raise
+                raise conflict from exc
         return run
 
     async def purge_expired_runs(
@@ -672,6 +689,32 @@ def _integrity_errors() -> tuple[type[Exception], ...]:
     import asyncpg
 
     return (asyncpg.exceptions.IntegrityConstraintViolationError,)
+
+
+def _occurrence_conflict(exc: Exception, run: Run) -> DuplicateOccurrence | None:
+    """The duplicate-firing this violation means, or None if it means something else.
+
+    The occurrence claim (migration 015). Two tickers evaluating the same due
+    window both reach the insert; the index refuses the second, and the caller's
+    correct response is to treat that firing as already fired rather than to
+    retry it or abandon the batch (#220).
+
+    Matched on the constraint name, the way `_integrity_failure` below already
+    is: asyncpg raises one class for every unique index, so another constraint
+    refusing the insert means something else entirely — and reporting it as a
+    duplicate firing would tell the schedule admitter to carry its cursor past a
+    firing that never happened.
+
+    The `run.provenance` check is not redundant with the name. A Run carrying no
+    `(schedule_id, scheduled_for)` cannot have violated this index, so calling
+    its failure a duplicate would be inventing a firing.
+    """
+    occurrence = occurrence_key(run.provenance)
+    if occurrence is None:
+        return None
+    if str(getattr(exc, "constraint_name", "") or "") != OCCURRENCE_INDEX:
+        return None
+    return DuplicateOccurrence(*occurrence)
 
 
 def _integrity_failure(exc: Exception, node_run_id: str) -> Exception:

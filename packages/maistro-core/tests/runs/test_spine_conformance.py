@@ -24,9 +24,17 @@ import pytest
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    SCHEDULE_CATCHUP_KEY,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULED_FOR_KEY,
+)
 from maistro.runs.store import (
     ActiveAttemptExists,
     AttemptNotFound,
+    DuplicateOccurrence,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
@@ -850,3 +858,163 @@ async def test_terminalizing_a_terminal_run_is_still_refused(spine: Any) -> None
     reloaded = await store.get_run(run.run_id)
     assert reloaded is not None
     assert reloaded.status is RunStatus.COMPLETED
+
+
+# ── one Run per schedule firing (#220, ADR-082426-82c7) ───────────
+#
+# `(schedule_id, scheduled_for)` is the identity of a firing; the cursor never
+# was. Before this a crash between creating a Run and stamping the cursor
+# repeated the occurrence on the next tick, and two tickers on one schedule
+# both created Runs for every occurrence they both enumerated.
+
+
+def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+00:00") -> dict:
+    return {
+        ADMISSION_SOURCE: SCHEDULE_SOURCE,
+        SCHEDULE_ID_KEY: schedule_id,
+        SCHEDULED_FOR_KEY: when,
+    }
+
+
+async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    with pytest.raises(DuplicateOccurrence) as caught:
+        await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    assert caught.value.schedule_id == "sched-1"
+    assert caught.value.scheduled_for == "2026-08-24T12:00:00+00:00"
+
+
+async def test_a_catch_up_fire_collides_with_the_on_time_one(spine: Any) -> None:
+    """They are the same occurrence. That one was noticed later than the other
+    is why `catchup` exists — it is not a reason to run the work twice."""
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    with pytest.raises(DuplicateOccurrence):
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance={**_occurrence(), SCHEDULE_CATCHUP_KEY: True},
+        )
+
+
+async def test_a_different_occurrence_of_the_same_schedule_is_admitted(spine: Any) -> None:
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    other = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(when="2026-08-24T13:00:00+00:00"),
+    )
+
+    assert other.run_id
+
+
+async def test_the_same_time_on_a_different_schedule_is_admitted(spine: Any) -> None:
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    other = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(schedule_id="sched-2")
+    )
+
+    assert other.run_id
+
+
+async def test_runs_that_claim_no_occurrence_do_not_collide(spine: Any) -> None:
+    """Task and chat Runs carry neither key. Without a partial claim every one
+    of them would collide with every other on a pair of missing values."""
+    store, workspace, project_id = spine
+    provenance = {ADMISSION_SOURCE: "task_queue", "task_id": "t-1"}
+
+    run_ids = {
+        (await store.create_run(_graph(workspace, project_id), provenance=dict(provenance))).run_id
+        for _ in range(3)
+    }
+
+    assert len(run_ids) == 3
+
+
+async def test_half_an_occurrence_key_claims_nothing(spine: Any) -> None:
+    """A Run carrying one key without the other cannot say which firing it
+    belongs to. Inventing a key for it would collide unrelated work."""
+    store, workspace, project_id = spine
+    partial = {ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_ID_KEY: "sched-1"}
+
+    first = await store.create_run(_graph(workspace, project_id), provenance=partial)
+    second = await store.create_run(_graph(workspace, project_id), provenance=dict(partial))
+
+    assert first.run_id != second.run_id
+
+
+async def test_only_one_of_many_concurrent_tickers_admits_an_occurrence(spine: Any) -> None:
+    """Eight tickers race on one firing. Seven must lose.
+
+    Under SQLite the database serialises them and the application check would
+    be enough on its own; under PostgreSQL they run genuinely at once, which
+    is the case #220 is actually about — "exactly one run_id per firing" must
+    not depend on how many replicas happen to be deployed.
+    """
+    store, workspace, project_id = spine
+
+    results = await asyncio.gather(
+        *(
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    admitted = [r for r in results if not isinstance(r, BaseException)]
+    refused = [r for r in results if isinstance(r, DuplicateOccurrence)]
+    unexpected = [
+        r
+        for r in results
+        if isinstance(r, BaseException) and not isinstance(r, DuplicateOccurrence)
+    ]
+
+    assert unexpected == [], f"losers must be refused cleanly, not crash: {unexpected}"
+    assert len(admitted) == 1
+    assert len(refused) == 7
+
+
+async def test_a_failed_occurrences_run_is_still_retryable(spine: Any) -> None:
+    """The claim refuses duplicate *occurrences*, not duplicate *attempts*. A
+    scheduled Run that failed is retried by executing another Attempt under its
+    existing NodeRun — which never goes back through `create_run`, so a
+    constraint that blocked it would be a worse bug than the one being fixed.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    first = await store.create_attempt(node_run.node_run_id, lease_holder="ticker-a")
+    assert first.execution_lease is not None
+    token = first.execution_lease.fencing_token
+    await store.transition_attempt(first.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    await store.transition_attempt(
+        first.attempt_id, AttemptStatus.FAILED, error="provider down", fencing_token=token
+    )
+
+    second = await store.create_attempt(node_run.node_run_id, lease_holder="ticker-a")
+
+    assert second.ordinal == 2
+
+
+async def test_deleting_a_run_releases_its_occurrence(spine: Any) -> None:
+    """The claim lives on the Run, so it goes when the Run does. Nothing is
+    duplicated by re-admitting a firing whose only record was deliberately
+    destroyed, and a claim outliving its Run would assert something no longer
+    true."""
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    await store.delete_run(run.run_id, force=True)
+
+    readmitted = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    assert readmitted.run_id != run.run_id

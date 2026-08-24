@@ -17,8 +17,27 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.runs.pg_store import PgRunStore, _integrity_failure
-from maistro.runs.store import ActiveAttemptExists, RunIntegrityError
+from maistro.graph import Graph, Node
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.pg_store import OCCURRENCE_INDEX, PgRunStore, _integrity_failure
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULED_FOR_KEY,
+)
+from maistro.runs.store import ActiveAttemptExists, DuplicateOccurrence, RunIntegrityError
+
+
+def _asyncpg_integrity_base() -> type[Exception]:
+    """asyncpg's own integrity-violation base, resolved at import.
+
+    The store catches this class and nothing else, so a stand-in that does not
+    inherit from it would never reach the code under test.
+    """
+    import asyncpg
+
+    return asyncpg.exceptions.IntegrityConstraintViolationError
 
 
 class _Violation(Exception):
@@ -75,3 +94,105 @@ class TestThePayloadTableGuard:
         `node_run_id` would build valid SQL against the wrong column."""
         with pytest.raises(ValueError, match="unsupported canonical execution table"):
             await PgRunStore._write(None, "canonical_runs", "node_run_id", "r-1", object())
+
+
+class TestTheOccurrenceClaimIsMatchedByName:
+    """A unique violation on some *other* constraint is not a duplicate firing.
+
+    The same argument `_integrity_failure` above rests on, one table over.
+    asyncpg raises the same exception class for every unique index, so the only
+    thing separating "this occurrence already fired" from any other constraint
+    refusing the insert is the name — and reporting the wrong one would tell
+    the admitter to carry the cursor past a firing that never happened.
+
+    These use a subclass of asyncpg's **real** base class rather than a
+    stand-in. `create_run` catches `_integrity_errors()`, which resolves that
+    class at call time, so a plain `Exception` would sail past the guard
+    untouched and the test would pass without ever entering it.
+    """
+
+    async def test_a_violation_on_another_constraint_is_re_raised(self) -> None:
+        store, graph = await _store_raising(_violation("some_other_index"))
+
+        with pytest.raises(_AsyncpgViolation):
+            await store.create_run(graph, provenance=_occurrence_provenance())
+
+    async def test_the_occurrence_index_becomes_a_duplicate_occurrence(self) -> None:
+        """The positive half, so the two tests together pin the discrimination
+        rather than just one side of it."""
+        store, graph = await _store_raising(_violation(OCCURRENCE_INDEX))
+
+        with pytest.raises(DuplicateOccurrence) as caught:
+            await store.create_run(graph, provenance=_occurrence_provenance())
+
+        assert caught.value.schedule_id == "sched-1"
+
+    async def test_a_run_claiming_no_occurrence_re_raises_even_on_that_index(self) -> None:
+        """A Run with no claim cannot have violated the occurrence index, so
+        matching the name alone is not enough to call it a duplicate firing."""
+        store, graph = await _store_raising(_violation(OCCURRENCE_INDEX))
+
+        with pytest.raises(_AsyncpgViolation):
+            await store.create_run(graph, provenance={ADMISSION_SOURCE: "task_queue"})
+
+
+class _AsyncpgViolation(_asyncpg_integrity_base()):  # type: ignore[misc]
+    """A real asyncpg integrity error carrying the constraint name.
+
+    Subclassed rather than constructed because asyncpg builds its exceptions
+    from a server message; the name is all this store reads.
+    """
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__("violates")
+        self.constraint_name = constraint_name
+
+
+def _violation(constraint_name: str) -> _AsyncpgViolation:
+    return _AsyncpgViolation(constraint_name)
+
+
+def _occurrence_provenance() -> dict[str, str]:
+    return {
+        ADMISSION_SOURCE: SCHEDULE_SOURCE,
+        SCHEDULE_ID_KEY: "sched-1",
+        SCHEDULED_FOR_KEY: "2026-08-24T12:00:00+00:00",
+    }
+
+
+async def _store_raising(exc: Exception) -> tuple[PgRunStore, Graph]:
+    """A store whose every statement fails with `exc`, on a real Project.
+
+    The Project is real so `_validate_graph_scope` passes on its own terms —
+    these tests are about what happens at the insert, and stubbing the check
+    before it would leave the path under test reachable only by the stub.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    store = PgRunStore(_PoolRaising(exc), project_store=projects)
+    graph = Graph(
+        workspace_id="w1",
+        project_id=root.project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent", name="a")],
+    )
+    return store, graph
+
+
+class _PoolRaising:
+    """A pool whose only connection fails every statement with `exc`."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def acquire(self) -> _PoolRaising:
+        return self
+
+    async def __aenter__(self) -> _PoolRaising:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> bool:
+        return False
+
+    async def execute(self, *_args: object) -> None:
+        raise self._exc

@@ -9,18 +9,38 @@ becomes true.
 
 Three things this is careful about, all of them ordering:
 
-**The cursor advances only after the Runs exist.** `record_fire` stamps
+**The occurrence is what gets claimed, and the cursor is where enumeration
+resumes (#220).** `(schedule_id, scheduled_for)` is the identity of a firing;
+a cursor never was. The Run store refuses a second Run for an occurrence that
+already has one, so two tickers evaluating the same due window produce one Run
+between them and a crash between creating a Run and stamping the cursor cannot
+duplicate the firing on the next tick.
+
+That leaves `record_fire` doing what it is actually good at. The cursor is now
+an optimisation — where to start enumerating, so a schedule does not re-derive
+its whole history every tick — rather than the mechanism that makes firing
+exactly-once. Both were load-bearing before, silently, and only one of them
+could carry the weight.
+
+**The cursor still advances only after the Runs exist.** `record_fire` stamps
 `last_fired_at`, and a tick that stamped first and then failed to create the
 Run would skip that occurrence permanently and silently — the next evaluation
 enumerates from the new cursor and never looks back. Creating first can at
-worst repeat an occurrence after a crash, which is recoverable; skipping one is
-not.
+worst repeat an occurrence after a crash, and with the claim in place that
+repeat is now refused rather than merely preferred to a skip.
 
 **A missing template is a failure, not a quiet no-op.** `DagRegistry` returned
 `None` for an unregistered id and the caller returned early — while the
 schedule's `last_run` had already been stamped, so it looked like it fired.
 `require_template` raises instead, and the cursor has not moved when it does,
 so the occurrence is still there to retry once the template is registered.
+
+**A duplicate claim is not a failure.** Every other admission error stops the
+batch, because the cursor moves past everything it covers and continuing would
+lose the failure or duplicate the success. A duplicate is the opposite case:
+that occurrence *did* fire, so it is consumed — the cursor may pass it — while
+not counting toward `max_runs`, which the admitter that actually created the
+Run counts for itself.
 
 **Exhaustion is decided against the fires that actually happened.**
 `ScheduleEvaluation.exhausted` answers "does `max_runs` run out once these
@@ -45,6 +65,7 @@ from maistro.runs.sources import (
     SCHEDULE_SOURCE,
     SCHEDULED_FOR_KEY,
 )
+from maistro.runs.store import DuplicateOccurrence
 from maistro.scheduling.engine import SkipReason, evaluate
 
 if TYPE_CHECKING:
@@ -88,6 +109,16 @@ class ScheduleAdmission:
     Reported rather than acted on: this admitter creates Runs and does not know
     which one is in flight — the caller tracking that is the one that can
     cancel it.
+    """
+
+    already_fired: tuple[datetime, ...] = ()
+    """Occurrences another admitter had already claimed (#220).
+
+    Not failures and not skips. The firing happened — some other ticker, or
+    this process before a crash, created its Run — so the work is done and the
+    cursor may pass it. They are reported because "this tick admitted nothing
+    because everything was already admitted" and "this tick admitted nothing
+    because nothing was due" are different operational facts.
     """
 
     failures: tuple[Exception, ...] = field(default=())
@@ -158,11 +189,31 @@ class ScheduleRunAdmitter:
 
         run_ids: list[str] = []
         admitted: list[FireDecision] = []
+        already_fired: list[datetime] = []
+        consumed: list[FireDecision] = []
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
                 run_ids.append(await self._admit_one(schedule, template, fire))
                 admitted.append(fire)
+                consumed.append(fire)
+            except DuplicateOccurrence:
+                # **Continue**, unlike every other failure below. The claim
+                # refusing this insert says the occurrence already has its Run
+                # (#220) — nothing is owed, so stopping here would re-enumerate
+                # a firing that has already happened on every subsequent tick.
+                #
+                # Counted as consumed so the cursor may pass it, but *not* as
+                # admitted: `fires` feeds `runs_so_far`, and both tickers
+                # counting one firing would exhaust `max_runs` at half the
+                # occurrences it was configured for.
+                logger.info(
+                    "schedule %s occurrence %s was already admitted elsewhere",
+                    schedule.schedule_id,
+                    fire.scheduled_for.isoformat(),
+                )
+                already_fired.append(fire.scheduled_for)
+                consumed.append(fire)
             except Exception as exc:
                 # **Stop**, rather than continue. `record_fire` moves the cursor
                 # past everything it covers, so admitting a later occurrence
@@ -179,7 +230,7 @@ class ScheduleRunAdmitter:
                 failures.append(exc)
                 break
 
-        if not admitted:
+        if not consumed:
             return ScheduleAdmission(
                 skipped=decision.skipped,
                 next_due_at=decision.next_due_at,
@@ -191,19 +242,23 @@ class ScheduleRunAdmitter:
         # `next_due_at` is recomputed only when the whole batch landed. A
         # partial batch leaves occurrences owed, and `evaluate()`'s answer
         # assumed all of them fired.
-        complete = len(admitted) == len(decision.fires)
+        complete = len(consumed) == len(decision.fires)
         await self._schedules.record_fire(
             schedule.schedule_id,
             # The newest occurrence *admitted*, not `now`. This value becomes
             # the lower bound of the next enumeration, so `now` would carry the
             # cursor past occurrences this batch stopped short of and lose them
             # permanently — the exact failure the ordering above prevents.
-            fired_at=admitted[-1].scheduled_for,
+            fired_at=consumed[-1].scheduled_for,
             # The newest Run, matching the cursor being the newest fire.
             # `Schedule.last_run_id` is a pointer to the latest occurrence, not
             # a history of them; the history is on the Runs, each naming this
             # schedule.
-            run_id=run_ids[-1],
+            # None when the batch's last consumed occurrence was one another
+            # admitter had claimed: `_advance` keeps the existing id rather
+            # than clearing it, and pointing `last_run_id` at an older Run of
+            # ours would be less true than leaving it where it was.
+            run_id=run_ids[-1] if run_ids else None,
             next_due_at=decision.next_due_at if complete else schedule.next_due_at,
             fires=len(admitted),
             disable=disable,
@@ -214,6 +269,7 @@ class ScheduleRunAdmitter:
             next_due_at=decision.next_due_at,
             disabled=disable,
             cancel_active_run=decision.cancel_active_run,
+            already_fired=tuple(already_fired),
             failures=tuple(failures),
         )
 

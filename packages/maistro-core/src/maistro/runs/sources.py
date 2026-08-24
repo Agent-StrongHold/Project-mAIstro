@@ -56,6 +56,36 @@ SCHEDULE_CATCHUP_KEY = "catchup"
 #: replayed.
 SCHEDULE_INPUTS_KEY = "schedule_inputs"
 
+
+def occurrence_key(provenance: dict[str, object] | None) -> tuple[str, str] | None:
+    """The occurrence a scheduled Run claims, or None if it claims none.
+
+    `(schedule_id, scheduled_for)` is the identity of a *firing* — the cursor
+    never was (#220). A schedule's cursor says where enumeration resumes; two
+    tickers reading it before either writes enumerate the same occurrences and
+    both create Runs for them, and a crash between creating a Run and stamping
+    the cursor re-enumerates the same occurrence on the next tick.
+
+    `catchup` is deliberately **not** part of the key. A backfill and an
+    on-time fire for the same nominal time are the same occurrence — that they
+    were noticed at different moments is why the flag exists, not a reason to
+    run the work twice.
+
+    Both halves are required. A Run carrying one without the other is not a
+    partial claim on anything; it is a Run that cannot say which firing it
+    belongs to, and inventing a key for it would collide unrelated work.
+    """
+    if not provenance:
+        return None
+    schedule_id = provenance.get(SCHEDULE_ID_KEY)
+    scheduled_for = provenance.get(SCHEDULED_FOR_KEY)
+    if not (isinstance(schedule_id, str) and isinstance(scheduled_for, str)):
+        return None
+    if not (schedule_id and scheduled_for):
+        return None
+    return schedule_id, scheduled_for
+
+
 __all__ = [
     "ADMISSION_SOURCE",
     "CHAT_SOURCE",
@@ -66,4 +96,5 @@ __all__ = [
     "SCHEDULE_INPUTS_KEY",
     "SCHEDULE_SOURCE",
     "TASK_QUEUE_SOURCE",
+    "occurrence_key",
 ]
