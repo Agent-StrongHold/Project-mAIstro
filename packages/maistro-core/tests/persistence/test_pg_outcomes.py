@@ -92,6 +92,13 @@ def make_outcome(**overrides: Any) -> Outcome:
         "response_time_ms": 1200,
         "org_id": "org-1",
         "team_id": "team-a",
+        "project_id": "proj-a",
+        "dag_id": "dag-a",
+        "dag_run_id": "run-a",
+        "node_id": "node-a",
+        "thumb": "down",
+        "thumb_comment": "wrong file",
+        "eval_judge_score": 42.5,
         "user_id": "u1",
         "agent_id": "scribe",
         "input_tokens": 100,
@@ -120,12 +127,21 @@ async def test_record_inserts_with_all_fields_and_returns_id(
     assert call.method == "fetchrow"
     assert "INSERT INTO outcomes" in call.query
     assert "RETURNING id" in call.query
+    # This tuple used to pin `"[{'name': 'bash'}]"` -- the Python repr, with
+    # single quotes, which PostgreSQL rejects as JSONB. The test asserted the
+    # defect rather than catching it, because a FakeConnection accepts any
+    # string. `json.dumps` is what the column actually takes.
+    #
+    # `org_id` was missing from the INSERT entirely, and is NOT NULL in
+    # migration 001 with no DDL default, so every insert was a
+    # NotNullViolation -- and a default would only have traded that for a row
+    # that silently lost the org scope `ix_outcomes_org_task` keys on (#122).
     assert call.args == (
         "req-1",
         "coding",
         "claude-opus",
         "anthropic",
-        "[{'name': 'bash'}]",
+        '[{"name": "bash"}]',
         True,
         "",
         1200,
@@ -139,6 +155,18 @@ async def test_record_inserts_with_all_fields_and_returns_id(
         50,
         10,
         "v1",
+        # Scope and feedback, none of which had a column before migration 006.
+        # `project_id` being dropped meant one project's failure narrative
+        # could be injected into another's prompt; `thumb` being dropped meant
+        # a thumbs-down became an ordinary successful row that the learning
+        # loop could never see again.
+        "proj-a",
+        "dag-a",
+        "run-a",
+        "node-a",
+        "down",
+        "wrong file",
+        42.5,
     )
 
 
@@ -407,12 +435,21 @@ async def test_get_experience_context_returns_empty_string_when_no_failures(
 async def test_get_experience_context_formats_failure_lines(
     store: PgOutcomeStore, conn: FakeConnection
 ) -> None:
+    """Two queries now, and the shared formatter renders both (#122).
+
+    The old assertion pinned a bespoke `"Recent failures:"` heading that
+    `InMemoryOutcomeStore` never produced -- the two implementations of one
+    protocol rendered different prompts from the same rows. This store now
+    delegates to the same `_format_failure_lines` / `_format_thumb_lines`,
+    so the headings come from one place.
+    """
     conn.queue_fetch(
         [
-            {"error_type": "timeout", "model_used": "claude"},
-            {"error_type": "rate_limit", "model_used": "gpt"},
+            {"id": 2, "success": False, "error_type": "rate_limit", "model_used": "gpt"},
+            {"id": 1, "success": False, "error_type": "timeout", "model_used": "claude"},
         ]
     )
+    conn.queue_fetch([])  # the thumbs-down leg
 
     result = await store.get_experience_context("coding", tool_name="bash", limit=2)
 
@@ -420,9 +457,47 @@ async def test_get_experience_context_formats_failure_lines(
     assert call.query.strip().startswith("SELECT * FROM outcomes")
     assert "success = false" in call.query
     assert call.args[0] == "coding"
-    assert call.args[2] == 2
+    # `tool_name` is a JSONB containment predicate, not a string match, so a
+    # tool named `bash` cannot match a call to `bash_login`.
+    assert "tool_calls @>" in call.query
+    assert '[{"name": "bash"}]' in call.args
+    assert call.args[-1] == 2, "limit is the last placeholder"
 
-    assert result == ("Recent failures:\n- timeout: model=claude\n- rate_limit: model=gpt")
+    # Rendered oldest-first among the most recent `limit`, which is what the
+    # in-memory store's `[-limit:]` slice produces. The rows arrive DESC and
+    # are reversed, so `timeout` (id 1) precedes `rate_limit` (id 2).
+    assert result == (
+        "## Recent Failure Patterns\n- timeout (model: claude)\n- rate_limit (model: gpt)"
+    )
+
+
+async def test_get_experience_context_surfaces_thumbs_down(
+    store: PgOutcomeStore, conn: FakeConnection
+) -> None:
+    """The half of the contract that had no column until migration 006.
+
+    `InMemoryOutcomeStore` surfaces hard failures *and* thumbs-down, so a
+    thumbs-down accepted by the feedback service reaches the next run's
+    prompt. Without a `thumb` column this store could not do that at all.
+    """
+    conn.queue_fetch([])  # no hard failures
+    conn.queue_fetch(
+        [
+            {
+                "id": 9,
+                "success": True,
+                "thumb": "down",
+                "thumb_comment": "wrong file",
+                "node_id": "n7",
+                "task_type": "coding",
+            }
+        ]
+    )
+
+    result = await store.get_experience_context("coding")
+
+    assert "thumb = 'down'" in conn.calls[1].query
+    assert result == "## User Thumbs-Down Patterns\n- node=n7 task=coding — wrong file"
 
 
 # --------------------------------------------------------------------------

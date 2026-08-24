@@ -4,13 +4,36 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from maistro.quota.billing import cycle_key as _canonical_cycle_key
+
 if TYPE_CHECKING:
     import asyncpg
 
 
 def cycle_key(billing_cycle: str) -> str:
-    """Normalize billing cycle to a consistent key."""
-    return billing_cycle.strip().lower()
+    """Resolve a billing *cycle type* to the key for the cycle running now.
+
+    `billing_cycle` is a type -- "monthly" or "daily" -- not an instance:
+    `ModelQuota.billing_cycle` defaults to "monthly" and `QuotaBurnScheduler`
+    passes that string straight through. This function used to return it
+    lowercased, so every month's usage accumulated into the single row keyed
+    `"monthly"` and nothing ever rolled over. A provider that exhausted its
+    free tier once stayed over quota permanently, and the router kept
+    deprioritising it forever.
+
+    `InMemoryQuotaTracker` never had that bug -- it uses
+    `maistro.quota.billing.cycle_key`, which renders the current `%Y-%m` or
+    `%Y-%m-%d`. Two implementations of one protocol disagreeing about what a
+    key means is the bug; this delegates rather than restating it, so they
+    cannot drift again.
+
+    `sqlite_quota.py` imports this same function, so the SQLite tracker had the
+    identical defect and is fixed by the same line. That one is pre-existing
+    and outside #122's diff -- it is fixed here because leaving a known
+    never-rolls-over bug in the sibling backend while repairing this one would
+    be the wrong half of a shared fix.
+    """
+    return _canonical_cycle_key(billing_cycle)
 
 
 class PgQuotaTracker:

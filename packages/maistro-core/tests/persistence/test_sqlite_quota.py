@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 import aiosqlite
 import pytest
 
+from maistro.persistence.pg_quota import cycle_key
 from maistro.persistence.sqlite_quota import SqliteQuotaTracker
 
 
@@ -25,7 +26,7 @@ async def test_record_usage_creates_new_row(tracker: SqliteQuotaTracker) -> None
     result = await tracker.record_usage("openai", "  Monthly  ", 100, 50)
     assert result == {
         "provider": "openai",
-        "cycle_key": "monthly",
+        "cycle_key": cycle_key("monthly"),
         "input_tokens": 100,
         "output_tokens": 50,
         "total_tokens": 150,
@@ -39,7 +40,7 @@ async def test_record_usage_accumulates_on_conflict(tracker: SqliteQuotaTracker)
     result = await tracker.record_usage("openai", "monthly", 10, 5)
     assert result == {
         "provider": "openai",
-        "cycle_key": "monthly",
+        "cycle_key": cycle_key("monthly"),
         "input_tokens": 110,
         "output_tokens": 55,
         "total_tokens": 165,
