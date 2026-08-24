@@ -218,11 +218,67 @@ jobs:
           retention-days: 1
 
 
+  # The PostgreSQL producer (#135). Same reason `coverage-archive` exists: the
+  # durable-event stores under `events/pg_stores.py` only execute against a real
+  # server, so a run with no services scores every line of them as uncovered and
+  # the diff gate then rejects the file for being untestable in a job that could
+  # never have tested it. Measuring them here puts the lines the PG legs DO
+  # cover into the combined database, where the gate can see them.
+  #
+  # `ci.yml`'s `durable-events` job runs the same suites for their pass/fail
+  # verdict; this one runs them for their coverage. Splitting the two costs a
+  # duplicate run and buys a producer that can fail without turning the
+  # conformance verdict into a coverage question.
+  coverage-postgres:
+    name: coverage (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Durable-event conformance against PostgreSQL (under coverage)
+        env:
+          MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
+          # A skipped leg is untested, not passing. Without this a broken service
+          # container would leave the job green and quietly drop these lines from
+          # the denominator — the exact failure `coverage-archive` names.
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+        run: |
+          uv run coverage run --branch --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests/events tests/migrations -v --tb=short
+      - name: upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-postgres
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
   coverage-gate:
     name: Coverage gate (publish-set floor + diff coverage)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [coverage-unit, coverage-archive]
+    needs: [coverage-unit, coverage-archive, coverage-postgres]
     steps:
       - uses: actions/checkout@v4
         with:

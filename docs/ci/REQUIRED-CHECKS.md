@@ -95,6 +95,7 @@ let it be silently neither.
 | Workflow | Check name | Runs on |
 |---|---|---|
 | CI | `docker-build` | every PR |
+| CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -113,6 +114,7 @@ let it be silently neither.
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
 | quality | `coverage (MinIO)` | every PR |
+| quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
