@@ -1251,7 +1251,7 @@ def _outcome(node_run: Any, attempt: Any, result: Any) -> AcceptedNodeOutcome:
     )
 
 
-async def test_a_superseded_attempt_cannot_commit_its_outcome(spine: Any) -> None:
+async def _assert_superseded_attempt_cannot_commit(spine: Any) -> None:
     """The stale-write case #45 asks to fail closed. Worker A finishes but is
     slow to commit; recovery parks the node; worker B takes over. A's evidence
     is genuine and matches its persisted Attempt — which is why the existing
@@ -1274,7 +1274,7 @@ async def test_a_superseded_attempt_cannot_commit_its_outcome(spine: Any) -> Non
     assert settled.result is None
 
 
-async def test_the_current_attempt_still_commits(spine: Any) -> None:
+async def _assert_current_attempt_still_commits(spine: Any) -> None:
     """The check must refuse staleness, not acceptance. A worker holding the
     newest Attempt is the ordinary case and has to keep working."""
     store, _workspace, _project_id = spine
@@ -1289,7 +1289,7 @@ async def test_the_current_attempt_still_commits(spine: Any) -> None:
     assert accepted.result == {"from": "A"}
 
 
-async def test_the_newest_attempt_is_decided_by_ordinal_not_row_order(spine: Any) -> None:
+async def _assert_newest_is_by_ordinal(spine: Any) -> None:
     """`create_attempt` allocates ordinals under a row lock, so the highest is
     the Attempt that most recently claimed the NodeRun — whatever order a
     given store returns rows in."""
@@ -1306,7 +1306,7 @@ async def test_the_newest_attempt_is_decided_by_ordinal_not_row_order(spine: Any
     assert caught.value.current_attempt_id == second.attempt_id
 
 
-async def test_forged_evidence_is_still_refused_first(spine: Any) -> None:
+async def _assert_forged_evidence_refused_first(spine: Any) -> None:
     """The pre-existing check keeps its job. A result that does not match the
     persisted Attempt is refused as evidence, not as staleness — the two say
     different things and a caller branches on them differently."""
@@ -1332,3 +1332,69 @@ async def test_forged_evidence_is_still_refused_first(spine: Any) -> None:
 
     assert not isinstance(caught.value, SupersededAttempt)
     assert "differs from persisted Attempt evidence" in str(caught.value)
+
+
+# ── the fence at the logical commit (#238) ────────────────────────────
+#
+# Each rule is asserted twice, on purpose, and the split is not redundancy.
+#
+# The `spine`-parameterized test runs it against all three stores, which is the
+# claim that matters for a durable system — but its postgres leg *skips* where
+# no database is configured, and `scripts/ac_outcome_plugin.py` counts a skip
+# as no evidence at all ("an environment-gated test that never ran is not
+# evidence the criterion holds"). So the acceptance criteria are marked on the
+# in-memory tests below, which run everywhere the gate does, while the
+# conformance tests above carry the cross-store claim in CI's postgres legs.
+# Marking the parameterized tests instead would leave every criterion stuck at
+# `covered` in any job without a database — which is exactly what happened.
+
+
+async def test_a_superseded_attempt_cannot_commit_its_outcome(spine: Any) -> None:
+    await _assert_superseded_attempt_cannot_commit(spine)
+
+
+async def test_the_current_attempt_still_commits(spine: Any) -> None:
+    await _assert_current_attempt_still_commits(spine)
+
+
+async def test_the_newest_attempt_is_decided_by_ordinal_not_row_order(spine: Any) -> None:
+    await _assert_newest_is_by_ordinal(spine)
+
+
+async def test_forged_evidence_is_still_refused_first(spine: Any) -> None:
+    await _assert_forged_evidence_refused_first(spine)
+
+
+@pytest.fixture
+async def memory_spine() -> Any:
+    """The same shape `spine` yields, pinned to the store with no environment
+    gate — so a criterion marked on it is measurable wherever the suite runs."""
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.store import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-fence")
+    project = await projects.create(
+        workspace_id="workspace-fence", parent_project_id=root.project_id, name="Fence"
+    )
+    return InMemoryRunStore(project_store=projects), "workspace-fence", project.project_id
+
+
+@pytest.mark.ac("ADR-082426-e3ff/AC-1")
+async def test_superseded_attempt_refused_in_memory(memory_spine: Any) -> None:
+    await _assert_superseded_attempt_cannot_commit(memory_spine)
+
+
+@pytest.mark.ac("ADR-082426-e3ff/AC-2")
+async def test_current_attempt_commits_in_memory(memory_spine: Any) -> None:
+    await _assert_current_attempt_still_commits(memory_spine)
+
+
+@pytest.mark.ac("ADR-082426-e3ff/AC-3")
+async def test_newest_is_by_ordinal_in_memory(memory_spine: Any) -> None:
+    await _assert_newest_is_by_ordinal(memory_spine)
+
+
+@pytest.mark.ac("ADR-082426-e3ff/AC-4")
+async def test_forged_evidence_refused_first_in_memory(memory_spine: Any) -> None:
+    await _assert_forged_evidence_refused_first(memory_spine)

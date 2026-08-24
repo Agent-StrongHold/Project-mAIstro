@@ -21,7 +21,13 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/runs/test_spine_conformance.py
+ac-modules:
+  AC-1: maistro.runs.reconciliation
+  AC-2: maistro.runs.reconciliation
+  AC-3: maistro.runs.reconciliation
+  AC-4: maistro.runs.reconciliation
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -90,6 +96,32 @@ Whether it needs the same currency check depends on the concurrency control of
 `DurableRunStore`'s checkpoint, which this decision does not establish. Naming it as
 unestablished is the point: it is the one remaining route by which an acceptance reaches a
 NodeRun without passing this check.
+
+## Acceptance Criteria
+
+Each rule is asserted twice. The marked test runs against `InMemoryRunStore`,
+which has no environment gate, so the criterion is measurable wherever the
+suite runs; the identically-bodied conformance test runs the same assertions
+against all three stores and carries the cross-store claim in CI's postgres
+legs. The assertions live once, in a shared helper, so the two cannot drift.
+
+The split is not decoration. `scripts/ac_outcome_plugin.py` treats a skip as no
+evidence — "an environment-gated test that never ran is not evidence the
+criterion holds" — and the Quality gate job configures no database, so marking
+the parameterized tests would pin every criterion below at `covered` forever.
+
+- [x] **AC-1**: A worker whose Attempt has been superseded cannot commit an
+  outcome. `accept_outcome` raises `SupersededAttempt`, naming the Attempt that
+  superseded it, and the NodeRun is left untouched.
+- [x] **AC-2**: The current worker is unaffected — including the
+  `prior_completion_accepted` continuation path, which re-runs after an
+  accepted completion under a new Attempt and is exactly what the
+  newest-ordinal rule keeps working.
+- [x] **AC-3**: "Newest" is decided by `ordinal`, not by the order the store
+  happens to return rows in. A store that listed Attempts oldest-last would
+  otherwise pass this suite while fencing nothing.
+- [x] **AC-4**: The pre-existing evidence check still runs first: a forged
+  result is refused as a forgery, not misreported as a supersession.
 
 ## Consequences
 
