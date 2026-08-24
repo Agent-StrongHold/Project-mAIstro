@@ -1155,3 +1155,65 @@ async def test_a_cancelled_node_does_not_cancel_a_run_with_live_siblings(spine: 
     still_running = await store.get_node_run(sibling.node_run_id)
     assert reloaded is not None and reloaded.status is RunStatus.RUNNING
     assert still_running is not None and still_running.status is RunStatus.RUNNING
+
+
+async def test_a_cancellation_arriving_after_the_node_finished_changes_nothing(
+    spine: Any,
+) -> None:
+    """A NodeRun that already reached an outcome of its own keeps it. The
+    cancellation lost the race, and overwriting would replace a real result
+    with the fact that someone asked too late."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    await store.transition_node_run(
+        node_run.node_run_id, RunStatus.FAILED, error="the node itself failed"
+    )
+
+    await AttemptLifecycleReconciler(store).reconcile(
+        attempt, cancellation=CancellationCause.REQUESTED
+    )
+
+    unchanged = await store.get_node_run(node_run.node_run_id)
+    assert unchanged is not None
+    assert unchanged.status is RunStatus.FAILED
+    assert unchanged.error == "the node itself failed"
+
+
+async def test_reconciling_the_same_failure_twice_is_idempotent(spine: Any) -> None:
+    """Repeated terminalization, which #43 asks about by name. The second pass
+    finds the NodeRun already parked and the Run no longer running, and must
+    leave both alone rather than re-parking them."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    attempt = await _terminal_attempt(spine, node_run, AttemptStatus.FAILED)
+    reconciler = AttemptLifecycleReconciler(store)
+
+    await reconciler.reconcile(attempt)
+    first = await store.get_run(run.run_id)
+    await reconciler.reconcile(attempt)
+    second = await store.get_run(run.run_id)
+
+    assert first is not None and second is not None
+    assert first.status is second.status is RunStatus.WAITING
+    assert first.updated_at == second.updated_at
+
+
+async def test_a_failure_does_not_park_a_run_with_live_siblings(spine: Any) -> None:
+    """The parking half of the same rule the cancellation half follows: one
+    branch ending does not decide for the others."""
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    failing = await store.create_node_run(run.run_id, node_id="node-1")
+    sibling = await store.create_node_run(run.run_id, node_id="node-2")
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    for node_run_id in (failing.node_run_id, sibling.node_run_id):
+        await store.transition_node_run(node_run_id, RunStatus.QUEUED)
+        await store.transition_node_run(node_run_id, RunStatus.RUNNING)
+    attempt = await _terminal_attempt(spine, failing, AttemptStatus.FAILED)
+
+    await AttemptLifecycleReconciler(store).reconcile(attempt)
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None and reloaded.status is RunStatus.RUNNING
