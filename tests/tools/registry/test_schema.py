@@ -164,6 +164,18 @@ def test_history_entries_parse_and_validate() -> None:
                 ]
             }
         )
+    with pytest.raises(ValidationError, match="accepted date must match"):
+        FrontMatter.model_validate(corrected | {"accepted": "2026-08-25"})
+
+    implemented = corrected | {
+        "status": "Implemented",
+        "implemented": "2026-08-25",
+        "history": corrected["history"]
+        + [{"status": "Implemented", "date": "2026-08-25"}],
+    }
+    assert FrontMatter.model_validate(implemented).implemented.isoformat() == "2026-08-25"
+    with pytest.raises(ValidationError, match="implemented date must match"):
+        FrontMatter.model_validate(implemented | {"implemented": "2026-08-26"})
 
 
 def test_history_rejects_unknown_status_and_extra_keys() -> None:
