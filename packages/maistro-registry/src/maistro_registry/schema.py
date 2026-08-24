@@ -27,7 +27,7 @@ import re
 from datetime import date
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _Date = date
 
@@ -98,6 +98,14 @@ _ID_PATTERN = re.compile(r"^(ADR|SPEC)-(\d{3}|\d{6}-[0-9a-f]{4})$")
 # This repo is self-contained; references resolve within it.
 _REF_PATTERN = re.compile(r"^maistro-engine#((ADR|SPEC)-(\d{3}|\d{6}-[0-9a-f]{4}))$")
 
+# ADR-097 has required lifecycle evidence that the original schema never
+# enforced. Applying it retroactively would turn a validator improvement into a
+# bulk rewrite of records authored under the older contract, so #239 establishes
+# a prospective boundary: records authored from this date forward must carry the
+# status evidence ADR-097 says they carry. Legacy/backfilled history remains
+# readable and is still audited by the acceptance-state ledger.
+_LIFECYCLE_EVIDENCE_ENFORCED_FROM = date(2026, 8, 24)
+
 
 def _is_valid_id(value: str) -> bool:
     return bool(_ID_PATTERN.match(value))
@@ -111,7 +119,8 @@ class HistoryEntry(BaseModel):
     """One ADR-097 lifecycle transition: the status entered, when, and why.
 
     `date` is optional because backfilled entries (tools/backfill_history.py)
-    omit it when the original transition date is unknown.
+    omit it when the original transition date is unknown. Newly-authored
+    documents cannot rely on that exception; FrontMatter validates them below.
 
     `reason` is optional prose for transitions whose motivation is not obvious
     from the status alone — a rollback out of `Implemented`, a deprecation, a
@@ -212,3 +221,46 @@ class FrontMatter(BaseModel):
             if not owner.startswith("@"):
                 raise ValueError(f"owner must start with @, got {owner!r}")
         return v
+
+    @model_validator(mode="after")
+    def _validate_lifecycle_evidence(self) -> "FrontMatter":
+        """Make ADR-097's lifecycle claims true for newly-authored records.
+
+        Older documents were valid under a schema where history defaulted empty
+        and status metadata was not related. They stay parseable so this change
+        does not convert governance hardening into an unrelated bulk rewrite.
+        """
+        if self.created < _LIFECYCLE_EVIDENCE_ENFORCED_FROM:
+            return self
+
+        if not self.history:
+            raise ValueError(
+                "ADR-097: documents created on or after 2026-08-24 must record lifecycle history"
+            )
+        if any(entry.date is None for entry in self.history):
+            raise ValueError("ADR-097: newly-authored lifecycle history entries require a date")
+        if self.history[-1].status is not self.status:
+            raise ValueError(
+                "ADR-097: front-matter status must match the latest lifecycle history entry"
+            )
+
+        adr_taken = {Status.ACCEPTED, Status.FULLY_SPECCED, Status.IMPLEMENTED}
+        spec_taken = {
+            Status.ACCEPTED,
+            Status.AC_DEFINED,
+            Status.IN_PROGRESS,
+            Status.TESTS_PASSING,
+            Status.IMPLEMENTED,
+        }
+        if (self.kind is Kind.ADR and self.status in adr_taken) or (
+            self.kind is Kind.SPEC and self.status in spec_taken
+        ):
+            if self.accepted is None:
+                raise ValueError(f"ADR-097: {self.status.value} requires an accepted date")
+            if not self.owners:
+                raise ValueError(f"ADR-097: {self.status.value} requires at least one owner")
+
+        if self.status is Status.IMPLEMENTED and self.implemented is None:
+            raise ValueError("ADR-097: Implemented requires an implemented date")
+
+        return self
