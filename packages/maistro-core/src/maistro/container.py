@@ -53,7 +53,6 @@ from maistro.types.errors import AgentError, ConfigError
 if TYPE_CHECKING:
     import httpx
 
-    from maistro.a2a.broker import A2ABroker
     from maistro.agents.base import Agent
     from maistro.auth.oauth import (
         IdentityLinker,
@@ -194,8 +193,6 @@ class Container:
     identity_store: IdentityStore = None  # type: ignore[assignment]
     token_store: TokenStore = None  # type: ignore[assignment]
     secret_store: SecretStore = None  # type: ignore[assignment]
-    # A2A delegation broker (ADR-058).
-    a2a_broker: A2ABroker = None  # type: ignore[assignment]
     # Hierarchical orchestration across foreign harnesses (ADR-101).
     harness_registry: HarnessRegistry = None  # type: ignore[assignment]
     hierarchy: HierarchicalOrchestrator = None  # type: ignore[assignment]
@@ -842,9 +839,9 @@ async def create_container(
     skill_registry = InMemorySkillRegistry()
     policy_attachment_store = InMemoryPolicyAttachmentStore()
 
-    # --- A2A delegation broker (ADR-058) ----------------------------------
+    # The live agent map every wiring closure below reads. Populated later by
+    # `create_agents`; the closures capture the dict, not its contents.
     agents: dict[str, Agent] = {}
-    a2a_broker = _wire_a2a_broker(agents)
 
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
@@ -907,7 +904,6 @@ async def create_container(
         identity_store=identity_store,
         token_store=token_store,
         secret_store=secret_store,
-        a2a_broker=a2a_broker,
         harness_registry=harness_registry,
         hierarchy=hierarchy,
         harness_adapters=wired_harness_adapters,
@@ -1365,44 +1361,6 @@ async def _wire_pg_durable_events(
     return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
 
 
-def _wire_a2a_broker(agents: dict[str, Agent]) -> A2ABroker:
-    """Wire the A2A broker over the container's live agent map.
-
-    The resolver and invoker are small adapter closures over ``agents`` —
-    the broker itself stays DI-clean (it never sees the container).
-    """
-    from maistro.a2a.broker import A2ABroker, A2AError, DelegationBudget, LocalTransport
-    from maistro.a2a.delegate import A2ATask
-    from maistro.agents.catalog import AgentCard
-
-    class _AgentMapCardResolver:
-        def resolve(self, agent_id: str, user_id: str = "") -> AgentCard | None:
-            agent = agents.get(agent_id)
-            if agent is None:
-                return None
-            return AgentCard.from_identity(agent.identity, user_id=user_id)
-
-    async def _invoke(task: A2ATask, budget: DelegationBudget) -> str:
-        agent = agents.get(task.to_agent)
-        if agent is None:
-            raise A2AError(f"unknown local agent '{task.to_agent}'")
-        response = await agent.handle(
-            [{"role": "user", "content": task.task}],
-            auth=None,
-            session_id=budget.trace_id,
-        )
-        # LocalTransport maps "no exception" to TaskStatus.COMPLETED, so a
-        # failed run has to be re-raised here or a delegation that never ran
-        # would be recorded as a success carrying an apology string.
-        if response.failed:
-            raise A2AError(f"local agent '{task.to_agent}' failed: {response.error}")
-        if response.blocked:
-            raise A2AError(f"local agent '{task.to_agent}' blocked: {response.block_reason}")
-        return response.content
-
-    return A2ABroker(resolver=_AgentMapCardResolver(), local=LocalTransport(_invoke))
-
-
 def _wire_hierarchy(
     agents: dict[str, Agent],
     skill_registry: InMemorySkillRegistry,
@@ -1447,7 +1405,7 @@ def _wire_harness_adapters(
 ) -> dict[str, HarnessAdapter]:
     """Wire the `agent.spawn_harness` node's adapter map.
 
-    Unlike `_wire_a2a_broker`/`_wire_hierarchy`, this has no default
+    Unlike `_wire_hierarchy`, this has no default
     population of its own. `RsiCycleHarnessAdapter` (`maistro-rsi`, a
     downstream package this one cannot depend on -- `maistro-core` is the
     shared library `maistro-rsi` imports, never the reverse) wraps `RsiCycle`,
