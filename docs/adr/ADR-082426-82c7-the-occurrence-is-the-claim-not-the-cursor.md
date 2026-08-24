@@ -40,10 +40,11 @@ firing it admits a canonical Run. #46's first acceptance criterion puts a number
 
 `ScheduleRunAdmitter` got the durability half right and left the uniqueness half open. Its
 ordering is create-the-Runs, then advance the cursor, chosen against the failure that
-matters: a tick that stamped `last_fired_at` first and then failed would skip that
-occurrence permanently and silently, because the next tick re-enumerates the occurrence and creates a second Run.
+matters: a tick that stamped `last_fired_at` first and then failed to create the Run would
+skip that occurrence permanently and silently, because the next tick resumes after that
+timestamp and cannot re-enumerate the missed occurrence.
 
-Two ways it happens, and they are the same missing thing:
+Two ways duplication happens under create-then-advance, and they are the same missing thing:
 
 - **A crash between creating the Run and stamping the cursor.** The Run exists, the cursor
   did not move, and the next tick re-enumerates the occurrence and creates a second Run.
@@ -59,12 +60,16 @@ different question from which firings have happened.
 
 ## Decision
 
-**1. `(schedule_id, scheduled_for)` is the identity of a firing, and the store enforces it.**
+**1. `(schedule_id, scheduled_for)` is the identity of a firing, and the Run store enforces it.**
 
 A scheduled Run already carries both in its provenance (#218). That pair becomes a claim:
 the Run store refuses a second Run for an occurrence that already has one, with a typed
 `DuplicateOccurrence`. Refused by the store rather than checked by the caller, because a
 convention in the caller is exactly what two callers do not share.
+
+This decision defines the shared admission/store semantics. It does **not** claim that the
+legacy live `services/scheduler.py` loop has already been replaced by `ScheduleRunAdmitter`;
+that product-path convergence remains tracked by #231/#46.
 
 **2. `catchup` is not part of the key.**
 
@@ -97,7 +102,8 @@ it was configured for.
 With occurrence identity durable, `last_fired_at` says where to resume enumerating so a
 schedule does not re-derive its whole history every tick. It is no longer what makes firing
 exactly-once. The create-then-advance ordering stays — a skip is still worse than a repeat
-— but its "at worst a repeat" case is now refused rather than merely tolerated.
+— but its "at worst a repeat" case is now refused rather than merely tolerated on callers
+that use the shared admission/store path.
 
 ## Acceptance Criteria
 
@@ -110,10 +116,10 @@ exactly-once. The create-then-advance ordering stays — a skip is still worse t
 
 ### Positive
 
-- #46's first criterion becomes a property of the system rather than of the deployment
-  topology. A second ticker is safe to run.
+- #46's first criterion now has a store/admission primitive that is independent of deployment
+  topology. Two tickers using the shared admission path cannot create two Runs for one occurrence.
 - The crash window between creating a Run and stamping the cursor stops producing a
-  duplicate firing. It was the known cost of the ordering, and it is now paid.
+  duplicate firing on that path. It was the known cost of the ordering, and it is now paid.
 - Two things that were both silently load-bearing — the cursor and the create-first
   ordering — are separated, and only one of them carries correctness.
 
@@ -132,6 +138,9 @@ exactly-once. The create-then-advance ordering stays — a skip is still worse t
 
 ### Neutral
 
+- The live `services/scheduler.py` loop still has to be converged onto the shared admitter;
+  #231/#46 owns that M1 product-path work. This ADR therefore records the occurrence-claim
+  decision and its reusable implementation, not completion of the live scheduler migration.
 - `scheduled_for` is compared as the ISO-8601 string the admitter writes. Every producer
   gets it from `evaluate()`, and `datetime.isoformat()` is deterministic for a given
   aware instant, so two tickers computing one occurrence write one string.
