@@ -65,7 +65,7 @@ instead of silently selecting a policy.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6574 | `ci.yml` |
+| `packages/maistro-core/tests` | 6612 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 189 | `ci.yml` |
