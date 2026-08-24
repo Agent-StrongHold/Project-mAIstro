@@ -66,6 +66,7 @@ from maistro.runs.store import (
     StaleExecutionFence,
     admit_in_state,
     validate_accepted_outcome_against_attempt,
+    validate_child_scope,
 )
 
 #: The unique index migration 015 creates. Compared against
@@ -128,13 +129,15 @@ class PgRunStore:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         if parent_run_id is not None:
             parent = await self._require_run(parent_run_id)
-            if parent.workspace_id != graph.workspace_id:
-                raise RunIntegrityError("child Run cannot cross Workspace boundaries")
-            if parent.project_id != graph.project_id and not allow_cross_project:
-                raise RunIntegrityError(
-                    "child Run cannot implicitly cross Project boundaries; "
-                    "caller must authorize and request the destination Project",
-                )
+            # The shared check, not a second copy of its two conditions. Its own
+            # docstring says duplicating them at a call site is "the smaller diff
+            # and the worse one", and this store was that duplicate.
+            validate_child_scope(
+                parent,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                allow_cross_project=allow_cross_project,
+            )
             if parent_node_run_id is not None:
                 parent_node_run = await self._require_node_run(parent_node_run_id)
                 if parent_node_run.run_id != parent_run_id:
@@ -175,20 +178,10 @@ class PgRunStore:
                     run.retention_expires_at,
                 )
             except _integrity_errors() as exc:
-                # The occurrence claim (migration 015). Two tickers evaluating
-                # the same due window both reach this insert; the index refuses
-                # the second, and the caller's correct response is to treat that
-                # firing as already fired rather than retry or abandon the batch.
-                #
-                # Matched on the constraint name, the way `_integrity_failure`
-                # already is: another constraint refusing this insert means
-                # something else, and reporting it as a duplicate firing would
-                # tell the admitter to carry on past a Run that does not exist.
-                occurrence = occurrence_key(run.provenance)
-                constraint = str(getattr(exc, "constraint_name", "") or "")
-                if occurrence is None or constraint != OCCURRENCE_INDEX:
+                conflict = _occurrence_conflict(exc, run)
+                if conflict is None:
                     raise
-                raise DuplicateOccurrence(*occurrence) from exc
+                raise conflict from exc
         return run
 
     async def purge_expired_runs(
@@ -696,6 +689,32 @@ def _integrity_errors() -> tuple[type[Exception], ...]:
     import asyncpg
 
     return (asyncpg.exceptions.IntegrityConstraintViolationError,)
+
+
+def _occurrence_conflict(exc: Exception, run: Run) -> DuplicateOccurrence | None:
+    """The duplicate-firing this violation means, or None if it means something else.
+
+    The occurrence claim (migration 015). Two tickers evaluating the same due
+    window both reach the insert; the index refuses the second, and the caller's
+    correct response is to treat that firing as already fired rather than to
+    retry it or abandon the batch (#220).
+
+    Matched on the constraint name, the way `_integrity_failure` below already
+    is: asyncpg raises one class for every unique index, so another constraint
+    refusing the insert means something else entirely — and reporting it as a
+    duplicate firing would tell the schedule admitter to carry its cursor past a
+    firing that never happened.
+
+    The `run.provenance` check is not redundant with the name. A Run carrying no
+    `(schedule_id, scheduled_for)` cannot have violated this index, so calling
+    its failure a duplicate would be inventing a firing.
+    """
+    occurrence = occurrence_key(run.provenance)
+    if occurrence is None:
+        return None
+    if str(getattr(exc, "constraint_name", "") or "") != OCCURRENCE_INDEX:
+        return None
+    return DuplicateOccurrence(*occurrence)
 
 
 def _integrity_failure(exc: Exception, node_run_id: str) -> Exception:
