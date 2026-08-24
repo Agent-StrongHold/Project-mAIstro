@@ -1,7 +1,15 @@
 """Postgres-backed strike tracker — survives restarts, works across workers/pods.
 
-Replaces InMemoryStrikeTracker with atomic SQL operations.
-Falls back to in-memory if no DATABASE_URL is configured (dev/test only).
+Satisfies `maistro.protocols.StrikeTracker`, the same protocol
+`InMemoryStrikeTracker` does, so `Gate` cannot tell them apart (#134). It did
+not before: both methods returned `dict`, while `Gate` does attribute access on
+the result, so wiring this tracker raised `AttributeError` on the **first
+security violation**. The docstring claimed it "replaces InMemoryStrikeTracker"
+and the type system was not asked to check that, because both `Gate.__init__`
+and `Container.strike_tracker` were typed against the concrete in-memory class.
+
+The two implementations are now held to one conformance suite rather than one
+docstring — see `tests/security/test_strike_tracker_conformance.py`.
 """
 
 from __future__ import annotations
@@ -11,9 +19,13 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from maistro.security.strikes import LOCKOUT_DURATION, StrikeRecord, ViolationRecord
+
 logger = logging.getLogger("maistro.strikes")
 
-LOCKOUT_DURATION = timedelta(hours=8)
+# LOCKOUT_DURATION comes from `strikes.py` rather than being redeclared here.
+# Two copies of a lockout window is two windows, and the one that matters is
+# whichever module the reader happens to open.
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS security_strikes (
@@ -76,7 +88,7 @@ class PgStrikeTracker:
         flags: tuple[str, ...],
         boundary: str = "user_input",
         detail: str = "",
-    ) -> dict[str, Any]:
+    ) -> StrikeRecord:
         """Atomic: upsert strike record + escalate + insert violation in one transaction."""
         pool = await self._get_pool()
         async with pool.acquire() as conn, conn.transaction():
@@ -137,22 +149,60 @@ class PgStrikeTracker:
                 detail[:1000],
             )
 
-            return {"user_id": user_id, "strike_count": strike_count, "escalated": True}
+            # Re-read rather than assembling a summary from what this function
+            # happened to write. The escalation above is three separate UPDATEs
+            # and returning `{"strike_count": n, "escalated": True}` described
+            # the *change* while `Gate` reports the *state* — so a locked
+            # account was announced to the caller as merely struck. Inside the
+            # transaction, so the row read is the row written.
+            record = await self._read(conn, user_id)
+            if record is None:  # pragma: no cover - the upsert above guarantees a row
+                msg = f"security_strikes row for {user_id!r} vanished mid-transaction"
+                raise RuntimeError(msg)
+            return record
 
-    async def get(self, user_id: str) -> dict[str, Any] | None:
-        pool = await self._get_pool()
-        row = await pool.fetchrow("SELECT * FROM security_strikes WHERE user_id=$1", user_id)
+    @staticmethod
+    async def _read(conn: Any, user_id: str) -> StrikeRecord | None:
+        """One row plus its violations, as the shared `StrikeRecord`."""
+        row = await conn.fetchrow("SELECT * FROM security_strikes WHERE user_id=$1", user_id)
         if row is None:
             return None
-        r = dict(row)
-        r["is_locked"] = r.get("disabled") or (
-            r.get("locked_until") is not None and datetime.now(UTC) < r["locked_until"]
+        violations = await conn.fetch(
+            "SELECT timestamp, flags, boundary, detail FROM security_violations "
+            "WHERE user_id=$1 ORDER BY timestamp, id",
+            user_id,
         )
-        return r
+        return StrikeRecord(
+            user_id=row["user_id"],
+            strike_count=row["strike_count"],
+            scrutiny_level=row["scrutiny_level"],
+            locked_until=row["locked_until"],
+            disabled=row["disabled"],
+            violations=[
+                ViolationRecord(
+                    timestamp=v["timestamp"],
+                    flags=tuple(v["flags"] or ()),
+                    boundary=v["boundary"],
+                    detail=v["detail"] or "",
+                )
+                for v in violations
+            ],
+            last_violation_at=row["last_violation_at"],
+            last_appeal=row["last_appeal"] or "",
+            last_appeal_at=row["last_appeal_at"],
+        )
+
+    async def get(self, user_id: str) -> StrikeRecord | None:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            return await self._read(conn, user_id)
 
     async def is_locked(self, user_id: str) -> bool:
-        rec = await self.get(user_id)
-        return rec["is_locked"] if rec else False
+        record = await self.get(user_id)
+        # `StrikeRecord.is_locked` rather than a second copy of the rule. The
+        # dict form recomputed it here, which is how two implementations end up
+        # disagreeing about whether an account is locked.
+        return record.is_locked if record else False
 
 
 class PgRateLimiter:

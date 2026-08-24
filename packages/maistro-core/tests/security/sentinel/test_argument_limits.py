@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from maistro.constants import TOOL_ARGUMENT_MAX_BYTES, TOOL_ARGUMENT_MAX_DEPTH
 from maistro.security._types import AuditEntry, AuthContext, WardenVerdict
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.policy import Sentinel
@@ -116,16 +117,63 @@ def test_non_json_arguments_fail_closed() -> None:
 
 
 @pytest.mark.ac("SPEC-082126-7a31/AC-5")
-def test_environment_overrides_are_explicit_deployment_policy(monkeypatch: Any) -> None:
+def test_environment_overrides_may_tighten_without_unsafe_policy(monkeypatch: Any) -> None:
+    monkeypatch.delenv("ALLOW_UNSAFE_RESOURCE_OVERRIDES", raising=False)
     monkeypatch.setenv("MAISTRO_TOOL_ARGUMENT_MAX_BYTES", "2048")
     monkeypatch.setenv("MAISTRO_TOOL_ARGUMENT_MAX_DEPTH", "12")
     limits = ToolArgumentLimits.from_environment()
     assert limits == ToolArgumentLimits(max_bytes=2048, max_depth=12)
 
 
+@pytest.mark.ac("SPEC-082126-7a31/AC-5")
+@pytest.mark.parametrize(
+    ("name", "value", "baseline"),
+    [
+        (
+            "MAISTRO_TOOL_ARGUMENT_MAX_BYTES",
+            str(TOOL_ARGUMENT_MAX_BYTES + 1),
+            TOOL_ARGUMENT_MAX_BYTES,
+        ),
+        (
+            "MAISTRO_TOOL_ARGUMENT_MAX_DEPTH",
+            str(TOOL_ARGUMENT_MAX_DEPTH + 1),
+            TOOL_ARGUMENT_MAX_DEPTH,
+        ),
+    ],
+)
+def test_weaker_environment_limit_requires_explicit_unsafe_policy(
+    monkeypatch: Any,
+    name: str,
+    value: str,
+    baseline: int,
+) -> None:
+    monkeypatch.delenv("ALLOW_UNSAFE_RESOURCE_OVERRIDES", raising=False)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=f"declared security baseline of {baseline}"):
+        ToolArgumentLimits.from_environment()
+
+
+@pytest.mark.ac("SPEC-082126-7a31/AC-5")
+def test_explicit_unsafe_policy_allows_weaker_environment_limits(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "true")
+    monkeypatch.setenv("MAISTRO_TOOL_ARGUMENT_MAX_BYTES", str(TOOL_ARGUMENT_MAX_BYTES * 2))
+    monkeypatch.setenv("MAISTRO_TOOL_ARGUMENT_MAX_DEPTH", str(TOOL_ARGUMENT_MAX_DEPTH * 2))
+    limits = ToolArgumentLimits.from_environment()
+    assert limits == ToolArgumentLimits(
+        max_bytes=TOOL_ARGUMENT_MAX_BYTES * 2,
+        max_depth=TOOL_ARGUMENT_MAX_DEPTH * 2,
+    )
+
+
 def test_invalid_environment_policy_fails_loudly(monkeypatch: Any) -> None:
     monkeypatch.setenv("MAISTRO_TOOL_ARGUMENT_MAX_BYTES", "not-a-number")
     with pytest.raises(ValueError, match="MAISTRO_TOOL_ARGUMENT_MAX_BYTES"):
+        ToolArgumentLimits.from_environment()
+
+
+def test_invalid_unsafe_override_flag_fails_loudly(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "sometimes")
+    with pytest.raises(ValueError, match="ALLOW_UNSAFE_RESOURCE_OVERRIDES"):
         ToolArgumentLimits.from_environment()
 
 
