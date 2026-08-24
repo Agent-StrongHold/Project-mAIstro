@@ -1,4 +1,4 @@
-"""One suite, two GraphTemplate registries (#145).
+"""One suite, three GraphTemplate registries (#145).
 
 `Schedule.graph_template_id` has always been the field a firing resolves, and
 nothing resolved it because there was nowhere to look it up. The property that
@@ -25,15 +25,40 @@ from maistro.graph.templates import (
 WORKSPACE = "template-workspace"
 
 
-@pytest.fixture(params=["memory", "postgres"])
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+    """All three backends `wire_execution_spine` can select.
+
+    SQLite was missing from this list while `SqliteGraphTemplateStore` was
+    already wired for a `sqlite:` deployment — an implementation with no test
+    at all, which is the same shape as the untested `PgStrikeTracker` that #134
+    exists for. A registry whose redefinition refusal has never run is a
+    registry that may not have one.
+    """
     if request.param == "postgres":
         if pg_pool is None:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         from maistro.graph.pg_templates import PgGraphTemplateStore
 
-        return PgGraphTemplateStore(pg_pool)
-    return InMemoryGraphTemplateStore()
+        yield PgGraphTemplateStore(pg_pool)
+        return
+    if request.param == "sqlite":
+        import aiosqlite
+
+        from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
+
+        # Closed rather than dropped: aiosqlite runs its connection on a
+        # non-daemon thread, and a live one blocks interpreter shutdown — a
+        # suite that passes every test and then hangs on exit.
+        conn = await aiosqlite.connect(":memory:")
+        made = SqliteGraphTemplateStore(conn)
+        await made.ensure_schema()
+        try:
+            yield made
+        finally:
+            await conn.close()
+        return
+    yield InMemoryGraphTemplateStore()
 
 
 def _template(

@@ -104,6 +104,13 @@ class TestGracefulShutdown:
             assert main_module._runner is None
 
 
+def _stopped_runner() -> MagicMock:
+    runner = MagicMock()
+    runner.start = AsyncMock()
+    runner.stop = AsyncMock()
+    return runner
+
+
 class TestLifespan:
     """Drive the lifespan context manager directly (bypassing TestClient's
     worker-thread portal, which cannot register OS signal handlers)."""
@@ -145,6 +152,53 @@ class TestLifespan:
 
         mock_runner.stop.assert_awaited_once()
         assert main_module._runner is mock_runner
+
+    @pytest.mark.parametrize(
+        ("pool", "expects_warning"),
+        [
+            pytest.param(None, True, id="no-database"),
+            pytest.param(object(), False, id="postgres-pool"),
+        ],
+    )
+    async def test_the_lifespan_says_which_run_store_is_live(
+        self, pool: object, expects_warning: bool
+    ) -> None:
+        """Both halves of the spine branch, and the log line is the point.
+
+        `None` is an ordinary answer rather than a degraded one, so it warns:
+        a Run admitted by `/tasks` is lost on restart, and an operator who
+        configured no database should be told that rather than left to assume
+        otherwise. With a pool there is nothing to warn about, and a warning
+        left behind would say the opposite of what is true.
+        """
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", server_logger),
+            patch("maistro_server.main._run_store_pool", AsyncMock(return_value=pool)),
+            patch(
+                "maistro_server.main.wire_execution_spine",
+                AsyncMock(return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())),
+            ),
+            patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                pass
+
+        warned = [
+            call
+            for call in server_logger.awarning.await_args_list
+            if call.args and call.args[0] == "run_store_in_process_only"
+        ]
+        assert bool(warned) is expects_warning
 
     async def test_lifespan_seeds_pm_catalog_in_poc_mode(
         self, monkeypatch: pytest.MonkeyPatch
@@ -229,3 +283,76 @@ class TestLifespan:
 
         mock_engine.dispose.assert_awaited_once()
         mock_reset.assert_called_once()
+
+
+class TestRunStorePool:
+    """`_run_store_pool` decides whether this deployment gets a durable spine.
+
+    Both answers matter and neither had a test. `None` is ordinary — no
+    database configured means the in-process store and a log line saying so —
+    while a PostgreSQL URL must reach `get_pool` through the *same* resolver
+    alembic uses (#187), or the spine lands in a database the migrations never
+    described.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_environment(self, monkeypatch: pytest.MonkeyPatch):
+        for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+            monkeypatch.delenv(name, raising=False)
+
+    async def test_no_database_configured_is_none_not_an_error(self) -> None:
+        assert await main_module._run_store_pool() is None
+
+    @pytest.mark.parametrize("url", ["sqlite:///tmp/x.db", "memory://"])
+    async def test_a_non_postgres_backend_gets_no_pool(
+        self, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        """Neither can hold the spine, and neither is a misconfiguration."""
+        monkeypatch.setenv("DATABASE_URL", url)
+
+        assert await main_module._run_store_pool() is None
+
+    async def test_a_postgres_url_opens_a_pool_on_the_normalised_dsn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `+driver` spelling is SQLAlchemy's; asyncpg speaks libpq DSNs.
+        Passing it through unchanged fails on the scheme rather than connecting.
+        """
+        seen: list[str] = []
+        sentinel = object()
+
+        async def _fake_get_pool(dsn: str):
+            seen.append(dsn)
+            return sentinel
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@db:5432/maistro")
+        monkeypatch.setattr("maistro.persistence.get_pool", _fake_get_pool)
+
+        assert await main_module._run_store_pool() is sentinel
+        assert seen == ["postgresql://u:p@db:5432/maistro"]
+
+    async def test_the_db_star_variables_reach_it_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`docker-compose.yml` sets these and no DATABASE_URL (#187). A spine
+        that only read DATABASE_URL would run in-process on the shipped
+        default, beside a PostgreSQL container with a volume."""
+        seen: list[str] = []
+
+        async def _fake_get_pool(dsn: str):
+            seen.append(dsn)
+            return object()
+
+        for name, value in (
+            ("DB_HOST", "db"),
+            ("DB_PORT", "5432"),
+            ("DB_NAME", "maistro"),
+            ("DB_USER", "maistro"),
+            ("DB_PASSWORD", "maistro"),
+        ):
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr("maistro.persistence.get_pool", _fake_get_pool)
+
+        assert await main_module._run_store_pool() is not None
+        assert seen and seen[0].startswith("postgresql://")
+        assert "db:5432/maistro" in seen[0]

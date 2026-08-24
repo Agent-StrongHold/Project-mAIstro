@@ -529,3 +529,153 @@ async def test_a_project_with_runs_cannot_be_deleted(spine: Any) -> None:
         await projects.delete(project_id)
 
     assert await projects.get(project_id) is not None
+
+
+# ── deletion, and the two things it refuses ────────────────────────
+#
+# `delete_run` was covered per-backend in `test_store.py` and
+# `test_sqlite_store.py` and nowhere across all three, so PostgreSQL's copy of
+# these refusals — the ones that keep a retention sweep from orphaning history —
+# was the only unproven one. That asymmetry is what this file exists to end.
+
+
+async def test_a_terminal_run_can_be_deleted(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED)
+
+    assert await store.delete_run(run.run_id) is True
+    assert await store.get_run(run.run_id) is None
+
+
+async def test_deleting_an_unknown_run_is_false_not_an_error(spine: Any) -> None:
+    """A sweep that raced another sweep asked about a Run already gone. That is
+    an ordinary outcome, not a failure to report."""
+    store, _workspace, _project_id = spine
+
+    assert await store.delete_run("run-that-never-existed") is False
+
+
+async def test_a_running_run_is_not_deletable(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    with pytest.raises(RunIntegrityError, match="non-terminal"):
+        await store.delete_run(run.run_id)
+
+    assert await store.get_run(run.run_id) is not None
+
+
+async def test_force_skips_the_terminal_check_and_nothing_else(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    assert await store.delete_run(run.run_id, force=True) is True
+    assert await store.get_run(run.run_id) is None
+
+
+async def test_a_run_with_children_is_never_deletable_even_forced(spine: Any) -> None:
+    """The child check is not a policy knob. Deleting a parent out from under
+    its children leaves a `parent_run_id` pointing at nothing, on every backend
+    — PostgreSQL would refuse it with a foreign key and the others must agree."""
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    for force in (False, True):
+        with pytest.raises(RunIntegrityError, match="child Run"):
+            await store.delete_run(parent.run_id, force=force)
+
+    assert await store.get_run(parent.run_id) is not None
+
+
+async def test_deleting_a_run_takes_its_node_runs_and_attempts(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    await store.delete_run(run.run_id)
+
+    assert await store.get_node_run(node_run.node_run_id) is None
+    assert await store.get_attempt(attempt.attempt_id) is None
+
+
+# ── has_runs_in_project ────────────────────────────────────────────
+
+
+async def test_a_project_reports_whether_it_owns_runs(spine: Any) -> None:
+    """The predicate `PgProjectScopeStore.delete()` consults, so its refusal
+    names the rule rather than surfacing a raw constraint name."""
+    store, workspace, project_id = spine
+
+    assert await store.has_runs_in_project(project_id) is False
+    await store.create_run(_graph(workspace, project_id))
+    assert await store.has_runs_in_project(project_id) is True
+
+
+# ── the remaining child-Run refusals ───────────────────────────────
+
+
+async def test_a_child_run_cannot_implicitly_cross_projects(spine: Any) -> None:
+    """Crossing Workspaces is never allowed; crossing Projects requires the
+    caller to have authorized the destination and say so."""
+    store, workspace, _project_id = spine
+    projects = store._project_store
+    root = await projects.create_root(workspace)
+    sibling = await projects.create(
+        workspace_id=workspace, parent_project_id=root.project_id, name="Sibling"
+    )
+    parent = await _run(spine)
+
+    with pytest.raises(RunIntegrityError, match="cross Project"):
+        await store.create_run(_graph(workspace, sibling.project_id), parent_run_id=parent.run_id)
+
+    allowed = await store.create_run(
+        _graph(workspace, sibling.project_id),
+        parent_run_id=parent.run_id,
+        allow_cross_project=True,
+    )
+    assert allowed.project_id == sibling.project_id
+
+
+async def test_a_parent_node_run_must_belong_to_the_parent_run(spine: Any) -> None:
+    """Otherwise the child cites a delegating node in some other Run's history."""
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    unrelated = await _run(spine)
+    foreign_node_run = await store.create_node_run(unrelated.run_id, node_id="node-1")
+
+    with pytest.raises(RunIntegrityError, match="does not belong"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            parent_node_run_id=foreign_node_run.node_run_id,
+        )
+
+
+# ── Attempts under a NodeRun that has already ended ────────────────
+
+
+async def test_an_attempt_under_a_terminal_node_run_is_refused(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    # Cancelled rather than completed: both are terminal, and cancellation is
+    # reachable straight from CREATED, so the test states the rule under
+    # examination without also walking the acceptance-evidence machinery.
+    await store.transition_node_run(node_run.node_run_id, RunStatus.CANCELLED)
+
+    with pytest.raises(RunIntegrityError, match="terminal NodeRun"):
+        await store.create_attempt(node_run.node_run_id)
