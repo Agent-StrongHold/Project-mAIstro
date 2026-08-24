@@ -12,6 +12,8 @@ everywhere.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from maistro.container import (
@@ -20,7 +22,8 @@ from maistro.container import (
     _asyncpg_dsn,
     create_container,
 )
-from maistro.types.config import AgentConfig
+from maistro.persistence import close_pool
+from maistro.types.config import AgentConfig, SecurityConfig
 from maistro.types.errors import ConfigError
 
 from .persistence.conftest import postgres_dsn
@@ -49,8 +52,12 @@ requires_postgres = pytest.mark.skipif(
 )
 
 
-def _config(url: str) -> AgentConfig:
-    return AgentConfig(router_api_key="test-key", database_url=url)
+def _config(url: str, **security: object) -> AgentConfig:
+    return AgentConfig(
+        router_api_key="test-key",
+        database_url=url,
+        security=SecurityConfig(**security),  # type: ignore[arg-type]
+    )
 
 
 # ── DSN normalisation ─────────────────────────────────────────────
@@ -205,6 +212,50 @@ async def test_the_wired_stores_actually_work() -> None:
     )
 
     assert await total() - before == 10
+
+
+@requires_postgres
+async def test_a_postgres_url_wires_the_durable_strike_tracker() -> None:
+    """#134's acceptance: no more in-memory lockouts on a database deployment."""
+    container = await create_container(_config(postgres_dsn(), strike_tracking_enabled=True))
+
+    assert type(container.strike_tracker).__name__ == "PgStrikeTracker"
+    assert container.gate._strike_tracker is container.strike_tracker
+
+
+@requires_postgres
+async def test_a_lockout_imposed_through_the_gate_survives_a_restart() -> None:
+    """The criterion the whole issue exists for, end to end.
+
+    Not the tracker in isolation -- `test_strike_tracker_conformance.py` covers
+    that for both implementations. What is only observable here is the path an
+    attacker actually takes: violations arrive through `Gate`, and a *second*
+    container, built as a restarted process would build it, still sees the
+    account locked. While the ladder was in-memory this was false, and a
+    locked-out account was released by any deploy.
+
+    Two violations, because the second strike is what imposes the lockout. The
+    user id is unique per run: this database is durable, so a fixed id would
+    carry a ladder over from the previous run and start at strike three.
+    """
+    user_id = f"lockout-{uuid4().hex}"
+
+    imposing = await create_container(_config(postgres_dsn(), strike_tracking_enabled=True))
+    tracker = imposing.strike_tracker
+    assert tracker is not None
+    for _ in range(2):
+        await tracker.record_violation(user_id=user_id, flags=("prompt_injection",))
+
+    assert (await tracker.get(user_id)).is_locked is True  # type: ignore[union-attr]
+
+    await close_pool()
+    restarted = await create_container(_config(postgres_dsn(), strike_tracking_enabled=True))
+
+    assert restarted.strike_tracker is not tracker
+    record = await restarted.strike_tracker.get(user_id)  # type: ignore[union-attr]
+    assert record is not None
+    assert record.is_locked is True
+    assert record.strike_count == 2
 
 
 @requires_postgres

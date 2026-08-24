@@ -12,6 +12,7 @@ missing wiring in the first place.
 from __future__ import annotations
 
 import contextlib
+import logging
 
 import pytest
 
@@ -118,10 +119,87 @@ async def test_container_strike_tracker_absent_by_default() -> None:
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 async def test_container_wires_strike_tracker_when_enabled() -> None:
+    """No pool, so in-memory -- the homelab deployment's correct answer."""
     container = await _container(strike_tracking_enabled=True)
     assert container.strike_tracker is not None
     assert isinstance(container.strike_tracker, InMemoryStrikeTracker)
     assert container.gate._strike_tracker is container.strike_tracker
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_a_pool_selects_the_durable_strike_tracker() -> None:
+    """The whole of #134: a database means lockouts outlive the process.
+
+    Against `_wire_strike_tracker` rather than a built container, because the
+    selection is the thing under test and building a container around a fake
+    pool would exercise the event-schema path instead. The two trackers' shared
+    *behaviour* is `test_strike_tracker_conformance.py`'s job, parametrised over
+    both; that a real container reaches this branch is covered against a real
+    server by `test_container_postgres.py`.
+    """
+    from maistro.container import _wire_strike_tracker
+    from maistro.security.pg_strikes import PgStrikeTracker
+
+    tracker = _wire_strike_tracker(enabled=True, pg_pool=object())
+
+    assert isinstance(tracker, PgStrikeTracker)
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+async def test_the_durable_tracker_uses_the_containers_own_pool() -> None:
+    """Not a second one of its own.
+
+    A tracker that opened its own pool would double the process's connection
+    budget, and the two could name different databases the moment `DATABASE_URL`
+    changed -- the strike ladder reading one while every other store wrote the
+    other. It would also run `_SCHEMA`'s `CREATE TABLE IF NOT EXISTS` behind the
+    migration chain that owns those tables.
+    """
+    from maistro.container import _wire_strike_tracker
+
+    pool = object()
+    tracker = _wire_strike_tracker(enabled=True, pg_pool=pool)
+
+    assert tracker is not None
+    assert await tracker._get_pool() is pool  # type: ignore[attr-defined]
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_no_pool_still_selects_the_in_memory_tracker(caplog) -> None:
+    """A homelab deployment with no database chose this, so it is said at INFO.
+
+    And it is still *said*: the in-memory ladder means a locked-out account is
+    unlocked by any deploy, which an operator should be able to find in the log
+    rather than infer.
+    """
+    from maistro.container import _wire_strike_tracker
+
+    with caplog.at_level(logging.INFO, logger="maistro.container"):
+        tracker = _wire_strike_tracker(enabled=True, pg_pool=None)
+
+    assert isinstance(tracker, InMemoryStrikeTracker)
+    assert any("resets on restart" in r.message for r in caplog.records)
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_a_pool_no_longer_warns_that_lockouts_reset(caplog) -> None:
+    """The warning was the acceptance criterion's other half.
+
+    It said "PgStrikeTracker is not yet Gate-compatible (#134)". Leaving it
+    behind after wiring the durable tracker would tell an operator their
+    lockouts reset when they no longer do -- worse than the silence, because it
+    reads as current.
+    """
+    from maistro.container import _wire_strike_tracker
+
+    with caplog.at_level(logging.WARNING, logger="maistro.container"):
+        _wire_strike_tracker(enabled=True, pg_pool=object())
+
+    assert not [r for r in caplog.records if "in-memory" in r.message]
 
 
 @pytest.mark.contract("behavioral")

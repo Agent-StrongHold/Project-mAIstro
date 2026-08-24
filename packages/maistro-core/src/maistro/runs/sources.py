@@ -19,6 +19,9 @@ TASK_QUEUE_SOURCE = "task_queue"
 #: `admission_source` for work that entered as a chat turn.
 CHAT_SOURCE = "chat"
 
+#: `admission_source` for work a Schedule fired (#145).
+SCHEDULE_SOURCE = "schedule"
+
 #: Sources whose Runs a bounded store evicts *first*.
 #:
 #: Chat turns arrive orders of magnitude more often than task submissions, and
@@ -30,9 +33,37 @@ CHAT_SOURCE = "chat"
 #: any admitter's own sweep could run.
 EPHEMERAL_ADMISSION_SOURCES = frozenset({CHAT_SOURCE})
 
+#: Provenance keys a scheduled Run carries beyond its source (#145).
+#:
+#: Named here for the same reason the sources are: `scheduling.admission`
+#: writes them and anything reading a Run's provenance has to agree on the
+#: spelling without importing the scheduler.
+SCHEDULE_ID_KEY = "schedule_id"
+
+#: The occurrence a Run belongs to, not the moment its tick noticed it.
+SCHEDULED_FOR_KEY = "scheduled_for"
+
+#: True when the fire was a backfill after downtime rather than an on-time one.
+#: The two mean different things and were previously indistinguishable.
+SCHEDULE_CATCHUP_KEY = "catchup"
+
+#: The Schedule's configured payload, carried onto the Run it fires.
+#:
+#: `Schedule.inputs` is what a parameterized schedule was set up to pass, and
+#: instantiating its template alone dropped it — every such Run looked like one
+#: configured with nothing. On the Run rather than only handed to a runner,
+#: because a Run that cannot say what it was asked to do cannot be audited or
+#: replayed.
+SCHEDULE_INPUTS_KEY = "schedule_inputs"
+
 __all__ = [
     "ADMISSION_SOURCE",
     "CHAT_SOURCE",
     "EPHEMERAL_ADMISSION_SOURCES",
+    "SCHEDULED_FOR_KEY",
+    "SCHEDULE_CATCHUP_KEY",
+    "SCHEDULE_ID_KEY",
+    "SCHEDULE_INPUTS_KEY",
+    "SCHEDULE_SOURCE",
     "TASK_QUEUE_SOURCE",
 ]
