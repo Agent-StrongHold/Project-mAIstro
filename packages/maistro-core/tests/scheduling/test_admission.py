@@ -456,3 +456,103 @@ class TestTemplateResolutionIsPerBatch:
         assert result.failures
         # One lookup for the batch, however many occurrences were due.
         assert lookups["n"] == 1
+
+
+class TestOneRunPerFiring:
+    """Exactly-once admission of an occurrence (#220, ADR-082426-82c7).
+
+    The cursor was the only thing standing between one firing and two Runs, and
+    a cursor is a high-water mark rather than the identity of an occurrence.
+    These are the admitter's half; the store's half — the claim itself, and the
+    concurrent race — is in `runs/test_spine_conformance.py`, on all three
+    backends.
+    """
+
+    async def test_a_crash_before_the_cursor_moved_does_not_refire(self, harness) -> None:
+        """The known cost of create-then-advance, now paid. Re-running the
+        admitter with the cursor exactly where it was is what the next tick
+        after such a crash does."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        first = await admitter.admit_due(schedule, now=NOON)
+        assert len(first.run_ids) == 1
+
+        # The same Schedule object: its `last_fired_at` is the pre-fire value,
+        # which is precisely the state a crash between the two writes leaves.
+        again = await admitter.admit_due(schedule, now=NOON)
+
+        assert again.run_ids == ()
+        assert len(again.already_fired) == 1
+        scheduled = [
+            run
+            for run in [await runs.get_run(run_id) for run_id in first.run_ids]
+            if run is not None
+        ]
+        assert len(scheduled) == 1
+
+    async def test_a_duplicate_does_not_stop_the_batch(self, harness) -> None:
+        """The one place a `break` on first failure is wrong. Nothing is owed
+        for an occurrence that already fired, so stopping would re-enumerate it
+        on every tick from here on."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=3),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+        # A rival ticker got the *first* of the three due occurrences and then
+        # stopped. Its cursor write does not matter here: this admitter is
+        # driving the Schedule object it had already read.
+        first_only = await admitter.admit_due(schedule, now=NOON - timedelta(hours=2))
+        assert len(first_only.run_ids) == 1
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        assert len(result.already_fired) == 1
+        assert len(result.run_ids) == 2
+        assert result.failures == ()
+
+    async def test_the_cursor_passes_an_occurrence_someone_else_fired(self, harness) -> None:
+        """It fired. Leaving the cursor short of it would re-enumerate a firing
+        that has already happened, forever."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        await admitter.admit_due(schedule, now=NOON)
+        before = await schedules.get(schedule.schedule_id)
+
+        await admitter.admit_due(schedule, now=NOON)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert after is not None and before is not None
+        assert after.last_fired_at == before.last_fired_at
+
+    async def test_a_duplicate_does_not_count_toward_max_runs(self, harness) -> None:
+        """`fires` feeds `runs_so_far`. Both tickers counting one firing would
+        exhaust a schedule at half the occurrences it was configured for."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=4)
+        await admitter.admit_due(schedule, now=NOON)
+        after_first = await schedules.get(schedule.schedule_id)
+
+        await admitter.admit_due(schedule, now=NOON)
+
+        after_second = await schedules.get(schedule.schedule_id)
+        assert after_first is not None and after_second is not None
+        assert after_first.runs_so_far == 1
+        assert after_second.runs_so_far == 1
+
+    async def test_last_run_id_survives_a_batch_that_admitted_nothing_new(self, harness) -> None:
+        """`record_fire(run_id=None)` keeps the existing pointer. Clearing it,
+        or pointing it at an older Run of ours, would both be less true than
+        leaving it where the admitter that created the Run put it."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        first = await admitter.admit_due(schedule, now=NOON)
+
+        await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == first.run_ids[-1]

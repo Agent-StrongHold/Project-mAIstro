@@ -27,10 +27,12 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
+    DuplicateOccurrence,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
@@ -106,6 +108,26 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
     ON canonical_runs(parent_run_id);
+
+-- One Run per schedule firing (#220). The unique index *is* the claim: two
+-- tickers evaluating the same due window both reach the insert, and the
+-- database refuses the second rather than a convention in the caller.
+--
+-- Expression index over the payload rather than columns, because these two
+-- fields belong to the schedule admitter and every other admitter would carry
+-- them as NULL. `json_extract` is deterministic, which is what SQLite requires
+-- of an indexed expression.
+--
+-- Partial on `schedule_id IS NOT NULL`: only scheduled Runs claim an
+-- occurrence, and without the predicate every task and chat Run would collide
+-- on `(NULL, NULL)`.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_occurrence
+    ON canonical_runs(
+        json_extract(payload, '$.provenance.schedule_id'),
+        json_extract(payload, '$.provenance.scheduled_for')
+    )
+    WHERE json_extract(payload, '$.provenance.schedule_id') IS NOT NULL
+      AND json_extract(payload, '$.provenance.scheduled_for') IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
@@ -240,21 +262,31 @@ class SqliteRunStore:
             # in which a process death leaves a CREATED Run whose provenance
             # names a receipt that was already queued.
             run = admit_in_state(run, initial_status)
-            await self._conn.execute(
-                """INSERT INTO canonical_runs
-                   (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    run.run_id,
-                    run.workspace_id,
-                    run.project_id,
-                    run.parent_run_id,
-                    run.parent_node_run_id,
-                    run.status.value,
-                    json_of(run),
-                ),
-            )
+            try:
+                await self._conn.execute(
+                    """INSERT INTO canonical_runs
+                       (run_id, workspace_id, project_id, parent_run_id,
+                        parent_node_run_id, status, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run.run_id,
+                        run.workspace_id,
+                        run.project_id,
+                        run.parent_run_id,
+                        run.parent_node_run_id,
+                        run.status.value,
+                        json_of(run),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                occurrence = occurrence_key(run.provenance)
+                if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
+                    raise
+                # Rolled back before raising: the failed INSERT opened a
+                # transaction, and leaving it for the next caller to inherit
+                # would make an unrelated write commit inside this one.
+                await self._conn.rollback()
+                raise DuplicateOccurrence(*occurrence) from exc
             await self._conn.commit()
             return run
 

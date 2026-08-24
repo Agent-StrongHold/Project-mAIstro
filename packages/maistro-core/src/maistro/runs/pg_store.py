@@ -54,10 +54,12 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
+    DuplicateOccurrence,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
@@ -65,6 +67,12 @@ from maistro.runs.store import (
     admit_in_state,
     validate_accepted_outcome_against_attempt,
 )
+
+#: The unique index migration 015 creates. Compared against
+#: `UniqueViolationError.constraint_name` so a violation on any *other*
+#: constraint keeps its own identity instead of being reported as a duplicate
+#: firing.
+OCCURRENCE_INDEX = "ix_canonical_runs_occurrence"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -148,23 +156,39 @@ class PgRunStore:
         # which a process death leaves a CREATED Run whose receipt was queued.
         run = admit_in_state(run, initial_status)
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO canonical_runs
+            try:
+                await conn.execute(
+                    """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
                     parent_node_run_id, status, payload, retention_expires_at)
                    VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
-                run.run_id,
-                run.workspace_id,
-                run.project_id,
-                run.parent_run_id,
-                run.parent_node_run_id,
-                run.status.value,
-                json_of(run),
-                # Duplicated out of the payload so the retention sweep can use
-                # an index (migration 012). Written once at creation and never
-                # transitioned, so the two cannot drift the way `status` could.
-                run.retention_expires_at,
-            )
+                    run.run_id,
+                    run.workspace_id,
+                    run.project_id,
+                    run.parent_run_id,
+                    run.parent_node_run_id,
+                    run.status.value,
+                    json_of(run),
+                    # Duplicated out of the payload so the retention sweep can use
+                    # an index (migration 012). Written once at creation and never
+                    # transitioned, so the two cannot drift the way `status` could.
+                    run.retention_expires_at,
+                )
+            except _integrity_errors() as exc:
+                # The occurrence claim (migration 015). Two tickers evaluating
+                # the same due window both reach this insert; the index refuses
+                # the second, and the caller's correct response is to treat that
+                # firing as already fired rather than retry or abandon the batch.
+                #
+                # Matched on the constraint name, the way `_integrity_failure`
+                # already is: another constraint refusing this insert means
+                # something else, and reporting it as a duplicate firing would
+                # tell the admitter to carry on past a Run that does not exist.
+                occurrence = occurrence_key(run.provenance)
+                constraint = str(getattr(exc, "constraint_name", "") or "")
+                if occurrence is None or constraint != OCCURRENCE_INDEX:
+                    raise
+                raise DuplicateOccurrence(*occurrence) from exc
         return run
 
     async def purge_expired_runs(

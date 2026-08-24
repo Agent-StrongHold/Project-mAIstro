@@ -27,7 +27,11 @@ from maistro.runs.model import (
     RunStatus,
     evidence_values_equal,
 )
-from maistro.runs.sources import ADMISSION_SOURCE, EPHEMERAL_ADMISSION_SOURCES
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    EPHEMERAL_ADMISSION_SOURCES,
+    occurrence_key,
+)
 
 
 class RunNotFound(KeyError):
@@ -48,6 +52,24 @@ class RunIntegrityError(ValueError):
 
 class ActiveAttemptExists(RunIntegrityError):
     pass
+
+
+class DuplicateOccurrence(RunIntegrityError):
+    """A Run already exists for this `(schedule_id, scheduled_for)` (#220).
+
+    Distinguished from every other integrity failure because the caller's
+    correct response is the opposite one: nothing is wrong. Another ticker, or
+    this process before a crash, already admitted that firing, and the right
+    move is to treat the occurrence as fired and carry on — not to retry it, and
+    not to abandon the batch.
+    """
+
+    def __init__(self, schedule_id: str, scheduled_for: str) -> None:
+        self.schedule_id = schedule_id
+        self.scheduled_for = scheduled_for
+        super().__init__(
+            f"schedule {schedule_id!r} already has a Run for occurrence {scheduled_for!r}"
+        )
 
 
 def validate_accepted_outcome_against_attempt(
@@ -278,6 +300,11 @@ class InMemoryRunStore:
         self._runs: OrderedDict[str, Run] = OrderedDict()
         self._node_runs: dict[str, NodeRun] = {}
         self._attempts: dict[str, Attempt] = {}
+        # `(schedule_id, scheduled_for)` -> run_id, for the Runs that claim an
+        # occurrence (#220). Held beside the Runs rather than derived by
+        # scanning them, because the check is on the hot admission path and a
+        # scan would be linear in every Run the store holds.
+        self._occurrences: dict[tuple[str, str], str] = {}
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -324,7 +351,15 @@ class InMemoryRunStore:
         half of the memory while removing the index into it — a leak that is
         also unreachable.
         """
-        del self._runs[run_id]
+        forgotten = self._runs.pop(run_id)
+        # The claim goes with the Run, so a Run this store evicted or a
+        # retention sweep deleted stops blocking its occurrence. That is the
+        # right coupling: nothing is duplicated by re-admitting a firing whose
+        # only record has been deliberately destroyed, and keeping the claim
+        # would be an unreachable row asserting something no longer true.
+        occurrence = occurrence_key(forgotten.provenance)
+        if occurrence is not None and self._occurrences.get(occurrence) == run_id:
+            del self._occurrences[occurrence]
         node_run_ids = {
             node_run_id
             for node_run_id, node_run in self._node_runs.items()
@@ -379,6 +414,15 @@ class InMemoryRunStore:
             retention_expires_at=retention_expires_at,
         )
         run = admit_in_state(run, initial_status)
+        occurrence = occurrence_key(run.provenance)
+        if occurrence is not None:
+            # Checked and claimed with no await between, which is what makes
+            # this atomic here: this store runs in one event loop, and the two
+            # halves cannot be interleaved by another coroutine. The durable
+            # backends get the same guarantee from a unique index instead.
+            if occurrence in self._occurrences:
+                raise DuplicateOccurrence(*occurrence)
+            self._occurrences[occurrence] = run.run_id
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
