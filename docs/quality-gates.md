@@ -50,7 +50,7 @@ All six minimum invariants now have an enforceable owner. Two are construction-t
 | 3. No second durable Workspace/Event-sequence authority | `EventEnvelope`/event-store construction rules refuse conflicting scope/sequence authority; event tests pin it |
 | 4. No unscoped durable project-owned execution objects | `Run`/`NodeRun` require Project scope and Run rejects a mismatched Graph snapshot |
 | 5. No outward core dependency-direction violations | `packages/maistro-core/tests/fitness/test_import_boundaries.py` |
-| 6. Compatibility owners cannot silently present as canonical | the same blocking fitness suite AST-scans direct public type aliases against a reviewed identity ledger and requires the explicit `Backwards compat aliases` banner; new/stale/unbannered aliases fail |
+| 6. Compatibility owners cannot silently present as canonical | the same blocking fitness suite AST-scans direct public type aliases against a reviewed identity ledger and requires each reviewed alias to be explicitly described as compatibility-only in its source; new/stale/unbannered aliases fail |
 
 Invariants 3 and 4 are stronger at construction than a later grep: the invalid object cannot be created. Invariant 6 is different — an alias can always be written — so it is now mechanically checked rather than left as convention.
 
@@ -92,11 +92,11 @@ The mandate cannot be banked away. Legacy debt stays grandfathered to the ratche
 
 ADR-097 defines `Proposed` as under discussion and `Accepted` as a decision made. From the M0 closeout boundary (2026-08-24), `maistro-registry` prospectively requires newly-authored records to carry dated lifecycle history whose latest entry matches front matter; taken decisions require their acceptance metadata/owner evidence. Legacy/backfilled records remain readable and continue through the acceptance-state debt process rather than being bulk-rewritten by a schema change. See #239.
 
-The `/adr` scaffold now emits lifecycle history immediately and distinguishes a genuine proposal from a decision being recorded alongside implementation.
+The `/adr` and `/spec` scaffolds emit lifecycle history immediately. When a record advances, contributors append the dated transition and update the corresponding lifecycle metadata rather than editing `status` alone.
 
 ## Design coverage
 
-Design coverage is decision-weighted: for each Accepted/Implemented ADR, measure the fraction of its own and implementing specs' criteria that reach `reachable`, then average one vote per decision. A taken decision with no evidence contributes zero rather than disappearing from the denominator.
+Design coverage is decision-weighted: for each taken ADR (`Accepted`, `Fully Specced`, or `Implemented`), measure the fraction of its own and implementing specs' criteria that reach `reachable`, then average one vote per decision. A taken decision with no evidence contributes zero rather than disappearing from the denominator.
 
 The **current reviewed floor is always the value in `quality/ac-state-ceilings.json`**, not a number copied into prose. Accepting a real new decision can legitimately lower the percentage because new work becomes owed; such a denominator change must be banked and explained. Proving criteria raises it and the higher value must likewise be banked so the gain cannot pay for a later regression.
 
