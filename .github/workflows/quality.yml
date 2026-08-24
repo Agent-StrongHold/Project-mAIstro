@@ -51,6 +51,294 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ----- Coverage is produced by several jobs and judged by one (#211) -----
+  #
+  # Coverage used to be produced by a single job with no service containers,
+  # which meant any code whose suites need a real server was scored from a run
+  # that could not execute them. `pg_stores.py` read as 41% covered while being
+  # thoroughly tested, because its PostgreSQL legs skip without a server and the
+  # measuring job had none. A gate that cannot see something must not report a
+  # number as if it had looked.
+  #
+  # So: every suite is measured exactly once, in a job that can actually run it,
+  # and the floors are evaluated on the combined data.
+  #
+  # ADDING A PRODUCER is one job plus one artifact name:
+  #   1. run the suite under `coverage run --branch --source=<src>`;
+  #   2. upload `.coverage` as `coverage-<name>` with include-hidden-files;
+  #   3. add `coverage-<name>` to `coverage-gate`'s `needs:` and download list.
+  # Make skipping fatal in the producer (see MAISTRO_REQUIRE_* below) — a
+  # producer that silently skips its legs contributes an empty file and shrinks
+  # the denominator, which is the failure this whole structure exists to avoid.
+  #
+  # `durable-events` and `migrations` are not producers yet: no PostgreSQL-gated
+  # test exists on `develop`. They arrive with #181 and #178, each adding its own
+  # producer.
+
+  coverage-unit:
+    name: coverage (no services)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: the diff gate needs the merge base
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.5.x"
+
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+
+      # formal/ imports maistro_evolve; not a uv workspace member, so
+      # `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+
+      # ----- Pillar 1: coverage (line + branch ≥95% on touched files) -----
+      # C2/#287: measured over the PyPI publish set (core, canvas, evolve, rsi,
+      # bootstrap — the PyPI publish set),
+      # not maistro-core alone. Each package runs as its own `coverage run
+      # --append` invocation rather than one combined pytest call: an earlier
+      # attempt at a single `pytest packages/maistro-core/tests
+      # packages/maistro-canvas/tests ...` invocation broke an unrelated
+      # maistro-rsi test (structlog's capture_logs() picks up stale global
+      # config when another package's tests configure structlog first) — the
+      # same cross-package state-pollution risk ci.yml's `test` job already
+      # avoids by giving every package its own pytest step.
+      - name: pytest with coverage (line + branch)
+        env:
+          PYTHONPATH: >-
+            packages/maistro-core/src:packages/maistro-canvas/src:
+            packages/maistro-rsi/src:packages/maistro-evolve/src
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+        run: |
+          uv run coverage erase
+          uv run coverage run --branch --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-canvas/src/maistro_canvas \
+            -m pytest packages/maistro-canvas/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-evolve/src/maistro_evolve \
+            -m pytest packages/maistro-evolve/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-rsi/src/maistro_rsi \
+            -m pytest packages/maistro-rsi/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
+            -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
+      - name: upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          # `.coverage` is a dotfile and upload-artifact@v4 skips hidden files
+          # by default — without this the artifact uploads empty and the gate
+          # silently measures less than it claims to.
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+  # The Archive tier against a real S3-compatible server (#133, ADR-082226-d3dd).
+  # Moved here from ci.yml by #211: it is the only job that can execute these
+  # legs, so it is the only job that can honestly measure them, and artifacts do
+  # not cross workflow runs.
+  #
+  # MinIO rather than a mocked client: a mocked object store proves the call was
+  # made with the arguments the test already knew, which is not the property
+  # worth checking about storage. The same conformance suite runs over
+  # FilesystemArchiveStore and S3ArchiveStore, so the two implementations cannot
+  # drift into behaving differently under one protocol.
+  #
+  # `--extra dev --extra s3` installs the optional SDK for the S3 leg. The
+  # *absence* case is covered by test_optional_dependency.py, which hides
+  # aioboto3 from the import system rather than uninstalling it — so both halves
+  # are checked in one environment.
+  #
+  # Started as a step rather than under `services:`, for two reasons found the
+  # hard way. The official `minio/minio` image needs `server /data` as a
+  # command, and a `services:` block has no `command:` key at all — only
+  # `image`, `env`, `ports`, `options` and `credentials`. And the first version
+  # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
+  # retired their public tags, so every run died on `manifest unknown` before
+  # reaching a single test. An image name is not verified by being plausible.
+  coverage-archive:
+    name: coverage (MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start MinIO
+        run: |
+          set -euo pipefail
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          # Poll the health endpoint rather than sleeping a fixed amount: a
+          # fixed sleep is either slower than it needs to be or racy, and the
+          # race surfaces as a connection error that reads exactly like the
+          # storage bug this job exists to catch.
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "MinIO ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::MinIO did not become ready within 60s"
+          docker logs minio
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev --extra s3
+      - name: Archive conformance against MinIO (under coverage)
+        env:
+          MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          MAISTRO_TEST_S3_ACCESS_KEY: minioadmin
+          MAISTRO_TEST_S3_SECRET_KEY: minioadmin
+          # A skipped leg is untested, not passing. Without this a broken MinIO
+          # would leave the job green and quietly drop these lines from the
+          # denominator.
+          MAISTRO_REQUIRE_S3_LEGS: "1"
+        run: |
+          uv run coverage run --branch --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests/memory/archive -v --tb=short
+      - name: upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-archive
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+
+  coverage-gate:
+    name: Coverage gate (publish-set floor + diff coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [coverage-unit, coverage-archive]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: the diff gate needs the merge base
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.5.x"
+
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+
+      - name: download every producer's coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-data
+
+      # `coverage combine` consumes files named `.coverage.<suffix>` from one
+      # directory. Each artifact arrives as `coverage-data/<name>/.coverage`, so
+      # they are renamed by producer before combining — same basename in
+      # different directories would collide on move.
+      - name: combine
+        run: |
+          set -euo pipefail
+          shopt -s nullglob dotglob
+          found=0
+          for dir in coverage-data/*/; do
+            name="$(basename "$dir")"
+            if [ -s "${dir}.coverage" ]; then
+              mv "${dir}.coverage" ".coverage.${name}"
+              found=$((found + 1))
+            else
+              echo "::error::producer ${name} contributed no coverage data"
+              exit 1
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no coverage artifacts found — every producer failed or uploaded nothing"
+            exit 1
+          fi
+          echo "combining $found producer(s)"
+          uv run coverage combine
+          uv run coverage report -m --skip-covered
+
+          # The publish-set floor is evaluated HERE, before any non-publish-set
+          # data joins the database. `coverage report` scopes by --include/--omit
+          # only, so appending maistro-server first would have put it under this
+          # floor no matter what the comment said — the doc and the arithmetic
+          # would have disagreed, silently, in the direction of a stricter gate
+          # than anyone signed up for.
+          #
+          # 88 -> 86 on 2026-08-22, and this is a widened MEASUREMENT rather than
+          # a regression. `include_namespace_packages` (added in this change) let
+          # coverage discover never-imported files under
+          # `maistro_canvas/canvas/`, a directory with no `__init__.py` whose
+          # four modules had been invisible to this gate entirely. The publish
+          # set went from 41,469 statements at 89% to 42,290 at 87.43%: the +821
+          # are 100% uncovered and always were. Nothing got worse — the number
+          # stopped being flattering, which is the entire point of the flag.
+          #
+          # 86 kept roughly the 1.5 points of headroom the 88-under-89.63 choice
+          # had. The newly-visible debt was #171, NOT an omit pattern here:
+          # re-hiding it is the one response that would have made discovering it
+          # pointless.
+          #
+          # 86 -> 87 on 2026-08-22, as #171 lands. `canvas/compositor.py` (148
+          # statements) and `canvas/executor.py` (167) went 0% -> 100% and 98%,
+          # taking the publish set from 42,290 at 87.43% to 42,290 at 88.23%.
+          # Same denominator: this is coverage arriving, not measurement moving.
+          # 87 keeps 1.23 points of headroom under it.
+          #
+          # The floor does not go higher yet. `canvas/store.py` (175) and
+          # `canvas/tool.py` (331) are still 0% and still in the denominator —
+          # both are RETIRE in quality/reachability-dispositions.json, so the
+          # 506 statements leave by deletion rather than by tests, and the
+          # aggregate rises again when they do (see #171 for why writing tests
+          # for them would be the wrong move).
+          uv run coverage report --fail-under=87 || \
+            (echo "::error::publish-set coverage below the 87% floor" && exit 1)
+          # Now widen for the DIFF gate only. maistro-server is outside the
+          # publish set, but "the file you touched" is well defined even where
+          # "the package's aggregate" is not yet governed.
+          uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
+            -m pytest packages/maistro-server/tests --timeout=30 -q
+          uv run coverage xml -o coverage.xml
+
+      # ----- Pillar 1b: diff coverage (the lines this PR added) -----
+      #
+      # The aggregate above cannot see a change: a new 400-line module landing
+      # at 0% moves a 42,000-statement total by a fraction of a point.
+      #
+      # PER FILE, and branch arcs included — both learned from review of the
+      # first version, which wrapped `diff-cover`. That tool pools every changed
+      # line before applying its threshold, so five uncovered lines in a new file
+      # plus ninety-five covered elsewhere passed at 95% — the aggregate defect
+      # again, one scope smaller. It also scores line hits only, so `--branch`
+      # collected arc data that nothing read.
+      #
+      # THRESHOLDS, measured over every PR merged into `develop` since 15abb9d
+      # (#124, #125, #128, #123, #126), per file: worst line coverage 94.9%,
+      # worst branch coverage 85.7%. Floors of 90 and 80 sit under each measured
+      # worst — separate numbers because the distributions differ, and a single
+      # shared floor would have to be the lower of the two, which would stop
+      # enforcing anything on lines. Raise as the sample grows.
+      - name: Diff coverage gate (per file, lines 90% / branches 80%)
+        # A push has no base_ref, so there is no "lines this PR touched" to
+        # measure. The aggregate floor is what governs a push.
+        if: github.event_name == 'pull_request'
+        run: |
+          uv run python scripts/check-diff-coverage.py coverage.xml \
+            --base "origin/${{ github.base_ref }}"
+
   quality-gate:
     name: Quality gate (Pillars 1–4, 7, 8)
     runs-on: ubuntu-latest
@@ -127,6 +415,24 @@ jobs:
       # must agree with it — catches drift before merge, not just at bump time.
       - name: version consistency check (VERSION vs. every version site)
         run: uv run python scripts/bump_version.py --check
+
+      # The step above proves the 32 version sites agree on a number. It says
+      # nothing about the number's relationship to the release the repo is
+      # writing notes for — and VERSION 0.9.0 against a CHANGELOG heading of
+      # `## [1.0.0] - TBD` is coherent only if something states that they are
+      # meant to differ. This checks that story: one pending release, VERSION
+      # at or below it, no dated release above it, and a README block naming
+      # all three numbers as labelled fields so a reader is not left to infer
+      # any of them (#83).
+      #
+      # It reads the repository's `v*` tags, which is what makes "nothing has
+      # been released yet" a checked fact rather than a claim that rots the
+      # moment the first tag is pushed. The job's checkout above uses
+      # `fetch-depth: 0`, which fetches them; without tags the gate demands
+      # `Released: none` and so fails loudly on a published repo rather than
+      # passing while the README understates.
+      - name: release consistency (VERSION, CHANGELOG, README and tags tell one story)
+        run: uv run python scripts/check-release-consistency.py
 
       # The maistro-registry gate validates front-matter relationships
       # (supersedes/depends_on); it never resolves prose links in a document
@@ -233,6 +539,15 @@ jobs:
       - name: reachability dispositions (every unreachable module has an owner)
         run: uv run python scripts/check-reachability-dispositions.py
 
+      # SECURITY.md was the one load-bearing document with no gate behind it --
+      # no script and no workflow referenced it at all -- while making the
+      # strongest claims in the repository about what the code does. It had
+      # Known Limitation #1 backwards (three files named as having no SSRF
+      # guard; all three had one), and the consequence was a second SSRF
+      # implementation written because the first was documented as absent (#157).
+      - name: security inventory (SECURITY.md's checkable claims match the code)
+        run: uv run python scripts/check-security-inventory.py
+
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
       # reads its vocabulary out of the file's own legend tables, so a legend
@@ -288,107 +603,6 @@ jobs:
             echo "::error::pyright regression — $count errors exceeds baseline of $PYRIGHT_BASELINE; fix the new findings (Boy Scout Rule)"
             exit 1
           fi
-
-      # ----- Pillar 1: coverage (line + branch ≥95% on touched files) -----
-      # C2/#287: measured over the PyPI publish set (core, canvas, evolve, rsi,
-      # bootstrap — the PyPI publish set),
-      # not maistro-core alone. Each package runs as its own `coverage run
-      # --append` invocation rather than one combined pytest call: an earlier
-      # attempt at a single `pytest packages/maistro-core/tests
-      # packages/maistro-canvas/tests ...` invocation broke an unrelated
-      # maistro-rsi test (structlog's capture_logs() picks up stale global
-      # config when another package's tests configure structlog first) — the
-      # same cross-package state-pollution risk ci.yml's `test` job already
-      # avoids by giving every package its own pytest step.
-      - name: pytest with coverage (line + branch)
-        env:
-          PYTHONPATH: >-
-            packages/maistro-core/src:packages/maistro-canvas/src:
-            packages/maistro-rsi/src:packages/maistro-evolve/src
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
-        run: |
-          uv run coverage erase
-          uv run coverage run --branch --source=packages/maistro-core/src/maistro \
-            -m pytest packages/maistro-core/tests --timeout=30 -q
-          uv run coverage run --append --branch --source=packages/maistro-canvas/src/maistro_canvas \
-            -m pytest packages/maistro-canvas/tests --timeout=30 -q
-          uv run coverage run --append --branch --source=packages/maistro-evolve/src/maistro_evolve \
-            -m pytest packages/maistro-evolve/tests --timeout=30 -q
-          uv run coverage run --append --branch --source=packages/maistro-rsi/src/maistro_rsi \
-            -m pytest packages/maistro-rsi/tests --timeout=30 -q
-          uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
-            -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
-          uv run coverage report -m --skip-covered
-
-          # The publish-set floor is evaluated HERE, before any non-publish-set
-          # data joins the database. `coverage report` scopes by --include/--omit
-          # only, so appending maistro-server first would have put it under this
-          # floor no matter what the comment said — the doc and the arithmetic
-          # would have disagreed, silently, in the direction of a stricter gate
-          # than anyone signed up for.
-          #
-          # 88 -> 86 on 2026-08-22, and this is a widened MEASUREMENT rather than
-          # a regression. `include_namespace_packages` (added in this change) let
-          # coverage discover never-imported files under
-          # `maistro_canvas/canvas/`, a directory with no `__init__.py` whose
-          # four modules had been invisible to this gate entirely. The publish
-          # set went from 41,469 statements at 89% to 42,290 at 87.43%: the +821
-          # are 100% uncovered and always were. Nothing got worse — the number
-          # stopped being flattering, which is the entire point of the flag.
-          #
-          # 86 kept roughly the 1.5 points of headroom the 88-under-89.63 choice
-          # had. The newly-visible debt was #171, NOT an omit pattern here:
-          # re-hiding it is the one response that would have made discovering it
-          # pointless.
-          #
-          # 86 -> 87 on 2026-08-22, as #171 lands. `canvas/compositor.py` (148
-          # statements) and `canvas/executor.py` (167) went 0% -> 100% and 98%,
-          # taking the publish set from 42,290 at 87.43% to 42,290 at 88.23%.
-          # Same denominator: this is coverage arriving, not measurement moving.
-          # 87 keeps 1.23 points of headroom under it.
-          #
-          # The floor does not go higher yet. `canvas/store.py` (175) and
-          # `canvas/tool.py` (331) are still 0% and still in the denominator —
-          # both are RETIRE in quality/reachability-dispositions.json, so the
-          # 506 statements leave by deletion rather than by tests, and the
-          # aggregate rises again when they do (see #171 for why writing tests
-          # for them would be the wrong move).
-          uv run coverage report --fail-under=87 || \
-            (echo "::error::publish-set coverage below the 87% floor" && exit 1)
-
-          # Now widen for the DIFF gate only. maistro-server is outside the
-          # publish set, but "the file you touched" is well defined even where
-          # "the package's aggregate" is not yet governed.
-          uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
-            -m pytest packages/maistro-server/tests --timeout=30 -q
-          uv run coverage xml -o coverage.xml
-
-      # ----- Pillar 1b: diff coverage (the lines this PR added) -----
-      #
-      # The aggregate above cannot see a change: a new 400-line module landing
-      # at 0% moves a 42,000-statement total by a fraction of a point.
-      #
-      # PER FILE, and branch arcs included — both learned from review of the
-      # first version, which wrapped `diff-cover`. That tool pools every changed
-      # line before applying its threshold, so five uncovered lines in a new file
-      # plus ninety-five covered elsewhere passed at 95% — the aggregate defect
-      # again, one scope smaller. It also scores line hits only, so `--branch`
-      # collected arc data that nothing read.
-      #
-      # THRESHOLDS, measured over every PR merged into `develop` since 15abb9d
-      # (#124, #125, #128, #123, #126), per file: worst line coverage 94.9%,
-      # worst branch coverage 85.7%. Floors of 90 and 80 sit under each measured
-      # worst — separate numbers because the distributions differ, and a single
-      # shared floor would have to be the lower of the two, which would stop
-      # enforcing anything on lines. Raise as the sample grows.
-      - name: Diff coverage gate (per file, lines 90% / branches 80%)
-        # A push has no base_ref, so there is no "lines this PR touched" to
-        # measure. The aggregate floor is what governs a push.
-        if: github.event_name == 'pull_request'
-        run: |
-          uv run python scripts/check-diff-coverage.py coverage.xml \
-            --base "origin/${{ github.base_ref }}"
 
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml
