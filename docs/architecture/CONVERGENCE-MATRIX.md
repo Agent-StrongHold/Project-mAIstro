@@ -89,7 +89,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
-| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.durable_log`, `events.outbox` | — |
+| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` when the container is given a pool, else `events.durable_log` (SQLite) or in-memory; `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
 | Collaboration | `maistro.collaboration` | Multi-actor editing | its own session records | — | — |
@@ -138,7 +138,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on the Invocation, not a side ledger | #56, #63 |
 | External integrations | `maistro.integrations` exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from a product route | #34 |
 | Delivery gateway | none | `5/5` | CONNECT | ADR-047 | a delivery effect recorded as an Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/54` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/55` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
@@ -149,7 +149,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/11` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/12` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `0/8` | KEEP | ADR-037, ADR-082, ADR-055 | one trace spanning request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `3/9` | KEEP | ADR-038, ADR-066 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `3/3` | CONNECT | ADR-070426-3a1f | a collaborative edit correlated to a Run | #34 |

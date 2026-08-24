@@ -273,3 +273,110 @@ class TestHTTPHandlerCaller:
             event = LoggedEvent(id=1, event_type="a.b")
             with pytest.raises(HandlerCallError, match="transport error"):
                 await caller(trigger, event)
+
+
+class YieldingCaller(RecordingCaller):
+    """A handler that actually suspends, so the workers genuinely interleave.
+
+    `RecordingCaller.__call__` is `async def` with no `await` in it, so it never
+    yields — and `asyncio.gather` over coroutines that never yield runs them one
+    after another to completion. Every worker after the first then finds the
+    invocation already terminal and skips, and a test built on it passes against
+    the *unfixed* dispatch loop: worker 2 never overlaps worker 1, so there is
+    no race to lose. Verified by reverting `process_events` to `get_or_create`
+    and watching the test still pass.
+
+    Suspending inside the handler is what puts a second worker at `claim` while
+    the first is mid-dispatch, which is the only arrangement in which the bug
+    exists.
+    """
+
+    async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None:
+        import asyncio
+
+        self.calls.append((trigger.trigger_id, event.id))
+        for _ in range(4):
+            await asyncio.sleep(0)
+
+
+class TestConcurrentWorkersDispatchOnce:
+    """Two workers, one event, one handler call (Codex review, #181).
+
+    The store's composite key made racing workers converge on one invocation
+    *row*, and `process_events` read any non-terminal row as permission to
+    dispatch — so both workers called the handler and the bookkeeping showed a
+    single tidy invocation either way. ADR-086 says a handler is invoked "at
+    most once successfully per event"; one row and two calls is not that.
+
+    These run at the `process_events` level rather than the store level on
+    purpose: `test_durable_store_conformance.py` proves `claim` is atomic, and
+    this proves the dispatch loop actually goes through it. The store being
+    correct while the caller ignores it is exactly the shape of the original
+    bug.
+    """
+
+    @staticmethod
+    async def _one_event_two_workers(caller, workers: int = 8):
+        import asyncio
+
+        event_log = InMemoryEventLog()
+        trigger_store = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        await trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                name="t1",
+                event_pattern="task.created",
+                handler_url="http://handler.invalid",
+            )
+        )
+        await event_log.append("task.created")
+
+        await asyncio.gather(
+            *(process_events(event_log, trigger_store, invocations, caller) for _ in range(workers))
+        )
+        return invocations
+
+    async def test_only_one_worker_calls_the_handler(self):
+        caller = YieldingCaller()
+        invocations = await self._one_event_two_workers(caller)
+
+        assert caller.calls == [("t1", 1)], f"the handler fired {len(caller.calls)} times"
+        assert len(await invocations.list_for_event(1)) == 1
+
+    async def test_the_surviving_invocation_records_the_success(self):
+        """A worker that skipped dispatch must not leave the invocation looking
+        unhandled — the cursor would then never advance past the event."""
+        caller = YieldingCaller()
+        invocations = await self._one_event_two_workers(caller)
+
+        invocation = await invocations.get("t1", 1)
+        assert invocation is not None
+        assert invocation.status is InvocationStatus.SUCCESS
+
+    async def test_a_worker_that_skips_does_not_advance_past_an_unsettled_event(self):
+        """The other half: skipping is not the same as settled. A worker that
+        finds the event owned by someone still running it must hold its cursor,
+        or the event is dropped from every later batch."""
+        event_log = InMemoryEventLog()
+        trigger_store = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        await trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                name="t1",
+                event_pattern="task.created",
+                handler_url="http://handler.invalid",
+            )
+        )
+        event = await event_log.append("task.created")
+
+        # Another worker holds a live lease and has not finished.
+        held = await invocations.claim("t1", event.id)
+        assert held is not None
+
+        caller = RecordingCaller()
+        cursor = await process_events(event_log, trigger_store, invocations, caller)
+
+        assert caller.calls == []
+        assert cursor == 0, "the cursor advanced past an event still being handled"

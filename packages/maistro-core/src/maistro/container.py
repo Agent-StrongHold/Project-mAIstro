@@ -33,6 +33,7 @@ from maistro.router.selector import RouterEngine
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.security.gate import Gate
+from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import TaskRunAdmitter
@@ -396,7 +397,10 @@ class Container:
 
 
 async def create_container(
-    config: AgentConfig, *, harness_adapters: dict[str, HarnessAdapter] | None = None
+    config: AgentConfig,
+    *,
+    harness_adapters: dict[str, HarnessAdapter] | None = None,
+    pg_pool: Any = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -404,10 +408,40 @@ async def create_container(
     `_wire_harness_adapters` -- see that function for why this container
     cannot construct a real `RsiCycleHarnessAdapter` (`"rsi_cycle"`) on its
     own and instead leaves the map for the caller to populate.
+
+    `pg_pool`, if given, is a live `asyncpg.Pool` and selects the PostgreSQL
+    stores — durable events included (#135). When it is not given and
+    `config.database_url` names PostgreSQL, this container opens one itself
+    (#122).
+
+    Both paths exist, and the parameter is not vestigial now that the URL path
+    works. #135 landed first and could only offer the parameter, because
+    deciding which backend a URL names and owning the pool's lifetime was
+    #122's work and this container still refused `postgresql://` outright. #122
+    closed that. What the parameter still buys is a caller that already holds a
+    pool — a test with a fixture, an embedding application that opened its own
+    — being able to hand it over rather than have a second one opened against
+    the same server.
+
+    A supplied pool wins over the URL. The caller naming a concrete pool is
+    more specific than a string saying which server to reach, and silently
+    opening a second pool while the given one sat unused is the shape of bug
+    that reads as "PostgreSQL is configured and nothing is durable".
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
         raise ConfigError(msg)
+
+    # The outbound guard is on for every request this process makes (#155), so
+    # the endpoints it is *supposed* to reach have to be named before the first
+    # one. Seeded from configuration rather than a list kept here, so moving a
+    # gateway moves its allowance with it.
+    from maistro.config.settings import get_settings
+
+    configure_outbound_policy(
+        *configured_endpoints(config),
+        *configured_endpoints(get_settings()),
+    )
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
@@ -416,7 +450,13 @@ async def create_container(
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
     # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
-    pg_pool: Any = None
+    # Held aside before the URL branch runs, because that branch rebinds
+    # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
+    # #135 first did — drops the parameter on the floor, and a caller-supplied
+    # pool silently becomes in-memory durable events: the exact failure #135
+    # exists to have fixed, reintroduced by the change that generalised it.
+    supplied_pg_pool = pg_pool
+    pg_pool = None
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -439,6 +479,7 @@ async def create_container(
         learning_store = InMemoryLearningStore()
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
+    pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
@@ -513,7 +554,18 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
-    if db_pool is not None:
+    # PostgreSQL first: a caller who supplied a pool asked for the durable
+    # backend, and `db_pool` (SQLite) may be set at the same time because the
+    # two cover different stores. Silently preferring SQLite here would give
+    # that caller in-memory-shaped durability on the one backend that can
+    # actually be shared between workers.
+    if pg_pool is not None:
+        (
+            durable_event_log,
+            trigger_store,
+            invocation_store,
+        ) = await _wire_pg_durable_events(pg_pool)
+    elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
@@ -656,6 +708,19 @@ async def create_container(
         identity_linker=identity_linker,
     )
 
+    # One word again, and only because this change is what makes it true.
+    #
+    # #135 had to report the stores and the durable events separately, because
+    # `pg_pool` reached the events and not the stores: saying "PostgreSQL" for
+    # both would have described a deployment whose learnings and outcomes were
+    # still in memory. That is #122's gap, and this branch closes it — a pool
+    # now selects PostgreSQL for the learnings, outcome, session and quota
+    # stores as well as for the event log, so the two words would always be the
+    # same word.
+    #
+    # The lesson survives the collapse: the line reports what is *wired*, not
+    # what was configured. If a future change makes one of these durable
+    # without the other, this splits again rather than rounding up.
     if pg_pool is not None:
         backend = "PostgreSQL"
     elif db_pool is not None:
@@ -793,6 +858,22 @@ async def _require_postgres_schema(conn: Any) -> None:
             f"{', '.join(missing)}. Run `alembic upgrade head` against this database."
         )
         raise ConfigError(msg)
+
+
+def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
+    """Which asyncpg pool the PostgreSQL-backed subsystems should use.
+
+    A supplied pool wins over whatever the URL produced. The caller naming a
+    concrete pool is more specific than a string naming a server, and opening a
+    second pool against the same database while the given one sits unused is
+    how "PostgreSQL is configured and nothing is durable" happens.
+
+    It replaces the pool only. The learnings, outcome, session and quota stores
+    are already built by the time this is called and keep whatever the URL
+    selected — that split is #122's contract, and #135's is that a caller
+    holding a pool can reach the durable-event stores with it.
+    """
+    return supplied if supplied is not None else from_url
 
 
 async def _wire_postgres_backend(
@@ -992,6 +1073,28 @@ async def _wire_sqlite_durable_events(
     await sqlite_trigger_store.ensure_schema()
     await sqlite_invocation_store.ensure_schema()
     return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
+
+
+async def _wire_pg_durable_events(
+    pool: Any,
+) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+    """Wire the durable-event stores onto a caller-supplied `asyncpg.Pool` (#135).
+
+    All three share one pool rather than opening their own, matching
+    `persistence/pg_*` and leaving connection lifetime with the caller — which
+    also means a single `ensure_event_schema` covers all three tables, instead
+    of three `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
+    pool connections the way the SQLite twin's serial calls cannot.
+    """
+    from maistro.events.pg_stores import (
+        PgEventLog,
+        PgInvocationStore,
+        PgTriggerStore,
+        ensure_event_schema,
+    )
+
+    await ensure_event_schema(pool)
+    return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
 
 
 def _wire_a2a_broker(agents: dict[str, Agent]) -> A2ABroker:

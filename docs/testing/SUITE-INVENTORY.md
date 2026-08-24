@@ -71,18 +71,9 @@ every branch adding tests rewrote the same lines and collided with every other
 such branch on merge (#208). Notes moved out so this file could stay purely
 derived.
 
-Merging `develop` into the canonical-Run branch moves several rows at once, so
-the paragraph matters more than the number. The canonical-Run work adds nineteen
-maistro-core node IDs (Run retention, the non-finite evidence codec,
-chat/schedule/delegation admission, graph templates). Retiring the PM-demo
-surface removes eighteen Hive backend node IDs and one e2e case along with the
-routes and services they covered — those two very nearly cancel, so a reader who
-only checked the total would have seen almost no change. The remaining `+2` on
-maistro-core comes from the replay-property work (#173) arriving via `develop`.
-
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6896 | `ci.yml` |
+| `packages/maistro-core/tests` | 7050 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 202 | `ci.yml` |
@@ -91,7 +82,7 @@ maistro-core comes from the replay-property work (#173) arriving via `develop`.
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |
 | `packages/maistro-canvas/tests` | 250 | `ci.yml` |
 | `packages/maistro-turing/backend/tests` | 26 | `ci.yml` (own invocation) |
-| `tests/` (root) | 965 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
+| `tests/` (root) | 973 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
 | `packages/hive-conductor/backend/tests` | 1231 | `ci.yml` (bare python) |
 | `packages/hive-conductor/tests/e2e` | 23 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
