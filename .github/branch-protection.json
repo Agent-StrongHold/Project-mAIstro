@@ -54,7 +54,14 @@
         "them. The gate `needs:` them, so a failed producer already blocks by",
         "leaving the gate at `Expected` — but a requirement that is only",
         "transitively enforced reads, on the PR page, as a check nobody decided",
-        "about. Requiring all three says which of them the merge contract covers."
+        "about. Requiring all three says which of them the merge contract covers.",
+        "",
+        "`migrations` and `durable-stores` are required. The alembic chain could",
+        "not apply to an empty database and no workflow had a postgres service, so",
+        "nothing ran it; `quota_usage` and `sessions` had no migration at all and",
+        "the stores querying them could not start. Both jobs exist because the",
+        "absence of a server is what hid the defect, which is the definition of a",
+        "check that has to be required rather than advisory."
       ],
       "required_status_checks": {
         "strict": true,
@@ -77,7 +84,9 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "migrations",
+          "durable-stores"
         ]
       },
       "enforce_admins": false,
@@ -126,7 +135,9 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "migrations",
+          "durable-stores"
         ]
       },
       "enforce_admins": false,
@@ -186,7 +197,9 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "migrations",
+          "durable-stores"
         ]
       },
       "enforce_admins": false,
