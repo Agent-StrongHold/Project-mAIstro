@@ -1,7 +1,5 @@
 import { useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import { usePmPoc } from "../context/PocMode";
-import { PM_PRODUCT_NAME, PM_PRODUCT_TAGLINE } from "../lib/pmBranding";
 
 type Mode = "login" | "signup";
 
@@ -47,7 +45,6 @@ type LoginProps = {
 };
 
 export default function Login({ onAuthenticated }: LoginProps) {
-  const pmPoc = usePmPoc();
   const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>("login");
   const [username, setUsername] = useState("");
@@ -168,14 +165,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
         <div style={{ textAlign: "center" }}>
           <div style={{ fontFamily: "var(--hand)", fontSize: 32, fontWeight: 700 }}>{"\uD83D\uDC1D"}</div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 20, fontWeight: 600, marginTop: 4 }}>
-            {pmPoc ? PM_PRODUCT_NAME : "Hive Conductor"}
+            {"Hive Conductor"}
           </div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>
-            {pmPoc
-              ? PM_PRODUCT_TAGLINE
-              : mode === "login"
-                ? "Sign in to your hive"
-                : "Create a new account"}
+            {mode === "login" ? "Sign in to your hive" : "Create a new account"}
           </div>
         </div>
 
@@ -258,7 +251,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
               disabled={loading || !username.trim() || !password}
               style={{ width: "100%", marginTop: 4 }}
             >
-              {loading ? "signing in..." : pmPoc ? "sign in" : "enter the hive"}
+              {loading ? "signing in..." : "enter the hive"}
             </button>
           </form>
         ) : (

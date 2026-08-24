@@ -7,7 +7,6 @@ import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Agents from "./pages/Agents";
-import { PocModeProvider } from "./context/PocMode";
 import AuditLog from "./pages/AuditLog";
 import Chat from "./pages/Chat";
 import CLI from "./pages/CLI";
@@ -181,17 +180,7 @@ export default function App() {
     <ErrorBoundary>
       <ToastProvider>
         <ModeProvider>
-          {/* Retained deliberately. Routing, navigation and the post-setup
-              landing page no longer branch on POC mode (#129), but five pages
-              — Login, Chat, Settings, MCP and Missions — still call
-              usePmPoc() for copy and for a few PM-only actions. Dropping the
-              provider would pin those to the context default of false, which
-              would change their behaviour by accident rather than by
-              decision. They are retired in a follow-up, where which of those
-              actions survive is a question with an answer. */}
-          <PocModeProvider>
-            <AppRoutes />
-          </PocModeProvider>
+          <AppRoutes />
         </ModeProvider>
       </ToastProvider>
     </ErrorBoundary>
