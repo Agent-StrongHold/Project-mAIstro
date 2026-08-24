@@ -54,7 +54,14 @@
         "them. The gate `needs:` them, so a failed producer already blocks by",
         "leaving the gate at `Expected` — but a requirement that is only",
         "transitively enforced reads, on the PR page, as a check nobody decided",
-        "about. Requiring all three says which of them the merge contract covers."
+        "about. Requiring all three says which of them the merge contract covers.",
+        "",
+        "`durable-events` and `coverage (PostgreSQL)` are required, not advisory.",
+        "The durable-event stores only execute against a real server, and their",
+        "PostgreSQL legs were skipping — which is how 'durable events' stayed",
+        "in-memory on PostgreSQL unnoticed. A skipped leg is untested, not",
+        "passing, so the job that makes those legs run is part of the merge",
+        "contract rather than a signal to glance at."
       ],
       "required_status_checks": {
         "strict": true,
@@ -77,7 +84,9 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "durable-events",
+          "coverage (PostgreSQL)"
         ]
       },
       "enforce_admins": false,
@@ -126,7 +135,9 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "durable-events",
+          "coverage (PostgreSQL)"
         ]
       },
       "enforce_admins": false,
@@ -186,7 +197,9 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "durable-events",
+          "coverage (PostgreSQL)"
         ]
       },
       "enforce_admins": false,
