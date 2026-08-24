@@ -622,6 +622,16 @@
         "maistro.memory.archive.s3",
         "maistro.protocols.archive"
       ]
+    },
+    {
+      "id": "scheduling-run-admission",
+      "subsystem": "Recurrence / schedules",
+      "disposition": "CONNECT",
+      "rationale": "The ScheduleRunAdmitter (#145): evaluate, resolve the template, create the Run with schedule provenance, then advance the cursor. It has no production caller yet because the live fire path is hive-conductor's `services/scheduler.py` loop, whose `/v1/schedules` row has no workspace, project, timezone or max_runs column and names a `mission_template_id` rather than a `graph_template_id`. Migrating that model is a product-surface change with its own API compatibility questions, which #145 puts explicitly out of scope; this makes the seam exist in core.",
+      "root": "hive-conductor's schedule loop migrated onto ScheduleRunAdmitter (#46, #145)",
+      "modules": [
+        "maistro.scheduling.admission"
+      ]
     }
   ]
 }
