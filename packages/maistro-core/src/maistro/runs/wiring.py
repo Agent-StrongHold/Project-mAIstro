@@ -13,10 +13,11 @@ from typing import Any
 
 from maistro.agents.intents import IntentRegistry
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.store import RunStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 
-__all__ = ["wire_execution_spine"]
+__all__ = ["wire_chat_admission", "wire_execution_spine"]
 
 
 async def wire_execution_spine(
@@ -70,3 +71,31 @@ async def wire_execution_spine(
     # exist yet at startup.
     await admitter.admitter_for(workspace_id)
     return project_scope_store, run_store, admitter
+
+
+def wire_chat_admission(
+    run_store: RunStore,
+    project_scope_store: ProjectScopeStore,
+    *,
+    workspace_id: str,
+    intents: IntentRegistry | None = None,
+) -> ChatRunAdmitter:
+    """The seam a chat turn is admitted through (#131).
+
+    Separate from :func:`wire_execution_spine` rather than another element of
+    its tuple: the spine is what a process needs to execute anything, and chat
+    admission is one entry point on top of it. A process that serves tasks and
+    no chat has no use for this, and one that serves both should not have to
+    unpack an element it ignores.
+
+    The Root Project resolves lazily here — unlike the task admitter, which is
+    built at startup with an eagerly-created root. There is no second store to
+    misconfigure: this takes the spine's own, whose root
+    :func:`wire_execution_spine` has already created.
+    """
+    return ChatRunAdmitter(
+        run_store,
+        workspace_id=workspace_id,
+        project_store=project_scope_store,
+        intents=intents,
+    )
