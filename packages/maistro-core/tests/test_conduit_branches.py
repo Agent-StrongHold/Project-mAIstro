@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 
 from maistro.conduit import Conduit, _apply_intent_hint, determine_execution_tier
 from maistro.security._types import GateResult
+from maistro.types.agent import AgentResponse
 from maistro.types.config import TaskTypeConfig
 from maistro.types.intent import Intent
 
@@ -248,3 +249,85 @@ class TestRouteRequestEdgeCases:
         assert agent.handled_kwargs is not None
         assert agent.handled_kwargs["auth"] is auth
         assert agent.handled_kwargs["session_id"] == "sess-1"
+
+
+class BlockingGate:
+    """A Gate that refuses, so the refusal's own shape can be checked."""
+
+    async def process_input(self, content: str, **kwargs: Any) -> GateResult:
+        return GateResult(blocked=True, block_reason="prompt injection")
+
+
+class TestAgentResponseReachesTheCaller:
+    """The shape every `BaseAgent.handle` returns, which had no test.
+
+    The non-dict branch was covered only by a plain string, so it looked
+    exercised while `AgentResponse` — the type that actually travels it — was
+    never tried. A dataclass with no `__str__` stringifies to its repr, so what
+    a caller read back as the assistant's message was the whole dataclass with
+    the answer buried inside it.
+    """
+
+    async def test_the_answer_is_the_content_not_the_dataclass_repr(self) -> None:
+        agent = FakeAgent(response=AgentResponse(content="the real answer"))
+        container = FakeContainer(agents={"unknown": agent}, resolved_name="unknown")
+        conduit = Conduit(container)  # type: ignore[arg-type]
+
+        result = await conduit.route_request(_messages())
+
+        message = result["choices"][0]["message"]["content"]
+        assert message == "the real answer"
+        assert "AgentResponse(" not in message
+
+    async def test_an_agent_refusal_is_a_content_filter_finish(self) -> None:
+        """A refusal an agent decided on — Sentinel, a policy — reads the same
+        as one the Gate decided on. A client branching on `finish_reason`
+        should not have to know which layer said no."""
+        agent = FakeAgent(response=AgentResponse.blocked_response("sentinel said no"))
+        container = FakeContainer(agents={"unknown": agent}, resolved_name="unknown")
+        conduit = Conduit(container)  # type: ignore[arg-type]
+
+        result = await conduit.route_request(_messages())
+
+        choice = result["choices"][0]
+        assert choice["finish_reason"] == "content_filter"
+        assert choice["message"]["content"] == "Request blocked: sentinel said no"
+
+    async def test_a_failed_response_still_carries_its_message(self) -> None:
+        """`error_response` puts the message in `content`, so the failure is
+        already the answer. OpenAI has no finish_reason for it, and inventing
+        one would be a shape no client parses."""
+        agent = FakeAgent(response=AgentResponse.error_response("upstream is down"))
+        container = FakeContainer(agents={"unknown": agent}, resolved_name="unknown")
+        conduit = Conduit(container)  # type: ignore[arg-type]
+
+        result = await conduit.route_request(_messages())
+
+        choice = result["choices"][0]
+        assert choice["message"]["content"] == "upstream is down"
+        assert choice["finish_reason"] == "stop"
+
+    async def test_a_dict_returning_agent_is_still_passed_through(self) -> None:
+        """The pass-through this change must not break: an agent already
+        speaking the wire shape owns it, `finish_reason` included."""
+        wire = {"choices": [{"message": {"role": "assistant", "content": "mine"}, "id": "x"}]}
+        agent = FakeAgent(response=wire)
+        container = FakeContainer(agents={"unknown": agent}, resolved_name="unknown")
+        conduit = Conduit(container)  # type: ignore[arg-type]
+
+        assert await conduit.route_request(_messages()) is wire
+
+
+class TestGateRefusalShape:
+    async def test_a_gate_block_finishes_as_content_filter(self) -> None:
+        """OpenAI's own spelling for a refusal, so a client that already
+        handles moderation needs no Maistro-specific case."""
+        container = FakeContainer(agents={"unknown": FakeAgent()}, resolved_name="unknown")
+        container.gate = BlockingGate()  # type: ignore[assignment]
+        conduit = Conduit(container)  # type: ignore[arg-type]
+
+        result = await conduit.route_request(_messages())
+
+        choice = result["choices"][0]
+        assert choice["finish_reason"] == "content_filter"
+        assert choice["message"]["content"] == "Request blocked: prompt injection"
