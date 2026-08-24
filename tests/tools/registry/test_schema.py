@@ -128,6 +128,43 @@ def test_history_entries_parse_and_validate() -> None:
     )
     assert [entry.status for entry in fm.history] == [Status.PROPOSED, Status.ACCEPTED]
 
+    # #239 reconstructed exactly: a newly-authored ADR that says Proposed with
+    # no history used to validate even after the decision was implemented.
+    fresh = _valid_dict() | {
+        "id": "ADR-082426-dead",
+        "created": "2026-08-24",
+        "status": "Proposed",
+        "accepted": None,
+        "history": [],
+    }
+    with pytest.raises(ValidationError, match="must record lifecycle history"):
+        FrontMatter.model_validate(fresh)
+
+    corrected = fresh | {
+        "status": "Accepted",
+        "accepted": "2026-08-24",
+        "history": [
+            {"status": "Proposed", "date": "2026-08-24"},
+            {"status": "Accepted", "date": "2026-08-24"},
+        ],
+    }
+    fixed = FrontMatter.model_validate(corrected)
+    assert fixed.status is Status.ACCEPTED
+    assert fixed.history[-1].status is Status.ACCEPTED
+
+    with pytest.raises(ValidationError, match="latest lifecycle history"):
+        FrontMatter.model_validate(corrected | {"status": "Proposed", "accepted": None})
+    with pytest.raises(ValidationError, match="require a date"):
+        FrontMatter.model_validate(
+            corrected
+            | {
+                "history": [
+                    {"status": "Proposed", "date": "2026-08-24"},
+                    {"status": "Accepted"},
+                ]
+            }
+        )
+
 
 def test_history_rejects_unknown_status_and_extra_keys() -> None:
     with pytest.raises(ValidationError):
