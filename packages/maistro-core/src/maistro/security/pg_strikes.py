@@ -63,11 +63,30 @@ CREATE INDEX IF NOT EXISTS idx_rate_limits_expiry ON security_rate_limits(window
 class PgStrikeTracker:
     """Postgres-backed strike tracker with atomic operations."""
 
-    def __init__(self, db_url: str | None = None):
+    def __init__(self, pool: Any = None, db_url: str | None = None):
+        """Either the container's pool, or a URL to open one of its own.
+
+        `pool` is how the container wires this (#134): every other durable store
+        takes the one pool the process already opened, and a tracker that opened
+        a second would double the connection budget while the two disagreed
+        about which database a `DATABASE_URL` change had switched to.
+
+        A supplied pool also skips `_SCHEMA`. Migration `005_engine_runtime_tables`
+        owns `security_strikes`, `security_violations` and `security_rate_limits`
+        now, and `CREATE TABLE IF NOT EXISTS` running behind a migration chain is
+        how a table silently keeps a shape nobody migrated -- the failure #178
+        found in migration 003. The container's preflight names these tables
+        instead, so an unmigrated database is refused at startup with the command
+        that fixes it rather than served from a runtime-invented schema.
+
+        `db_url` remains for the standalone caller that has no container, and
+        keeps creating its own pool and schema exactly as before.
+        """
+        self._supplied_pool = pool
         self._db_url = (
             db_url or os.environ.get("DATABASE_URL") or os.environ.get("DEPLOY_TARGET_DB_URL")
         )
-        self._pool: Any = None
+        self._pool: Any = pool
 
     async def _get_pool(self) -> Any:
         if self._pool is None:
@@ -208,13 +227,20 @@ class PgStrikeTracker:
 class PgRateLimiter:
     """Postgres-backed sliding window rate limiter — atomic check-and-record (fixes TOCTOU)."""
 
-    def __init__(self, db_url: str | None = None, window_seconds: int = 60, max_requests: int = 60):
+    def __init__(
+        self,
+        pool: Any = None,
+        db_url: str | None = None,
+        window_seconds: int = 60,
+        max_requests: int = 60,
+    ):
+        """Same two ways in as `PgStrikeTracker`, for the same reasons."""
         self._db_url = (
             db_url or os.environ.get("DATABASE_URL") or os.environ.get("DEPLOY_TARGET_DB_URL")
         )
         self._window_seconds = window_seconds
         self._max_requests = max_requests
-        self._pool: Any = None
+        self._pool: Any = pool
 
     async def _get_pool(self) -> Any:
         if self._pool is None:

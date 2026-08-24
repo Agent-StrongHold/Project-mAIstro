@@ -857,30 +857,44 @@ def _wire_audit_log(pg_pool: Any) -> Any:
 
 
 def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
-    """The strike ladder, which stays in-memory even on PostgreSQL — loudly.
+    """The strike ladder, durable when there is a database to keep it in (#134).
 
-    `security.pg_strikes.PgStrikeTracker` looks like a drop-in and is not. Its
-    `get()` returns a dict where `Gate` does attribute access on a
-    `StrikeRecord`, and its `record_violation()` returns only
-    user_id/strike_count/escalated where `Gate` reads scrutiny_level,
-    locked_until and disabled as well. Wiring it would raise AttributeError on
-    the first security violation — the worst possible place to find out. Making
-    it usable needs an adapter, which is #134; until then the operator is told
-    that lockout state does not survive a restart rather than left to assume a
-    configured database means it does.
+    This used to return `InMemoryStrikeTracker` on every backend and warn that
+    lockout state resets on restart, because `PgStrikeTracker` advertised itself
+    as a drop-in and was not: both its methods returned `dict` where `Gate` does
+    attribute access on a `StrikeRecord`, so wiring it raised `AttributeError` on
+    the first security violation. That is fixed at the source rather than behind
+    an adapter — both trackers satisfy `protocols.StrikeTracker` and are held to
+    one conformance suite — so the durable one can simply be selected.
+
+    What the warning was protecting against was real and is worth stating plainly
+    now that it is gone: an in-memory ladder means **a locked-out account is
+    unlocked by any deploy**. On PostgreSQL the lockout now outlives the process
+    that imposed it.
+
+    A pool and nothing else decides. `enabled` is still the operator's switch,
+    and no pool still means in-memory — which is correct for the homelab
+    deployments that have no database, and is now said at INFO rather than
+    warned about, because it is the configuration they chose.
     """
     if not enabled:
         return None
+    if pg_pool is not None:
+        from maistro.security.pg_strikes import PgStrikeTracker
+
+        logger.info(
+            "Strike ladder armed (3-strike escalation via PgStrikeTracker); "
+            "lockouts survive restart."
+        )
+        return PgStrikeTracker(pool=pg_pool)
+
     from maistro.security.strikes import InMemoryStrikeTracker
 
-    tracker = InMemoryStrikeTracker()
-    logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
-    if pg_pool is not None:
-        logger.warning(
-            "Strike ladder is in-memory despite a PostgreSQL backend: lockout state "
-            "resets on restart. PgStrikeTracker is not yet Gate-compatible (#134)."
-        )
-    return tracker
+    logger.info(
+        "Strike ladder armed (3-strike escalation via InMemoryStrikeTracker); "
+        "no database is configured, so lockout state resets on restart."
+    )
+    return InMemoryStrikeTracker()
 
 
 #: URL schemes that select the PostgreSQL backend. `postgres://` is the legacy
@@ -911,6 +925,17 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # The strike ladder's three (#134). `pg_strikes._SCHEMA` still creates them
+    # for the standalone caller that opens its own pool, but a tracker handed
+    # the container's pool does not run it — migration
+    # `005_engine_runtime_tables` owns their shape, and a runtime
+    # `CREATE TABLE IF NOT EXISTS` behind a migration chain is what let
+    # migration 003 keep a shape nobody had migrated (#178). Named here so an
+    # unmigrated database is refused at startup, rather than at the first
+    # security violation.
+    "security_strikes",
+    "security_violations",
+    "security_rate_limits",
 )
 
 
