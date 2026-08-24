@@ -17,7 +17,7 @@ is available without callers having to discover modules manually.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
 
 from .base import (
     BaseNode,
@@ -32,9 +32,22 @@ from .capability_effect import invoke_capability_effect
 
 _REGISTRY: dict[str, type[BaseNode[Any, Any]]] = {}
 
+#: Bound to the *class object*, so a decorated subclass keeps its own
+#: constructor signature instead of collapsing to the base class's.
+NodeClassT = TypeVar("NodeClassT", bound=type[BaseNode[Any, Any]])
 
-def register_node(node_cls: type[BaseNode[Any, Any]]) -> type[BaseNode[Any, Any]]:
+
+def register_node(node_cls: NodeClassT) -> NodeClassT:
     """Register a node class by its `kind` identifier. Usable as a decorator.
+
+    Generic in the class it decorates, rather than
+    `type[BaseNode[Any, Any]] -> type[BaseNode[Any, Any]]`. The widening form
+    erased each subclass's own `__init__` for type checkers, so every
+    dependency-injected construction in `build_node_resolver` was reported as
+    `No parameter named "adapters"` / `"a2a_delegator"` -- three of pyright's
+    baseline findings were exactly this, and #147 would have added three more
+    by wiring one more node the same way. Fixing the decorator removes the
+    cause rather than raising the baseline.
 
     Raises ``ValueError`` on:
       - kind collision (cannot register two classes with the same kind)
