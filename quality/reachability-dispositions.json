@@ -594,7 +594,7 @@
       "id": "canvas-job-runner",
       "subsystem": "Canvas ability",
       "disposition": "CONNECT",
-      "rationale": "CanvasJobRunner is unstarted, not dead. canvas/executor.py \u2014 which is reachable \u2014 documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and two dedicated suites cover it, including single-claim-under-contention and lease reaping. An earlier disposition marked it RETIRE because its claim/lease/reap states duplicate the ADR-2026-08-16 fence. They do, and #52 is where that is resolved \u2014 but a module with a migration, a documented contract from reachable code and concurrency tests is wiring owed, not debt to delete.",
+      "rationale": "CanvasJobRunner is unstarted, not dead. canvas/executor.py \u2014 which is reachable \u2014 documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and two dedicated suites cover it, including single-claim-under-contention and lease reaping. An earlier disposition marked it RETIRE because its claim/lease/reap states duplicate the ADR-081626-f383 fence. They do, and #52 is where that is resolved \u2014 but a module with a migration, a documented contract from reachable code and concurrency tests is wiring owed, not debt to delete.",
       "root": "a canvas worker process started at deploy time; #52 folds it into Attempt execution",
       "modules": [
         "maistro_canvas.canvas.runner"
