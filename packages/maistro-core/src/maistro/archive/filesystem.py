@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from maistro.archive.types import (
@@ -19,6 +21,9 @@ from maistro.archive.types import (
     ArchiveIntegrityError,
     ArchiveKey,
 )
+
+#: A sha256 hex digest, which is what every object here is named.
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class FilesystemArchiveStore:
@@ -69,8 +74,46 @@ class FilesystemArchiveStore:
     async def exists(self, key: ArchiveKey) -> bool:
         return await asyncio.to_thread(self._path(key).is_file)
 
+    async def list_scope(self, scope: str) -> AsyncIterator[ArchiveKey]:
+        """Every key under `scope`, discovered lazily.
+
+        The directory is listed through `scandir` on a worker thread and
+        yielded a batch at a time rather than materialised: a scope holds
+        everything that ever went cold, and a caller reading the first few keys
+        must not wait for the last million.
+
+        Partial writes are skipped by name. `_write` renames into place from a
+        `.<digest>.partial` sibling, so anything still carrying that name is a
+        write in flight, not an object — and `ArchiveKey` would reject it as a
+        digest anyway.
+        """
+        # Validated by constructing a key, so an unsafe scope is refused here
+        # rather than reaching the filesystem walk below.
+        directory = (self._root / ArchiveKey(scope=scope, digest="0" * 64).scope).resolve()
+        if not directory.is_relative_to(self._root.resolve()):
+            return
+        for digest in await asyncio.to_thread(_digests_in, directory):
+            yield ArchiveKey(scope=scope, digest=digest)
+
     async def delete(self, key: ArchiveKey) -> None:
         await asyncio.to_thread(self._path(key).unlink, True)
+
+
+def _digests_in(directory: Path) -> list[str]:
+    """The digest-named files directly under `directory`, or nothing.
+
+    A scope that was never written to is an empty scope, not an error: asking
+    what is archived under a scope nothing has archived to is a reasonable
+    question with a short answer.
+    """
+    try:
+        return [
+            entry.name
+            for entry in os.scandir(directory)
+            if entry.is_file() and _DIGEST.fullmatch(entry.name)
+        ]
+    except FileNotFoundError:
+        return []
 
 
 def verify(key: ArchiveKey, payload: bytes) -> None:

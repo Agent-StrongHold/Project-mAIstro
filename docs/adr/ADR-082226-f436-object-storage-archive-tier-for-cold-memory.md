@@ -3,7 +3,7 @@ id: ADR-082226-f436
 title: "Object storage is an archive tier below durable memory, not a backup"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Superseded
 created: 2026-08-22
 substrate:
   - maistro-engine#ADR-082226-5104
@@ -12,6 +12,8 @@ related:
   - maistro-engine#ADR-019
   - maistro-engine#ADR-087
 supersedes: []
+superseded-by:
+  - maistro-engine#ADR-082226-d3dd
 blocks: []
 blocked-by: []
 contracts:
@@ -21,6 +23,26 @@ layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
 ---
+
+> **Superseded by ADR-082226-d3dd.**
+>
+> Both records decided the same thing — an archive tier below durable memory,
+> on any S3-compatible or local object store, not a backup — and both were
+> implemented. `maistro.memory.archive` implemented this one, keyed by an
+> opaque string; `maistro.archive` implemented d3dd, content-addressed by
+> `<scope>/<sha256>`.
+>
+> The code chose before the records did: `container.py` wires
+> `maistro.archive.wiring.build_archive_store`, and nothing ever imported
+> `maistro.memory.archive`. It sat in the reachability baseline from the day it
+> was written. Content addressing is also the better of the two answers here —
+> a digest in the key means a read can verify what it got, which is what makes
+> an archived record still authoritative rather than merely stored.
+>
+> `list_keys`, the one capability this design had and d3dd's did not, moved
+> across as `list_scope` before the implementation was deleted. Scope-at-a-time
+> rather than a free prefix, because half of a content-addressed key is a hash
+> and a prefix inside it selects an arbitrary bucket.
 
 # ADR-082226-f436: Object storage is an archive tier below durable memory, not a backup
 
