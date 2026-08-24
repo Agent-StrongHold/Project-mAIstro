@@ -483,3 +483,55 @@ async def test_an_unexpected_failure_leaves_no_open_transaction(tmp_path: Path) 
     attempt = await healthy.create_attempt(node_run.node_run_id)
     assert attempt.ordinal == 1
     await conn.close()
+
+
+# --- deletion (#131) -------------------------------------------------------
+#
+# Retention needs a way to forget, and this schema grants no cascade: the three
+# tables are joined by ON DELETE RESTRICT, so a delete that only removed the Run
+# would either fail or orphan its children depending on how the FK is enforced.
+
+
+async def _durable_store(tmp_path: Path) -> tuple[SqliteRunStore, str]:
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    return store, project_id
+
+
+@pytest.mark.asyncio
+async def test_delete_run_removes_its_node_runs_and_attempts(tmp_path: Path) -> None:
+    store, project_id = await _durable_store(tmp_path)
+    run = await store.create_run(_graph(project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.CANCELLED)
+    await store.transition_run(run.run_id, RunStatus.CANCELLED)
+
+    assert await store.delete_run(run.run_id) is True
+
+    assert await store.get_run(run.run_id) is None
+    assert await store.get_node_run(node_run.node_run_id) is None
+    assert await store.get_attempt(attempt.attempt_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_run_refuses_a_live_run(tmp_path: Path) -> None:
+    store, project_id = await _durable_store(tmp_path)
+    run = await store.create_run(_graph(project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+
+    with pytest.raises(RunIntegrityError):
+        await store.delete_run(run.run_id)
+
+    assert await store.get_run(run.run_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_run_for_an_unknown_run_is_false(tmp_path: Path) -> None:
+    store, _project_id = await _durable_store(tmp_path)
+
+    assert await store.delete_run("no-such-run") is False

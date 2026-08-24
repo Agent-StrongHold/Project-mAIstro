@@ -27,12 +27,14 @@ from typing import TYPE_CHECKING, Any
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.nodes import list_kinds
 
+# Re-exported: `ADMISSION_SOURCE` has always been this module's name for the
+# provenance key, and it now lives in `runs.sources` so `runs.store` can read
+# it without importing the admission machinery.
+from maistro.runs.sources import ADMISSION_SOURCE
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.model import Run
     from maistro.runs.store import RunStore
-
-#: Provenance key recording how a Run entered the system.
-ADMISSION_SOURCE = "admission_source"
 
 
 class UnknownNodeKindError(ValueError):
