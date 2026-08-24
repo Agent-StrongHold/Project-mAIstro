@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of_json
-from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
+from maistro.runs.lifecycle import (
+    settle_open_node_run,
+    transition_attempt,
+    transition_node_run,
+    transition_run,
+)
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -134,6 +139,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_attempts_one_active
 """
 
 
+_PAYLOAD_TABLES = frozenset(
+    {
+        ("canonical_runs", "run_id"),
+        ("canonical_node_runs", "node_run_id"),
+        ("canonical_attempts", "attempt_id"),
+    }
+)
+
+
+def _checked_table(table: str, identity_column: str) -> tuple[str, str]:
+    """Refuse any table/column pair not on the canonical list.
+
+    The UPDATE below interpolates both, so this is what keeps that from being
+    an injection point rather than a formatting convenience.
+    """
+    if (table, identity_column) not in _PAYLOAD_TABLES:
+        raise ValueError("unsupported canonical execution table")
+    return table, identity_column
+
+
 class SqliteRunStore:
     """Durable reference store for canonical execution identity and lifecycle."""
 
@@ -161,6 +186,9 @@ class SqliteRunStore:
         # a plain `async def` produces — so the store silently stopped
         # satisfying its own protocol.
         self._write_lock = asyncio.Lock()
+        # Staged payload updates, applied and committed together by
+        # `_flush`. Only ever non-empty inside one `_write_lock` holder.
+        self._pending: list[tuple[tuple[str, str], str, str, str]] = []
 
     async def ensure_schema(self) -> None:
         await self._conn.executescript(_SCHEMA)
@@ -360,10 +388,40 @@ class SqliteRunStore:
         async with self._write_lock:
             run = await self._require_run(run_id)
             updated = transition_run(run, target, at=at, result=result, error=error)
-            await self._update_payload(
+            settled: list[NodeRun] = []
+            if target in TERMINAL_RUN_STATUSES:
+                settled = [
+                    settle_open_node_run(node_run, target, at=at)
+                    for node_run in await self._open_node_runs(run_id)
+                ]
+            # One commit for the Run and every NodeRun it settles
+            # (ADR-082426-a47f). `_update_payload` commits per call, so the
+            # cascade writes through `_stage_payload` and commits once at the
+            # end: a half-settled Run reads as deliberate, which is worse than
+            # an unsettled one.
+            self._stage_payload(
                 "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
             )
+            for node_run in settled:
+                self._stage_payload(
+                    "canonical_node_runs",
+                    "node_run_id",
+                    node_run.node_run_id,
+                    node_run.status.value,
+                    json_of(node_run),
+                )
+            await self._flush()
             return updated
+
+    async def _open_node_runs(self, run_id: str) -> list[NodeRun]:
+        """Every non-terminal NodeRun under this Run, in ordinal order."""
+        cursor = await self._conn.execute(
+            "SELECT payload FROM canonical_node_runs WHERE run_id = ? "  # nosec B608
+            f"AND status NOT IN ({_placeholders(len(_TERMINAL_STATUS_VALUES))}) ORDER BY ordinal",
+            (run_id, *_TERMINAL_STATUS_VALUES),
+        )
+        rows = await cursor.fetchall()
+        return [model_of_json(NodeRun, row[0]) for row in rows]
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         async with self._write_lock:
@@ -425,6 +483,7 @@ class SqliteRunStore:
     ) -> NodeRun:
         async with self._write_lock:
             node_run = await self._require_node_run(node_run_id)
+            await self._refuse_under_terminal_run(node_run)
             if accepted_outcome is not None:
                 if accepted_outcome.node_run_id != node_run_id:
                     raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
@@ -618,6 +677,45 @@ class SqliteRunStore:
         cursor = await self._conn.execute(query, params)
         return await cursor.fetchone()
 
+    async def _refuse_under_terminal_run(self, node_run: NodeRun) -> None:
+        """Refuse to move a NodeRun whose Run has already finished.
+
+        `create_node_run` has always refused under a terminal Run; without the
+        same rule here a reconciliation that lands late rewrites the history of
+        a closed Run, and can undo the very cascade that settled it.
+        """
+        row = await self._fetchone(
+            "SELECT status FROM canonical_runs WHERE run_id = ?",
+            (node_run.run_id,),
+        )
+        if row is None or row[0] not in _TERMINAL_STATUS_VALUES:
+            return
+        raise RunIntegrityError(
+            f"cannot transition NodeRun {node_run.node_run_id!r}: "
+            f"Run {node_run.run_id!r} is terminal ({row[0]})"
+        )
+
+    def _stage_payload(
+        self,
+        table: str,
+        identity_column: str,
+        identity: str,
+        status: str,
+        payload: str,
+    ) -> None:
+        """Queue one payload update for the next :meth:`_flush`."""
+        self._pending.append((_checked_table(table, identity_column), identity, status, payload))
+
+    async def _flush(self) -> None:
+        """Apply every staged update and commit once."""
+        pending, self._pending = self._pending, []
+        for (table, identity_column), identity, status, payload in pending:
+            await self._conn.execute(
+                f"UPDATE {table} SET status = ?, payload = ? WHERE {identity_column} = ?",  # nosec B608
+                (status, payload, identity),
+            )
+        await self._conn.commit()
+
     async def _update_payload(
         self,
         table: str,
@@ -626,18 +724,8 @@ class SqliteRunStore:
         status: str,
         payload: str,
     ) -> None:
-        allowed = {
-            ("canonical_runs", "run_id"),
-            ("canonical_node_runs", "node_run_id"),
-            ("canonical_attempts", "attempt_id"),
-        }
-        if (table, identity_column) not in allowed:
-            raise ValueError("unsupported canonical execution table")
-        await self._conn.execute(
-            f"UPDATE {table} SET status = ?, payload = ? WHERE {identity_column} = ?",  # nosec B608
-            (status, payload, identity),
-        )
-        await self._conn.commit()
+        self._stage_payload(table, identity_column, identity, status, payload)
+        await self._flush()
 
 
 __all__ = ["SqliteRunStore"]

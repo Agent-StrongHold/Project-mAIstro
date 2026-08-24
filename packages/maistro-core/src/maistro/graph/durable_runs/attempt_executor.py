@@ -273,7 +273,7 @@ async def _persist_cancelled_run(
     latest = await store.get(run_id)
     if latest is None:
         raise KeyError(f"no such run: {run_id!r}")
-    latest = traversal._cancel_unfinished_node_runs(latest)
+    latest = traversal._settle_open_node_runs(latest, RunStatus.CANCELLED)
     run = traversal._running_run(latest.run)
     if run.status is RunStatus.RUNNING:
         run = transition_run(

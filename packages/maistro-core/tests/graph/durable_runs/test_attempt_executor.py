@@ -274,6 +274,10 @@ async def test_outer_cancellation_terminalizes_attempt_node_run_and_run() -> Non
     assert persisted.status is RunStatus.CANCELLED
     assert persisted.node_runs[0].status is RunStatus.CANCELLED
     assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    # The settled node names what actually ended it. Before #226 both the
+    # cancelled and the failed path wrote "cancelled because the durable run
+    # failed", so a *cancelled* Run's nodes claimed it had failed.
+    assert persisted.node_runs[0].error == "cancelled because its Run terminalized as cancelled"
 
 
 @pytest.mark.asyncio

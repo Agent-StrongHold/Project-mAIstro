@@ -37,7 +37,12 @@ from typing import TYPE_CHECKING, Any
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
-from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
+from maistro.runs.lifecycle import (
+    settle_open_node_run,
+    transition_attempt,
+    transition_node_run,
+    transition_run,
+)
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -82,6 +87,10 @@ _PAYLOAD_TABLES = {
     "canonical_node_runs": "node_run_id",
     "canonical_attempts": "attempt_id",
 }
+
+
+#: Status values that mean a Run or NodeRun is finished, as stored.
+_TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_STATUSES))
 
 
 class PgRunStore:
@@ -293,8 +302,36 @@ class PgRunStore:
         async with self._pool.acquire() as conn, conn.transaction():
             run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
+            # The cascade runs inside the Run's own transaction, with the Run
+            # row already locked (ADR-082426-a47f). Lock order is Run then
+            # NodeRun everywhere in this store — `create_node_run` and
+            # `transition_node_run` take the same two in the same order — so a
+            # concurrent transition on a sibling node cannot deadlock this one.
+            if target in TERMINAL_RUN_STATUSES:
+                for node_run in await self._locked_open_node_runs(conn, run_id):
+                    await self._write(
+                        conn,
+                        "canonical_node_runs",
+                        "node_run_id",
+                        node_run.node_run_id,
+                        settle_open_node_run(node_run, target, at=at),
+                    )
             await self._write(conn, "canonical_runs", "run_id", run_id, updated)
         return updated
+
+    async def _locked_open_node_runs(self, conn: Any, run_id: str) -> list[NodeRun]:
+        """Lock and return every non-terminal NodeRun under this Run."""
+        rows = await conn.fetch(
+            """SELECT payload FROM canonical_node_runs
+               WHERE run_id = $1 AND status <> ALL($2::text[])
+               ORDER BY ordinal
+               FOR UPDATE""",
+            run_id,
+            list(_TERMINAL_STATUS_VALUES),
+        )
+        return [
+            NodeRun.model_validate(decode_evidence(decode_payload(row["payload"]))) for row in rows
+        ]
 
     # ── NodeRun ───────────────────────────────────────────────────
 
@@ -357,6 +394,11 @@ class PgRunStore:
         accepted_outcome: AcceptedNodeOutcome | None = None,
     ) -> NodeRun:
         async with self._pool.acquire() as conn, conn.transaction():
+            node_run = NodeRun.model_validate(await self._peek_node_run(conn, node_run_id))
+            # Parent Run first, then the NodeRun row: the same order
+            # `create_node_run` and `transition_run` take, which is what keeps
+            # a cascade and a sibling transition from deadlocking each other.
+            await self._refuse_under_terminal_run(conn, node_run)
             node_run = NodeRun.model_validate(
                 await self._locked(conn, "canonical_node_runs", "node_run_id", node_run_id)
             )
@@ -517,6 +559,38 @@ class PgRunStore:
             )
         if project.workspace_id != graph.workspace_id:
             raise RunIntegrityError("Graph Project does not belong to the Graph Workspace")
+
+    @staticmethod
+    async def _peek_node_run(conn: Any, node_run_id: str) -> Any:
+        """Read a NodeRun payload without locking, to find its Run.
+
+        Unlocked deliberately: the lock this method's caller needs is on the
+        parent Run, and taking the NodeRun's first would invert the store's one
+        lock order. The row is re-read under its own lock straight after.
+        """
+        payload = await conn.fetchval(
+            "SELECT payload FROM canonical_node_runs WHERE node_run_id = $1",
+            node_run_id,
+        )
+        if payload is None:
+            raise NodeRunNotFound(node_run_id)
+        return decode_evidence(decode_payload(payload))
+
+    async def _refuse_under_terminal_run(self, conn: Any, node_run: NodeRun) -> None:
+        """Refuse to move a NodeRun whose Run has already finished.
+
+        `create_node_run` has always refused under a terminal Run; without the
+        same rule here a reconciliation that lands late rewrites the history of
+        a closed Run, and can undo the very cascade that settled it.
+        """
+        run = Run.model_validate(
+            await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
+        )
+        if run.status in TERMINAL_RUN_STATUSES:
+            raise RunIntegrityError(
+                f"cannot transition NodeRun {node_run.node_run_id!r}: "
+                f"Run {run.run_id!r} is terminal ({run.status.value})"
+            )
 
     async def _locked(self, conn: Any, table: str, column: str, identity: str) -> Any:
         """Read a payload under a row lock, or raise the right not-found error."""
