@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.model import TERMINAL_RUN_STATUSES
+from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.sources import CHAT_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
 
@@ -114,6 +115,7 @@ class ChatRunAdmitter:
         project_store: ProjectScopeStore | None = None,
         intents: IntentRegistry | None = None,
         max_retained: int = MAX_RETAINED_CHAT_RUNS,
+        retention: RetentionPolicy | None = None,
     ) -> None:
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
@@ -140,6 +142,23 @@ class ChatRunAdmitter:
         # a new Run had already been created, so the caller got no run_id for a
         # Run that then sat CREATED forever.
         self._sweep_lock = asyncio.Lock()
+        # The durable half of the same policy (#132). The window above is
+        # per-process and starts empty after a restart, so on a durable store a
+        # chat Run admitted by a process that has since exited is one nothing
+        # would ever sweep. Giving the Run a deadline at admission puts the
+        # answer on the row, where a later process can act on it.
+        self._retention = retention if retention is not None else RetentionPolicy()
+        self._sweeper = RunRetentionSweeper(run_store, self._retention)
+
+    @property
+    def retention(self) -> RetentionPolicy:
+        """The durable retention policy this admitter stamps onto its Runs."""
+        return self._retention
+
+    @property
+    def sweeper(self) -> RunRetentionSweeper:
+        """The sweeper that enforces that policy against the store."""
+        return self._sweeper
 
     @property
     def retained(self) -> int:
@@ -201,9 +220,16 @@ class ChatRunAdmitter:
             description=description,
             actor_principal_id=actor_principal_id,
             provenance=provenance,
+            retention_expires_at=self._retention.deadline(),
         )
         self._window[run.run_id] = None
         await self._sweep()
+        # Opportunistic, and deliberately after the Run is safely created: the
+        # sweep is bounded and rate-limited by the policy, it swallows its own
+        # errors, and a turn is never refused because retention could not run.
+        # This is what closes the restart gap — the window this process holds
+        # says nothing about the Runs a previous one left behind.
+        await self._sweeper.maybe_sweep()
         return run
 
     async def _sweep(self) -> int:

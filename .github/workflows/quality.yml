@@ -301,6 +301,13 @@ jobs:
         run: |
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
             -m pytest tests/migrations -v --tb=short
+      # `runs`, `graph` and `projects` join the list because #132 put
+      # PostgreSQL implementations behind them — `runs/pg_store.py`,
+      # `projects/pg_scope_store.py`, `graph/pg_templates.py`. Their suites are
+      # parametrised over every backend and the PostgreSQL leg skips without a
+      # server, so running them only in `coverage (no services)` measured the
+      # in-memory and SQLite legs and scored the PostgreSQL stores as untested
+      # code. The diff gate was reading a number no job produced.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -308,7 +315,10 @@ jobs:
             --source=packages/maistro-core/src/maistro \
             -m pytest packages/maistro-core/tests/persistence \
             packages/maistro-core/tests/test_container_postgres.py \
-            packages/maistro-core/tests/events -v --tb=short
+            packages/maistro-core/tests/events \
+            packages/maistro-core/tests/runs \
+            packages/maistro-core/tests/graph \
+            packages/maistro-core/tests/projects -v --tb=short
       - name: upload coverage data
         uses: actions/upload-artifact@v4
         with:

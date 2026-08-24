@@ -9,9 +9,11 @@ which Workspace a Run belongs to.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Final
 
 from maistro.agents.intents import IntentRegistry
+from maistro.graph.templates import GraphTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.store import RunStore
@@ -20,24 +22,97 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 __all__ = ["wire_chat_admission", "wire_execution_spine"]
 
 
+logger = logging.getLogger(__name__)
+
+#: Tables the PostgreSQL spine needs before it may be selected. Defined here
+#: rather than in `container` because the import runs that way: `container`
+#: imports this module, so this module cannot import it back.
+SPINE_PG_TABLES: Final = (
+    "canonical_projects",
+    "canonical_runs",
+    "canonical_node_runs",
+    "canonical_attempts",
+    "graph_templates",
+)
+
+
+async def _spine_is_migrated(pg_pool: Any) -> bool:
+    """Whether this pool's database actually has the spine's tables.
+
+    A pool reached here two ways, and only one of them has been checked. The
+    URL path runs `_require_postgres_schema` at startup and refuses an
+    unmigrated database by name, so by the time it gets here the answer is
+    always yes. The caller-supplied pool (#135's seam — a test with a fixture,
+    an embedding application that opened its own) has been through no preflight
+    at all, and may legitimately hold only the tables that caller cared about.
+
+    Assuming yes there turns "this pool has no spine tables" into
+    `UndefinedTableError` from inside `create_container`, which is a startup
+    crash for a deployment that never asked for a durable spine. Probing is one
+    round trip, once, and lets the caller keep the backend it did ask for.
+
+    Falling back is warned about rather than silent: a durable pool that ends up
+    with an in-memory spine is exactly the shape of #122, and the difference
+    between that defect and this fallback is entirely that this one says so.
+    """
+    missing = [
+        table
+        for table in SPINE_PG_TABLES
+        if not await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+    ]
+    if not missing:
+        return True
+    logger.warning(
+        "PostgreSQL pool is missing the canonical spine's tables (%s), so Runs are "
+        "in-process and lost on restart. Run `alembic upgrade head` against this "
+        "database to make the spine durable (#132).",
+        ", ".join(missing),
+    )
+    return False
+
+
 async def wire_execution_spine(
     conn: Any,
     *,
     workspace_id: str,
     intents: IntentRegistry | None = None,
-) -> tuple[ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter]:
+    pg_pool: Any = None,
+) -> tuple[ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter, GraphTemplateStore]:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
-    Durable when a SQLite connection is open, in-memory otherwise — the same
-    split every other store in this container follows. The Workspace's Root
-    Project is created eagerly rather than on first submission: a Run store
-    refuses to file a Graph in a Project that does not exist, so resolving it
-    lazily would turn a startup misconfiguration into a runtime failure on
-    somebody's first task.
+    PostgreSQL when the deployment has one, SQLite for a homelab, in-memory
+    otherwise — the same backend order every other store follows, and the order
+    ADR-082226-5104 requires: the spine is the one thing that must not be
+    ephemeral, because it is what an audit, a recovery, a retry and a resumed
+    HITL pause all read (#132).
+
+    The Workspace's Root Project is created eagerly rather than on first
+    submission: a Run store refuses to file a Graph in a Project that does not
+    exist, so resolving it lazily would turn a startup misconfiguration into a
+    runtime failure on somebody's first task.
+
+    The Graph template store is wired here rather than separately because a
+    Run's Graph and the template it was instantiated from must live in the same
+    database — a registry pointing at one and a spine at another is how a Run
+    ends up citing a template version nothing can resolve.
     """
     project_scope_store: ProjectScopeStore
     run_store: RunStore
-    if conn is not None:
+    template_store: GraphTemplateStore
+    if pg_pool is not None and await _spine_is_migrated(pg_pool):
+        # No ensure_schema: these tables come from `alembic/versions/012` and
+        # `014`. A store that quietly created its own tables would be a second
+        # schema owner and a second thing to keep in step — which is why the
+        # check above *probes* rather than creates.
+        from maistro.graph.pg_templates import PgGraphTemplateStore
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.runs.pg_store import PgRunStore
+
+        project_scope_store = PgProjectScopeStore(pg_pool)
+        run_store = PgRunStore(pg_pool, project_store=project_scope_store)
+        template_store = PgGraphTemplateStore(pg_pool)
+    elif conn is not None:
+        from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.runs.sqlite_store import SqliteRunStore
 
@@ -45,14 +120,26 @@ async def wire_execution_spine(
         await sqlite_scope_store.ensure_schema()
         sqlite_run_store = SqliteRunStore(conn, project_store=sqlite_scope_store)
         await sqlite_run_store.ensure_schema()
+        sqlite_template_store = SqliteGraphTemplateStore(conn)
+        await sqlite_template_store.ensure_schema()
         project_scope_store = sqlite_scope_store
         run_store = sqlite_run_store
+        template_store = sqlite_template_store
     else:
+        from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
         from maistro.runs.store import InMemoryRunStore
 
         project_scope_store = InMemoryProjectScopeStore()
         run_store = InMemoryRunStore(project_store=project_scope_store)
+        template_store = InMemoryGraphTemplateStore()
+
+    # The Project store refuses to delete a Project that owns Runs, and only
+    # the Run store can answer that. PostgreSQL has a foreign key for it; this
+    # is how the in-memory and SQLite stores learn the same rule.
+    register = getattr(project_scope_store, "set_run_owner", None)
+    if register is not None:
+        register(run_store.has_runs_in_project)
 
     # The caller's registry, not a fresh default. `IntentRegistry()` builds the
     # engineering table unconditionally, so a PM-mode deployment admitted
@@ -70,7 +157,7 @@ async def wire_execution_spine(
     # submission names later (#158) are built on first use, because they do not
     # exist yet at startup.
     await admitter.admitter_for(workspace_id)
-    return project_scope_store, run_store, admitter
+    return project_scope_store, run_store, admitter, template_store
 
 
 def wire_chat_admission(

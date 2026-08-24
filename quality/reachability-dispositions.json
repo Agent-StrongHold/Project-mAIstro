@@ -440,7 +440,8 @@
       "modules": [
         "maistro.testing",
         "maistro.testing.faux_provider",
-        "maistro.testing.harness"
+        "maistro.testing.harness",
+        "maistro.testing.postgres"
       ]
     },
     {
