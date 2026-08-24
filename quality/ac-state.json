@@ -10857,6 +10857,18 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-082326-8194",
+      "file": "docs/adr/ADR-082326-8194-memory-embedding-column-and-dimensionality.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-083",
       "file": "docs/adr/ADR-083-skills-mcp-trust.md",
       "declared_status": "Proposed",
