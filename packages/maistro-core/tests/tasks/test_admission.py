@@ -385,3 +385,42 @@ async def test_the_admitter_uses_the_registry_it_was_given(scoped) -> None:
     run = await runs.get_run(task.run_id or "")
     assert run is not None
     assert run.graph.materialize().nodes[0].parameters["to_agent"] == "delivery"
+
+
+async def test_a_run_that_left_waiting_under_us_does_not_falsely_report_progress(
+    scoped,
+) -> None:
+    """The resume before terminalizing is a second write, and it can lose.
+
+    `record_transition` reads the Run, sees WAITING, and resumes it to RUNNING
+    so a terminal target has an edge to travel (#143). Between that read and
+    that write another worker can move the same Run — a cancellation, a
+    timeout — and the resume is then illegal. Reporting success there would
+    tell the queue the receipt advanced when the Run did not.
+    """
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter)
+    task = await queue.submit(TaskCreate(description="one"))
+    run_id = task.run_id or ""
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.WAITING)
+
+    real_transition = runs.transition_run
+    lost_the_race = False
+
+    async def _losing(run_id_: str, target: RunStatus, **kwargs: object):
+        nonlocal lost_the_race
+        if target is RunStatus.RUNNING and not lost_the_race:
+            lost_the_race = True
+            # The competing worker's write, which is what makes ours illegal.
+            await real_transition(run_id_, RunStatus.CANCELLED)
+        return await real_transition(run_id_, target, **kwargs)
+
+    runs.transition_run = _losing  # type: ignore[method-assign]
+
+    assert await admitter.record_transition(run_id, TaskStatus.FAILED) is False
+    runs.transition_run = real_transition  # type: ignore[method-assign]
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.CANCELLED

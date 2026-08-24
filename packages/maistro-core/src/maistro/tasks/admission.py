@@ -34,8 +34,8 @@ import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.runs.admission import admit_direct_work
-from maistro.runs.lifecycle import InvalidLifecycleTransition
-from maistro.runs.model import RunStatus
+from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
 from maistro.tasks.models import TaskStatus
 
@@ -232,6 +232,21 @@ class TaskRunAdmitter:
             return False
         if run.status is target:
             return True
+        if (
+            run.status is RunStatus.WAITING
+            and target in TERMINAL_RUN_STATUSES
+            and target not in RUN_TRANSITIONS[RunStatus.WAITING]
+        ):
+            # A failed or timed-out Attempt parks its NodeRun, and a Run with no
+            # other active node then parks too (#143). The receipt is still the
+            # domain here and it says the work is over — but WAITING has no edge
+            # to COMPLETED or FAILED, so the Run has to be resumed before it can
+            # be terminalized. Without this the receipt of every failed task
+            # stayed stuck at CODING, with its error written nowhere.
+            try:
+                await self._runs.transition_run(run_id, RunStatus.RUNNING)
+            except InvalidLifecycleTransition:
+                return False
         try:
             await self._runs.transition_run(run_id, target, result=result, error=error)
         except InvalidLifecycleTransition:

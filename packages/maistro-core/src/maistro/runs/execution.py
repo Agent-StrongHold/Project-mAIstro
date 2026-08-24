@@ -24,6 +24,35 @@ AttemptReconciler = Callable[[Attempt], Awaitable[None]]
 AttemptContextFactory = Callable[[Attempt, Any], Any]
 
 
+@runtime_checkable
+class CarriesAttemptEvidence(Protocol):
+    """An exception that knows what its failed execution managed to do.
+
+    An executor that fails may attach JSON-safe evidence to the exception it
+    raises. Without it a failed Attempt records only the exception text, so a
+    domain whose failures carry partial work — files written before the error, a
+    rejected draft answer — loses that half of the record precisely where an
+    audit or a retry goes looking for it.
+
+    A Protocol rather than a `getattr` probe, so the attribute is a real
+    reference that static analysis can see and a domain can be type-checked
+    against.
+    """
+
+    attempt_evidence: object
+
+
+def attempt_evidence_of(exc: BaseException) -> object | None:
+    """Evidence a raising executor attached to its failure, or None.
+
+    Read rather than required: the runtime treats results as opaque, so it can
+    offer the slot without any domain having to fill it.
+    """
+    if isinstance(exc, CarriesAttemptEvidence):
+        return exc.attempt_evidence
+    return None
+
+
 def _materialize_execution_context(
     attempt: Attempt,
     execution_context: Any,
@@ -153,11 +182,12 @@ class AttemptExecutionService:
                 executor=executor,
                 timeout_s=timeout_s,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             terminal = await self._terminalize(
                 attempt.attempt_id,
                 AttemptStatus.CANCELLED,
                 fencing_token=token,
+                result=attempt_evidence_of(exc),
                 error="execution cancelled",
             )
             await self._reconcile(terminal)
@@ -167,6 +197,7 @@ class AttemptExecutionService:
                 attempt.attempt_id,
                 AttemptStatus.TIMED_OUT,
                 fencing_token=token,
+                result=attempt_evidence_of(exc),
                 error=str(exc),
             )
             await self._reconcile(terminal)
@@ -176,6 +207,7 @@ class AttemptExecutionService:
                 attempt.attempt_id,
                 AttemptStatus.FAILED,
                 fencing_token=token,
+                result=attempt_evidence_of(exc),
                 error=str(exc),
             )
             await self._reconcile(terminal)
@@ -252,4 +284,6 @@ __all__ = [
     "AttemptExecutionService",
     "AttemptExecutionStore",
     "AttemptReconciler",
+    "CarriesAttemptEvidence",
+    "attempt_evidence_of",
 ]
