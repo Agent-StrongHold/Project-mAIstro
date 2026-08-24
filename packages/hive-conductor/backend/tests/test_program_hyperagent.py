@@ -109,7 +109,7 @@ async def test_apply_guidance_interview_incomplete(
     monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
     monkeypatch.setattr(ph, "apply_guidance", lambda c, t: c)
     monkeypatch.setattr(ph, "interview_status", lambda c: {"done": False})
-    monkeypatch.setattr(ph, "propose_actions", lambda c, max_actions: [])
+    monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])
 
     out = await ph.apply_guidance_and_pulse("u1", "guidance here")
     assert "Complete the Program interview" in out["message"]
@@ -127,7 +127,7 @@ async def test_apply_guidance_pulse_succeeds(
     monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
     monkeypatch.setattr(ph, "apply_guidance", lambda c, t: c)
     monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-    monkeypatch.setattr(ph, "propose_actions", lambda c, max_actions: [])
+    monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])
 
     async def _stub_pulse(
         uid: str, *, workspace_id: str | None = None, max_actions: int
@@ -151,7 +151,7 @@ async def test_apply_guidance_pulse_exception_swallowed(
     monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
     monkeypatch.setattr(ph, "apply_guidance", lambda c, t: c)
     monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-    monkeypatch.setattr(ph, "propose_actions", lambda c, max_actions: [])
+    monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])
 
     async def _boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("engine down")
@@ -172,7 +172,7 @@ async def test_apply_guidance_max_pulse_actions_zero_skips_pulse(
     monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
     monkeypatch.setattr(ph, "apply_guidance", lambda c, t: c)
     monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-    monkeypatch.setattr(ph, "propose_actions", lambda c, max_actions: [])
+    monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])
 
     pulse_called = [0]
 
@@ -213,7 +213,7 @@ async def test_run_program_pulse_no_queue_returns_note(
     ctx = _StubCtx()
     ctx.interview_complete = True
     monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [])
+    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, roster, max_actions: [])
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
 
     class _Engine:
@@ -249,7 +249,9 @@ async def test_run_program_pulse_submits_autonomous_action(
         def as_dict(self) -> dict[str, Any]:
             return {"s": True}
 
-    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
+    monkeypatch.setattr(
+        ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
+    )
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [_Sugg()])
     monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
     monkeypatch.setattr(
@@ -297,7 +299,9 @@ async def test_run_program_pulse_submit_failure_swallowed(
         def as_dict(self) -> dict[str, Any]:
             return {"a": "x"}
 
-    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
+    monkeypatch.setattr(
+        ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
+    )
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
     monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
     monkeypatch.setattr(
@@ -337,7 +341,9 @@ async def test_run_program_pulse_skips_non_autonomous_actions(
         def as_dict(self) -> dict[str, Any]:
             return {}
 
-    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
+    monkeypatch.setattr(
+        ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
+    )
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
     monkeypatch.setattr(ph, "is_autonomous", lambda cap: False)
 
@@ -386,7 +392,7 @@ class TestTheWorkspaceReachesEverythingItShould:
         monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
         monkeypatch.setattr(ph, "apply_guidance", lambda c, t: c)
         monkeypatch.setattr(ph, "interview_status", lambda c: {"done": False})
-        monkeypatch.setattr(ph, "propose_actions", lambda c, max_actions: [])
+        monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])
 
         await ph.apply_guidance_and_pulse("u1", "go", workspace_id="ws-a")
 
@@ -444,7 +450,9 @@ class TestTheWorkspaceReachesEverythingItShould:
         monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
         monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
         monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-        monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
+        monkeypatch.setattr(
+            ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
+        )
         monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
         monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
         monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
@@ -463,13 +471,14 @@ class TestTheWorkspaceReachesEverythingItShould:
 
         assert captured.get("workspace_id") == "ws-a"
 
-    async def test_a_persona_without_the_proposed_agents_is_told_so(
+    async def test_a_roster_that_changed_mid_pulse_is_told_so(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`propose_autonomous_actions` names PM Fleet's roster, so a
-        `content_creator` workspace produces actions none of its agents can
-        serve. Returning an empty `queued` beside a full `proposed` read as
-        "the pulse ran and found nothing to do"."""
+        """Since #221 the proposals come from this workspace's own roster, so
+        an action that cannot be queued means the roster changed between
+        proposing and queueing. That is a real race, and returning an empty
+        `queued` beside a full `proposed` would read as "the pulse ran and
+        found nothing to do"."""
         import services.program_hyperagent as ph
 
         class _Engine:
@@ -490,7 +499,9 @@ class TestTheWorkspaceReachesEverythingItShould:
         monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
         monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
         monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-        monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
+        monkeypatch.setattr(
+            ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
+        )
         monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
         monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
         monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
@@ -504,3 +515,63 @@ class TestTheWorkspaceReachesEverythingItShould:
 
         assert out["queued"] == []
         assert "program_manager" in out["note"]
+        assert "roster changed" in out["note"]
+
+    async def test_a_workspace_with_no_autonomous_capable_agents_is_told_that(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other empty case, and the one #221 makes ordinary. Nothing went
+        wrong and no roster changed: this workspace simply has no agent
+        declaring a capability that may run without approval. Saying "the
+        pulse proposed agents you do not have" there would be false."""
+        import services.program_hyperagent as ph
+
+        class _Engine:
+            _backend = object()
+
+        ctx = _StubCtx()
+        ctx.interview_complete = True
+        monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
+        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
+        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
+        monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, roster, max_actions: [])
+        monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
+        monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
+
+        out = await ph.run_program_pulse("u1", workspace_id="ws-a")
+
+        assert out["queued"] == []
+        assert out["note"] == (
+            "No agent in this workspace declares a capability the pulse can run "
+            "without approval. No autonomous work was queued."
+        )
+
+    async def test_the_pulse_reads_the_workspaces_own_roster(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole of #221 at this seam: the roster handed to the proposer
+        is this workspace's, not PM Fleet's."""
+        import services.program_hyperagent as ph
+
+        class _Engine:
+            _backend = object()
+
+        seen: dict[str, Any] = {}
+
+        def _propose(c: Any, roster: Any, max_actions: int) -> list[Any]:
+            seen["roster"] = roster
+            return []
+
+        ctx = _StubCtx()
+        ctx.interview_complete = True
+        monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
+        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
+        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
+        monkeypatch.setattr(ph, "propose_autonomous_actions", _propose)
+        monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
+        monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
+        monkeypatch.setattr(ph, "pulse_roster", lambda ws: [f"roster-for-{ws}"])
+
+        await ph.run_program_pulse("u1", workspace_id="ws-a")
+
+        assert seen["roster"] == ["roster-for-ws-a"]

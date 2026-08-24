@@ -35,14 +35,17 @@ def test_work_item_capabilities() -> None:
 
 def test_pulse_candidates_include_jira_when_configured() -> None:
     with_jira = autonomous_pulse_candidates(["Jira", "Confluence"])
-    caps = {c for _, c, _ in with_jira}
+    caps = {c for c, _ in with_jira}
     assert "poll_jira" in caps
     assert "web_search_background" in caps
     with_air = autonomous_pulse_candidates(["Airtable"])
-    assert any(c == "poll_airtable" for _, c, _ in with_air)
+    assert any(c == "poll_airtable" for c, _ in with_air)
 
 
-def test_research_agent_in_pulse() -> None:
-    candidates = autonomous_pulse_candidates([])
-    agents = {a for a, _, _ in candidates}
-    assert "research" in agents
+def test_a_candidate_names_work_and_not_an_agent() -> None:
+    """Since #221 the pulse proposes a capability and the caller's roster says
+    who does it. Carrying an agent name here is what made every workspace get
+    PM Fleet's roster regardless of the persona it runs."""
+    for candidate in autonomous_pulse_candidates([]):
+        assert len(candidate) == 2
+    assert all(is_autonomous(cap) for cap, _ in autonomous_pulse_candidates(["Jira"]))

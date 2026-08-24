@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from maistro.agents.hyperagent import propose_actions, propose_work_item_suggestions
+from maistro.agents.hyperagent import (
+    RosterAgent,
+    propose_actions,
+    propose_work_item_suggestions,
+)
 from maistro.agents.pm_capabilities import is_autonomous
+from maistro.agents.pm_fleet import PM_FLEET
 from maistro.agents.program_context import (
     ProgramContext,
     apply_guidance,
@@ -36,7 +41,10 @@ def test_propose_actions_after_interview() -> None:
     ctx = ProgramContext.empty("carol")
     for answer in ("Prog A", "Goal 1", "Jira", "Dep X", "Lead"):
         ctx = apply_interview_answer(ctx, answer)
-    actions = propose_actions(ctx, max_actions=4)
+    roster = [
+        RosterAgent(name=defn.name, capabilities=frozenset(defn.capabilities)) for defn in PM_FLEET
+    ]
+    actions = propose_actions(ctx, roster=roster, max_actions=4)
     assert len(actions) >= 2
     agents = {a.agent_id for a in actions}
     assert "program_manager" in agents

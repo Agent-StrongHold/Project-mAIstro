@@ -16,7 +16,7 @@ from maistro.agents.hyperagent import (
 from maistro.agents.pm_capabilities import is_autonomous
 from maistro.agents.program_context import apply_guidance
 from services import program_store as prog
-from services.agent_invocation import resolve_agent_task
+from services.agent_invocation import pulse_roster, resolve_agent_task
 from services.engine import get_engine
 
 logger = logging.getLogger("hive.services.program_hyperagent")
@@ -125,7 +125,10 @@ async def apply_guidance_and_pulse(
     out: dict[str, Any] = {
         "context": ctx.model_dump(mode="json"),
         "interview": interview_status(ctx),
-        "proposed_actions": [a.as_dict() for a in propose_actions(ctx, max_actions=5)],
+        "proposed_actions": [
+            a.as_dict()
+            for a in propose_actions(ctx, roster=pulse_roster(workspace_id), max_actions=5)
+        ],
         "queued_tasks": queued,
     }
     if pulse_error:
@@ -139,6 +142,40 @@ async def apply_guidance_and_pulse(
     else:
         out["message"] = "Guidance saved — fleet will use this on the next pulse."
     return out
+
+
+def _empty_pulse_note(
+    *,
+    queued: list[dict[str, str]],
+    failed: list[str],
+    unavailable: list[str],
+    actions: list[Any],
+) -> str:
+    """Why a pulse queued nothing, or empty when it queued something.
+
+    Said once, plainly, rather than inferred from an empty `queued` beside a
+    full `proposed` — and saying which of two different things happened (#221).
+
+    Before the pulse read this workspace's own roster, "nothing here can do
+    what was proposed" was the ordinary case and had one message. Now it is a
+    race — the roster changed between proposing and queueing — and the ordinary
+    empty pulse is the second message: this workspace has agents, and none of
+    them declares a capability that may run without approval.
+    """
+    if queued or failed:
+        return ""
+    if unavailable:
+        return (
+            "This workspace's roster changed while the pulse was running: "
+            f"{', '.join(sorted(set(unavailable)))} could no longer take the "
+            "proposed work. No autonomous work was queued."
+        )
+    if not actions:
+        return (
+            "No agent in this workspace declares a capability the pulse can run "
+            "without approval. No autonomous work was queued."
+        )
+    return ""
 
 
 async def run_program_pulse(
@@ -156,7 +193,11 @@ async def run_program_pulse(
             "interview": interview_status(ctx),
         }
 
-    actions = propose_autonomous_actions(ctx, max_actions=max_actions)
+    # The workspace's own roster decides who is proposed (#221). Before this
+    # the pulse named PM Fleet's agents to every workspace, so any other
+    # persona got a list of actions that could not run here.
+    roster = pulse_roster(workspace_id)
+    actions = propose_autonomous_actions(ctx, roster=roster, max_actions=max_actions)
     suggestions = propose_work_item_suggestions(ctx, user_id)
     engine = get_engine()
     queued: list[dict[str, str]] = []
@@ -216,14 +257,12 @@ async def run_program_pulse(
                 }
             )
         except ValueError as exc:
-            # This workspace's persona has no such agent.
-            # `propose_autonomous_actions` names PM Fleet's roster
-            # (`program_manager`, `risk_dependency`, `reporting`, ...), so a
-            # workspace running any other persona produces one of these per
-            # action. Collected rather than swallowed: silently returning an
-            # empty `queued` beside a full `proposed` list reads as "the pulse
-            # ran and found nothing to do", when in fact nothing it proposed
-            # could ever run here.
+            # An action was proposed for an agent this workspace turns out not
+            # to have, or for a capability it does not declare. Since #221 the
+            # proposals come from this workspace's own roster, so the ordinary
+            # cause of this is gone — what remains is a roster that changed
+            # between proposing and queueing, which is a real race and worth
+            # reporting rather than assuming away.
             logger.warning(
                 "pulse action %s/%s not available in workspace %s: %s",
                 action.agent_id,
@@ -250,15 +289,9 @@ async def run_program_pulse(
         "work_item_suggestions": [s.as_dict() for s in suggestions],
         "context": ctx.model_dump(mode="json"),
     }
-    if unavailable and not queued:
-        # Said once, plainly, rather than inferred from an empty list. Deriving
-        # the actions from the workspace's own roster is the real fix and is
-        # `propose_autonomous_actions`' to make (#221); until then a caller is
-        # at least told why their pulse queued nothing.
-        result["note"] = (
-            "This workspace's persona has none of the agents the pulse proposes "
-            f"({', '.join(sorted(set(unavailable)))}). No autonomous work was queued."
-        )
+    note = _empty_pulse_note(queued=queued, failed=failed, unavailable=unavailable, actions=actions)
+    if note:
+        result["note"] = note
     if failed:
         result["failed"] = sorted(set(failed))
     return result

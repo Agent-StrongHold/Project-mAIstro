@@ -109,24 +109,33 @@ def agent_for_work_item(work_type: WorkItemType) -> str:
     return mapping[work_type]
 
 
-def autonomous_pulse_candidates(ctx_tools: list[str]) -> list[tuple[str, str, str]]:
-    """Return (agent_id, capability, reason) tuples safe to auto-run."""
-    candidates: list[tuple[str, str, str]] = [
-        ("program_manager", "fetch_program_state", "Refresh program state from context"),
-        ("risk_dependency", "scan_risks", "Continuous RAID scan"),
-        ("reporting", "generate_exec_summary", "Exec visibility snapshot"),
+def autonomous_pulse_candidates(ctx_tools: list[str]) -> list[tuple[str, str]]:
+    """Return (capability, reason) pairs safe to auto-run, in priority order.
+
+    The *work*, not who does it. Each entry used to carry an agent name from
+    PM Fleet's roster (`program_manager`, `risk_dependency`, `reporting`), so
+    the pulse proposed those names to every workspace regardless of which
+    persona it runs (#221). Who performs a capability is the caller's roster
+    to answer, and `hyperagent.agent_for_capability` asks it.
+
+    Order is the priority order the pulse truncates against `max_actions`, and
+    is unchanged.
+    """
+    candidates: list[tuple[str, str]] = [
+        ("fetch_program_state", "Refresh program state from context"),
+        ("scan_risks", "Continuous RAID scan"),
+        ("generate_exec_summary", "Exec visibility snapshot"),
     ]
     tools_lower = " ".join(ctx_tools).lower()
     if "jira" in tools_lower:
-        candidates.insert(0, ("delivery", "poll_jira", "Poll Jira for execution updates"))
+        candidates.insert(0, ("poll_jira", "Poll Jira for execution updates"))
     if "airtable" in tools_lower:
         candidates.insert(
             1 if "jira" in tools_lower else 0,
-            ("program_manager", "poll_airtable", "Poll Airtable for planning data"),
+            ("poll_airtable", "Poll Airtable for planning data"),
         )
     candidates.append(
         (
-            "research",
             "web_search_background",
             "Gather web background on program domain, goals, and risks",
         )

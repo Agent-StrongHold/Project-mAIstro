@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import pytest
 import stores
 from models.schemas import Agent
-from services.agent_invocation import resolve_agent, resolve_agent_task
+from services.agent_invocation import pulse_roster, resolve_agent, resolve_agent_task
 
 
 @pytest.fixture(autouse=True)
@@ -193,3 +193,81 @@ class TestTheResolvedAgentIdIsTheExecutorsShape:
         )
 
         assert agent_id in _PM_AGENT_TO_ROLE
+
+
+class TestPulseRoster:
+    """What the autonomous pulse is allowed to propose (#221).
+
+    Before this the pulse proposed PM Fleet's six names to every workspace,
+    and a workspace running any other persona got a list of actions none of
+    its agents could serve.
+    """
+
+    def test_a_non_pm_workspace_gets_its_own_agents(self) -> None:
+        """The defect, stated positively. `content_creator` has no
+        `program_manager`, and until now that was all the pulse could offer
+        it."""
+        _materialized("ws-1", "editor", skills=["scan_risks"])
+
+        roster = pulse_roster("ws-1")
+
+        assert [(a.name, sorted(a.capabilities)) for a in roster] == [
+            ("editor", ["scan_risks"]),
+        ]
+
+    def test_the_name_is_the_spawn_name_the_next_layer_takes(self) -> None:
+        """`resolve_agent_task` takes `delivery`, not `ws-1.delivery` and not
+        `pm_fleet.delivery`. A proposed action carrying anything else would be
+        a name the next layer has to undo."""
+        _materialized("ws-1", "delivery", skills=["poll_jira"])
+
+        assert [a.name for a in pulse_roster("ws-1")] == ["delivery"]
+
+    def test_capabilities_come_from_both_fields(self) -> None:
+        """The two rosters fill them differently, and a pulse candidate does
+        not know which side of that split its capability landed on."""
+        t = datetime.now(UTC)
+        stores.agents["ws-1.mixed"] = Agent(
+            id="ws-1.mixed",
+            workspace_id="ws-1",
+            name="persona.mixed",
+            description="",
+            model="x",
+            status="idle",
+            capabilities=["poll_jira"],
+            skills=["scan_risks"],
+            created_at=t,
+        )
+
+        roster = pulse_roster("ws-1")
+
+        assert sorted(roster[0].capabilities) == ["poll_jira", "scan_risks"]
+
+    def test_the_workspaces_own_agent_is_preferred_over_a_global_one(self) -> None:
+        """The pulse takes the first declarer, so this ordering is what gives
+        a workspace's own agent the same precedence `resolve_agent` gives it
+        one step later."""
+        _global("shared", skills=["scan_risks"])
+        _materialized("ws-1", "own", skills=["scan_risks"])
+
+        assert [a.name for a in pulse_roster("ws-1")] == ["own", "shared"]
+
+    def test_another_workspaces_agents_are_not_in_this_roster(self) -> None:
+        _materialized("ws-1", "mine", skills=["scan_risks"])
+        _materialized("ws-2", "theirs", skills=["scan_risks"])
+
+        assert [a.name for a in pulse_roster("ws-1")] == ["mine"]
+
+    def test_no_workspace_sees_only_the_global_agents(self) -> None:
+        """A pulse asked for without a workspace still has the workspace-less
+        records `stores.agents` holds, which is what `resolve_agent` falls
+        back to."""
+        _global("shared", skills=["scan_risks"])
+        _materialized("ws-1", "own", skills=["scan_risks"])
+
+        assert [a.name for a in pulse_roster()] == ["shared"]
+
+    def test_an_unknown_workspace_has_an_empty_roster(self) -> None:
+        """And an empty roster proposes nothing, which is the honest answer
+        rather than a list of actions that cannot run."""
+        assert pulse_roster("ws-nobody") == []

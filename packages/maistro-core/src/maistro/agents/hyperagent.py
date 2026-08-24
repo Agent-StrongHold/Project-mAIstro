@@ -1,7 +1,29 @@
-"""Meta hyperagent — proactive polls/scans; gated Jira writes become suggestions only."""
+"""Meta hyperagent — proactive polls/scans; gated Jira writes become suggestions only.
+
+**The pulse proposes work, and the caller's roster says who does it (#221).**
+
+It used to do both. `autonomous_pulse_candidates` named an agent per candidate
+— `program_manager`, `risk_dependency`, `reporting` — and `propose_autonomous_actions`
+filtered each through `get_pm_def`, PM Fleet's six-name table. Those names only
+mean something in a workspace whose persona materialized agents with them, so a
+workspace running any other persona got a pulse proposing work none of its
+agents could do: every action raised, every one was logged, nothing queued.
+
+The roster now arrives as an argument. A capability is matched to the **first
+agent in roster order that declares it**, which is a rule any roster can answer
+— an ordered list and a set membership test, with no notion of a "primary"
+agent that a wizard-authored persona would have no way to express. PM Fleet's
+own order resolves every pulse capability to exactly the agent that was
+hardcoded before, including `fetch_program_state`, which both `program_manager`
+and `research` declare and which the old list gave to `program_manager`.
+
+`maistro-core` stays product-agnostic either way (ADR-019): nothing here
+imports a roster, and PM Fleet becomes one caller's argument.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,13 +33,44 @@ from maistro.agents.pm_capabilities import (
     autonomous_pulse_candidates,
     is_autonomous,
 )
-from maistro.agents.pm_fleet import get_pm_def
 from maistro.agents.program_context import (
     ProgramContext,
     current_interview_question,
     interview_steps_for,
 )
 from maistro.agents.work_items import suggest_work_item
+
+
+@dataclass(frozen=True)
+class RosterAgent:
+    """One agent a workspace actually has, and what it declares it can do.
+
+    Deliberately two fields. The pulse asks a roster exactly one question —
+    "who here can do this?" — and anything richer would be a shape only the
+    roster that happens to have it could satisfy.
+    """
+
+    name: str
+    capabilities: frozenset[str]
+
+
+#: A workspace's agents, in the order they should be preferred. Order is
+#: load-bearing: two agents may declare one capability, and the first wins.
+AgentRoster = Sequence[RosterAgent]
+
+
+def agent_for_capability(roster: AgentRoster, capability: str) -> str | None:
+    """Who in this roster can do this, or None if nobody can.
+
+    First declarer in roster order, rather than a "primary capability" match.
+    A persona built by the wizard has no primary-capability field to consult,
+    and a rule only PM Fleet can answer is the rule this issue exists to
+    remove.
+    """
+    for agent in roster:
+        if capability in agent.capabilities:
+            return agent.name
+    return None
 
 
 @dataclass(frozen=True)
@@ -87,9 +140,16 @@ def interview_status(
 def propose_autonomous_actions(
     ctx: ProgramContext,
     *,
+    roster: AgentRoster,
     max_actions: int = 4,
 ) -> list[ProposedAction]:
-    """Only polls, scans, and read-only sync — safe to queue without approval."""
+    """Only polls, scans, and read-only sync — safe to queue without approval.
+
+    ``roster`` is the workspace's own agents. A candidate whose capability
+    nobody here declares is dropped rather than proposed: an action naming an
+    agent this workspace does not have cannot run, and proposing it anyway
+    puts the failure at queue time, one layer below where it is explicable.
+    """
     if not ctx.interview_complete:
         return []
 
@@ -102,10 +162,11 @@ def propose_autonomous_actions(
     }
 
     actions: list[ProposedAction] = []
-    for agent_id, capability, reason in autonomous_pulse_candidates(ctx.tools):
+    for capability, reason in autonomous_pulse_candidates(ctx.tools):
         if len(actions) >= max_actions:
             break
-        if get_pm_def(agent_id) is None:
+        agent_id = agent_for_capability(roster, capability)
+        if agent_id is None:
             continue
         actions.append(
             ProposedAction(
@@ -168,6 +229,7 @@ def build_suggestion_draft(
 def propose_actions(
     ctx: ProgramContext,
     *,
+    roster: AgentRoster,
     max_actions: int = 3,
     include_interview: bool = True,
 ) -> list[ProposedAction]:
@@ -184,4 +246,4 @@ def propose_actions(
                 )
             ]
         return []
-    return propose_autonomous_actions(ctx, max_actions=max_actions)
+    return propose_autonomous_actions(ctx, roster=roster, max_actions=max_actions)

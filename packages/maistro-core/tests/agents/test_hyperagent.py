@@ -7,6 +7,7 @@ import pytest
 import maistro.agents.hyperagent as hyperagent_mod
 from maistro.agents.hyperagent import (
     ProposedAction,
+    RosterAgent,
     WorkItemSuggestion,
     build_suggestion_draft,
     interview_status,
@@ -14,6 +15,7 @@ from maistro.agents.hyperagent import (
     propose_autonomous_actions,
     propose_work_item_suggestions,
 )
+from maistro.agents.pm_fleet import PM_FLEET
 from maistro.agents.program_context import ProgramContext
 
 
@@ -94,14 +96,29 @@ class TestInterviewStatus:
         assert result["question"] == "What's this for?"
 
 
+def _pm_fleet_roster() -> list[RosterAgent]:
+    """PM Fleet's own agents, in PM Fleet's own order.
+
+    Built from `PM_FLEET` rather than restated, so these tests keep proving
+    what they proved before #221 moved the roster out of the function: with
+    PM Fleet's roster, the pulse is exactly what it always was. Order matters
+    — the pulse takes the first agent declaring a capability, and
+    `fetch_program_state` is declared by both `program_manager` and
+    `research`.
+    """
+    return [
+        RosterAgent(name=defn.name, capabilities=frozenset(defn.capabilities)) for defn in PM_FLEET
+    ]
+
+
 class TestProposeAutonomousActions:
     def test_interview_incomplete_returns_empty(self) -> None:
         ctx = _ctx(interview_complete=False)
-        assert propose_autonomous_actions(ctx) == []
+        assert propose_autonomous_actions(ctx, roster=_pm_fleet_roster()) == []
 
     def test_complete_interview_returns_actions(self) -> None:
         ctx = _ctx(interview_complete=True, program_name="Apollo", goals=["g1"], tools=["jira"])
-        actions = propose_autonomous_actions(ctx)
+        actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster())
         assert len(actions) > 0
         for a in actions:
             assert a.payload["source"] == "hyperagent"
@@ -109,7 +126,7 @@ class TestProposeAutonomousActions:
 
     def test_unknown_agent_id_is_skipped(self) -> None:
         ctx = _ctx(interview_complete=True, tools=[])
-        actions = propose_autonomous_actions(ctx)
+        actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster())
         assert all(a.agent_id != "research" or True for a in actions)
         # "research" IS a known pm agent; verify no bogus agent ids leak through
         known_ids = {"program_manager", "risk_dependency", "reporting", "delivery", "research"}
@@ -117,28 +134,62 @@ class TestProposeAutonomousActions:
 
     def test_max_actions_caps_results(self) -> None:
         ctx = _ctx(interview_complete=True, tools=["jira", "airtable"])
-        actions = propose_autonomous_actions(ctx, max_actions=2)
+        actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster(), max_actions=2)
         assert len(actions) <= 2
 
     def test_dedupes_by_agent_and_capability(self) -> None:
         ctx = _ctx(interview_complete=True, tools=["jira"])
-        actions = propose_autonomous_actions(ctx, max_actions=10)
+        actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster(), max_actions=10)
         keys = [(a.agent_id, a.capability) for a in actions]
         assert len(keys) == len(set(keys))
 
     def test_empty_program_name_falls_back_in_payload(self) -> None:
         ctx = _ctx(interview_complete=True, program_name="", tools=[])
-        actions = propose_autonomous_actions(ctx)
+        actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster())
         assert actions[0].payload["title"] == "program"
 
-    def test_unknown_pm_agent_id_is_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_capability_no_one_declares_is_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Since #221 the roster answers "who", so the skippable case is a
+        capability nobody here has — not an agent name off a fixed table."""
         ctx = _ctx(interview_complete=True, tools=[])
         monkeypatch.setattr(
             hyperagent_mod,
             "autonomous_pulse_candidates",
-            lambda tools: [("nonexistent_agent", "poll_jira", "reason")],
+            lambda tools: [("no_such_capability", "reason")],
         )
-        assert propose_autonomous_actions(ctx) == []
+        assert propose_autonomous_actions(ctx, roster=_pm_fleet_roster()) == []
+
+    def test_an_empty_roster_proposes_nothing(self) -> None:
+        """A workspace with no agents cannot run anything, and proposing work
+        anyway moves the failure to queue time where it is less explicable."""
+        ctx = _ctx(interview_complete=True, tools=["jira"])
+        assert propose_autonomous_actions(ctx, roster=[]) == []
+
+    def test_a_non_pm_roster_gets_its_own_agents(self) -> None:
+        """The whole point of #221. A workspace running any other persona used
+        to get PM Fleet's names, every one of which failed to queue here."""
+        ctx = _ctx(interview_complete=True, tools=[])
+        roster = [RosterAgent(name="analyst", capabilities=frozenset({"scan_risks"}))]
+
+        actions = propose_autonomous_actions(ctx, roster=roster, max_actions=10)
+
+        assert [(a.agent_id, a.capability) for a in actions] == [("analyst", "scan_risks")]
+
+    def test_the_first_declarer_in_roster_order_wins(self) -> None:
+        """Two agents may declare one capability — `fetch_program_state` is
+        both `program_manager`'s and `research`'s in PM Fleet. Roster order
+        decides, which is a rule any roster can answer; a "primary capability"
+        rule would be one only PM Fleet could."""
+        ctx = _ctx(interview_complete=True, tools=[])
+        caps = frozenset({"fetch_program_state"})
+        roster = [
+            RosterAgent(name="second", capabilities=caps),
+            RosterAgent(name="first", capabilities=caps),
+        ]
+
+        actions = propose_autonomous_actions(ctx, roster=roster, max_actions=1)
+
+        assert actions[0].agent_id == "second"
 
     def test_duplicate_candidates_are_deduped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         ctx = _ctx(interview_complete=True, tools=[])
@@ -146,11 +197,11 @@ class TestProposeAutonomousActions:
             hyperagent_mod,
             "autonomous_pulse_candidates",
             lambda tools: [
-                ("delivery", "poll_jira", "reason 1"),
-                ("delivery", "poll_jira", "reason 2"),
+                ("poll_jira", "reason 1"),
+                ("poll_jira", "reason 2"),
             ],
         )
-        actions = propose_autonomous_actions(ctx, max_actions=10)
+        actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster(), max_actions=10)
         assert len(actions) == 1
         assert actions[0].reason == "reason 1"
 
@@ -197,7 +248,7 @@ class TestBuildSuggestionDraft:
 class TestProposeActions:
     def test_interview_incomplete_with_question_routes_to_intake(self) -> None:
         ctx = _ctx(interview_complete=False, interview_step=0)
-        result = propose_actions(ctx)
+        result = propose_actions(ctx, roster=_pm_fleet_roster())
         assert len(result) == 1
         assert result[0].agent_id == "intake"
         assert result[0].capability == "route_to_pm_agent"
@@ -205,15 +256,15 @@ class TestProposeActions:
 
     def test_interview_incomplete_no_question_left_returns_empty(self) -> None:
         ctx = _ctx(interview_complete=False, interview_step=99)
-        assert propose_actions(ctx) == []
+        assert propose_actions(ctx, roster=_pm_fleet_roster()) == []
 
     def test_include_interview_false_skips_gating(self) -> None:
         ctx = _ctx(interview_complete=False, interview_step=0, tools=[])
-        result = propose_actions(ctx, include_interview=False)
+        result = propose_actions(ctx, roster=_pm_fleet_roster(), include_interview=False)
         assert result == []
 
     def test_complete_interview_delegates_to_autonomous_actions(self) -> None:
         ctx = _ctx(interview_complete=True, program_name="Apollo", tools=["jira"])
-        result = propose_actions(ctx, max_actions=2)
+        result = propose_actions(ctx, roster=_pm_fleet_roster(), max_actions=2)
         assert len(result) <= 2
         assert all(isinstance(a, ProposedAction) for a in result)
