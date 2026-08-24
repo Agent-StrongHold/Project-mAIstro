@@ -1202,7 +1202,6 @@
         "packages/maistro-core/src/maistro/security/passwords.py::unused function 'needs_rehash'",
         "packages/maistro-core/src/maistro/security/passwords.py::unused function 'verify_password'",
         "packages/maistro-core/src/maistro/security/pg_strikes.py::unused class 'PgRateLimiter'",
-        "packages/maistro-core/src/maistro/security/pg_strikes.py::unused class 'PgStrikeTracker'",
         "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'check_and_record'",
         "packages/maistro-core/src/maistro/security/rate_limiter.py::unused attribute '_last_eviction'",
         "packages/maistro-core/src/maistro/security/rate_limiter.py::unused attribute '_last_eviction'",

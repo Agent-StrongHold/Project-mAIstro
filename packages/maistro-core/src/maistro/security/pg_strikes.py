@@ -82,7 +82,6 @@ class PgStrikeTracker:
         `db_url` remains for the standalone caller that has no container, and
         keeps creating its own pool and schema exactly as before.
         """
-        self._supplied_pool = pool
         self._db_url = (
             db_url or os.environ.get("DATABASE_URL") or os.environ.get("DEPLOY_TARGET_DB_URL")
         )

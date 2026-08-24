@@ -498,16 +498,6 @@
       ]
     },
     {
-      "id": "security-strikes-postgres",
-      "subsystem": "Warden / Sentinel / Gate",
-      "disposition": "CONNECT",
-      "rationale": "The PostgreSQL strike store. Under ADR-082226-5104 PostgreSQL is the durable system of record, so lockout state belongs here rather than in the in-memory tracker the container wires.",
-      "root": "maistro.container strike-tracker wiring (#122)",
-      "modules": [
-        "maistro.security.pg_strikes"
-      ]
-    },
-    {
       "id": "workspace-project-scope",
       "subsystem": "Workspace / Project scope",
       "disposition": "CONNECT",
