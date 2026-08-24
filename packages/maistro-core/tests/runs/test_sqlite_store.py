@@ -18,6 +18,12 @@ from maistro.runs import (
     RunStatus,
     SqliteRunStore,
 )
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULED_FOR_KEY,
+)
 from maistro.runtime import PythonExecutionRuntime
 
 
@@ -535,3 +541,58 @@ async def test_delete_run_for_an_unknown_run_is_false(tmp_path: Path) -> None:
     store, _project_id = await _durable_store(tmp_path)
 
     assert await store.delete_run("no-such-run") is False
+
+
+@pytest.mark.asyncio
+async def test_an_integrity_error_on_another_constraint_is_re_raised(tmp_path: Path) -> None:
+    """A duplicate firing is told apart from every other constraint by name.
+
+    SQLite raises one exception class for all of them, so the occurrence claim
+    is recognised by the index named in the message. Reporting some other
+    violation as a duplicate firing would tell the schedule admitter to carry
+    its cursor past an occurrence that never ran (#220).
+    """
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+
+    async def _other_violation(*_args: Any, **_kwargs: Any) -> Any:
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: canonical_runs.run_id")
+
+    conn.execute = _other_violation  # type: ignore[method-assign]
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match=r"canonical_runs\.run_id"):
+            await store.create_run(
+                _graph(project_id),
+                provenance={
+                    ADMISSION_SOURCE: SCHEDULE_SOURCE,
+                    SCHEDULE_ID_KEY: "sched-1",
+                    SCHEDULED_FOR_KEY: "2026-08-24T12:00:00+00:00",
+                },
+            )
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_run_claiming_no_occurrence_re_raises_the_claim_violation(
+    tmp_path: Path,
+) -> None:
+    """Matching the index name alone is not enough: a Run carrying no
+    `(schedule_id, scheduled_for)` cannot have violated the occurrence claim,
+    so calling its failure a duplicate firing would be inventing one."""
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+
+    async def _claim_violation(*_args: Any, **_kwargs: Any) -> Any:
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: idx_canonical_runs_occurrence")
+
+    conn.execute = _claim_violation  # type: ignore[method-assign]
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            await store.create_run(_graph(project_id), provenance={ADMISSION_SOURCE: "task_queue"})
+    finally:
+        await conn.close()

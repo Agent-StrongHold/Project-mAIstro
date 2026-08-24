@@ -556,3 +556,32 @@ class TestOneRunPerFiring:
         stored = await schedules.get(schedule.schedule_id)
         assert stored is not None
         assert stored.last_run_id == first.run_ids[-1]
+
+    async def test_a_failure_on_the_first_occurrence_consumes_nothing(self, harness) -> None:
+        """`consumed` gates the cursor write. When the very first occurrence
+        fails there is nothing to advance past, and stamping `last_fired_at`
+        anyway would skip a firing that never happened."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=4),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+        before = await schedules.get(schedule.schedule_id)
+
+        async def _always_fail(schedule_, template_, fire_):
+            raise RuntimeError("run store refused")
+
+        admitter._admit_one = _always_fail  # type: ignore[method-assign]
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert result.run_ids == ()
+        assert result.already_fired == ()
+        assert len(result.failures) == 1
+        assert after is not None and before is not None
+        assert after.last_fired_at == before.last_fired_at
+        assert after.runs_so_far == before.runs_so_far
