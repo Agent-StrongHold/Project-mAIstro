@@ -12,9 +12,10 @@ from __future__ import annotations
 import pytest
 
 from maistro.agents.types import CodeOutput, ConductorOutput
+from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.store import InMemoryRunStore
+from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.tasks.admission import TaskRunAdmitter
 from maistro.tasks.execution import TASK_EXECUTOR_ID, TaskAttemptExecutor, TaskExecutionFailed
 from maistro.tasks.models import TaskCreate, TaskStatus
@@ -394,3 +395,55 @@ async def test_shutdown_waits_for_a_cancelled_attempt_to_terminalize(wired) -> N
     node_runs = await runs.list_node_runs(task.run_id or "")
     attempts = await runs.list_attempts(node_runs[0].node_run_id)
     assert [a.status for a in attempts] == [AttemptStatus.CANCELLED]
+
+
+# --- cancel's refusals ----------------------------------------------------
+
+
+async def test_cancelling_a_task_whose_tries_are_all_over_says_so(wired) -> None:
+    """A NodeRun exists and every Attempt under it is terminal.
+
+    Distinct from having no NodeRun at all: the work *did* run, so the lookup
+    finds a node, and the answer still has to be False rather than an attempt to
+    cancel a try that already finished.
+    """
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    await _runner(queue, runs, _Executor())._execute_task(task.task_id)
+    node_runs = await runs.list_node_runs(task.run_id or "")
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [a.status for a in attempts] == [AttemptStatus.COMPLETED]
+
+    assert await TaskAttemptExecutor(runs).cancel(task.run_id or "") is False
+
+
+async def test_cancelling_an_unknown_run_is_an_integrity_error(wired) -> None:
+    """Not False. False means "nothing in flight", which is a fact about a Run
+    that exists; a run_id with no Run behind it is a broken caller."""
+    _queue, runs = wired
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await TaskAttemptExecutor(runs).cancel("no-such-run")
+
+
+async def test_cancelling_a_multi_node_run_is_refused() -> None:
+    """This seam addresses a task's single node by construction.
+
+    A Run with more than one node is not a task Run, and picking one of its
+    nodes to cancel would be a guess. #143's adapter is for direct work.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    store = InMemoryRunStore(project_store=projects)
+    run = await store.create_run(
+        Graph(
+            graph_id="two-node",
+            workspace_id="w1",
+            project_id=root.project_id,
+            name="Two nodes",
+            nodes=[Node(node_id="a", node_type="agent"), Node(node_id="b", node_type="agent")],
+        )
+    )
+
+    with pytest.raises(RunIntegrityError, match="admits exactly one"):
+        await TaskAttemptExecutor(store).cancel(run.run_id)

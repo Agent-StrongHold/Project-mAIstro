@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,10 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import (
     ActiveAttemptExists,
+    Attempt,
     AttemptExecutionService,
     AttemptStatus,
+    RunIntegrityError,
     RunStatus,
     SqliteRunStore,
 )
@@ -214,3 +217,269 @@ async def test_concurrent_transitions_do_not_interleave(tmp_path: Path) -> None:
         reloaded = await store.get_run(run.run_id)
         assert reloaded is not None
         assert reloaded.status is RunStatus.QUEUED
+
+
+# --- integrity refusals ----------------------------------------------------
+
+
+async def _store(tmp_path: Path) -> tuple[SqliteRunStore, str, aiosqlite.Connection]:
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    return store, project_id, conn
+
+
+@pytest.mark.asyncio
+async def test_a_parent_node_run_without_a_parent_run_is_refused(tmp_path: Path) -> None:
+    store, project_id, conn = await _store(tmp_path)
+
+    with pytest.raises(RunIntegrityError, match="requires parent_run_id"):
+        await store.create_run(_graph(project_id), parent_node_run_id="node-run-1")
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_parent_node_run_from_another_run_is_refused(tmp_path: Path) -> None:
+    """Both halves of the correlation exist; they just do not belong together.
+
+    Accepting it would hang a child Run off a node of some *other* Run, which
+    reads as real provenance and is not.
+    """
+    store, project_id, conn = await _store(tmp_path)
+    graph = _graph(project_id)
+    parent = await store.create_run(graph)
+    elsewhere = await store.create_run(graph)
+    node_run = await store.create_node_run(elsewhere.run_id, node_id="node-1")
+
+    with pytest.raises(RunIntegrityError, match="does not belong to parent_run_id"):
+        await store.create_run(
+            graph,
+            parent_run_id=parent.run_id,
+            parent_node_run_id=node_run.node_run_id,
+        )
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_node_run_under_a_terminal_run_is_refused(tmp_path: Path) -> None:
+    store, project_id, conn = await _store(tmp_path)
+    run = await store.create_run(_graph(project_id))
+    await store.transition_run(run.run_id, RunStatus.CANCELLED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_node_run(run.run_id, node_id="node-1")
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_node_run_for_a_node_outside_the_snapshot_is_refused(tmp_path: Path) -> None:
+    """The Graph the Run was admitted over is the whole world it may execute.
+
+    The live Graph can gain nodes after admission; a NodeRun naming one of them
+    would be work the Run never agreed to.
+    """
+    store, project_id, conn = await _store(tmp_path)
+    run = await store.create_run(_graph(project_id))
+
+    with pytest.raises(RunIntegrityError, match="not present in the Run Graph snapshot"):
+        await store.create_node_run(run.run_id, node_id="node-added-later")
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_outcome_for_another_node_run_is_refused(tmp_path: Path) -> None:
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    graph = Graph(
+        graph_id="two-node",
+        workspace_id="workspace-1",
+        project_id=project_id,
+        name="Two nodes",
+        nodes=[
+            Node(node_id="node-1", node_type="agent"),
+            Node(node_id="node-2", node_type="agent"),
+        ],
+    )
+    run = await store.create_run(graph)
+    executed = await store.create_node_run(run.run_id, node_id="node-1")
+    other = await store.create_node_run(run.run_id, node_id="node-2")
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+
+    async def _ok(_work: Any, _context: Any) -> dict[str, bool]:
+        return {"ok": True}
+
+    await service.execute(executed.node_run_id, None, None, executor=_ok, executor_id="agent")
+    persisted = await store.get_node_run(executed.node_run_id)
+    assert persisted is not None and persisted.accepted_outcome is not None
+
+    with pytest.raises(RunIntegrityError, match="different NodeRun"):
+        await store.transition_node_run(
+            other.node_run_id,
+            RunStatus.COMPLETED,
+            accepted_outcome=persisted.accepted_outcome,
+        )
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_under_a_terminal_node_run_is_refused(tmp_path: Path) -> None:
+    store, project_id, conn = await _store(tmp_path)
+    run = await store.create_run(_graph(project_id))
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.CANCELLED)
+
+    with pytest.raises(RunIntegrityError, match="terminal NodeRun"):
+        await store.create_attempt(node_run.node_run_id)
+    await conn.close()
+
+
+# --- losing the write race -------------------------------------------------
+
+
+class _RaceLosingConnection:
+    """A connection whose Attempt INSERT is rejected the way a lost race is.
+
+    `create_attempt` asks "is there an active Attempt?" and then writes. Those
+    are two looks at the same state, so the answer can go stale in between, and
+    the partial unique index — not the read — is what actually enforces one
+    active Attempt per NodeRun.
+
+    That rejection cannot be staged with a second live connection: `BEGIN
+    IMMEDIATE` holds a RESERVED lock, so a competing writer is refused entry
+    rather than admitted mid-transaction, and by the time it can write our
+    SELECT would already have seen it. This stands in for the writer that got
+    there first, and lets it commit once our rollback drops the lock — which is
+    the state the recovery branch reads to tell "somebody beat me" from "the
+    row will never be accepted".
+    """
+
+    def __init__(self, conn, *, error, after_rollback=None) -> None:
+        self._conn = conn
+        self._error = error
+        self._after_rollback = after_rollback
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    async def execute(self, sql, parameters=()):
+        if "INSERT INTO canonical_attempts" in sql:
+            raise self._error
+        return await self._conn.execute(sql, parameters)
+
+    async def rollback(self) -> None:
+        await self._conn.rollback()
+        if self._after_rollback is not None:
+            hook, self._after_rollback = self._after_rollback, None
+            await hook()
+
+
+async def _node_run_on(conn, project_store, project_id: str):
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    run = await store.create_run(_graph(project_id))
+    return store, await store.create_node_run(run.run_id, node_id="node-1")
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_insert_with_a_winner_committed_reports_the_winner(
+    tmp_path: Path,
+) -> None:
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "runs.db"
+    conn = await aiosqlite.connect(db_path)
+    _setup, node_run = await _node_run_on(conn, project_store, project_id)
+
+    async def _winner_commits() -> None:
+        winner = Attempt(
+            node_run_id=node_run.node_run_id,
+            ordinal=1,
+            runtime_id="python",
+            executor_id="the-other-worker",
+        )
+        other = await aiosqlite.connect(db_path)
+        await other.execute(
+            """INSERT INTO canonical_attempts
+               (attempt_id, node_run_id, ordinal, status, payload)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                winner.attempt_id,
+                winner.node_run_id,
+                winner.ordinal,
+                winner.status.value,
+                winner.model_dump_json(),
+            ),
+        )
+        await other.commit()
+        await other.close()
+
+    racing = SqliteRunStore(
+        _RaceLosingConnection(
+            conn,
+            error=sqlite3.IntegrityError(
+                "UNIQUE constraint failed: index 'idx_canonical_attempts_one_active'"
+            ),
+            after_rollback=_winner_commits,
+        ),
+        project_store=project_store,
+    )
+
+    with pytest.raises(ActiveAttemptExists):
+        await racing.create_attempt(node_run.node_run_id)
+    assert conn.in_transaction is False
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_insert_with_no_winner_is_an_integrity_failure(
+    tmp_path: Path,
+) -> None:
+    """No active Attempt to point at, so the row itself is the problem.
+
+    Reporting `ActiveAttemptExists` here would name a conflicting Attempt that
+    does not exist and send a caller into a retry that can only fail again.
+    """
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    _setup, node_run = await _node_run_on(conn, project_store, project_id)
+    racing = SqliteRunStore(
+        _RaceLosingConnection(
+            conn,
+            error=sqlite3.IntegrityError("UNIQUE constraint failed: canonical_attempts.ordinal"),
+        ),
+        project_store=project_store,
+    )
+
+    with pytest.raises(RunIntegrityError, match="Attempt persistence integrity failure"):
+        await racing.create_attempt(node_run.node_run_id)
+    assert conn.in_transaction is False
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_leaves_no_open_transaction(tmp_path: Path) -> None:
+    """`BEGIN IMMEDIATE` is explicit, so every exit from it has to be too.
+
+    A failure that is not an integrity violation still has to release the write
+    lock: leaving the transaction open would make the *next* caller's BEGIN
+    raise "cannot start a transaction within a transaction" on a connection
+    that is otherwise healthy.
+    """
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    _setup, node_run = await _node_run_on(conn, project_store, project_id)
+    racing = SqliteRunStore(
+        _RaceLosingConnection(conn, error=sqlite3.OperationalError("disk I/O error")),
+        project_store=project_store,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        await racing.create_attempt(node_run.node_run_id)
+
+    assert conn.in_transaction is False
+    healthy = SqliteRunStore(conn, project_store=project_store)
+    attempt = await healthy.create_attempt(node_run.node_run_id)
+    assert attempt.ordinal == 1
+    await conn.close()
