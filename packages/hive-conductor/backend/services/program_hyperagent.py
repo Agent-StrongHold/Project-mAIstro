@@ -253,8 +253,8 @@ async def run_program_pulse(
     if unavailable and not queued:
         # Said once, plainly, rather than inferred from an empty list. Deriving
         # the actions from the workspace's own roster is the real fix and is
-        # `propose_autonomous_actions`' to make (#129 follow-up); until then a
-        # caller is at least told why their pulse queued nothing.
+        # `propose_autonomous_actions`' to make (#221); until then a caller is
+        # at least told why their pulse queued nothing.
         result["note"] = (
             "This workspace's persona has none of the agents the pulse proposes "
             f"({', '.join(sorted(set(unavailable)))}). No autonomous work was queued."
