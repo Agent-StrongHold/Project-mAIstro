@@ -23,6 +23,8 @@ blocked-by: []
 contracts:
   - behavioral
 tests: []
+ac-modules:
+  AC-1: maistro.runs.reconciliation
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -101,6 +103,13 @@ Both are plausibly retryable, and whether to retry is a policy decision belongin
 layer — which is exactly what `WAITING` is for. Only cancellation is a decision already
 taken. Stated here rather than left implied, because "all three park" was previously true by
 accident rather than by choice.
+
+## Acceptance Criteria
+
+<!-- ac-state: unproven AC-1 - this decision landed before ADR-level AC marker wiring; #230/#233 reconciliation tests exist and the marker retrofit remains measured governance debt -->
+- [ ] **AC-1**: A requested cancellation projects to a cancelled NodeRun (and an inactive
+  parent Run), while a recovery cancellation remains retryable/parked; failure and timeout keep
+  their existing retryable semantics.
 
 ## Consequences
 
