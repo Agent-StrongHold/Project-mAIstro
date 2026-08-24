@@ -12,7 +12,7 @@ work producer to say "run this DAG".
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from maistro.container import build_node_resolver
@@ -63,6 +63,7 @@ async def run_registered_dag(
     configure: Callable[[Graph], None] | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> tuple[Graph, Any]:
     """Execute a registered DAG through the canonical durable Run path.
 
@@ -74,7 +75,10 @@ async def run_registered_dag(
     identity via ``parent_run_id``/``parent_node_run_id`` so the launched
     work is a child Run rather than a disconnected sibling. Returns the
     instantiated Graph (callers key node lookups on its stable node names)
-    together with the durable run record.
+    together with the durable run record. ``provenance`` lands on the Run, so
+    a caller that fired this on someone's behalf -- a schedule, most of all --
+    records that on the Run rather than only in an audit line beside it
+    (#145).
     """
     descriptor = get_registry().get(dag_id)
     if descriptor is None:
@@ -90,5 +94,6 @@ async def run_registered_dag(
         actor_principal_id=user_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     return graph, record

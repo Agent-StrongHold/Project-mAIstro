@@ -16,6 +16,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 import maistro
 
 _SRC = str(pathlib.Path(maistro.__file__).resolve().parent.parent)
@@ -111,3 +113,23 @@ def test_an_unknown_attribute_still_raises_attribute_error() -> None:
     result = _run(statement)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_an_unknown_attribute_raises_in_process_too() -> None:
+    """The same property as the subprocess test above, measured.
+
+    That test runs the statement in a child interpreter, because its subject is
+    what happens when `aioboto3` is hidden from the import system — which can
+    only be arranged before `maistro.archive` is first imported. Coverage does
+    not follow a subprocess, so the `raise AttributeError` arm of
+    `__getattr__` was exercised on every CI run and recorded as unexercised,
+    and the diff gate read that as an untested branch.
+
+    A typo does not need a child interpreter. This is the same assertion where
+    the measurement can see it; the subprocess version stays, because the
+    dependency-hiding half genuinely needs it.
+    """
+    import maistro.archive as archive
+
+    with pytest.raises(AttributeError, match="NoSuchThing"):
+        getattr(archive, "NoSuchThing")  # noqa: B009 — the attribute access IS the subject

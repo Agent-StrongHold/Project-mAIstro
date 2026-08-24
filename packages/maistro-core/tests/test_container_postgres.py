@@ -63,6 +63,10 @@ def _config(url: str) -> AgentConfig:
         ("postgres://u:p@h:5432/d", "postgres://u:p@h:5432/d"),
         # asyncpg speaks libpq DSNs; SQLAlchemy's `+driver` spelling is not one.
         ("postgresql+asyncpg://u:p@h:5432/d", "postgresql://u:p@h:5432/d"),
+        # Either driver suffix, not only asyncpg's: the pool opened from this
+        # DSN is asyncpg's whichever spelling named the database, and
+        # `DB_*`-only deployments resolve to the psycopg one.
+        ("postgresql+psycopg://u:p@h:5432/d", "postgresql://u:p@h:5432/d"),
     ],
 )
 def test_sqlalchemy_spelling_is_normalised_for_asyncpg(configured: str, expected: str) -> None:
@@ -76,9 +80,42 @@ def test_the_sqlalchemy_prefix_is_only_stripped_once() -> None:
     assert dsn == "postgresql://u:p@h:5432/postgresql+asyncpg://"
 
 
-def test_every_scheme_an_operator_might_write_is_recognised() -> None:
+def test_the_scheme_a_db_star_deployment_resolves_to_is_recognised(monkeypatch) -> None:
+    """The docker-compose case: five `DB_*` variables and no `DATABASE_URL`.
+
+    This replaces a test that asserted every member of `POSTGRES_SCHEMES`
+    starts with one of `POSTGRES_SCHEMES` — true of any tuple, and therefore
+    green no matter which spellings were missing. The real question is whether
+    the tuple covers what `resolve_database_url` actually produces, so the
+    scheme is *measured* here rather than restated: when `sync_url` gained its
+    `+psycopg` driver suffix, the tautological version stayed green while the
+    container silently fell back to in-memory stores for exactly the
+    deployment #187 exists to have fixed.
+    """
+    from maistro.config.database import resolve_database_url
+
+    for name in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DB_HOST", "db.internal")
+
+    resolved = resolve_database_url()
+
+    assert resolved.startswith(POSTGRES_SCHEMES), (
+        f"{resolved.split('://', 1)[0]}:// is what a DB_*-only deployment resolves to, "
+        "and the container does not recognise it as PostgreSQL"
+    )
+
+
+def test_no_scheme_in_the_tuple_is_a_prefix_of_another() -> None:
+    """`startswith` on a tuple takes the first match, and `_asyncpg_dsn`
+    strips by name — so a scheme that is a prefix of another would make the
+    order of this tuple load-bearing without saying so."""
     for scheme in POSTGRES_SCHEMES:
-        assert f"{scheme}user@host/db".startswith(POSTGRES_SCHEMES)
+        others = [s for s in POSTGRES_SCHEMES if s != scheme]
+        assert not any(other.startswith(scheme) for other in others), (
+            f"{scheme} is a prefix of another entry"
+        )
 
 
 # ── refusals, which need no server ────────────────────────────────

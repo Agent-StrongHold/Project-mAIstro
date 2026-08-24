@@ -256,9 +256,15 @@ export default function Agents() {
   const handleCreate = useCallback(async () => {
     setCBusy(true);
     try {
+      // `workspace_id` is what makes this work at all in a deployment that
+      // still has HIVE_POC_MODE set: routes/agents.py 403s a create with no
+      // workspace ("PM fleet is read-only in POC mode") and honours one with
+      // it, subject to a workspace-owner check. The list call above has always
+      // been workspace-scoped; the mutations were not (#129).
       await apiPost("/v1/agents", {
         name: cName, description: cDesc, model: cModel,
         capabilities: cCaps, strategy: cStrat,
+        ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
       });
       toast("Agent created");
       setShowCreate(false);
@@ -269,13 +275,14 @@ export default function Agents() {
     } finally {
       setCBusy(false);
     }
-  }, [cName, cDesc, cModel, cCaps, cStrat, load, toast]);
+  }, [cName, cDesc, cModel, cCaps, cStrat, load, toast, activeWorkspaceId]);
 
   const handleForge = useCallback(async () => {
     setBBusy(true);
     try {
       const res = await apiPost<Record<string, unknown>>("/v1/agents/forge", {
         description: bDesc, strategy: bStrat, model: bModel,
+        ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
       });
       setBConfig(JSON.stringify(res, null, 2));
       setBStep(4);
@@ -284,7 +291,7 @@ export default function Agents() {
     } finally {
       setBBusy(false);
     }
-  }, [bDesc, bStrat, bModel, toast]);
+  }, [bDesc, bStrat, bModel, toast, activeWorkspaceId]);
 
   const handleBuilderScan = useCallback(async () => {
     setBBusy(true);
@@ -303,7 +310,10 @@ export default function Agents() {
     setBBusy(true);
     try {
       const config = JSON.parse(bConfig);
-      await apiPost("/v1/agents", config);
+      await apiPost("/v1/agents", {
+        ...config,
+        ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
+      });
       toast("Agent created from forge");
       setBStep(0); setBDesc(""); setBConfig(""); setBScan(null);
       await load();
@@ -312,7 +322,7 @@ export default function Agents() {
     } finally {
       setBBusy(false);
     }
-  }, [bConfig, load, toast]);
+  }, [bConfig, load, toast, activeWorkspaceId]);
 
   const toggleCap = (cap: string) => {
     setCCaps((prev) => prev.includes(cap) ? prev.filter((c) => c !== cap) : [...prev, cap]);

@@ -31,7 +31,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "005"
-down_revision = "004"
+down_revision = "004_task_run_id"
 branch_labels = None
 depends_on = None
 

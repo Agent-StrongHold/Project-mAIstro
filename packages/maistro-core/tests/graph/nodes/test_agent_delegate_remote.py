@@ -13,7 +13,10 @@ from unittest.mock import AsyncMock
 from maistro.a2a.delegate import A2ADelegator
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
 from maistro.graph.nodes import NodeContext, get_node, list_kinds
-from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+from maistro.graph.nodes.agent_delegate_remote import (
+    AgentDelegateRemoteNode,
+    DelegationNotConfiguredError,
+)
 
 
 def _ctx(**overrides: Any) -> NodeContext:
@@ -54,12 +57,26 @@ async def test_in_process_first_reach_pauses_with_task_id() -> None:
     assert delegator.get_task_status(result.metadata["task_id"]) is not None
 
 
-async def test_in_process_no_delegator_configured_fails_without_pausing() -> None:
+async def test_in_process_no_delegator_configured_is_a_refusal_not_a_result() -> None:
+    """A wiring fault is not the target agent declining (#147).
+
+    This used to return `status="failed"` with "no a2a_delegator configured",
+    which is the same shape a real refusal takes — so a Graph branching on
+    failure could not tell "this instance is misconfigured" from "the agent
+    said no", and nothing surfaced it. `build_node_resolver` constructed this
+    node with `a2a_delegator=None` in the only resolver production uses, so
+    that was every delegation.
+    """
     node = AgentDelegateRemoteNode()  # no a2a_delegator injected
+
     result = await node.run({"from_agent": "planner", "task": "x"}, _ctx(node_id="delegate-1"))
-    assert result.status == "completed"
-    assert result.output.status == "failed"
-    assert result.output.error == "no a2a_delegator configured"
+
+    # The distinction is in the NodeResult, not the output: the *node* failed,
+    # rather than completing with an output that says the delegation failed.
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.error_code == DelegationNotConfiguredError.__name__
+    assert result.output is None, "a misconfiguration produces no delegation result"
 
 
 async def test_in_process_delegation_rejected_returns_without_pausing() -> None:
@@ -133,14 +150,18 @@ async def test_cross_instance_first_reach_pauses_with_task_id() -> None:
     )
 
 
-async def test_cross_instance_no_guest_peers_configured_fails_without_pausing() -> None:
+async def test_cross_instance_no_guest_peers_configured_is_a_refusal_not_a_result() -> None:
+    """Same distinction on the cross-instance path (#147)."""
     node = AgentDelegateRemoteNode()  # no guest_peers injected
+
     result = await node.run(
-        {"from_agent": "planner", "task": "x", "peer_name": "hub"}, _ctx(node_id="delegate-2")
+        {"from_agent": "planner", "task": "x", "peer_name": "peer-a"},
+        _ctx(node_id="delegate-1"),
     )
-    assert result.status == "completed"
-    assert result.output.status == "failed"
-    assert result.output.error == "no guest_peers manager configured"
+
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.error_code == DelegationNotConfiguredError.__name__
 
 
 async def test_cross_instance_peer_rejected_returns_without_pausing() -> None:

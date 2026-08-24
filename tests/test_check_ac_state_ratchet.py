@@ -26,7 +26,28 @@ TOTALS = {
     "criteria_claimed_but_unproven": 0,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
+    "specs_implementing_nothing": 76,
+    "adrs_without_implementing_spec": 35,
+    "specs_declaring_no_criteria": 7,
+    # The one counter that is a percentage and the one whose recorded number is
+    # a floor rather than a ceiling. A round 4.0 here rather than the shipped
+    # 3.9582, so a test asserting on the direction reads as arithmetic about
+    # floors and not as a second copy of the corpus measurement.
+    "design_coverage": 4.0,
 }
+
+
+def test_the_fixture_covers_every_ratcheted_counter(gate):
+    """A missing key here surfaces as a `KeyError` inside the gate.
+
+    `_bank` and `_compare` both index `totals[name]` for every ratcheted
+    counter, so a fixture that has fallen behind fails five tests at once with a
+    traceback that points at the gate rather than at the fixture. Naming the
+    drift directly is the difference between a five-minute fix and a confusing
+    one — which is the same argument the gate itself makes about ceilings.
+    """
+    bounded = {*gate.RATCHETED, *gate.FLOORED}
+    assert bounded == set(TOTALS), "TOTALS is missing: " + ", ".join(sorted(bounded - set(TOTALS)))
 
 
 @pytest.fixture(scope="module")
@@ -120,5 +141,63 @@ def test_a_missing_ceilings_file_fails_with_the_bank_instruction(
 
 def test_the_shipped_ceilings_cover_every_ratcheted_counter(gate) -> None:
     recorded = json.loads((ROOT / "quality" / "ac-state-ceilings.json").read_text())
-    assert set(recorded["ceilings"]) == set(gate.RATCHETED)
+    assert set(recorded["ceilings"]) == {*gate.RATCHETED, *gate.FLOORED}
     assert recorded["measured_with_tests"] is True
+
+
+class TestTheFloorUnderProgress:
+    """`design_coverage` is the first counter where higher is better (#166).
+
+    `_compare` compared ten counters in one direction before this, so the
+    failure mode worth pinning is not "the floor does not work" but "the floor
+    is quietly a ceiling" — a fall reported as an improvement to bank, which
+    would ratchet the number *down* on every PR that lost ground and call it
+    progress. These assert on which list each move lands in, not merely that
+    something failed.
+    """
+
+    def test_design_coverage_is_floored_and_not_also_a_debt_counter(self, gate) -> None:
+        """The membership assertion comes first because `isdisjoint` alone is
+        vacuously true when `FLOORED` is empty — which is exactly the state the
+        predicted bug leaves it in."""
+        assert "design_coverage" in gate.FLOORED
+        assert "design_coverage" not in gate.RATCHETED
+        assert set(gate.RATCHETED).isdisjoint(gate.FLOORED)
+
+    def test_a_fall_is_a_regression_and_names_the_floor(self, gate, ceilings, capsys) -> None:
+        ceilings()
+        worse = {**TOTALS, "design_coverage": 3.9}
+        assert gate.ratchet(worse, measured=True, bank=False) == 1
+        out = capsys.readouterr().out
+        assert "3.9 falls below the floor of 4.0" in out
+        assert "unbanked improvement" not in out, "a fall was offered as progress to bank"
+
+    def test_a_rise_is_an_unbanked_improvement_not_a_regression(
+        self, gate, ceilings, capsys
+    ) -> None:
+        """Proving a criterion must not read as a new contradiction."""
+        ceilings()
+        better = {**TOTALS, "design_coverage": 4.5}
+        assert gate.ratchet(better, measured=True, bank=False) == 1
+        out = capsys.readouterr().out
+        assert "4.5, floor still says 4.0" in out
+        assert "exceeds the ceiling" not in out
+
+    def test_banking_a_rise_raises_the_floor(self, gate, ceilings) -> None:
+        path = ceilings()
+        better = {**TOTALS, "design_coverage": 4.5}
+        assert gate.ratchet(better, measured=True, bank=True) == 0
+        assert json.loads(path.read_text())["ceilings"]["design_coverage"] == 4.5
+        assert gate.ratchet(better, measured=True, bank=False) == 0
+        # ...and the raised floor is what makes the old value a regression.
+        assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
+
+    def test_a_missing_floor_fails_rather_than_defaulting_to_zero(self, gate, ceilings) -> None:
+        """`ceilings.get(name)` is None for an absent key, and `0 < None` raises
+        while `actual > None` would too — but a `0` default would silently pass
+        anything. The absence has to be its own failure."""
+        path = ceilings()
+        payload = json.loads(path.read_text())
+        del payload["ceilings"]["design_coverage"]
+        path.write_text(json.dumps(payload))
+        assert gate.ratchet(TOTALS, measured=True, bank=False) == 1

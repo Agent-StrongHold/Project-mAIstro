@@ -40,6 +40,9 @@ _ITEM = re.compile(
 _ITEM_LINE = re.compile(r"^\*\*\[[a-z]+-\d")
 _TABLE_ROW = re.compile(r"^\|\s*`?([^`|]+?)`?\s*\|")
 _PREFIX_BULLET = re.compile(r"^- `([a-z]+)-NNN`")
+
+#: An item reference like `[engine-012]` — how one backlog item names another.
+_ITEM_REF = re.compile(r"\[((?:[a-z]+)-\d+)\]")
 _DECISION = re.compile(r"\b(?:ADR|SPEC)-\d[0-9A-Za-z]*(?:-[0-9a-f]{4})?")
 
 
@@ -119,7 +122,33 @@ def audit(text: str) -> list[str]:
     for identifier in sorted(set(_DECISION.findall(text))):
         if not _decision_exists(identifier):
             failures.append(f"cites {identifier}, which is not in docs/adr or docs/specs")
+
+    failures.extend(_dangling_item_references(text, seen))
     return failures
+
+
+def _dangling_item_references(text: str, defined: set[str]) -> list[str]:
+    """Item references that name an item this file never defines (#30).
+
+    An item's dependencies are the part of it this repository can act on — the
+    `sh-` header says exactly that. A reference to an id that does not exist
+    reads as a recorded prerequisite while pointing at nothing, which is worse
+    than recording none: the first says the dependency is known and tracked.
+
+    The ids of range-form items (`[turing-030..034]`) are expanded, because a
+    reference to any member of the range is legitimate.
+    """
+    expanded = set(defined)
+    for base, upper in re.findall(r"(?m)^\*\*\[([a-z]+-\d+)\.\.(\d+)\]", text):
+        prefix, low = base.rsplit("-", 1)
+        for number in range(int(low), int(upper) + 1):
+            expanded.add(f"{prefix}-{number:0{len(low)}d}")
+
+    return [
+        f"references [{reference}], which is not an item defined in this file"
+        for reference in sorted(set(_ITEM_REF.findall(text)))
+        if reference not in expanded
+    ]
 
 
 def main() -> int:

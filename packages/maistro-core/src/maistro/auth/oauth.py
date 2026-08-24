@@ -30,6 +30,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from maistro.security.outbound import configure_outbound_policy
+
 logger = logging.getLogger("maistro.auth.oauth")
 
 __all__ = [
@@ -345,6 +347,23 @@ class OAuth2Client:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._providers = dict(providers)
+        # Same reason as `HomeAssistantIntegration`: a provider map can name a
+        # self-hosted issuer on the operator's own network, and it arrives as a
+        # constructor argument rather than through settings, so the outbound
+        # policy (#155) cannot have seen it. Registering a public issuer too
+        # costs nothing — an allowance is one exact origin, not a class of them.
+        configure_outbound_policy(
+            *(
+                url
+                for config in self._providers.values()
+                for url in (
+                    config.authorization_url,
+                    config.token_url,
+                    config.jwks_url or "",
+                    config.userinfo_url or "",
+                )
+            )
+        )
         self._states = state_store
         self._http = http
         self._secret_resolver = secret_resolver
