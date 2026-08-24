@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -22,18 +23,64 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.store import (
+    DEFAULT_PURGE_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
     NodeRunNotFound,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
+    admit_in_state,
+    is_purgeable,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
 
 if TYPE_CHECKING:
     import aiosqlite
+
+_TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
+
+
+def _placeholders(count: int) -> str:
+    """`count` SQL parameter marks, comma-separated.
+
+    The one thing this repo interpolates into SQL, and the reason bandit's B608
+    findings on the statements below are marked rather than fixed: the returned
+    text is `?,?,?`, derived from a length and never from a value. Every datum
+    still travels in the parameter tuple, so there is no vector to close — the
+    alternative bandit would prefer (a fixed number of marks) cannot express
+    `IN` over a variable-length list at all.
+
+    `sqlite_learnings.py` marks the identical pattern the same way.
+    """
+    return ",".join("?" * count)
+
+
+#: Held as templates rather than built inline so the interpolation sits on one
+#: line that can carry its `# nosec`, and so the SQL itself is readable next to
+#: the schema above rather than buried in a call.
+_PURGE_CANDIDATES_SQL = """SELECT run_id, payload FROM canonical_runs r
+    WHERE r.status IN ({statuses})
+      AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY json_extract(r.payload, '$.retention_expires_at')
+    LIMIT ?"""
+
+_DELETE_ATTEMPTS_SQL = """DELETE FROM canonical_attempts WHERE node_run_id IN (
+        SELECT node_run_id FROM canonical_node_runs WHERE run_id IN ({runs})
+    )"""
+
+_DELETE_NODE_RUNS_SQL = "DELETE FROM canonical_node_runs WHERE run_id IN ({runs})"
+
+_DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN ({runs})"
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -129,6 +176,8 @@ class SqliteRunStore:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         async with self._write_lock:
             await self._validate_graph_scope(graph)
@@ -157,7 +206,12 @@ class SqliteRunStore:
                 persona_id=persona_id,
                 actor_principal_id=actor_principal_id,
                 provenance=dict(provenance or {}),
+                retention_expires_at=retention_expires_at,
             )
+            # Before the insert, not after it: one commit, so there is no window
+            # in which a process death leaves a CREATED Run whose provenance
+            # names a receipt that was already queued.
+            run = admit_in_state(run, initial_status)
             await self._conn.execute(
                 """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
@@ -170,7 +224,7 @@ class SqliteRunStore:
                     run.parent_run_id,
                     run.parent_node_run_id,
                     run.status.value,
-                    run.model_dump_json(),
+                    json_of(run),
                 ),
             )
             await self._conn.commit()
@@ -181,7 +235,7 @@ class SqliteRunStore:
             "SELECT payload FROM canonical_runs WHERE run_id = ?",
             (run_id,),
         )
-        return Run.model_validate_json(row[0]) if row is not None else None
+        return model_of_json(Run, row[0]) if row is not None else None
 
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
         """Forget one terminal Run and everything hanging off it.
@@ -224,6 +278,76 @@ class SqliteRunStore:
         await self._conn.commit()
         return True
 
+    async def has_runs_in_project(self, project_id: str) -> bool:
+        """Whether any Run is filed in this Project.
+
+        Consulted by `SqliteProjectScopeStore.delete()` so a Project cannot be
+        deleted out from under its Run history.
+        """
+        row = await self._fetchone(
+            "SELECT 1 FROM canonical_runs WHERE project_id = ? LIMIT 1",
+            (project_id,),
+        )
+        return row is not None
+
+    async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
+        """Terminal Runs carrying a deadline and descended from by nobody.
+
+        Ordered by deadline, so the caller can stop at the first unexpired one
+        rather than parsing the whole batch. `json_extract` is only used to
+        *narrow* and *order*; the comparison against the cutoff happens in
+        Python against a parsed datetime, because comparing ISO-8601 strings
+        lexically is only correct while every one of them carries the same UTC
+        offset — true today, and not something to make load-bearing.
+        """
+        sql = _PURGE_CANDIDATES_SQL.format(  # nosec B608 — `{}` takes only `?`s, never data
+            statuses=_placeholders(len(_TERMINAL_STATUS_VALUES))
+        )
+        cursor = await self._conn.execute(sql, (*_TERMINAL_STATUS_VALUES, limit))
+        return [(row[0], Run.model_validate_json(row[1])) for row in await cursor.fetchall()]
+
+    async def purge_expired_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+
+        Deletes in the order the foreign keys require — Attempts, NodeRuns,
+        Runs — under the same write lock every other mutation takes, so a
+        concurrent transition cannot land on a Run this sweep is removing.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        cutoff = now if now is not None else datetime.now(UTC)
+        async with self._write_lock:
+            doomed = []
+            for run_id, run in await self._purge_candidates(limit):
+                if not is_purgeable(run, cutoff):
+                    break
+                doomed.append(run_id)
+            if not doomed:
+                return 0
+            marks = _placeholders(len(doomed))
+            ids = tuple(doomed)
+            # Same reasoning as `_purge_candidates`: the only interpolated text
+            # is `marks`, and every run_id travels in the parameter tuple.
+            await self._conn.execute(
+                _DELETE_ATTEMPTS_SQL.format(runs=marks),
+                ids,  # nosec B608
+            )
+            await self._conn.execute(
+                _DELETE_NODE_RUNS_SQL.format(runs=marks),
+                ids,  # nosec B608
+            )
+            await self._conn.execute(
+                _DELETE_RUNS_SQL.format(runs=marks),
+                ids,  # nosec B608
+            )
+            await self._conn.commit()
+        return len(doomed)
+
     async def transition_run(
         self,
         run_id: str,
@@ -237,7 +361,7 @@ class SqliteRunStore:
             run = await self._require_run(run_id)
             updated = transition_run(run, target, at=at, result=result, error=error)
             await self._update_payload(
-                "canonical_runs", "run_id", run_id, updated.status.value, updated.model_dump_json()
+                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
             )
             return updated
 
@@ -267,7 +391,7 @@ class SqliteRunStore:
                     node_run.node_id,
                     node_run.ordinal,
                     node_run.status.value,
-                    node_run.model_dump_json(),
+                    json_of(node_run),
                 ),
             )
             await self._conn.commit()
@@ -278,7 +402,7 @@ class SqliteRunStore:
             "SELECT payload FROM canonical_node_runs WHERE node_run_id = ?",
             (node_run_id,),
         )
-        return NodeRun.model_validate_json(row[0]) if row is not None else None
+        return model_of_json(NodeRun, row[0]) if row is not None else None
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         await self._require_run(run_id)
@@ -287,7 +411,7 @@ class SqliteRunStore:
             (run_id,),
         )
         rows = await cursor.fetchall()
-        return [NodeRun.model_validate_json(row[0]) for row in rows]
+        return [model_of_json(NodeRun, row[0]) for row in rows]
 
     async def transition_node_run(
         self,
@@ -319,7 +443,7 @@ class SqliteRunStore:
                 "node_run_id",
                 node_run_id,
                 updated.status.value,
-                updated.model_dump_json(),
+                json_of(updated),
             )
             return updated
 
@@ -382,7 +506,7 @@ class SqliteRunStore:
                         attempt.node_run_id,
                         attempt.ordinal,
                         attempt.status.value,
-                        attempt.model_dump_json(),
+                        json_of(attempt),
                     ),
                 )
                 await self._conn.commit()
@@ -412,7 +536,7 @@ class SqliteRunStore:
             "SELECT payload FROM canonical_attempts WHERE attempt_id = ?",
             (attempt_id,),
         )
-        return Attempt.model_validate_json(row[0]) if row is not None else None
+        return model_of_json(Attempt, row[0]) if row is not None else None
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         await self._require_node_run(node_run_id)
@@ -422,7 +546,7 @@ class SqliteRunStore:
             (node_run_id,),
         )
         rows = await cursor.fetchall()
-        return [Attempt.model_validate_json(row[0]) for row in rows]
+        return [model_of_json(Attempt, row[0]) for row in rows]
 
     async def transition_attempt(
         self,
@@ -451,7 +575,7 @@ class SqliteRunStore:
                 "attempt_id",
                 attempt_id,
                 updated.status.value,
-                updated.model_dump_json(),
+                json_of(updated),
             )
             return updated
 

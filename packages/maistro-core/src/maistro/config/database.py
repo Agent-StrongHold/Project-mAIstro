@@ -203,6 +203,37 @@ def to_async_url(database_url: str) -> str:
     return _normalise_postgres_scheme(database_url, "postgresql+asyncpg://")
 
 
+def to_asyncpg_dsn(database_url: str) -> str:
+    """Normalise to the spelling asyncpg's own parser accepts.
+
+    asyncpg understands `postgresql://` and `postgres://` and nothing else, so
+    either SQLAlchemy `+driver` spelling — which an operator may reasonably have
+    set for alembic — raises `ValueError: invalid DSN` rather than connecting.
+    Stripping the suffix is the whole conversion: userinfo, host, port, database
+    and query string all mean the same thing to both parsers.
+
+    Only the suffix. `postgres://` is left exactly as it is, because asyncpg
+    accepts it and rewriting it would be a change dressed as a normalisation —
+    a caller comparing the DSN it configured against the one that was opened
+    would stop recognising its own string.
+
+    That is also why this does not go through `_normalise_postgres_scheme`,
+    which rewrites the base scheme as well: `to_sync_url` needs that, since
+    SQLAlchemy 2 removed the legacy `postgres` dialect alias and a bare
+    `postgresql://` resolves to psycopg2. asyncpg has neither problem, so the
+    two conversions genuinely differ and sharing an implementation would make
+    one of them wrong.
+
+    The async counterpart of :func:`to_sync_url`, and here rather than in each
+    caller because "which spelling does this driver take" is one question with
+    one answer, and two copies of it drift (#187).
+    """
+    for suffix in ("postgresql+asyncpg://", "postgresql+psycopg://"):
+        if database_url.startswith(suffix):
+            return "postgresql://" + database_url[len(suffix) :]
+    return database_url
+
+
 def _normalise_postgres_scheme(database_url: str, target: str) -> str:
     """Rewrite whichever PostgreSQL spelling this URL uses to `target`."""
     for scheme in (
