@@ -14,6 +14,13 @@ typo produces. Those must still fail rather than silently become ephemeral.
 
 The three cases are deliberately distinguished, and the distinction is the
 design: unset is honest, `memory://` is chosen, anything else is a mistake.
+
+`postgresql://` was in the "mistake" list until #122 gave it a backend, and it
+moved rather than being deleted: the rejection message still has to name it, or
+an operator reading it learns that the durable system of record is unsupported.
+The PostgreSQL path's own credential redaction is exercised against a live
+server in `tests/migrations/test_pg_store_wiring.py`, where a refused
+connection is a real error rather than a DNS timeout.
 """
 
 from __future__ import annotations
@@ -50,6 +57,15 @@ async def test_a_database_that_cannot_be_wired_is_a_config_error(url: str) -> No
     assert _redact_url(url) in message, "the message must name the offending value"
     for supported in ("postgresql://", "sqlite://", "memory://"):
         assert supported in message, "and the supported alternatives"
+
+
+async def test_the_error_names_postgresql_among_the_supported_backends() -> None:
+    """PostgreSQL is the durable system of record (ADR-082226-5104). An error
+    that lists only sqlite tells an operator the opposite of what is true."""
+    with pytest.raises(ConfigError) as excinfo:
+        await create_container(_config("mysql://host/db"))
+
+    assert "postgresql://" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

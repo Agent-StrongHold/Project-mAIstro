@@ -195,28 +195,47 @@ class TestQuotaTrackerRunsAgainstTheMigration:
         assert second["total_tokens"] == 126
         assert second["request_count"] == 2
 
-    async def test_providers_and_cycles_are_separate_rows(self, pool):
+    async def test_providers_and_cycle_types_are_separate_rows(self, pool):
+        """`(provider, cycle_key)` is the key, so both axes have to separate.
+
+        This used to pass explicit cycle *instances* (`"2026-08"`, `"2026-09"`)
+        and expect three rows. That worked only against the old pg-local
+        `cycle_key`, which passed its argument straight through -- the defect
+        where every month accumulated into one row keyed `"monthly"` and
+        nothing ever rolled over. `billing_cycle` is a cycle *type*, and
+        `maistro.quota.billing.cycle_key` resolves it to the cycle running now,
+        which is what `InMemoryQuotaTracker` has always done. Neither tracker
+        can record into a past cycle, so a test that asked for one was
+        asserting a contract the protocol does not have.
+        """
         from maistro.persistence.pg_quota import PgQuotaTracker
 
         tracker = PgQuotaTracker(pool)
-        await tracker.record_usage("anthropic", "2026-08", 10, 1)
-        await tracker.record_usage("anthropic", "2026-09", 20, 2)
-        await tracker.record_usage("openai", "2026-08", 30, 3)
+        await tracker.record_usage("anthropic", "monthly", 10, 1)
+        await tracker.record_usage("anthropic", "daily", 20, 2)
+        await tracker.record_usage("openai", "monthly", 30, 3)
 
-        assert len(await tracker.get_all_usage()) == 3
+        usage = await tracker.get_all_usage()
+        assert len(usage) == 3, "two providers x two cycle types, minus the pair not used"
+        assert len({(u["provider"], u["cycle_key"]) for u in usage}) == 3
 
-    async def test_the_cycle_key_is_normalised_before_it_reaches_the_key(self, pool):
-        """`cycle_key` lowercases and strips. If that happened after the upsert
-        rather than before, ` 2026-08 ` and `2026-08` would be two rows and the
-        cycle's total would be split across them."""
+    async def test_one_cycle_type_accumulates_into_one_row(self, pool):
+        """The upsert has to resolve the key *before* it reaches `ON CONFLICT`.
+
+        If it resolved after, two calls naming the same cycle would land in two
+        rows and the cycle's total would be split across them -- the same class
+        of bug as never rolling over, in the opposite direction.
+        """
         from maistro.persistence.pg_quota import PgQuotaTracker
+        from maistro.quota.billing import cycle_key
 
         tracker = PgQuotaTracker(pool)
-        await tracker.record_usage("anthropic", "2026-08", 10, 1)
-        await tracker.record_usage("anthropic", "  2026-08  ", 10, 1)
+        await tracker.record_usage("anthropic", "monthly", 10, 1)
+        await tracker.record_usage("anthropic", "monthly", 10, 1)
 
         usage = await tracker.get_all_usage()
         assert len(usage) == 1
+        assert usage[0]["cycle_key"] == cycle_key("monthly")
         assert usage[0]["total_tokens"] == 22
 
 

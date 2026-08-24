@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -9,6 +10,39 @@ from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
     import asyncpg
+
+
+def _scoped(query: str, params: list[Any], org_id: str = "", project_id: str = "") -> str:
+    """Append the scope predicates every read here accepted and none applied.
+
+    All five reads took an `org_id` argument and filtered on nothing, so a
+    caller asking for one organization's completion rate got every
+    organization's rows. `InMemoryOutcomeStore` filters on both axes, which
+    makes this two implementations of one protocol disagreeing about whether
+    scope means anything -- the failure mode a shared helper exists to stop
+    recurring, since the defect was five copies of the same omission.
+
+    Empty means unscoped, matching `InMemoryOutcomeStore._org_matches`: a
+    caller that names no org sees everything, and one that names an org sees
+    exactly that org's rows.
+    """
+    return query + _scope_clause(params, org_id, project_id)
+
+
+def _scope_clause(params: list[Any], org_id: str = "", project_id: str = "") -> str:
+    """Just the `AND col = $n` fragment, for queries that continue after WHERE.
+
+    The aggregate reads end in GROUP BY / ORDER BY, so their predicates have to
+    be interpolated at the WHERE rather than appended to the whole statement.
+    Placeholder numbers come from the params list itself, which is what keeps
+    the two forms consistent when a query already has positional arguments.
+    """
+    clause = ""
+    for column, value in (("org_id", org_id), ("project_id", project_id)):
+        if value:
+            params.append(value)
+            clause += f" AND {column} = ${len(params)}"
+    return clause
 
 
 class PgOutcomeStore:
@@ -28,17 +62,30 @@ class PgOutcomeStore:
                    (request_id, task_type, model_used, provider,
                     tool_calls, success, error_type, response_time_ms,
                     org_id, team_id, user_id, agent_id,
-                    input_tokens, output_tokens, charged_microchips, pricing_version)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                    input_tokens, output_tokens, charged_microchips, pricing_version,
+                    project_id, dag_id, dag_run_id, node_id,
+                    thumb, thumb_comment, eval_judge_score)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                           $17,$18,$19,$20,$21,$22,$23)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
                 outcome.model_used,
                 outcome.provider,
-                str(outcome.tool_calls),
+                # `json.dumps`, not `str`. asyncpg's JSONB codec takes text and
+                # does not serialise Python objects, and `str([{"a": 1}])` is
+                # `"[{'a': 1}]"` -- single quotes, not JSON. Every outcome that
+                # actually recorded a tool call was an InvalidTextRepresentation
+                # error; only the empty-list case, whose repr happens to be
+                # valid JSON, ever got through.
+                json.dumps(outcome.tool_calls),
                 outcome.success,
                 outcome.error_type,
                 outcome.response_time_ms,
+                # `org_id` is NOT NULL with no DDL default and was omitted
+                # entirely, so every insert was a NotNullViolation -- and had it
+                # had a default, the row would have silently lost the org scope
+                # that `ix_outcomes_org_task` and `by_org` both key on.
                 outcome.org_id,
                 outcome.team_id,
                 outcome.user_id,
@@ -47,6 +94,18 @@ class PgOutcomeStore:
                 outcome.output_tokens,
                 outcome.charged_microchips,
                 outcome.pricing_version,
+                # Scope and feedback. `project_id` was dropped entirely, so a
+                # failure narrative injected into one project's prompt could
+                # come from another; `thumb` was dropped, so a thumbs-down
+                # accepted by the feedback service became an ordinary
+                # successful row and could never reach the learning loop.
+                outcome.project_id,
+                outcome.dag_id,
+                outcome.dag_run_id,
+                outcome.node_id,
+                outcome.thumb,
+                outcome.thumb_comment,
+                outcome.eval_judge_score,
             )
             return int(row["id"]) if row else 0
 
@@ -62,8 +121,9 @@ class PgOutcomeStore:
             query = "SELECT * FROM outcomes WHERE created_at >= $1"
             params: list[Any] = [cutoff]
             if task_type:
-                query += " AND task_type = $2"
                 params.append(task_type)
+                query += f" AND task_type = ${len(params)}"
+            query = _scoped(query, params, org_id)
             rows = await conn.fetch(query, *params)
 
         total = len(rows)
@@ -113,18 +173,26 @@ class PgOutcomeStore:
         async with self._pool.acquire() as conn:
             if days > 0:
                 cutoff = datetime.now(UTC) - timedelta(days=days)
+                params: list[Any] = [cutoff]
+                scope = _scope_clause(params, org_id)
                 rows = await conn.fetch(
                     f"""{select_cols}
-                       WHERE created_at >= $1
+                       WHERE created_at >= $1{scope}
                        GROUP BY {group_by}
-                       ORDER BY total_tokens DESC""",
-                    cutoff,
+                       ORDER BY total_tokens DESC""",  # nosec B608
+                    *params,
                 )
             else:
+                # No cutoff, so the scope predicate has to open the WHERE
+                # rather than extend one. `days <= 0` means "all time", not
+                # "all orgs".
+                params = []
+                scope = _scope_clause(params, org_id).replace(" AND ", " WHERE ", 1)
                 rows = await conn.fetch(
-                    f"""{select_cols}
+                    f"""{select_cols}{scope}
                        GROUP BY {group_by}
-                       ORDER BY total_tokens DESC""",
+                       ORDER BY total_tokens DESC""",  # nosec B608
+                    *params,
                 )
 
         return [
@@ -151,6 +219,8 @@ class PgOutcomeStore:
         allowed = {"user_id", "team_id", "model_used", "agent_id", "provider"}
         has_group = group_by in allowed
         cutoff = datetime.now(UTC) - timedelta(days=days)
+        params: list[Any] = [cutoff]
+        scope = _scope_clause(params, org_id)
 
         if has_group:
             query = f"""
@@ -162,11 +232,11 @@ class PgOutcomeStore:
                        COALESCE(SUM(charged_microchips), 0) AS total_microchips,
                        COUNT(*) AS request_count
                  FROM outcomes
-                 WHERE created_at >= $1
+                 WHERE created_at >= $1{scope}
                  GROUP BY day, {group_by}
                  ORDER BY day"""  # nosec B608
         else:
-            query = """
+            query = f"""
                 SELECT DATE(created_at AT TIME ZONE 'UTC') AS day,
                        COALESCE(SUM(input_tokens), 0) AS input_tokens,
                        COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -174,12 +244,12 @@ class PgOutcomeStore:
                        COALESCE(SUM(charged_microchips), 0) AS total_microchips,
                        COUNT(*) AS request_count
                 FROM outcomes
-                WHERE created_at >= $1
+                WHERE created_at >= $1{scope}
                 GROUP BY day
-                ORDER BY day"""
+                ORDER BY day"""  # nosec B608
 
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(query, cutoff)
+            rows = await conn.fetch(query, *params)
 
         return [
             {
@@ -202,23 +272,67 @@ class PgOutcomeStore:
         org_id: str = "",
         project_id: str = "",
     ) -> str:
-        """Get recent failure patterns as a prompt section."""
+        """Recent failures and thumbs-down, scoped, as a prompt section.
+
+        Matches `InMemoryOutcomeStore.get_experience_context`, which is the
+        protocol's reference implementation. Four parts of that contract were
+        missing here, and each one put the wrong text into an agent's system
+        prompt rather than merely returning less:
+
+        - `org_id` and `project_id` were accepted and ignored, so a failure
+          from another organization's project could be injected as this one's
+          experience.
+        - `tool_name` was accepted and ignored, so asking for one tool's
+          failures returned every tool's.
+        - thumbs-down outcomes were not surfaced at all, so user feedback never
+          reached the next run's prompt. That half of the contract needed a
+          `thumb` column, which is why migration 006 exists.
+
+        The rendering is delegated to the same `_format_failure_lines` /
+        `_format_thumb_lines` the in-memory store uses, so the two cannot drift
+        into producing different prompts from the same rows.
+        """
+        from maistro.memory.outcomes import _format_failure_lines, _format_thumb_lines
+
         cutoff = datetime.now(UTC) - timedelta(days=7)
+        params: list[Any] = [task_type, cutoff]
+        query = """SELECT * FROM outcomes
+                   WHERE task_type = $1 AND created_at >= $2"""
+        query += _scope_clause(params, org_id, project_id)
+        if tool_name:
+            # `tool_calls` is JSONB, so this is a containment check against the
+            # array of call objects rather than a string match -- a tool named
+            # `grep` must not match a call to `grep_all`.
+            params.append(json.dumps([{"name": tool_name}]))
+            query += f" AND tool_calls @> ${len(params)}::jsonb"
+        params.append(limit)
+        limit_placeholder = len(params)
+
+        # `created_at DESC, id DESC` then reversed, which is `[-limit:]` in SQL.
+        # The in-memory store slices the tail of an append-ordered list, so it
+        # renders the most recent `limit` rows *oldest first*; selecting DESC
+        # and rendering as-is gave the same rows in the opposite order, and the
+        # prompt an agent sees is the ordered text, not the set. `id DESC` is
+        # the tiebreak: outcomes recorded inside the same clock tick have equal
+        # `created_at`, and without it their relative order is whatever the
+        # planner returns -- which made this a flake as well as a mismatch.
+        order = f"ORDER BY created_at DESC, id DESC LIMIT ${limit_placeholder}"
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT * FROM outcomes
-                   WHERE task_type = $1 AND success = false
-                   AND created_at >= $2
-                   ORDER BY created_at DESC LIMIT $3""",
-                task_type,
-                cutoff,
-                limit,
+            failures = await conn.fetch(
+                f"{query} AND success = false {order}",  # nosec B608
+                *params,
             )
-        if not rows:
-            return ""
-        lines = ["Recent failures:"]
-        for r in rows:
-            lines.append(f"- {r['error_type']}: model={r['model_used']}")
+            thumbs = await conn.fetch(
+                f"{query} AND success = true AND thumb = 'down' {order}",  # nosec B608
+                *params,
+            )
+
+        lines = _format_failure_lines([_row_to_outcome(r) for r in reversed(failures)])
+        thumb_lines = _format_thumb_lines([_row_to_outcome(r) for r in reversed(thumbs)])
+        if thumb_lines:
+            if lines:
+                lines.append("")
+            lines.extend(thumb_lines)
         return "\n".join(lines)
 
     async def list_outcomes(
@@ -234,29 +348,72 @@ class PgOutcomeStore:
             query = "SELECT * FROM outcomes WHERE created_at >= $1"
             params: list[Any] = [cutoff]
             if task_type:
-                query += " AND task_type = $2"
                 params.append(task_type)
-            query += " ORDER BY created_at DESC LIMIT $" + str(len(params) + 1)
+                query += f" AND task_type = ${len(params)}"
+            query = _scoped(query, params, org_id)
             params.append(limit)
+            query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
             rows = await conn.fetch(query, *params)
 
-        return [
-            Outcome(
-                id=r["id"],
-                request_id=r.get("request_id", ""),
-                task_type=r.get("task_type", ""),
-                model_used=r.get("model_used", ""),
-                success=r["success"],
-                error_type=r.get("error_type", ""),
-                response_time_ms=r.get("response_time_ms", 0),
-                team_id=r.get("team_id", ""),
-                user_id=r.get("user_id", ""),
-                agent_id=r.get("agent_id") or None,
-                input_tokens=r.get("input_tokens", 0),
-                output_tokens=r.get("output_tokens", 0),
-                charged_microchips=r.get("charged_microchips", 0),
-                pricing_version=r.get("pricing_version", ""),
-                created_at=r.get("created_at", datetime.now(UTC)),
-            )
-            for r in rows
-        ]
+        return [_row_to_outcome(r) for r in rows]
+
+
+def _row_to_outcome(r: asyncpg.Record) -> Outcome:
+    """Map a row to an `Outcome`, including the fields the store now stores.
+
+    `org_id`, `provider`, `tool_calls` and every scope/feedback field were
+    absent from the previous inline mapping, so a round-tripped `Outcome` came
+    back missing the org it belonged to and the tool calls it made -- and
+    `_format_thumb_lines` reads `node_id` and `thumb_comment`, so a
+    thumbs-down would have rendered as `node=(unknown)` even once the columns
+    existed.
+    """
+    return Outcome(
+        id=r["id"],
+        request_id=r.get("request_id", ""),
+        task_type=r.get("task_type", ""),
+        model_used=r.get("model_used", ""),
+        provider=r.get("provider", ""),
+        tool_calls=_load_tool_calls(r.get("tool_calls")),
+        success=r["success"],
+        error_type=r.get("error_type", ""),
+        response_time_ms=r.get("response_time_ms", 0),
+        org_id=r.get("org_id", ""),
+        team_id=r.get("team_id", ""),
+        user_id=r.get("user_id", ""),
+        agent_id=r.get("agent_id") or None,
+        input_tokens=r.get("input_tokens", 0),
+        output_tokens=r.get("output_tokens", 0),
+        charged_microchips=r.get("charged_microchips", 0),
+        pricing_version=r.get("pricing_version", ""),
+        created_at=r.get("created_at", datetime.now(UTC)),
+        project_id=r.get("project_id", ""),
+        dag_id=r.get("dag_id", ""),
+        dag_run_id=r.get("dag_run_id", ""),
+        node_id=r.get("node_id", ""),
+        thumb=r.get("thumb", ""),
+        thumb_comment=r.get("thumb_comment", ""),
+        eval_judge_score=r.get("eval_judge_score"),
+    )
+
+
+def _load_tool_calls(raw: object) -> list[dict[str, object]]:
+    """Decode the JSONB `tool_calls` column, which asyncpg returns as text.
+
+    Same trap as `pg_learnings._load_keys`: the previous mapping did not read
+    this column at all, and reading it naively would have handed callers a
+    string where the dataclass promises a list of dicts. A row that will not
+    parse costs that one outcome's tool calls, not the whole query.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [c for c in raw if isinstance(c, dict)]
+    if isinstance(raw, str | bytes | bytearray):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(decoded, list):
+            return [c for c in decoded if isinstance(c, dict)]
+    return []
