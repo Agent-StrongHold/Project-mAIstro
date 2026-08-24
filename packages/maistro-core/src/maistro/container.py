@@ -33,8 +33,10 @@ from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
+from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
+from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import Run, RunStatus
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
@@ -283,13 +285,18 @@ class Container:
                 session_id=session_id,
                 intent_hint=intent_hint,
             )
-        try:
-            result: dict[str, Any] = await self.conduit.route_request(
+
+        async def _dispatch() -> dict[str, Any]:
+            dispatched: dict[str, Any] = await self.conduit.route_request(
                 messages,
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
             )
+            return dispatched
+
+        try:
+            result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
         except BaseException as exc:
             # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`
             # verbatim to anyone holding the run_id, and a provider error's
@@ -307,6 +314,34 @@ class Container:
             # container with no chat admitter wired.
             result["run_id"] = run.run_id
         return result
+
+    async def _execute_chat_turn(
+        self,
+        run: Run | None,
+        messages: list[dict[str, Any]],
+        dispatch: ChatDispatch,
+    ) -> dict[str, Any]:
+        """Route the turn, as a physical Attempt when there is a Run (#223).
+
+        Without a Run there is nothing to hang a NodeRun on, so the dispatch
+        happens directly. That is the same rule admission follows and for the
+        same reason: a turn is never refused for want of a record. The Run is
+        the thing that may be missing here — the answer is not.
+
+        A failure to *record* the execution is likewise not a failure to
+        perform it. `RunIntegrityError` means this process could not write the
+        spine — a Run deleted underneath the turn, or a Graph that is not the
+        one node a turn admits — and turning that into a refusal would trade an
+        unrecorded answer for no answer at all.
+        """
+        if run is None or self.run_store is None:
+            return await dispatch()
+        executor = ChatAttemptExecutor(self.run_store)
+        try:
+            return await executor.execute(run.run_id, messages, dispatch)
+        except RunIntegrityError:
+            logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
+            return await dispatch()
 
     async def _admit_chat_turn(
         self,
@@ -364,11 +399,39 @@ class Container:
             return
         target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
         try:
-            await asyncio.shield(
-                self.run_store.transition_run(run.run_id, target, result=result, error=error)
-            )
+            await asyncio.shield(self._terminalize(run.run_id, target, result, error))
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
+
+    async def _terminalize(
+        self,
+        run_id: str,
+        target: RunStatus,
+        result: dict[str, Any] | None,
+        error: str | None,
+    ) -> None:
+        """Move the Run to its terminal state, resuming it first if parked.
+
+        A failed or timed-out Attempt parks its NodeRun, and a Run with no
+        other active node parks too (#143) — so a chat turn whose dispatch
+        raised arrives here WAITING. WAITING has no edge to COMPLETED or
+        FAILED, deliberately: parked work is waiting for a decision, and
+        declaring it finished without one would erase the choice.
+
+        For a chat turn the decision is already made and is not a retry — the
+        turn is over. So the Run is resumed and then terminalized, which is the
+        same two-hop `tasks/admission.py` makes for the same reason. Doing it
+        the same way in both places is the point: two entry points onto one
+        spine must not grow two ideas of what a parked Run means.
+        """
+        current = await self.run_store.get_run(run_id)
+        if (
+            current is not None
+            and current.status is RunStatus.WAITING
+            and target not in RUN_TRANSITIONS[RunStatus.WAITING]
+        ):
+            await self.run_store.transition_run(run_id, RunStatus.RUNNING)
+        await self.run_store.transition_run(run_id, target, result=result, error=error)
 
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
