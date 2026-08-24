@@ -23,8 +23,12 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
-from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
+from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
+from maistro.runs.reconciliation import (
+    AttemptLifecycleReconciler,
+    CancellationCause,
+    SupersededAttempt,
+)
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
@@ -1217,3 +1221,114 @@ async def test_a_failure_does_not_park_a_run_with_live_siblings(spine: Any) -> N
 
     reloaded = await store.get_run(run.run_id)
     assert reloaded is not None and reloaded.status is RunStatus.RUNNING
+
+
+# ── the fence reaches the logical commit too (#238) ───────────────
+#
+# `transition_attempt` is fenced in every store; `transition_node_run` and
+# `transition_run` take no token at all. So a worker that lost its lease was
+# stopped at the physical record and free at the logical one — and matching
+# evidence for a superseded Attempt is exactly what such a worker holds.
+
+
+async def _completed_attempt(spine: Any, node_run: Any, holder: str, result: Any) -> Any:
+    store, _workspace, _project_id = spine
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder=holder)
+    assert attempt.execution_lease is not None
+    token = attempt.execution_lease.fencing_token
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    return await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result=result, fencing_token=token
+    )
+
+
+def _outcome(node_run: Any, attempt: Any, result: Any) -> AcceptedNodeOutcome:
+    return AcceptedNodeOutcome(
+        node_run_id=node_run.node_run_id,
+        attempt_result=AttemptResult.from_attempt(attempt),
+        logical_status=RunStatus.COMPLETED,
+        result=result,
+    )
+
+
+async def test_a_superseded_attempt_cannot_commit_its_outcome(spine: Any) -> None:
+    """The stale-write case #45 asks to fail closed. Worker A finishes but is
+    slow to commit; recovery parks the node; worker B takes over. A's evidence
+    is genuine and matches its persisted Attempt — which is why the existing
+    evidence check passes it."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    stale = await _completed_attempt(spine, node_run, "worker-A", {"from": "A"})
+    stale_outcome = _outcome(node_run, stale, {"from": "A"})
+    await store.transition_node_run(node_run.node_run_id, RunStatus.WAITING, error="orphaned")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    await store.create_attempt(node_run.node_run_id, lease_holder="worker-B")
+
+    with pytest.raises(SupersededAttempt) as caught:
+        await AttemptLifecycleReconciler(store).accept_outcome(stale_outcome)
+
+    assert caught.value.attempt_id == stale.attempt_id
+    settled = await store.get_node_run(node_run.node_run_id)
+    assert settled is not None
+    assert settled.status is RunStatus.RUNNING
+    assert settled.result is None
+
+
+async def test_the_current_attempt_still_commits(spine: Any) -> None:
+    """The check must refuse staleness, not acceptance. A worker holding the
+    newest Attempt is the ordinary case and has to keep working."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    attempt = await _completed_attempt(spine, node_run, "worker-A", {"from": "A"})
+
+    accepted = await AttemptLifecycleReconciler(store).accept_outcome(
+        _outcome(node_run, attempt, {"from": "A"})
+    )
+
+    assert accepted.status is RunStatus.COMPLETED
+    assert accepted.result == {"from": "A"}
+
+
+async def test_the_newest_attempt_is_decided_by_ordinal_not_row_order(spine: Any) -> None:
+    """`create_attempt` allocates ordinals under a row lock, so the highest is
+    the Attempt that most recently claimed the NodeRun — whatever order a
+    given store returns rows in."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    first = await _completed_attempt(spine, node_run, "worker-A", {"from": "A"})
+    second = await store.create_attempt(node_run.node_run_id, lease_holder="worker-B")
+
+    assert second.ordinal > first.ordinal
+    with pytest.raises(SupersededAttempt) as caught:
+        await AttemptLifecycleReconciler(store).accept_outcome(
+            _outcome(node_run, first, {"from": "A"})
+        )
+    assert caught.value.current_attempt_id == second.attempt_id
+
+
+async def test_forged_evidence_is_still_refused_first(spine: Any) -> None:
+    """The pre-existing check keeps its job. A result that does not match the
+    persisted Attempt is refused as evidence, not as staleness — the two say
+    different things and a caller branches on them differently."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    attempt = await _completed_attempt(spine, node_run, "worker-A", {"from": "A"})
+    # The *evidence*, not the logical projection: `AcceptedNodeOutcome.result`
+    # is allowed to differ from what the Attempt physically produced — that is
+    # what "accepted outcome" means. `attempt_result` is the claim about the
+    # Attempt itself, and that has to match.
+    genuine = _outcome(node_run, attempt, {"from": "A"})
+    tampered = genuine.model_copy(
+        update={
+            "attempt_result": genuine.attempt_result.model_copy(
+                update={"result": {"from": "somebody else"}}
+            ),
+            "result": {"from": "somebody else"},
+        }
+    )
+
+    with pytest.raises(RunIntegrityError) as caught:
+        await AttemptLifecycleReconciler(store).accept_outcome(tampered)
+
+    assert not isinstance(caught.value, SupersededAttempt)
+    assert "differs from persisted Attempt evidence" in str(caught.value)
