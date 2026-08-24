@@ -23,6 +23,8 @@ blocked-by: []
 contracts:
   - behavioral
 tests: []
+ac-modules:
+  AC-1: maistro.scheduling.admission
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -39,13 +41,11 @@ firing it admits a canonical Run. #46's first acceptance criterion puts a number
 `ScheduleRunAdmitter` got the durability half right and left the uniqueness half open. Its
 ordering is create-the-Runs, then advance the cursor, chosen against the failure that
 matters: a tick that stamped `last_fired_at` first and then failed would skip that
-occurrence permanently and silently, because the next evaluation enumerates from the new
-cursor and never looks back. Preferring a duplicate to a skip is right. Nothing bounded
-the duplicate.
+occurrence permanently and silently, because the next tick re-enumerates the occurrence and creates a second Run.
 
 Two ways it happens, and they are the same missing thing:
 
-- **A crash between creating the Run and stamping the cursor.** The Runs exist, the cursor
+- **A crash between creating the Run and stamping the cursor.** The Run exists, the cursor
   did not move, and the next tick re-enumerates the occurrence and creates a second Run.
 - **Two tickers on one schedule.** Nothing serialises read-evaluate-write. Both read the
   same `last_fired_at`, both enumerate the same occurrences, both create Runs, both stamp
@@ -98,6 +98,13 @@ With occurrence identity durable, `last_fired_at` says where to resume enumerati
 schedule does not re-derive its whole history every tick. It is no longer what makes firing
 exactly-once. The create-then-advance ordering stays — a skip is still worse than a repeat
 — but its "at worst a repeat" case is now refused rather than merely tolerated.
+
+## Acceptance Criteria
+
+<!-- ac-state: unproven AC-1 - this decision landed before ADR-level AC marker wiring; #220/#229 concurrency tests exist and the marker retrofit remains measured governance debt -->
+- [ ] **AC-1**: Two admissions of the same `(schedule_id, scheduled_for)` occurrence can
+  produce at most one canonical Run across each durable RunStore backend, and a duplicate is
+  consumed without counting twice toward `max_runs`.
 
 ## Consequences
 
