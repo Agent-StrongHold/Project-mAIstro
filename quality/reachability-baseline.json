@@ -152,6 +152,7 @@
     "maistro.testing",
     "maistro.testing.faux_provider",
     "maistro.testing.harness",
+    "maistro.testing.postgres",
     "maistro.tools.approval",
     "maistro.tools.approval.gate",
     "maistro.tools.approval.protocols",

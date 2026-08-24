@@ -23,6 +23,13 @@ wheels/
 .pytest_cache/
 htmlcov/
 .coverage
+# Parallel-mode data files: `.coverage.<host>.<pid>.<random>`, which the bare
+# `.coverage` pattern above does not match. One of these was committed by a
+# `git add -A` and reached CI, where `coverage combine` picked it up and
+# `coverage report` then failed on absolute paths belonging to the machine
+# that produced it — a green local run turning the shared gate red.
+.coverage.*
+coverage.xml
 .hypothesis/
 
 # Claude Code — share project skills + hooks, keep personal/runtime files local
