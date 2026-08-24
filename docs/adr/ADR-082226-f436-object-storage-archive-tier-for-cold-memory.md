@@ -157,6 +157,36 @@ rehydrate) is per call site: memory retrieval reads through, because a decayed l
 in a search is exactly the point; bulk analytics does not, because rehydrating a million rows to
 count them is worse than not answering.
 
+The same rule binds the *store*, not only the caller, and it is sharper there than it first
+looks. `head_object` answers a bare `404` with no error code, and answers the same 404 whether
+the key is absent from a healthy bucket or the bucket does not exist — the two responses are
+identical apart from the request id. So an `exists()` that trusted the 404 would report every
+archived record absent whenever the bucket name is wrong, the bucket is deleted, or the
+credential loses access: an outage indistinguishable from deletion, in the tier least likely to
+be watched. A miss is therefore confirmed against the bucket before it is reported as one, and a
+bucket that cannot be reached raises rather than answering. `get_object` needs no such check —
+it distinguishes `NoSuchKey` from `NoSuchBucket` — which is why the gap was only ever visible on
+the `exists` path.
+
+### 6a. An archived record is as durable, and as private, as the row it left
+
+Archiving moves a record out of a database that fsyncs its writes and restricts its files. The
+archive is therefore the one component in the path that must not have the weaker story, or "the
+record moved" becomes "the record was moved and then lost" on the first power cut.
+
+For the filesystem backend, write-then-rename is not sufficient on its own. `os.replace` is
+atomic with respect to *readers* and says nothing about a crash: the directory entry can reach
+the disk before the data it names, leaving a correctly-named object full of zeroes — which then
+fails its own digest check on read, so the record is not merely lost but reads as corrupted. The
+payload is fsynced before the rename publishes the name, and the containing directory after it,
+so the name survives the same crash the bytes now do.
+
+Exposure travels with the record for the same reason. A record readable only by the database
+process does not become world-readable because it moved into a directory created under the
+ambient umask, so the tree and the objects in it are owner-only — at every level, since a nested
+scope is exactly where an intermediate directory would otherwise be created with default
+permissions while the object beneath it was locked down.
+
 ### 7. Archiving is downstream of dreaming, not part of it
 
 Consolidation (ADR-082226-5104 decision 7) decides what is *worth keeping*. Archiving decides

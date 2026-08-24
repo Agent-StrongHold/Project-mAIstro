@@ -46,9 +46,20 @@ class _Boom(Exception):
 class _Client:
     """A boto3 client stub that raises what it is told to."""
 
-    def __init__(self, *, get_error: Exception | None = None, head_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        get_error: Exception | None = None,
+        head_error: Exception | None = None,
+        bucket_error: Exception | None = None,
+    ):
         self.get_error = get_error
         self.head_error = head_error
+        # A healthy bucket by default. `_head` confirms the bucket exists
+        # before reporting a 404 as an absent object, so a stub without this
+        # would make every miss look like an outage.
+        self.bucket_error = bucket_error
+        self.head_bucket_calls = 0
 
     def get_object(self, **_kwargs: object) -> object:
         if self.get_error is not None:
@@ -58,6 +69,12 @@ class _Client:
     def head_object(self, **_kwargs: object) -> object:
         if self.head_error is not None:
             raise self.head_error
+        return {}
+
+    def head_bucket(self, **_kwargs: object) -> object:
+        self.head_bucket_calls += 1
+        if self.bucket_error is not None:
+            raise self.bucket_error
         return {}
 
 
@@ -151,6 +168,59 @@ def test_head_reports_false_for_a_missing_object() -> None:
     store = _store(head_error=_Boom({"Error": {"Code": "404"}}))
 
     assert store._head(ArchiveKey.for_payload(b"x", scope=SCOPE)) is False
+
+
+def test_a_404_is_confirmed_against_the_bucket_before_reporting_absence() -> None:
+    """`head_object` answers the same bare 404 for a key missing from a healthy
+    bucket and for a bucket that does not exist, so the 404 alone cannot decide.
+    Counting the call pins that the confirmation actually happens — a version
+    that trusted the 404 would pass the assertion above and fail this one."""
+    client = _Client(head_error=_Boom({"Error": {"Code": "404"}}))
+    store = S3ArchiveStore("bucket", client=client)  # type: ignore[arg-type]
+
+    assert store._head(ArchiveKey.for_payload(b"x", scope=SCOPE)) is False
+    assert client.head_bucket_calls == 1
+
+
+def test_a_hit_does_not_pay_for_the_bucket_check() -> None:
+    """The confirmation is on the miss path only. An archive read is rare but
+    an `exists()` that doubled its requests would double them for every
+    caller, including the ones whose object is right there."""
+    client = _Client()
+    store = S3ArchiveStore("bucket", client=client)  # type: ignore[arg-type]
+
+    assert store._head(ArchiveKey.for_payload(b"x", scope=SCOPE)) is True
+    assert client.head_bucket_calls == 0
+
+
+def test_an_unreachable_bucket_refuses_to_report_the_object_absent() -> None:
+    """The failure this exists to prevent. A wrong bucket name, a deleted
+    bucket or a credential that lost access must not report every archived
+    record as missing — that is an outage wearing deletion's clothes, in the
+    tier least likely to be watched."""
+    store = _store(
+        head_error=_Boom({"Error": {"Code": "404"}}),
+        bucket_error=_Boom({"Error": {"Code": "NoSuchBucket"}}),
+    )
+
+    with pytest.raises(ArchiveError, match="not reachable"):
+        store._head(ArchiveKey.for_payload(b"x", scope=SCOPE))
+
+
+def test_the_refusal_does_not_echo_the_underlying_error_text() -> None:
+    """The cause is chained, not interpolated. A botocore error can carry an
+    endpoint, a request id, and in some configurations a presigned URL; the
+    message an operator sees names the bucket and the situation."""
+    store = _store(
+        head_error=_Boom({"Error": {"Code": "404"}}),
+        bucket_error=_Boom({"Error": {"Code": "AccessDenied", "Message": "sig=SECRETVALUE"}}),
+    )
+
+    with pytest.raises(ArchiveError) as caught:
+        store._head(ArchiveKey.for_payload(b"x", scope=SCOPE))
+
+    assert "SECRETVALUE" not in str(caught.value)
+    assert isinstance(caught.value.__cause__, _Boom)
 
 
 # --------------------------------------------------------------------------

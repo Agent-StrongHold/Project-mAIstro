@@ -291,3 +291,38 @@ def test_a_page_size_below_one_is_refused() -> None:
 
     with pytest.raises(ArchiveError, match="page_size must be at least 1"):
         S3ArchiveStore(BUCKET, client=object(), page_size=0)
+
+
+async def test_a_missing_bucket_is_an_outage_not_a_missing_record(s3_bucket: Any) -> None:
+    """The failure decision 6 of the ADR exists to prevent, one layer down.
+
+    `head_object` answers a bare `404` with no error code, and answers the
+    *same* 404 whether the key is absent from a healthy bucket or the bucket
+    does not exist — the two responses are byte-identical apart from the
+    request id. So `exists()` reading that 404 as "no such record" would report
+    every archived record absent whenever the bucket name is wrong, the bucket
+    is deleted, or the credential can no longer see it: an outage
+    indistinguishable from deletion, in the tier least likely to be watched.
+
+    `get` is not exposed to this — `get_object` distinguishes `NoSuchKey` from
+    `NoSuchBucket` — which is exactly why the gap was only ever visible here.
+    """
+    from maistro.archive import S3ArchiveStore
+
+    store = S3ArchiveStore("bucket-that-does-not-exist", client=s3_bucket)
+
+    with pytest.raises(ArchiveError, match="not reachable"):
+        await store.exists(ArchiveKey.for_payload(PAYLOAD, scope=SCOPE))
+
+
+async def test_a_missing_object_in_a_healthy_bucket_is_still_just_absent(
+    s3_bucket: Any,
+) -> None:
+    """The other arc. The bucket check must not turn an ordinary miss into an
+    error — `exists()` answering False for a key nobody archived is the whole
+    point of having it."""
+    from maistro.archive import S3ArchiveStore
+
+    store = S3ArchiveStore(BUCKET, client=s3_bucket)
+
+    assert await store.exists(ArchiveKey.for_payload(b"never archived", scope=SCOPE)) is False

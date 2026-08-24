@@ -15,6 +15,8 @@ record.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -61,3 +63,54 @@ async def test_a_scope_inside_the_root_still_lists(tmp_path: Path) -> None:
     found = [str(key) async for key in store.list_scope("learnings")]
 
     assert found == [str(ArchiveKey.for_payload(b"ours", scope="learnings"))]
+
+
+# ── durability and exposure ───────────────────────────────────────
+#
+# Both properties the retired `maistro.memory.archive` tier tested and this one
+# did not. They came back with the consolidation rather than being lost with the
+# deletion: a tier whose whole claim is "the archived record is still
+# authoritative" is the wrong component to have the weaker durability story.
+
+
+async def test_the_payload_and_its_directory_entry_are_both_flushed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`os.replace` is atomic for readers and says nothing about a crash.
+
+    Without an fsync of the bytes before the rename, the directory entry can
+    reach the disk first and leave a correctly-named object full of zeroes —
+    which then fails its own digest check on read, so the record is not merely
+    lost but reads as corrupted. Without an fsync of the directory after, the
+    name itself can be the thing that does not survive.
+
+    Descriptors are recorded rather than counted, so this pins *what* was
+    flushed and not just how often.
+    """
+    synced: list[int] = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd))[1])
+
+    store = FilesystemArchiveStore(tmp_path / "archive")
+    key = await store.put(b"durable", scope="learnings")
+
+    assert len(synced) == 2, f"expected the payload and its directory, got {len(synced)} fsync(s)"
+    assert await store.get(key) == b"durable"
+
+
+async def test_the_tree_is_owner_only(tmp_path: Path) -> None:
+    """An archived record keeps the exposure it had in the database.
+
+    Every level is checked, not just the leaf: `mkdir(parents=True, mode=...)`
+    applies the mode to the final component only, so a nested scope is exactly
+    where an intermediate directory would come out world-readable while the
+    object below it was locked down.
+    """
+    root = tmp_path / "archive"
+    store = FilesystemArchiveStore(root)
+    key = await store.put(b"private", scope="learnings/org-1")
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE((root / "learnings").stat().st_mode) == 0o700
+    assert stat.S_IMODE((root / "learnings" / "org-1").stat().st_mode) == 0o700
+    assert stat.S_IMODE((root / str(key)).stat().st_mode) == 0o600

@@ -138,9 +138,37 @@ class S3ArchiveStore:
             self._client.head_object(Bucket=self._bucket, Key=str(key))
         except Exception as exc:
             if self._is_missing(exc):
+                self._require_bucket(exc)
                 return False
             raise
         return True
+
+    def _require_bucket(self, cause: Exception) -> None:
+        """Refuse to read a 404 as "no such record" when the bucket is gone.
+
+        `head_object` answers a bare `404` with no error code, and it answers
+        the same 404 whether the key is absent from a healthy bucket or the
+        bucket itself does not exist — verified against a live server, where
+        the two responses are byte-identical apart from the request id. `get`
+        is not exposed to this (`get_object` distinguishes `NoSuchKey` from
+        `NoSuchBucket`), so this is `exists()`'s problem alone.
+
+        Getting it wrong is the failure decision 6 of the ADR exists to
+        prevent: a misconfigured bucket name, a deleted bucket or a credential
+        that can no longer see it would report every archived record as
+        absent — an outage indistinguishable from deletion, in the tier least
+        likely to be watched.
+
+        One extra call, and only on a miss. A hit never pays it, and a miss is
+        the case where being wrong is expensive.
+        """
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+        except Exception as exc:
+            raise ArchiveError(
+                f"archive bucket {self._bucket!r} is not reachable, so whether "
+                f"this object exists is unknown; refusing to report it absent"
+            ) from exc
 
     async def list_scope(self, scope: str) -> AsyncIterator[ArchiveKey]:
         """Every key under `scope`, one page at a time.

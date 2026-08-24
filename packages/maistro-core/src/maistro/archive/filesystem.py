@@ -25,12 +25,20 @@ from maistro.archive.types import (
 #: A sha256 hex digest, which is what every object here is named.
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 
+#: Owner-only, on both the tree and the objects in it. An archived record is a
+#: record that *moved* out of the database, so it keeps the exposure it had
+#: there: a homelab archive under a shared home directory must not be
+#: world-readable because the process umask happened to be 022.
+_DIRECTORY_MODE = 0o700
+_FILE_MODE = 0o600
+
 
 class FilesystemArchiveStore:
     """Content-addressed objects under a root directory."""
 
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root)
+        _mkdir_private(self._root)
 
     def _path(self, key: ArchiveKey) -> Path:
         # `ArchiveKey` validates the scope against a pattern that excludes `..`
@@ -51,13 +59,40 @@ class FilesystemArchiveStore:
 
     def _write(self, key: ArchiveKey, payload: bytes) -> None:
         path = self._path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_private(path.parent)
         # Write-then-rename: a reader must never see a half-written object. A
         # torn read would fail the digest check rather than corrupt anything,
         # but failing a read that should have succeeded is still a fault.
         temporary = path.with_name(f".{path.name}.partial")
-        temporary.write_bytes(payload)
+        # Written through a file descriptor rather than `write_bytes` so the
+        # bytes can be fsynced before the rename publishes the name. Without
+        # that, `os.replace` is atomic with respect to *readers* and says
+        # nothing about a crash: the directory entry can reach the disk before
+        # the data it points at, leaving a correctly-named object full of
+        # zeroes. An archive whose defining claim is that the record is still
+        # authoritative cannot be the one component that loses it on a power
+        # cut, so the ordering is made explicit here.
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+        try:
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         os.replace(temporary, path)
+        # And the rename itself, so the *name* survives the same crash the
+        # bytes now do. Best-effort: some filesystems refuse to open a
+        # directory for fsync, and failing a write that reached the disk over
+        # a durability upgrade would be the worse trade.
+        try:
+            directory = os.open(path.parent, os.O_RDONLY)
+        except OSError:  # pragma: no cover - platform-dependent
+            return
+        try:
+            os.fsync(directory)
+        except OSError:  # pragma: no cover - platform-dependent
+            pass
+        finally:
+            os.close(directory)
 
     async def get(self, key: ArchiveKey) -> bytes:
         payload = await asyncio.to_thread(self._read, key)
@@ -97,6 +132,31 @@ class FilesystemArchiveStore:
 
     async def delete(self, key: ArchiveKey) -> None:
         await asyncio.to_thread(self._path(key).unlink, True)
+
+
+def _mkdir_private(directory: Path) -> None:
+    """Create `directory` and any missing ancestor, each owner-only.
+
+    Not `mkdir(parents=True, mode=...)`: that mode applies to the final
+    component only, and every parent it creates on the way gets the default
+    permissions instead. A scope like `learnings/org-1` would then leave
+    `learnings/` world-readable while the leaf below it was locked down, which
+    is the wrong half. Each level is created separately so the mode is the one
+    asked for at every level.
+
+    `mkdir` applies the process umask to the mode, which can only remove bits
+    from `0o700` — a umask that made this *wider* is not expressible.
+    """
+    missing = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(missing):
+        path.mkdir(mode=_DIRECTORY_MODE, exist_ok=True)
 
 
 def _digests_in(directory: Path) -> list[str]:
