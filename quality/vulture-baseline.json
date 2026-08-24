@@ -693,6 +693,7 @@
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_protocol_compliance'",
         "packages/maistro-core/src/maistro/agents/auditor/checks.py::unused function 'check_type_annotations'",
         "packages/maistro-core/src/maistro/agents/base.py::unused attribute '_quota_tracker'",
+        "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'from_identity'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'list_by_priority_tier'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'list_by_trust_tier'",
         "packages/maistro-core/src/maistro/agents/factory.py::unused function 'create_agents'",
