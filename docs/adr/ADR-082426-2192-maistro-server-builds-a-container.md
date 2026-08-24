@@ -75,20 +75,26 @@ server states that requirement in its own `_validate_startup` — beside the two
 there, with a message naming the variable — rather than letting a `ConfigError` surface from
 inside container wiring at lifespan time.
 
-**2. The roster falls back to the conductor, rather than to nothing.**
+**2. The roster is the conductor, rather than nothing.**
 
-The Container's `agents` map is populated from `agents_dir` when the deployment names one. When
-it does not, the server registers a single agent that executes through `run_task` — the same
+The Container's `agents` map gets one entry: an agent that executes through `run_task` — the same
 executor the endpoint calls today, reached through the Conduit instead of around it.
 
-This is what makes the change safe to ship: a deployment with no roster keeps exactly the
-behaviour it has, and gains the Gate, the classifier, the router and the session store on the
-way in. The classifier's `task_type` is not decoration on that path either — it selects the tier
-`run_task` runs at, which was previously always the default.
+This is what makes the change safe to ship. A deployment keeps exactly the behaviour it has, and
+gains the Gate, the classifier, the router and the session store on the way in. The classifier's
+work is not decoration on that path either: its tier now reaches `run_task`, which previously ran
+every turn at the default.
 
-The alternative — requiring `agents_dir` — was rejected. It converts a working endpoint into a
-refusal for every deployment that has not configured a roster, in service of an internal
-convergence those deployments did not ask for.
+`agents_dir` is **not** read, though it is carried on the config. `create_agents` would consume
+it, but that factory needs an LLM client and a `Container` does not carry one —
+`hive-conductor` builds its own before calling it. Choosing this server's client is a deployment
+decision nobody has asked for: `agents_dir` defaults to empty and this app has never read it, so
+wiring a roster now would be inventing the requirement rather than meeting it. Whoever wants one
+starts from a Container that already carries the setting.
+
+The alternative — requiring `agents_dir`, and refusing turns without it — was rejected. It
+converts a working endpoint into a refusal for every deployment that has not configured a roster,
+in service of an internal convergence those deployments did not ask for.
 
 **3. The endpoint delegates the whole turn to `Container.route_request`.**
 

@@ -9,7 +9,7 @@ import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
@@ -21,13 +21,13 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
-from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
+from maistro.types.config import AgentConfig
 from maistro_server.api import (
     agents,
     canvas,
@@ -44,6 +44,9 @@ from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
 from maistro_server.api.schemas import ErrorDetail, ErrorResponse
+
+if TYPE_CHECKING:
+    from maistro.agents.base import Agent
 
 logger = structlog.get_logger()
 
@@ -74,6 +77,17 @@ def _validate_startup(settings: Settings) -> None:
             "and/or CI_WEBHOOK_SECRET is unset. Set both, or set "
             "REQUIRE_WEBHOOK_SECRETS=false if this deployment receives no webhooks."
         )
+    if not _router_api_key().strip():
+        # Stated here rather than left to surface from inside container wiring
+        # (#142). This app now builds a `Container`, and `create_container`
+        # refuses an empty `router_api_key` — correctly, but with a `ConfigError`
+        # raised several frames deep in lifespan, which reads as a bug rather
+        # than as a missing setting. Said once, by name, beside the other two.
+        raise RuntimeError(
+            "CRITICAL: ROUTER_API_KEY is unset. The server builds a maistro-core "
+            "Container so that every chat turn reaches the Conduit, and that "
+            "requires it. Set ROUTER_API_KEY."
+        )
 
 
 async def _run_store_pool() -> Any:
@@ -97,6 +111,97 @@ async def _run_store_pool() -> Any:
     from maistro.persistence import get_pool
 
     return await get_pool(to_asyncpg_dsn(database_url))
+
+
+def _router_api_key() -> str:
+    """`ROUTER_API_KEY`, from the same place the rest of the config reads it.
+
+    Not on `Settings`. `Settings` is the server's own env-driven model;
+    `router_api_key` lives on `MaistroYamlConfig`, which `config.loader` fills
+    from `maistro.yaml` and the environment. Read through that when it has been
+    loaded, and fall back to the variable itself when it has not — a server
+    started without a YAML file still has the environment.
+    """
+    from maistro.config.settings import get_yaml_config
+
+    yaml_config = get_yaml_config()
+    if yaml_config is not None and yaml_config.router_api_key:
+        return yaml_config.router_api_key
+    return os.getenv("ROUTER_API_KEY", "")
+
+
+def _agents_dir() -> str:
+    """`agents_dir`, from the same place, for the same reason."""
+    from maistro.config.settings import get_yaml_config
+
+    yaml_config = get_yaml_config()
+    return yaml_config.agents_dir if yaml_config is not None else ""
+
+
+def _agent_config(settings: Settings) -> AgentConfig:
+    """The `AgentConfig` this server's Container is wired from (#142).
+
+    Mapped explicitly rather than by passing `Settings` through. They are
+    different models — `AgentConfig` is what `create_container` receives, and
+    several of these fields are not on `Settings` at all — so a structural
+    overlap between them is how a setting comes to exist in one place and
+    quietly do nothing in the other.
+
+    `database_url` comes from the resolver alembic also uses (#187), which is
+    the same one `_run_store_pool` reads, so the container cannot decide it is
+    talking to a different database than the pool it is handed.
+
+    `workspace_id` is stated for the reason `hive-conductor` states it: core
+    defaults it to `"default"` too, so the value is identical today — but a
+    server that changed its default Workspace and a core that did not would
+    then disagree about where unscoped Runs live, with nothing saying so.
+    """
+    from maistro.config.database import resolve_database_url
+
+    return AgentConfig(
+        router_api_key=_router_api_key(),
+        litellm_url=settings.litellm.base_url,
+        litellm_key=settings.litellm.master_key,
+        agents_dir=_agents_dir(),
+        database_url=resolve_database_url(),
+        workspace_id=settings.workspace_id,
+    )
+
+
+async def _build_container(settings: Settings, pg_pool: Any) -> Any:
+    """The process's one Container, with a roster it can actually route to.
+
+    `Conduit.route_request` answers "No agents available." when `agents` is
+    empty, and this server has never built any. `run_task` needs no roster,
+    which is why the OpenAI door works today on deployments that configured
+    none — so an empty map here would convert every one of their chat turns
+    into a refusal.
+
+    `ConductorAgent` is that floor: the same executor, reached through the
+    pipeline instead of around it.
+
+    **`agents_dir` is deliberately not read here.** It is on `AgentConfig` and
+    `create_agents` would consume it, but that factory needs an LLM client and
+    a `Container` does not carry one — `hive-conductor` builds its own before
+    calling it. Choosing this server's client is a deployment decision nobody
+    has asked for yet: `agents_dir` defaults to empty and this app has never
+    read it, so wiring a roster now would be inventing the requirement rather
+    than meeting it. The setting is carried on the config so that whoever does
+    want one starts from a Container that already has it.
+    """
+    from maistro.container import create_container
+    from maistro_server.conductor_agent import CONDUCTOR_AGENT_NAME, ConductorAgent
+
+    container = await create_container(_agent_config(settings), pg_pool=pg_pool)
+    # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
+    # base class rather than a protocol — but `Conduit` uses the map
+    # structurally: `handle(...)`, and `priority_tier` only if present.
+    # `ConductorAgent` provides exactly that and deliberately does not subclass
+    # `BaseAgent`, which would bring a second strategy stack and a second
+    # extraction pass over an answer `run_task` has already produced.
+    container.agents = cast("dict[str, Agent]", {CONDUCTOR_AGENT_NAME: ConductorAgent()})
+    await logger.ainfo("container_wired", agents=sorted(container.agents))
+    return container
 
 
 @asynccontextmanager
@@ -149,9 +254,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # rather than leaving a run_id that silently stops resolving to be
     # discovered.
     spine_pool = await _run_store_pool()
-    scope_store, run_store, admitter, _templates = await wire_execution_spine(
-        None, workspace_id=settings.workspace_id, pg_pool=spine_pool
-    )
+    # One Container, and the spine comes *from* it (ADR-082426-2192, #142).
+    # `create_container` wires `wire_execution_spine` and `wire_chat_admission`
+    # itself, so calling either here as well would give this process two
+    # RunStores — a run_id returned by /tasks would not resolve for a chat turn
+    # and vice versa, which is an advertised handle that silently stops
+    # resolving. The pool opened above is handed over rather than left for the
+    # container to open a second one against the same server.
+    container = await _build_container(settings, spine_pool)
+    app.state.container = container
+    run_store = container.run_store
     if spine_pool is None:
         await logger.awarning(
             "run_store_in_process_only",
@@ -161,19 +273,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "are lost on restart"
             ),
         )
-    queue = configure_task_queue(admitter=admitter)
+    queue = configure_task_queue(admitter=container.task_admitter)
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.
     runs.configure_run_store(run_store)
-    # The OpenAI-compatible door gets the same Run spine (#150). Its Gate is
-    # left at the default: a bare `Gate()` self-wires a Warden, and this app
-    # builds no Container, so there is no shared Warden or strike tracker to
-    # hand it — configuring None here would be the same object with an extra
-    # step, and a way to accidentally configure nothing.
-    chat_completions.configure_chat_admission(
-        wire_chat_admission(run_store, scope_store, workspace_id=settings.workspace_id),
-        run_store,
-    )
+    # The OpenAI-compatible door now routes through the same Container (#142),
+    # which owns the Gate scan, the Run admission and the terminalization that
+    # #150 had to build here for want of one.
+    chat_completions.configure_container(container)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
         from maistro.agents.catalog import AgentCatalog

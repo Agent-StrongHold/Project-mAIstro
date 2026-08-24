@@ -4,23 +4,59 @@ Evidence: Open WebUI talks to maistro-engine via the OpenAI chat-completions
 contract. Both streaming (SSE) and non-streaming modes must translate
 conductor errors (timeout, LLM provider error, generic exception) into the
 correct HTTP status / SSE error event.
+
+Every case here is a contract case, and every one of them survives #142
+unchanged — the turn now reaches the conductor through
+`Container.route_request` rather than by calling `run_task` directly, and the
+status codes, the SSE error events and the response shapes are all the same.
+Two mechanical changes were needed: a Container has to be installed for the
+endpoint to route through, and `run_task` is patched where `ConductorAgent`
+imports it rather than where this module used to.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from maistro.agents.types import ConductorOutput, LLMProviderError
+from maistro.container import create_container
+from maistro.types.config import AgentConfig
+from maistro_server.api import chat_completions as chat_api
 from maistro_server.api.chat_completions import (
     ChatCompletionRequest,
     ChatMessage,
     _extract_user_message,
 )
+from maistro_server.conductor_agent import CONDUCTOR_AGENT_NAME, ConductorAgent
 from maistro_server.main import app
+
+#: Where `ConductorAgent` looks the executor up, and therefore where a patch
+#: has to land. Named once so a rename cannot leave a patch pointing at a
+#: module that no longer calls it — which would silently run the real thing.
+RUN_TASK = "maistro_server.conductor_agent.run_task"
+
+
+@pytest.fixture(autouse=True)
+async def _routed() -> Iterator[None]:
+    """A Container for the endpoint to route through (#142).
+
+    Autouse because it is now part of what "the endpoint exists" means: without
+    one, every request here raises before reaching the behaviour under test.
+    Real rather than faked — these are contract tests, and a fake pipeline
+    would let the contract pass while the pipeline did not.
+    """
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    container.agents = {CONDUCTOR_AGENT_NAME: ConductorAgent()}  # type: ignore[dict-item]
+    chat_api.configure_container(container)
+    try:
+        yield
+    finally:
+        chat_api.configure_container(None)
 
 
 @pytest.fixture
@@ -61,7 +97,7 @@ class TestExtractUserMessage:
 class TestNonStreamingChatCompletions:
     def test_returns_conductor_answer(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(return_value=_output("42")),
         ):
             response = client.post(
@@ -77,7 +113,7 @@ class TestNonStreamingChatCompletions:
 
     def test_falls_back_when_no_final_answer(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(return_value=ConductorOutput(final_answer="", success=True)),
         ):
             response = client.post(
@@ -89,7 +125,7 @@ class TestNonStreamingChatCompletions:
 
     def test_timeout_returns_504(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(side_effect=TimeoutError()),
         ):
             response = client.post(
@@ -101,7 +137,7 @@ class TestNonStreamingChatCompletions:
 
     def test_llm_provider_error_returns_502(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(side_effect=LLMProviderError("upstream blew up")),
         ):
             response = client.post(
@@ -117,7 +153,7 @@ class TestNonStreamingChatCompletions:
 
     def test_generic_exception_returns_500(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(side_effect=RuntimeError("kaboom")),
         ):
             response = client.post(
@@ -129,7 +165,7 @@ class TestNonStreamingChatCompletions:
 
     def test_model_field_echoed(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(return_value=_output("ok")),
         ):
             response = client.post(
@@ -157,7 +193,7 @@ class TestStreamingChatCompletions:
 
     def test_streams_role_content_and_done(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(return_value=_output("hi there")),
         ):
             response = client.post(
@@ -184,7 +220,7 @@ class TestStreamingChatCompletions:
 
     def test_streaming_timeout_emits_error_event(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(side_effect=TimeoutError()),
         ):
             response = client.post(
@@ -199,7 +235,7 @@ class TestStreamingChatCompletions:
 
     def test_streaming_llm_provider_error_emits_error_event(self, client: TestClient) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(side_effect=LLMProviderError("nope")),
         ):
             response = client.post(
@@ -215,7 +251,7 @@ class TestStreamingChatCompletions:
         self, client: TestClient
     ) -> None:
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(side_effect=RuntimeError("boom")),
         ):
             response = client.post(
@@ -230,7 +266,7 @@ class TestStreamingChatCompletions:
     def test_streaming_chunks_long_answer(self, client: TestClient) -> None:
         long_answer = "x" * 45  # STREAM_CHUNK_SIZE is 20, so this spans 3 chunks.
         with patch(
-            "maistro_server.api.chat_completions.run_task",
+            RUN_TASK,
             AsyncMock(return_value=_output(long_answer)),
         ):
             response = client.post(

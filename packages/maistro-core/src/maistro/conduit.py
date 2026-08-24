@@ -142,7 +142,22 @@ class Conduit:
             return _stop_response("No message provided.")
 
         # 1. Gate scan
-        gate_result = await self.container.gate.process_input(last_user_msg, auth=auth)
+        #
+        # A scan that fails for its own reasons refuses the turn. A Gate that
+        # raises must not become an open door — the exception would otherwise
+        # propagate past the classifier and the agent, which is safe here but
+        # is safe by accident: any caller that caught it and continued would be
+        # dispatching unscanned input. Refusing makes the boundary hold at the
+        # boundary. Note this is the opposite of how the Run is handled — a turn
+        # is answered without a Run and refused without a scan — because the two
+        # protect different things: one is a record, the other is the door.
+        try:
+            gate_result = await self.container.gate.process_input(last_user_msg, auth=auth)
+        except Exception:
+            logger.exception("Gate scan failed; refusing the turn")
+            return _stop_response(
+                "Request could not be screened and was not run.", finish_reason=CONTENT_FILTER
+            )
         if gate_result.blocked:
             logger.warning("Gate blocked: %s", gate_result.block_reason)
             return _stop_response(
@@ -189,8 +204,23 @@ class Conduit:
                 session_id=session_id,
                 classified_task_type=intent.task_type,
             )
-        except Exception as exc:
+        except Exception:
+            # Logged and re-raised, not turned into an answer.
+            #
+            # Two reasons. The message used to be `f"Agent error: {exc}"`, and
+            # an exception's text is not sanitized — a provider error carries
+            # its endpoint, and can carry the key sent to it, straight into the
+            # assistant message a client renders. And converting an outage into
+            # a normal-looking answer is the same defect class `failed=True` on
+            # `AgentResponse` exists to prevent: a caller that branches on
+            # success reads "the LLM is down" as a reply.
+            #
+            # Nothing regresses for a well-behaved agent. `BaseAgent.handle`
+            # catches its own exceptions and returns a failed `AgentResponse`
+            # with a generic message, so this path is only reached by an agent
+            # that deliberately raises — and such an agent's caller wants the
+            # exception, because the type is what selects a status code.
             logger.exception("Agent %s failed", agent_name)
-            return _stop_response(f"Agent error: {exc}")
+            raise
 
         return _as_response(result)

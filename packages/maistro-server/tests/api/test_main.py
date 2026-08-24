@@ -127,6 +127,11 @@ class TestLifespan:
         """
         for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
             monkeypatch.delenv(name, raising=False)
+        # And the lifespan now builds a Container (#142), which
+        # `_validate_startup` refuses to do without a router key. Same
+        # reasoning as the database above: these tests are not about that
+        # check, and `test_startup.py` is.
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
 
     async def test_lifespan_starts_and_stops_runner(self) -> None:
         test_app = MagicMock()
@@ -182,9 +187,13 @@ class TestLifespan:
             patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
             patch("maistro_server.main.logger", server_logger),
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=pool)),
+            # The spine now comes from the Container (#142), so this stands in
+            # for the Container rather than for `wire_execution_spine`. Still
+            # stubbed for the same reason: this test is about which log line
+            # the branch emits, not about wiring a real one.
             patch(
-                "maistro_server.main.wire_execution_spine",
-                AsyncMock(return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())),
+                "maistro_server.main._build_container",
+                AsyncMock(return_value=MagicMock()),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -299,6 +308,11 @@ class TestRunStorePool:
     def _clean_environment(self, monkeypatch: pytest.MonkeyPatch):
         for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
             monkeypatch.delenv(name, raising=False)
+        # And the lifespan now builds a Container (#142), which
+        # `_validate_startup` refuses to do without a router key. Same
+        # reasoning as the database above: these tests are not about that
+        # check, and `test_startup.py` is.
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
 
     async def test_no_database_configured_is_none_not_an_error(self) -> None:
         assert await main_module._run_store_pool() is None

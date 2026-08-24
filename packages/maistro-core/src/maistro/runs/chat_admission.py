@@ -75,6 +75,32 @@ DEFAULT_TURN_NAME = "chat turn"
 MAX_RECORDED_ANSWER_CHARS = 2_000
 
 
+#: What a failed chat turn records on its Run — a category, never the
+#: exception text. `/runs/{run_id}` returns `Run.error` verbatim to anyone
+#: holding the run_id, and a provider error's message carries the endpoint it
+#: called and can carry the key it sent. The detail belongs in the log, which
+#: is not handed out with a run_id.
+UPSTREAM_FAILURE = "upstream_error"
+INTERNAL_FAILURE = "internal_error"
+TIMEOUT_FAILURE = "timeout"
+
+
+def failure_category(exc: BaseException) -> str:
+    """The failure a chat Run may record, with no provider detail in it.
+
+    Matched on the exception type rather than its message for the same reason
+    the message is not recorded: the type is ours, the message is whatever the
+    provider sent.
+    """
+    from maistro.agents.types import LLMProviderError
+
+    if isinstance(exc, TimeoutError):
+        return TIMEOUT_FAILURE
+    if isinstance(exc, LLMProviderError):
+        return UPSTREAM_FAILURE
+    return INTERNAL_FAILURE
+
+
 def chat_turn_outcome(response: dict[str, Any]) -> dict[str, Any]:
     """What a completed chat turn records on its Run.
 

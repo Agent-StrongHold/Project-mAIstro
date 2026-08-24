@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import pytest
+
 from maistro.conduit import Conduit, _apply_intent_hint, determine_execution_tier
 from maistro.security._types import GateResult
 from maistro.types.agent import AgentResponse
@@ -192,15 +194,53 @@ class TestRouteRequestEdgeCases:
 
         assert result["choices"][0]["message"]["content"] == "No agents available."
 
-    async def test_agent_handle_raises_returns_error_response(self) -> None:
-        agent = FakeAgent(raises=RuntimeError("kaboom"))
+    async def test_agent_handle_raises_propagates_rather_than_answering(self) -> None:
+        """This used to answer `f"Agent error: {exc}"`.
+
+        Two things were wrong with that. An exception's text is not sanitized —
+        a provider error carries the endpoint it called and can carry the key
+        sent to it, straight into an assistant message a client renders. And
+        converting an outage into a normal-looking answer is the defect
+        `AgentResponse.failed` exists to prevent: a caller branching on success
+        reads "the LLM is down" as a reply.
+
+        Nothing regresses for a well-behaved agent: `BaseAgent.handle` catches
+        its own exceptions and returns a failed `AgentResponse` with a generic
+        message, so only an agent that deliberately raises reaches here — and
+        that agent's caller wants the exception, because its type is what
+        selects a status code.
+        """
+        agent = FakeAgent(raises=RuntimeError("https://provider.internal key=sk-secret"))
         container = FakeContainer(agents={"unknown": agent}, resolved_name="unknown")
+        conduit = Conduit(container)  # type: ignore[arg-type]
+
+        with pytest.raises(RuntimeError, match="sk-secret"):
+            await conduit.route_request(_messages())
+
+    async def test_a_gate_that_raises_refuses_rather_than_opening(self) -> None:
+        """A screening failure must not become an open door.
+
+        Propagating would be safe here and unsafe by accident: any caller that
+        caught it and carried on would be dispatching unscanned input. Refusing
+        makes the boundary hold at the boundary — the opposite of how the Run
+        is handled, deliberately, because one is a record and the other is the
+        door."""
+
+        class _RaisingGate:
+            async def process_input(self, content: str, **kwargs: Any) -> GateResult:
+                raise RuntimeError("warden exploded")
+
+        agent = FakeAgent()
+        container = FakeContainer(agents={"unknown": agent}, resolved_name="unknown")
+        container.gate = _RaisingGate()  # type: ignore[assignment]
         conduit = Conduit(container)  # type: ignore[arg-type]
 
         result = await conduit.route_request(_messages())
 
-        content = result["choices"][0]["message"]["content"]
-        assert "Agent error: kaboom" in content
+        assert agent.handled_kwargs is None, "unscanned input reached the agent"
+        choice = result["choices"][0]
+        assert choice["finish_reason"] == "content_filter"
+        assert "could not be screened" in choice["message"]["content"]
 
     async def test_non_dict_result_wrapped_in_stop_response(self) -> None:
         agent = FakeAgent(response="plain string result")

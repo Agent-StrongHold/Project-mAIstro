@@ -32,7 +32,7 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
-from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome
+from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import (
@@ -231,7 +231,22 @@ class Container:
         auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
+        run: Run | None = None,
     ) -> dict[str, Any]:
+        """Route one chat turn, admitting and terminalizing its Run.
+
+        `run`, if given, is a Run the caller has already admitted and this
+        method adopts instead of admitting a second — closed here exactly as
+        one admitted here would be. It exists for a caller that must name the
+        Run *before* the answer exists: `/v1/chat/completions` puts it in a
+        response header, and a streaming response's headers are sent before the
+        first byte, so it cannot wait for a return value.
+
+        Passing a Run this container's store does not know about is the caller's
+        error; nothing here checks, because the check would be a store read on
+        every turn to catch a mistake that is not reachable from within one
+        process.
+        """
         # An armed security control that cannot run is worse than an unarmed
         # one: the operator believes it is enforcing. Both controls this
         # container can arm are keyed on the caller's identity --
@@ -261,12 +276,13 @@ class Container:
             )
             raise AgentError(msg)
 
-        run = await self._admit_chat_turn(
-            messages,
-            auth=auth,
-            session_id=session_id,
-            intent_hint=intent_hint,
-        )
+        if run is None:
+            run = await self._admit_chat_turn(
+                messages,
+                auth=auth,
+                session_id=session_id,
+                intent_hint=intent_hint,
+            )
         try:
             result: dict[str, Any] = await self.conduit.route_request(
                 messages,
@@ -275,7 +291,13 @@ class Container:
                 intent_hint=intent_hint,
             )
         except BaseException as exc:
-            await self._close_chat_run(run, error=str(exc))
+            # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`
+            # verbatim to anyone holding the run_id, and a provider error's
+            # message carries the endpoint it called and can carry the key it
+            # sent — so recording it here would leak by a slower route what
+            # every response path already refuses to echo. The detail is in
+            # the log, which a run_id does not open.
+            await self._close_chat_run(run, error=failure_category(exc))
             raise
         await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
