@@ -9,6 +9,7 @@ Graph folding/routing helpers advance logical state.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 from maistro.graph.definitions import Graph
@@ -40,12 +41,17 @@ async def run_durable_graph(
     runtime: ExecutionRuntime | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
     ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
     the Run (and NodeRun) that produced it — delegation and sub-graph work
     say "work is happening" as a child Run, not a second lifecycle.
+
+    ``provenance`` records what admitted the work, and is accepted here as
+    well as in the traversal executor so the two entry points cannot disagree
+    about whether a Run remembers where it came from (#145).
     """
     run = traversal._new_run(
         graph,
@@ -53,6 +59,7 @@ async def run_durable_graph(
         actor_principal_id=actor_principal_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     state = GraphExecutionState(
         run_id=run.run_id,

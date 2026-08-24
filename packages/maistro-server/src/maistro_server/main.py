@@ -21,6 +21,7 @@ from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.wiring import wire_execution_spine
+from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
@@ -98,6 +99,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_keepalive_connections=settings.http_max_keepalive_connections,
         keepalive_expiry=settings.http_keepalive_expiry_s,
     )
+
+    # And name the endpoints this deployment is supposed to reach, before the
+    # first request (#155). The guard at that pool's transport is on for
+    # everything else; an endpoint nobody configured is not reachable by
+    # accident.
+    configure_outbound_policy(*configured_endpoints(settings))
 
     # Wire executor via import — the runner no longer imports conductor directly
     from maistro.agents.conductor import run_task

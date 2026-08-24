@@ -29,6 +29,7 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     validate_accepted_outcome_against_attempt,
+    validate_child_scope,
 )
 
 if TYPE_CHECKING:
@@ -135,13 +136,12 @@ class SqliteRunStore:
                 raise RunIntegrityError("parent_node_run_id requires parent_run_id")
             if parent_run_id is not None:
                 parent = await self._require_run(parent_run_id)
-                if parent.workspace_id != graph.workspace_id:
-                    raise RunIntegrityError("child Run cannot cross Workspace boundaries")
-                if parent.project_id != graph.project_id and not allow_cross_project:
-                    raise RunIntegrityError(
-                        "child Run cannot implicitly cross Project boundaries; "
-                        "caller must authorize and request the destination Project",
-                    )
+                validate_child_scope(
+                    parent,
+                    workspace_id=graph.workspace_id,
+                    project_id=graph.project_id,
+                    allow_cross_project=allow_cross_project,
+                )
                 if parent_node_run_id is not None:
                     parent_node_run = await self._require_node_run(parent_node_run_id)
                     if parent_node_run.run_id != parent_run_id:

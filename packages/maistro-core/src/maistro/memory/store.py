@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import os
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
@@ -29,8 +28,24 @@ logger = logging.getLogger(__name__)
 
 @functools.lru_cache(maxsize=1)
 def get_engine() -> AsyncEngine | None:
-    """Return an async SQLAlchemy engine, or None if DATABASE_URL is unset."""
-    url = os.environ.get("DATABASE_URL", "")
+    """Return an async SQLAlchemy engine, or None if no database is configured.
+
+    Routed through `config.database.resolve_database_url` rather than reading
+    `DATABASE_URL` directly (#187). This is the server's real startup path --
+    `maistro_server.main` calls it -- and it was the last place the two
+    configuration sources still disagreed: the shipped `docker-compose.yml`
+    gives `maistro-engine` five `DB_*` variables and no `DATABASE_URL`, so
+    alembic migrated the composed PostgreSQL URL while this returned `None` and
+    the server ran with no engine at all.
+
+    `to_async_url` is the other half. A bare `postgresql://` selects psycopg2,
+    which an `AsyncEngine` cannot drive, so `create_async_engine` raised and the
+    `except` below turned it into a silent `None` -- a configured database
+    reported as no database.
+    """
+    from maistro.config.database import resolve_database_url, to_async_url
+
+    url = to_async_url(resolve_database_url())
     if not url:
         return None
     try:

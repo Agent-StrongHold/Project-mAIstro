@@ -64,12 +64,6 @@ ALLOWED: dict[str, str] = {
     "packages/maistro-core/src/maistro/http.py": (
         "the pool itself — this is the one place a client is constructed"
     ),
-    "packages/maistro-core/src/maistro/tasks/progress_webhook.py": (
-        "holds one client for the notifier's lifetime; already pooled by construction"
-    ),
-    "packages/maistro-core/src/maistro/integrations/ntfy.py": (
-        "holds one client for the client object's lifetime; already pooled by construction"
-    ),
     "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py": (
         "maistro-evolve does not depend on maistro-core, and taking that dependency "
         "to pool one call site would couple a standalone optimizer to the whole core "

@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPatch } from "../lib/api";
-import { usePmPoc } from "../context/PocMode";
 import { PageHeader } from "../components/shared";
 
 type Settings = Record<string, unknown>;
 
 export default function Settings() {
-  const pmPoc = usePmPoc();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
@@ -64,24 +62,22 @@ export default function Settings() {
     <div>
       <PageHeader
         title="Settings"
-        subtitle={
-          pmPoc
-            ? "PM fleet preferences — integrations and tokens live under Credentials and Integrations"
-            : "System configuration — some changes require admin elevation"
-        }
-        helpHref={pmPoc ? undefined : "/docs#dashboard"}
+        subtitle="System configuration — some changes require admin elevation"
+        helpHref="/docs#dashboard"
       />
 
-      {pmPoc && (
-        <div className="card" style={{ marginBottom: 16, maxWidth: 480 }}>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
-            Integration tokens (Jira, GitHub, …) are stored encrypted on the server per account.
-          </div>
-          <Link to="/credentials" className="btn btn-accent" style={{ fontSize: 10, display: "inline-block" }}>
-            Manage credentials →
-          </Link>
+      {/* Kept unconditionally rather than deleted with the flag (#190). The
+          card is a working shortcut to a page that exists for every workspace,
+          and "keep the generic branch" would have removed it — which is a
+          product call, not the mechanical one that rule is for. */}
+      <div className="card" style={{ marginBottom: 16, maxWidth: 480 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+          Integration tokens (Jira, GitHub, …) are stored encrypted on the server per account.
         </div>
-      )}
+        <Link to="/credentials" className="btn btn-accent" style={{ fontSize: 10, display: "inline-block" }}>
+          Manage credentials →
+        </Link>
+      </div>
 
       {elevating && elevatingFor && (
         <div className="card" style={{ borderLeft: "3px solid var(--danger)", marginBottom: 12, maxWidth: 400 }}>
