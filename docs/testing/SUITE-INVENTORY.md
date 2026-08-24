@@ -58,9 +58,14 @@ the suite reported a containment failure about a process the kernel had already
 killed. Forking a child that exits without being reaped makes that state
 unambiguous, so the helper's semantics are held rather than assumed.
 
+Four more maistro-core node IDs close #68's deployment-policy gap: raising the
+byte or depth ceiling now fails without the explicit unsafe-resource override,
+the explicit override is covered, and malformed override values fail startup
+instead of silently selecting a policy.
+
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6497 | `ci.yml` |
+| `packages/maistro-core/tests` | 6501 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 189 | `ci.yml` |
