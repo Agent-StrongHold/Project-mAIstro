@@ -539,6 +539,15 @@ jobs:
       - name: reachability dispositions (every unreachable module has an owner)
         run: uv run python scripts/check-reachability-dispositions.py
 
+      # SECURITY.md was the one load-bearing document with no gate behind it --
+      # no script and no workflow referenced it at all -- while making the
+      # strongest claims in the repository about what the code does. It had
+      # Known Limitation #1 backwards (three files named as having no SSRF
+      # guard; all three had one), and the consequence was a second SSRF
+      # implementation written because the first was documented as absent (#157).
+      - name: security inventory (SECURITY.md's checkable claims match the code)
+        run: uv run python scripts/check-security-inventory.py
+
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
       # reads its vocabulary out of the file's own legend tables, so a legend
