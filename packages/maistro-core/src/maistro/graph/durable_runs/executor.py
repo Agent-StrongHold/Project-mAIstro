@@ -98,8 +98,16 @@ def _new_run(
     actor_principal_id: str | None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> Run:
-    """Create the canonical Run and initial GraphExecutionState for a graph launch."""
+    """Create the canonical Run and initial GraphExecutionState for a graph launch.
+
+    `provenance` is merged over the executor's own marker rather than
+    replacing it, so a caller records *why* the Run exists without erasing
+    *how* it ran. `executor` stays first so a caller cannot accidentally
+    reassign it -- a Run that claims a different executor than the one that
+    walked it would make the field worse than absent.
+    """
     values: dict[str, object] = {
         "workspace_id": graph.workspace_id,
         "project_id": graph.project_id,
@@ -107,7 +115,7 @@ def _new_run(
         "actor_principal_id": actor_principal_id,
         "parent_run_id": parent_run_id,
         "parent_node_run_id": parent_node_run_id,
-        "provenance": {"executor": "durable_graph"},
+        "provenance": {**dict(provenance or {}), "executor": "durable_graph"},
     }
     if run_id is not None:
         values["run_id"] = run_id
@@ -126,12 +134,19 @@ async def run_durable_graph(
     run_id: str | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start and execute a durable graph from its canonical entry frontier.
 
     ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
     the Run (and NodeRun) that produced it — delegation and sub-graph work
     say "work is happening" as a child Run, not a second lifecycle.
+
+    ``provenance`` records what admitted the work — `admission_source` and
+    whatever identifies the thing that asked for it. Without it, a Run that a
+    schedule fired is indistinguishable from one a person started, and the
+    linkage survives only in an audit line beside the Run rather than on it
+    (#145).
     """
     run = _new_run(
         graph,
@@ -139,6 +154,7 @@ async def run_durable_graph(
         actor_principal_id=actor_principal_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
+        provenance=provenance,
     )
     state = GraphExecutionState(
         run_id=run.run_id,

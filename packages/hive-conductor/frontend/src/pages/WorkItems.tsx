@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { WorkItemDraftModal, type WorkItemDraft } from "../components/WorkItemDraftModal";
 import { apiGet } from "../lib/api";
 import { labelForWorkType, type WorkItemType } from "../lib/pmCapabilities";
-import { PM_NAV_DRAFTS } from "../lib/pmBranding";
 import { LoadingSpinner, PageHeader, useToast } from "../components/shared";
 
 type DraftRow = WorkItemDraft;
@@ -41,7 +40,7 @@ export default function WorkItems() {
   return (
     <div style={{ padding: "20px 24px", maxWidth: 900, margin: "0 auto" }}>
       <PageHeader
-        title={PM_NAV_DRAFTS}
+        title="Jira drafts"
         subtitle="Gated Jira hierarchy — clarify, edit, then confirm to post (never auto-created)"
         actions={
           <Link to="/agents" className="btn" style={{ fontSize: 9, padding: "2px 8px" }}>

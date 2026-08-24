@@ -34,6 +34,7 @@ from maistro.runs.store import (
     RunNotFound,
     RunStore,
     StaleExecutionFence,
+    validate_child_scope,
 )
 
 __all__ = [
@@ -67,4 +68,5 @@ __all__ = [
     "transition_attempt",
     "transition_node_run",
     "transition_run",
+    "validate_child_scope",
 ]

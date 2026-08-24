@@ -291,6 +291,17 @@ class EngineService:
             return bool(remove(task_id))
         return False
 
+    @property
+    def supports_clear(self) -> bool:
+        """Whether this deployment's backend can bulk-clear tasks.
+
+        `MaistroServerTaskBackend` cannot: it has no `remove_where`, so
+        `clear_tasks` returns 0 and a caller is told a clear succeeded that
+        removed nothing. A UI that can read this can decline to offer the
+        control instead of reporting "cleared 0" as a success.
+        """
+        return self._backend is not None and hasattr(self._backend, "remove_where")
+
     def clear_tasks(self, *, status: str | None = None) -> int:
         if self._backend is None:
             return 0

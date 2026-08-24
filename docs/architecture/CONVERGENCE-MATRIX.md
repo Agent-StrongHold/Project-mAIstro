@@ -89,7 +89,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
-| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.durable_log`, `events.outbox` | — |
+| Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` when the container is given a pool, else `events.durable_log` (SQLite) or in-memory; `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
 | Collaboration | `maistro.collaboration` | Multi-actor editing | its own session records | — | — |
@@ -131,14 +131,14 @@ currently holds belongs to `Run`/`Invocation`.
 | Capability / Provider / Binding / Invocation | `services.capabilities_wiring`, `routes.capabilities` | `2/31` | KEEP — canonical effect path, incompletely adopted | ADR-081226-6b46 | every shipped model/tool effect has an Invocation row | #55, #56, #57 |
 | Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no direct SDK calls outside this package | #56 |
 | Router and classifier | `maistro.container.route_request` | `1/13` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring-formula tests; router chooses a Provider, never executes | — |
-| Tool execution | `services.tool_executor`, `maistro.container` | `8/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
+| Tool execution | `services.tool_executor`, `maistro.container` | `9/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
 | Sandbox isolation | none in this repo's processes | `6/6` | CONNECT — the ExecutionRuntime story needs it | ADR-093, ADR-054 | an Attempt executed inside a sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `12/22` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification runs on the real register/load path | #59, #34 |
 | Credentials | `routes.credentials`, `services.credential_store_v2` (unreachable) | `4/7` | MIGRATE — rotation belongs at Provider selection | ADR-063 | a rotation triggered by a real Invocation outcome | #58 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on the Invocation, not a side ledger | #56, #63 |
 | External integrations | `maistro.integrations` exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from a product route | #34 |
 | Delivery gateway | none | `5/5` | CONNECT | ADR-047 | a delivery effect recorded as an Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/53` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/55` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
@@ -149,7 +149,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | one subsystem resolving a semantic object through the registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | a backup/restore preserving canonical Run records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/11` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/12` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families sharing one envelope and one Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `0/8` | KEEP | ADR-037, ADR-082, ADR-055 | one trace spanning request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `3/9` | KEEP | ADR-038, ADR-066 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `3/3` | CONNECT | ADR-070426-3a1f | a collaborative edit correlated to a Run | #34 |
@@ -157,7 +157,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
 | Core CLI | `maistro.cli` console script | `5/14` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API only | — |
-| Shared contracts and config | imported by every package | `2/45` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
+| Shared contracts and config | imported by every package | `2/47` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction check; wheel-import verification | #36 |
 | Test scaffolding | test suites only | `3/3` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by the suites in `scripts/check-suite-inventory.py` | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/18` | MIGRATE — its task lifecycle becomes a receipt | ADR-076, ADR-096 | `/v1/tasks` submission returns a canonical `run_id` | #41 |
 | Agent Conductor HTTP surface | `main` (uvicorn) |  `4/67` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
@@ -267,6 +267,46 @@ currently holds belongs to `Run`/`Invocation`.
   other and only one was ever analysed. `check-reachability.py` now refuses a flat module
   shadowed by a package, and the six dead files are gone.
 
+## Design coverage — the distance still to travel
+
+This matrix says which subsystem owns what *today*. It does not say how much of the
+decided design is **proven**, and until #166 nothing did: every quality instrument in
+this repository counts debt, so "every green PR moves us closer to the designed future
+state" was an aspiration CI could not check. Traceability plus non-regression is
+necessary and is not progress — a PR that changes nothing satisfies both.
+
+**ADR-082226-ff3c** defines the number and `scripts/check-ac-state.py` publishes it. For
+each ADR whose status is `Accepted` or `Implemented`, take the fraction of its criteria
+— its own, plus those of every spec whose `implements:` names it — that have reached the
+`reachable` rung. Design coverage is the mean of those fractions, one vote per decision.
+
+**Design coverage: 3.9582%** — 99 taken decisions, of which **94 score zero**.
+
+Of those 94, **76 declare no acceptance criteria anywhere** — not in the ADR, not in any
+implementing spec — and the remaining 18 declare criteria but have proved none of them.
+Five decisions carry the whole number:
+
+| ADR | Criteria | At `reachable` | Its own fraction |
+|---|---:|---:|---:|
+| `ADR-064` | 44 | 44 | 100% |
+| `ADR-073` | 16 | 16 | 100% |
+| `ADR-061` | 46 | 37 | 80.4% |
+| `ADR-062326-702b` | 7 | 5 | 71.4% |
+| `ADR-037` | 10 | 4 | 40% |
+
+The same corpus measured *per criterion rather than per decision* reads **30.5%**. That
+number is the one to distrust: its denominator is "criteria that exist", so a decision
+with nothing written vanishes from it entirely, and deleting an unproven criterion
+*raises* it. The gap between 3.96% and 30.5% is itself the finding — it names how much
+of the design has never been written down as anything checkable, which is the same
+observation the `Acceptance evidence` column makes row by row.
+
+The number is ratcheted as a **floor** (a fall fails CI), and it interacts with this
+matrix in one direction worth stating: `reachable` is the top rung, so a `CONNECT` row
+being wired can raise design coverage, while accepting a new ADR lowers it because
+newly-owed work is now owed. Both are correct.
+
+
 ## Corrections to the issue that requested this
 
 [#28](https://github.com/Agent-StrongHold/Project-mAIstro/issues/28) says the matrix is
@@ -282,6 +322,8 @@ delivering against a premise that does not hold.
 - `quality/reachability-baseline.json` — the ratcheted unreachable set this matrix attributes.
 - `quality/reachability-dispositions.json` — CONNECT/LIBRARY/RETIRE per unreachable module,
   grouped by the subsystem rows above and CI-checked against them (#33).
+- `quality/ac-state.json` — the per-decision design-coverage breakdown published above,
+  regenerated by `scripts/check-ac-state.py --run-tests` and floored by its ratchet (#166).
 - `quality/execution-lifecycles.json` — every work-state enum, classified CANONICAL / DOMAIN /
   CONVERGE, CI-checked against the code (#36).
 - `KNOWN-GAPS.md` — capability-level gaps; this matrix is ownership-level.

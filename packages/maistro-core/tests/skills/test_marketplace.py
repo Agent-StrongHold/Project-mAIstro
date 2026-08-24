@@ -9,10 +9,7 @@ import pytest
 from maistro.skills.marketplace import (
     HTTPResponse,
     SkillMarketplace,
-    _block_literal_ip,
-    _block_resolved_ip,
     _block_ssrf,
-    _is_blocked_ip,
 )
 from maistro.skills.registry import InMemorySkillRegistry
 
@@ -55,49 +52,18 @@ class _FakeHttpClient:
         return self._response
 
 
-def test_is_blocked_ip_flags_private_address() -> None:
-    import ipaddress
-
-    assert _is_blocked_ip(ipaddress.ip_address("10.0.0.5")) is True
-
-
-def test_is_blocked_ip_flags_loopback_address() -> None:
-    import ipaddress
-
-    assert _is_blocked_ip(ipaddress.ip_address("127.0.0.1")) is True
-
-
-def test_is_blocked_ip_allows_public_address() -> None:
-    import ipaddress
-
-    assert _is_blocked_ip(ipaddress.ip_address("8.8.8.8")) is False
-
-
-def test_is_blocked_ip_returns_false_for_non_ip_object() -> None:
-    assert _is_blocked_ip("not-an-ip") is False
-
-
-def test_block_literal_ip_raises_for_blocked_ip() -> None:
-    with pytest.raises(ValueError, match="Blocked"):
-        _block_literal_ip("127.0.0.1", "http://127.0.0.1/skill.md")
-
-
-def test_block_literal_ip_returns_true_for_allowed_public_ip() -> None:
-    assert _block_literal_ip("8.8.8.8", "http://8.8.8.8/skill.md") is True
-
-
-def test_block_literal_ip_returns_false_for_non_ip_hostname() -> None:
-    assert _block_literal_ip("example.com", "http://example.com/skill.md") is False
-
-
-def test_block_resolved_ip_returns_silently_on_dns_failure() -> None:
-    _block_resolved_ip(
-        "this-host-does-not-exist.invalid", "http://this-host-does-not-exist.invalid/x"
-    )
+# The internals of the second SSRF implementation used to be unit-tested here:
+# `_is_blocked_ip`, `_block_literal_ip`, `_block_resolved_ip`. That
+# implementation is gone (#154) and `maistro.security.ssrf` is the only one
+# left, so those cases live in `tests/security/test_ssrf.py` — which covers
+# strictly more, including the DNS-failure case this file used to assert
+# *passed*. What stays here is the boundary this module actually owns: that
+# marketplace still refuses in `ValueError` terms, because `install()` documents
+# that contract and `import_pipeline` turns one into a "blocked" verdict.
 
 
 def test_block_ssrf_raises_for_malformed_url() -> None:
-    with pytest.raises(ValueError, match="malformed URL"):
+    with pytest.raises(ValueError, match="private/metadata network"):
         _block_ssrf("http://[::1")
 
 
@@ -127,48 +93,12 @@ def test_block_ssrf_raises_for_literal_private_ip() -> None:
     ],
 )
 def test_block_ssrf_rejects_unsupported_or_schemeless_urls(url: str) -> None:
-    with pytest.raises(ValueError, match="unsupported marketplace URL"):
+    with pytest.raises(ValueError, match="private/metadata network"):
         _block_ssrf(url)
 
 
 def test_block_ssrf_allows_literal_public_ip_url() -> None:
     _block_ssrf("https://8.8.8.8/skill.md")
-
-
-def test_block_resolved_ip_raises_for_blocked_resolved_address(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import socket
-
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *a, **k: [(None, None, None, None, ("127.0.0.1", 0))],
-    )
-    with pytest.raises(ValueError, match="resolves to private/internal"):
-        _block_resolved_ip("evil.example.com", "http://evil.example.com/x")
-
-
-def test_block_resolved_ip_skips_unparseable_address(monkeypatch: pytest.MonkeyPatch) -> None:
-    import socket
-
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *a, **k: [(None, None, None, None, ("not-an-ip", 0))],
-    )
-    _block_resolved_ip("weird.example.com", "http://weird.example.com/x")
-
-
-def test_block_resolved_ip_allows_public_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
-    import socket
-
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *a, **k: [(None, None, None, None, ("8.8.8.8", 0))],
-    )
-    _block_resolved_ip("example.com", "http://example.com/x")
 
 
 def test_block_ssrf_allows_public_hostname(monkeypatch: pytest.MonkeyPatch) -> None:

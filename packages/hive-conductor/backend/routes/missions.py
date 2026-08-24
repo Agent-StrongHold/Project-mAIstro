@@ -24,7 +24,11 @@ def _now() -> datetime:
 
 def _task_to_mission(rec: object) -> Mission:
     """Convert a TaskRecord from EngineService into a hive Mission."""
-    metadata: dict[str, object] = {}
+    # The engine owns this mission's lifecycle, so `update_mission_status`
+    # refuses every status change on it with a 409. Saying so on the record
+    # lets the UI hide controls that could only ever fail, rather than each
+    # surface guessing from deployment mode which missions are engine-backed.
+    metadata: dict[str, object] = {"engine_backed": True}
     err = getattr(rec, "error", None)
     if err:
         metadata["error"] = err
