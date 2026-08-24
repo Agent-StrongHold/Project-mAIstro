@@ -26,6 +26,7 @@ from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
     SCHEDULE_ID_KEY,
+    SCHEDULE_INPUTS_KEY,
     SCHEDULE_SOURCE,
     SCHEDULED_FOR_KEY,
 )
@@ -282,3 +283,176 @@ class TestDisabled:
 
         assert result.run_ids == ()
         assert result.next_due_at is None
+
+
+# ── what the cursor may and may not cross (Codex P1 x3, P2 x1 on #218) ──
+
+
+class TestTheCursorNeverCrossesAnOwedOccurrence:
+    """The batch cases the first version got wrong.
+
+    `record_fire` moves the cursor past everything it covers, and the cursor is
+    the lower bound of the next enumeration. So "advance only after the Runs
+    exist" is necessary and not sufficient: *which* occurrences it advances past
+    matters just as much, and a batch makes them differ.
+    """
+
+    async def test_a_failure_mid_batch_leaves_the_rest_owed(self, harness) -> None:
+        """The earlier version collected the failure and kept going, then
+        advanced past the whole batch — losing the failed occurrence
+        permanently, which is the exact outcome this admitter exists to
+        prevent."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=4),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+
+        calls = {"n": 0}
+        original = admitter._admit_one
+
+        async def _fail_on_the_second(schedule_, template_, fire_):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("run store refused")
+            return await original(schedule_, template_, fire_)
+
+        admitter._admit_one = _fail_on_the_second  # type: ignore[method-assign]
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert result.failures
+        assert len(result.run_ids) == 1
+        assert stored is not None
+        # The cursor sits on the occurrence that succeeded, so the failed one
+        # and everything after it are still owed.
+        assert stored.last_fired_at < NOON
+        assert stored.runs_so_far == 1
+
+    async def test_the_cursor_is_the_occurrence_not_the_tick(self, harness) -> None:
+        """`fired_at=now` would carry the cursor past occurrences the batch
+        stopped short of, whatever the stopping rule was."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        noticed = NOON + timedelta(minutes=45)
+
+        await admitter.admit_due(schedule, now=noticed)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_fired_at == NOON
+        assert stored.last_fired_at != noticed
+
+
+class TestSkipMeansDropNotDefer:
+    """`OverlapPolicy.SKIP` is documented as "Drop the fire; the in-flight Run
+    keeps going". Leaving the cursor behind made it *defer*: the occurrence came
+    due again next tick and fired once the active Run finished.
+
+    `SkipReason` already drew the line — BUFFERED and TRUNCATED say in as many
+    words that their occurrence is still owed, and nothing else does.
+    """
+
+    async def test_an_overlap_skip_consumes_its_occurrence(self, harness) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        before = await schedules.get(schedule.schedule_id)
+
+        result = await admitter.admit_due(schedule, now=NOON, active_run=True)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert result.run_ids == ()
+        assert after is not None and before is not None
+        assert after.last_fired_at > before.last_fired_at
+
+    async def test_a_dropped_occurrence_does_not_fire_on_the_next_tick(self, harness) -> None:
+        """The property the cursor move buys, asserted end to end."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+
+        await admitter.admit_due(schedule, now=NOON, active_run=True)
+        # The Run finished; the same nominal occurrence must not come back.
+        again = await admitter.admit_due(
+            await schedules.get(schedule.schedule_id), now=NOON, active_run=False
+        )
+
+        assert again.run_ids == ()
+
+    async def test_a_consumed_skip_does_not_count_as_a_fire(self, harness) -> None:
+        """It produced no Run, so `runs_so_far` must not move — otherwise a
+        bounded schedule burns its `max_runs` on occurrences it dropped."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules, project_id, overlap_policy=OverlapPolicy.SKIP, max_runs=5
+        )
+
+        await admitter.admit_due(schedule, now=NOON, active_run=True)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 0
+        assert stored.last_run_id is None
+
+
+class TestScheduleInputs:
+    async def test_a_configured_payload_reaches_the_run(self, harness) -> None:
+        """`Schedule.inputs` was dropped, so a parameterized schedule produced
+        a Run indistinguishable from one configured with nothing."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, inputs={"region": "eu-west", "depth": 3})
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        run = await runs.get_run(result.run_ids[0])
+        assert run is not None
+        assert run.provenance[SCHEDULE_INPUTS_KEY] == {"region": "eu-west", "depth": 3}
+
+    async def test_no_inputs_records_no_key(self, harness) -> None:
+        """Absent rather than an empty dict: a Run that never had inputs and one
+        configured with `{}` are the same thing, and the shorter provenance is
+        the honest one."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        run = await runs.get_run(result.run_ids[0])
+        assert run is not None
+        assert SCHEDULE_INPUTS_KEY not in run.provenance
+
+
+class TestTemplateResolutionIsPerBatch:
+    async def test_a_missing_template_is_looked_up_once_for_the_whole_batch(self, harness) -> None:
+        """A minutely schedule after an outage has hundreds of due occurrences.
+        Resolving per occurrence turned one configuration error into hundreds of
+        store round trips and log lines per tick — while the cursor stayed put,
+        so the burst repeated on every poll."""
+        admitter, _runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            graph_template_id="never-registered",
+            cron="* * * * *",
+            last_fired_at=NOON - timedelta(minutes=30),
+            catchup_window_seconds=3600.0,
+        )
+
+        lookups = {"n": 0}
+        original = templates.get
+
+        async def _counted(template_id, *, version=None):
+            lookups["n"] += 1
+            return await original(template_id, version=version)
+
+        templates.get = _counted  # type: ignore[method-assign]
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        assert result.run_ids == ()
+        assert result.failures
+        # One lookup for the batch, however many occurrences were due.
+        assert lookups["n"] == 1

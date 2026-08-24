@@ -34,26 +34,37 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.graph.templates import require_template
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
     SCHEDULE_ID_KEY,
+    SCHEDULE_INPUTS_KEY,
     SCHEDULE_SOURCE,
     SCHEDULED_FOR_KEY,
 )
-from maistro.scheduling.engine import evaluate
+from maistro.scheduling.engine import SkipReason, evaluate
 
 if TYPE_CHECKING:
+    from maistro.graph.definitions import GraphTemplate
     from maistro.graph.templates import GraphTemplateStore
     from maistro.runs.store import RunStore
-    from maistro.scheduling.engine import FireDecision, SkippedFire
+    from maistro.scheduling.engine import FireDecision, ScheduleEvaluation, SkippedFire
     from maistro.scheduling.model import Schedule
     from maistro.scheduling.store import ScheduleStore
 
 logger = logging.getLogger("maistro.scheduling.admission")
+
+#: Skip reasons whose occurrence is still owed, so the cursor must not pass it.
+#:
+#: Read from `SkipReason`'s own documentation rather than restated: BUFFERED
+#: says the cursor does not advance because "run one queued occurrence
+#: afterwards" is what BUFFER_ONE means, and TRUNCATED says a caller advancing
+#: on it "would otherwise lose the occurrence with no record of it". Every other
+#: reason is a decision not to run that occurrence at all.
+_UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
 
 
 @dataclass(frozen=True)
@@ -116,33 +127,59 @@ class ScheduleRunAdmitter:
         """
         decision = evaluate(schedule, now=now, active_run=active_run)
         if not decision.fires:
-            # Nothing fired, so nothing to record. `next_due_at` still moved and
-            # the caller wants it, but writing it here would stamp
-            # `last_fired_at` for a fire that did not happen.
+            return await self._consume_without_firing(schedule, decision)
+
+        # Resolved once for the batch, not once per occurrence. A minutely
+        # schedule naming a template nobody registered has hundreds of due
+        # occurrences after an outage, and resolving per occurrence turned one
+        # configuration error into hundreds of store round trips and log lines
+        # on every tick — while the cursor stayed put, so the burst repeated.
+        try:
+            template = await require_template(
+                self._templates,
+                schedule.graph_template_id,
+                version=schedule.template_version,
+            )
+        except Exception as exc:
+            logger.warning(
+                "schedule %s cannot resolve template %s: %s",
+                schedule.schedule_id,
+                schedule.graph_template_id,
+                exc,
+            )
+            # Cursor untouched: the occurrences are still owed, and become
+            # admissible the moment the template is registered.
             return ScheduleAdmission(
                 skipped=decision.skipped,
                 next_due_at=decision.next_due_at,
                 cancel_active_run=decision.cancel_active_run,
+                failures=(exc,),
             )
 
         run_ids: list[str] = []
+        admitted: list[FireDecision] = []
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
-                run_ids.append(await self._admit_one(schedule, fire))
+                run_ids.append(await self._admit_one(schedule, template, fire))
+                admitted.append(fire)
             except Exception as exc:
+                # **Stop**, rather than continue. `record_fire` moves the cursor
+                # past everything it covers, so admitting a later occurrence
+                # after an earlier one failed would either lose the failure
+                # (cursor past it) or duplicate the success (cursor before it).
+                # Stopping keeps the failed occurrence and everything after it
+                # owed, which is the property this admitter exists to hold.
                 logger.warning(
-                    "schedule %s could not admit its %s occurrence: %s",
+                    "schedule %s could not admit its %s occurrence, stopping the batch: %s",
                     schedule.schedule_id,
                     fire.scheduled_for.isoformat(),
                     exc,
                 )
                 failures.append(exc)
+                break
 
-        if not run_ids:
-            # Every occurrence failed. Leaving the cursor untouched is what
-            # makes them retryable: the next evaluation enumerates the same
-            # occurrences and can succeed once the template exists.
+        if not admitted:
             return ScheduleAdmission(
                 skipped=decision.skipped,
                 next_due_at=decision.next_due_at,
@@ -150,17 +187,25 @@ class ScheduleRunAdmitter:
                 failures=tuple(failures),
             )
 
-        disable = self._exhausted_after(schedule, fires=len(run_ids))
+        disable = self._exhausted_after(schedule, fires=len(admitted))
+        # `next_due_at` is recomputed only when the whole batch landed. A
+        # partial batch leaves occurrences owed, and `evaluate()`'s answer
+        # assumed all of them fired.
+        complete = len(admitted) == len(decision.fires)
         await self._schedules.record_fire(
             schedule.schedule_id,
-            fired_at=now,
-            # The newest Run, matching `last_fired_at` being the newest fire.
+            # The newest occurrence *admitted*, not `now`. This value becomes
+            # the lower bound of the next enumeration, so `now` would carry the
+            # cursor past occurrences this batch stopped short of and lose them
+            # permanently — the exact failure the ordering above prevents.
+            fired_at=admitted[-1].scheduled_for,
+            # The newest Run, matching the cursor being the newest fire.
             # `Schedule.last_run_id` is a pointer to the latest occurrence, not
             # a history of them; the history is on the Runs, each naming this
             # schedule.
             run_id=run_ids[-1],
-            next_due_at=decision.next_due_at,
-            fires=len(run_ids),
+            next_due_at=decision.next_due_at if complete else schedule.next_due_at,
+            fires=len(admitted),
             disable=disable,
         )
         return ScheduleAdmission(
@@ -170,6 +215,45 @@ class ScheduleRunAdmitter:
             disabled=disable,
             cancel_active_run=decision.cancel_active_run,
             failures=tuple(failures),
+        )
+
+    async def _consume_without_firing(
+        self, schedule: Schedule, decision: ScheduleEvaluation
+    ) -> ScheduleAdmission:
+        """Advance past occurrences that were *dropped*, not deferred.
+
+        `OverlapPolicy.SKIP` means "drop the fire; the in-flight Run keeps
+        going". Leaving the cursor behind turned that into *defer*: the
+        occurrence came due again on the next tick, and once the active Run
+        finished it fired after all — the opposite of what the default policy
+        promises.
+
+        `SkipReason` already draws the line and this reads it rather than
+        restating it. `BUFFERED` says in as many words that the cursor does not
+        advance, because "run one queued occurrence afterwards" is what
+        BUFFER_ONE means; `TRUNCATED` says a caller that advanced on it "would
+        otherwise lose the occurrence with no record of it". Everything else —
+        overlap, disabled, exhausted, outside the catch-up window — is a
+        decision not to run that occurrence at all.
+        """
+        consumable = [skip for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS]
+        if consumable:
+            newest = max(skip.scheduled_for for skip in consumable)
+            await self._schedules.record_fire(
+                schedule.schedule_id,
+                fired_at=newest,
+                # No Run was created, so neither `last_run_id` nor the fire
+                # count moves. `_advance` keeps the existing id when this is
+                # None, which is what makes "the last Run this schedule
+                # produced" survive an occurrence that produced none.
+                run_id=None,
+                next_due_at=decision.next_due_at,
+                fires=0,
+            )
+        return ScheduleAdmission(
+            skipped=decision.skipped,
+            next_due_at=decision.next_due_at,
+            cancel_active_run=decision.cancel_active_run,
         )
 
     @staticmethod
@@ -185,12 +269,9 @@ class ScheduleRunAdmitter:
             return False
         return schedule.runs_so_far + fires >= schedule.max_runs
 
-    async def _admit_one(self, schedule: Schedule, fire: FireDecision) -> str:
-        template = await require_template(
-            self._templates,
-            schedule.graph_template_id,
-            version=schedule.template_version,
-        )
+    async def _admit_one(
+        self, schedule: Schedule, template: GraphTemplate, fire: FireDecision
+    ) -> str:
         graph = template.instantiate(project_id=schedule.project_id, name=schedule.name or None)
         provenance: dict[str, Any] = {
             ADMISSION_SOURCE: SCHEDULE_SOURCE,
@@ -198,6 +279,14 @@ class ScheduleRunAdmitter:
             SCHEDULED_FOR_KEY: fire.scheduled_for.isoformat(),
             SCHEDULE_CATCHUP_KEY: fire.catchup,
         }
+        if schedule.inputs:
+            # `Schedule.inputs` is the schedule's configured payload, and
+            # instantiating the template alone dropped it: a parameterized
+            # schedule produced a Run indistinguishable from one configured
+            # with nothing. Recorded on the Run rather than only handed to a
+            # runner, because a Run that cannot say what it was asked to do
+            # cannot be audited or replayed.
+            provenance[SCHEDULE_INPUTS_KEY] = schedule.inputs
         run = await self._runs.create_run(
             graph,
             persona_id=schedule.persona_id,

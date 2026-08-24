@@ -47,6 +47,15 @@ SCHEDULED_FOR_KEY = "scheduled_for"
 #: The two mean different things and were previously indistinguishable.
 SCHEDULE_CATCHUP_KEY = "catchup"
 
+#: The Schedule's configured payload, carried onto the Run it fires.
+#:
+#: `Schedule.inputs` is what a parameterized schedule was set up to pass, and
+#: instantiating its template alone dropped it — every such Run looked like one
+#: configured with nothing. On the Run rather than only handed to a runner,
+#: because a Run that cannot say what it was asked to do cannot be audited or
+#: replayed.
+SCHEDULE_INPUTS_KEY = "schedule_inputs"
+
 __all__ = [
     "ADMISSION_SOURCE",
     "CHAT_SOURCE",
@@ -54,6 +63,7 @@ __all__ = [
     "SCHEDULED_FOR_KEY",
     "SCHEDULE_CATCHUP_KEY",
     "SCHEDULE_ID_KEY",
+    "SCHEDULE_INPUTS_KEY",
     "SCHEDULE_SOURCE",
     "TASK_QUEUE_SOURCE",
 ]
