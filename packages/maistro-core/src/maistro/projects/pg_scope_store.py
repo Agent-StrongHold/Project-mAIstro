@@ -30,6 +30,7 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+from maistro.runs.evidence_json import json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -65,7 +66,7 @@ class PgProjectScopeStore:
                    ON CONFLICT DO NOTHING""",
                 root.project_id,
                 root.workspace_id,
-                root.model_dump(mode="json"),
+                json_of(root),
             )
         return await self.root_for_workspace(workspace_id)
 
@@ -102,7 +103,7 @@ class PgProjectScopeStore:
                 project.project_id,
                 project.workspace_id,
                 project.parent_project_id,
-                project.model_dump(mode="json"),
+                json_of(project),
             )
         return project
 
@@ -110,7 +111,7 @@ class PgProjectScopeStore:
         payload = await self._payload(
             "SELECT payload FROM canonical_projects WHERE project_id = $1", project_id
         )
-        return Project.model_validate(payload) if payload is not None else None
+        return model_of(Project, payload) if payload is not None else None
 
     async def lineage(self, project_id: str) -> list[Project]:
         return await self._lineage(project_id)
@@ -150,7 +151,7 @@ class PgProjectScopeStore:
                 "SELECT payload FROM canonical_projects WHERE parent_project_id = $1",
                 project_id,
             )
-        children = [Project.model_validate(row["payload"]) for row in rows]
+        children = [model_of(Project, row["payload"]) for row in rows]
         # Sorted in Python, not SQL: the ordering keys live inside the payload,
         # and an ORDER BY over JSONB extraction would be a different comparison
         # than the SQLite store's — the point of the conformance suite is that
@@ -274,7 +275,7 @@ class PgProjectScopeStore:
                 updated.workspace_id,
                 updated.project_id,
                 updated.principal_id,
-                updated.model_dump(mode="json"),
+                json_of(updated),
             )
         return updated
 
@@ -292,7 +293,7 @@ class PgProjectScopeStore:
             params = (project_id, principal_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
-        memberships = [ProjectMembership.model_validate(row["payload"]) for row in rows]
+        memberships = [model_of(ProjectMembership, row["payload"]) for row in rows]
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
 
@@ -324,7 +325,7 @@ class PgProjectScopeStore:
                 resource.workspace_id,
                 resource.project_id,
                 resource.resource_type,
-                resource.model_dump(mode="json"),
+                json_of(resource),
             )
         if written is None:
             raise ProjectIntegrityError("resource identity cannot cross Workspaces")
@@ -344,7 +345,7 @@ class PgProjectScopeStore:
                 "SELECT payload FROM canonical_project_resources WHERE workspace_id = $1",
                 workspace_id,
             )
-        resources = [ProjectScopedResource.model_validate(row["payload"]) for row in rows]
+        resources = [model_of(ProjectScopedResource, row["payload"]) for row in rows]
         visible = [
             resource
             for resource in resources
@@ -372,7 +373,7 @@ class PgProjectScopeStore:
         sql = """UPDATE canonical_projects
                  SET parent_project_id = $1, payload = $2
                  WHERE project_id = $3"""
-        params = (project.parent_project_id, project.model_dump(mode="json"), project.project_id)
+        params = (project.parent_project_id, json_of(project), project.project_id)
         if conn is not None:
             await conn.execute(sql, *params)
             return
@@ -384,21 +385,21 @@ class PgProjectScopeStore:
             "SELECT payload FROM canonical_projects WHERE workspace_id = $1 AND is_root",
             workspace_id,
         )
-        return Project.model_validate(payload) if payload is not None else None
+        return model_of(Project, payload) if payload is not None else None
 
     async def _membership_or_none(self, membership_id: str) -> ProjectMembership | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_project_memberships WHERE membership_id = $1",
             membership_id,
         )
-        return ProjectMembership.model_validate(payload) if payload is not None else None
+        return model_of(ProjectMembership, payload) if payload is not None else None
 
     async def _resource_or_none(self, resource_id: str) -> ProjectScopedResource | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_project_resources WHERE resource_id = $1",
             resource_id,
         )
-        return ProjectScopedResource.model_validate(payload) if payload is not None else None
+        return model_of(ProjectScopedResource, payload) if payload is not None else None
 
     async def _require(self, project_id: str, *, conn: Any = None) -> Project:
         payload = await self._payload(
@@ -408,7 +409,7 @@ class PgProjectScopeStore:
         )
         if payload is None:
             raise ProjectNotFound(project_id)
-        return Project.model_validate(payload)
+        return model_of(Project, payload)
 
     async def _payload(self, sql: str, *params: Any, conn: Any = None) -> Any | None:
         if conn is not None:

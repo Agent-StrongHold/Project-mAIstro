@@ -25,7 +25,14 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
+
+#: Bound to `BaseModel` rather than a structural Protocol: pydantic types
+#: `model_validate` as returning the class it was called on, which is what lets
+#: `model_of(Attempt, ...)` be an `Attempt` instead of `Any`.
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 #: Key marking an encoded non-finite float. Long and specific so it cannot
 #: collide with a domain result that happens to be a one-key dict.
@@ -83,12 +90,35 @@ def json_of(model: Any) -> str:
     return json.dumps(payload_of(model))
 
 
-def model_of(cls: Any, payload: Any) -> Any:
-    """Validate a stored payload back into its model, restoring non-finites."""
-    return cls.model_validate(decode_evidence(payload))
+def decode_payload(raw: Any) -> Any:
+    """A stored JSONB payload as a Python object, however the driver handed it over.
+
+    asyncpg's default JSONB codec is `str` in both directions, so a pool built
+    by `asyncpg.create_pool` returns text while one built by
+    `maistro.persistence.get_pool` — which registers a JSON codec — returns a
+    dict. Both are legitimate: the container's URL path uses the second, and
+    #135's caller-supplied-pool seam means a caller may hand over the first.
+
+    A store whose correctness depends on how somebody else constructed the pool
+    is the hidden coupling `pg_learnings._load_keys` names, and the same answer
+    applies here: decode defensively and be right either way.
+    """
+    if isinstance(raw, str | bytes | bytearray):
+        return json.loads(raw)
+    return raw
 
 
-def model_of_json(cls: Any, text: str | bytes) -> Any:
+def model_of(cls: type[_ModelT], payload: Any) -> _ModelT:
+    """Validate a stored payload back into its model, restoring non-finites.
+
+    Generic rather than `Any`-in/`Any`-out: every caller knows the model it
+    asked for, and returning `Any` pushed that knowledge back onto each of them
+    as a `no-any-return` to silence individually.
+    """
+    return cls.model_validate(decode_evidence(decode_payload(payload)))
+
+
+def model_of_json(cls: type[_ModelT], text: str | bytes) -> _ModelT:
     """Validate stored JSON text back into its model, restoring non-finites."""
     return model_of(cls, json.loads(text))
 
@@ -96,6 +126,7 @@ def model_of_json(cls: Any, text: str | bytes) -> Any:
 __all__ = [
     "NON_FINITE_TAG",
     "decode_evidence",
+    "decode_payload",
     "encode_evidence",
     "json_of",
     "model_of",

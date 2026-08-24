@@ -35,7 +35,11 @@ from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.store import RunStore
-from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
+from maistro.runs.wiring import (
+    SPINE_PG_TABLES,
+    wire_chat_admission,
+    wire_execution_spine,
+)
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
@@ -925,6 +929,13 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # The canonical execution spine (#132). Listed here for the same reason as
+    # the four above: a `postgresql://` deployment that skipped `alembic upgrade
+    # head` should be told once, at startup, naming every table it is missing —
+    # not on the first request that happens to touch one. `wire_execution_spine`
+    # probes the same set for a caller-supplied pool, which reaches it without
+    # passing through this preflight.
+    *SPINE_PG_TABLES,
 )
 
 

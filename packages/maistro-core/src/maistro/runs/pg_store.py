@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.runs.evidence_json import decode_evidence, model_of, payload_of
+from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -150,7 +150,7 @@ class PgRunStore:
                 run.parent_run_id,
                 run.parent_node_run_id,
                 run.status.value,
-                payload_of(run),
+                json_of(run),
                 # Duplicated out of the payload so the retention sweep can use
                 # an index (migration 012). Written once at creation and never
                 # transitioned, so the two cannot drift the way `status` could.
@@ -327,7 +327,7 @@ class PgRunStore:
                 node_run.node_id,
                 node_run.ordinal,
                 node_run.status.value,
-                payload_of(node_run),
+                json_of(node_run),
             )
         return node_run
 
@@ -441,7 +441,7 @@ class PgRunStore:
                     attempt.node_run_id,
                     attempt.ordinal,
                     attempt.status.value,
-                    payload_of(attempt),
+                    json_of(attempt),
                 )
             except _integrity_errors() as exc:
                 raise _integrity_failure(exc, node_run_id) from exc
@@ -528,7 +528,7 @@ class PgRunStore:
         )
         if payload is None:
             raise _NOT_FOUND[table](identity)
-        return decode_evidence(payload)
+        return decode_evidence(decode_payload(payload))
 
     @staticmethod
     async def _write(conn: Any, table: str, column: str, identity: str, model: Any) -> None:
@@ -537,7 +537,7 @@ class PgRunStore:
         await conn.execute(
             f"UPDATE {table} SET status = $1, payload = $2 WHERE {column} = $3",  # nosec B608
             model.status.value,
-            payload_of(model),
+            json_of(model),
             identity,
         )
 
@@ -575,7 +575,7 @@ class PgRunStore:
     async def _payload(self, sql: str, *params: Any) -> Any | None:
         async with self._pool.acquire() as conn:
             payload = await conn.fetchval(sql, *params)
-        return decode_evidence(payload) if payload is not None else None
+        return decode_evidence(decode_payload(payload)) if payload is not None else None
 
 
 _NOT_FOUND: dict[str, type[Exception]] = {

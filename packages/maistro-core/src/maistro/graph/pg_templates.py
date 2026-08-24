@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import GraphTemplate
 from maistro.graph.templates import GraphTemplateConflict
+from maistro.runs.evidence_json import json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -47,7 +48,7 @@ class PgGraphTemplateStore:
                 template.workspace_id,
                 template.name,
                 template.content_hash,
-                template.model_dump(mode="json"),
+                json_of(template),
             )
         if row is None:
             raise GraphTemplateConflict(
@@ -72,7 +73,7 @@ class PgGraphTemplateStore:
                        LIMIT 1""",
                     template_id,
                 )
-        return GraphTemplate.model_validate(payload) if payload is not None else None
+        return model_of(GraphTemplate, payload) if payload is not None else None
 
     async def list_for_workspace(self, workspace_id: str) -> list[GraphTemplate]:
         async with self._pool.acquire() as conn:
@@ -82,7 +83,7 @@ class PgGraphTemplateStore:
                    ORDER BY name, template_id, version""",
                 workspace_id,
             )
-        return [GraphTemplate.model_validate(row["payload"]) for row in rows]
+        return [model_of(GraphTemplate, row["payload"]) for row in rows]
 
     async def versions(self, template_id: str) -> list[int]:
         async with self._pool.acquire() as conn:

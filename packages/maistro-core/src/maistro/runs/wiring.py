@@ -9,7 +9,8 @@ which Workspace a Run belongs to.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Final
 
 from maistro.agents.intents import IntentRegistry
 from maistro.graph.templates import GraphTemplateStore
@@ -19,6 +20,55 @@ from maistro.runs.store import RunStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 
 __all__ = ["wire_chat_admission", "wire_execution_spine"]
+
+
+logger = logging.getLogger(__name__)
+
+#: Tables the PostgreSQL spine needs before it may be selected. Defined here
+#: rather than in `container` because the import runs that way: `container`
+#: imports this module, so this module cannot import it back.
+SPINE_PG_TABLES: Final = (
+    "canonical_projects",
+    "canonical_runs",
+    "canonical_node_runs",
+    "canonical_attempts",
+    "graph_templates",
+)
+
+
+async def _spine_is_migrated(pg_pool: Any) -> bool:
+    """Whether this pool's database actually has the spine's tables.
+
+    A pool reached here two ways, and only one of them has been checked. The
+    URL path runs `_require_postgres_schema` at startup and refuses an
+    unmigrated database by name, so by the time it gets here the answer is
+    always yes. The caller-supplied pool (#135's seam — a test with a fixture,
+    an embedding application that opened its own) has been through no preflight
+    at all, and may legitimately hold only the tables that caller cared about.
+
+    Assuming yes there turns "this pool has no spine tables" into
+    `UndefinedTableError` from inside `create_container`, which is a startup
+    crash for a deployment that never asked for a durable spine. Probing is one
+    round trip, once, and lets the caller keep the backend it did ask for.
+
+    Falling back is warned about rather than silent: a durable pool that ends up
+    with an in-memory spine is exactly the shape of #122, and the difference
+    between that defect and this fallback is entirely that this one says so.
+    """
+    missing = [
+        table
+        for table in SPINE_PG_TABLES
+        if not await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+    ]
+    if not missing:
+        return True
+    logger.warning(
+        "PostgreSQL pool is missing the canonical spine's tables (%s), so Runs are "
+        "in-process and lost on restart. Run `alembic upgrade head` against this "
+        "database to make the spine durable (#132).",
+        ", ".join(missing),
+    )
+    return False
 
 
 async def wire_execution_spine(
@@ -49,12 +99,11 @@ async def wire_execution_spine(
     project_scope_store: ProjectScopeStore
     run_store: RunStore
     template_store: GraphTemplateStore
-    if pg_pool is not None:
+    if pg_pool is not None and await _spine_is_migrated(pg_pool):
         # No ensure_schema: these tables come from `alembic/versions/012` and
-        # `014`, and the container's PostgreSQL preflight already refuses an
-        # unmigrated database by name. A store that quietly created its own
-        # tables would be a second schema owner and a second thing to keep in
-        # step.
+        # `014`. A store that quietly created its own tables would be a second
+        # schema owner and a second thing to keep in step — which is why the
+        # check above *probes* rather than creates.
         from maistro.graph.pg_templates import PgGraphTemplateStore
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
