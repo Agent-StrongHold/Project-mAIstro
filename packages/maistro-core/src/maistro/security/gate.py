@@ -26,8 +26,8 @@ from maistro.security.request_analyzer import analyze_request_sufficiency
 from maistro.security.warden.sanitizer import sanitize
 
 if TYPE_CHECKING:
+    from maistro.protocols.strikes import StrikeTracker
     from maistro.security._types import AuthContext
-    from maistro.security.strikes import InMemoryStrikeTracker
     from maistro.security.warden.detector import Warden
 
 logger = logging.getLogger("maistro.gate")
@@ -42,7 +42,11 @@ class Gate:
     def __init__(
         self,
         warden: Warden | None = None,
-        strike_tracker: InMemoryStrikeTracker | None = None,
+        # The protocol, not the concrete in-memory class (#134). Typed against
+        # the implementation, `PgStrikeTracker` — which returned `dict` from
+        # both methods while every use below is attribute access — passed
+        # silently and raised AttributeError on the first violation.
+        strike_tracker: StrikeTracker | None = None,
     ) -> None:
         if warden is None:
             from maistro.security.warden.detector import Warden as WardenImpl

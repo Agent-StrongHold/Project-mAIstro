@@ -141,6 +141,47 @@ jobs:
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
+  strike-ladder:
+    # The PostgreSQL leg of the strike conformance suite (#134) skips without a
+    # server, and the plain `test` job has none — so the suite that exists to
+    # prove `PgStrikeTracker` matches the protocol was only ever exercising
+    # `InMemoryStrikeTracker`. A skipped leg is untested, not passing, and that
+    # is precisely how the original defect survived: `PgStrikeTracker` returned
+    # `dict` from both methods and nothing ran it against `Gate`'s expectations.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: strike_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/strike_test
+      # Turns "no server, skip" into a failure, in this job only. Without it a
+      # misconfigured service container leaves the job green with the durable
+      # leg skipped — reporting the absence of the gap rather than its closure.
+      MAISTRO_REQUIRE_PG_LEGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Strike ladder conforms on both in-memory and PostgreSQL
+        run: uv run pytest packages/maistro-core/tests/security/test_strike_tracker_conformance.py -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+
   hive-conductor-e2e-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -237,6 +278,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Fetch the base images first, retrying (#204). This job used to fail on a
+      # registry reset before touching a line of repository content — a red
+      # required check that nobody could re-run, because the GitHub App gets
+      # `403 Resource not accessible by integration` on `rerun-failed-jobs`.
+      #
+      # Only the fetch is retried. A genuine build failure still fails on its
+      # first attempt below, so this buys reliability without hiding breakage.
+      # The image list is parsed from the Dockerfiles rather than written here,
+      # so it cannot drift from what is actually built.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+
       - run: docker build -t maistro-engine:test .
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
 
@@ -268,63 +322,6 @@ jobs:
       # PR that does the renaming, which after #161 is every PR.
       - name: PR check contract matches the workflows
         run: python3 scripts/check-required-checks.py
-
-  # The Archive tier against a real S3-compatible server (#133, ADR-082226-d3dd).
-  #
-  # MinIO rather than a mocked client: a mocked object store proves the call was
-  # made with the arguments the test already knew, which is not the property
-  # worth checking about storage. The same conformance suite runs over
-  # FilesystemArchiveStore and S3ArchiveStore, so the two implementations cannot
-  # drift into behaving differently under one protocol.
-  #
-  # `--extra dev --extra s3` installs the optional SDK for the S3 leg. The
-  # *absence* case is covered by test_optional_dependency.py, which hides
-  # aioboto3 from the import system rather than uninstalling it — so both halves
-  # are checked in one environment.
-  #
-  # Started as a step rather than under `services:`, for two reasons found the
-  # hard way. The official `minio/minio` image needs `server /data` as a
-  # command, and a `services:` block has no `command:` key at all — only
-  # `image`, `env`, `ports`, `options` and `credentials`. And the first version
-  # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
-  # retired their public tags, so every run died on `manifest unknown` before
-  # reaching a single test. An image name is not verified by being plausible.
-  archive:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Start MinIO
-        run: |
-          set -euo pipefail
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
-          # Poll the health endpoint rather than sleeping a fixed amount: a
-          # fixed sleep is either slower than it needs to be or racy, and the
-          # race surfaces as a connection error that reads exactly like the
-          # storage bug this job exists to catch.
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
-              echo "MinIO ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::MinIO did not become ready within 60s"
-          docker logs minio
-          exit 1
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
-      - run: uv sync --locked --extra dev --extra s3
-      - name: Archive conformance against MinIO
-        env:
-          MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-          MAISTRO_TEST_S3_ACCESS_KEY: minioadmin
-          MAISTRO_TEST_S3_SECRET_KEY: minioadmin
-        run: uv run pytest packages/maistro-core/tests/memory/archive -v --tb=short
 
   # The alembic chain, applied to a real PostgreSQL server (#177).
   #

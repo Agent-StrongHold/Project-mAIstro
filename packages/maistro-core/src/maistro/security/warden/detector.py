@@ -11,6 +11,7 @@ Four layers (cheap to expensive, short-circuit on detection):
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from maistro.security._types import WardenVerdict
@@ -31,6 +32,40 @@ logger = logging.getLogger("maistro.warden")
 # which the loop below records as a fail-closed flag.
 _PATTERN_TIMEOUT_S = 0.5
 
+# One window size for both scan phases (#74). They used to differ: the reject
+# phase windowed at 50KB with a 2KB overlap while the heuristic phase received
+# the whole document, so the two halves of one scan disagreed about how much
+# text a single pass may see.
+#
+# That asymmetry matters because the phases are bounded differently. The reject
+# phase runs `regex` with a per-search timeout, so a catastrophic pattern is cut
+# off (`test_catastrophic_pattern_times_out_and_fails_closed`). The heuristic
+# phase runs `_regex`, whose stdlib fallback has **no timeout at all** — so a
+# pattern there is bounded only by the text it is handed. Handing it the whole
+# document removed the one bound it had.
+#
+# The overlap exists so a pattern straddling a boundary is still seen whole. 2KB
+# is far more than the widest construct either phase matches — the density
+# window is 40 words and the base64 run needs 40 characters.
+_SCAN_WINDOW_CHARS = 50 * 1024
+_SCAN_OVERLAP_CHARS = 2 * 1024
+
+
+def _windows(text: str) -> Iterator[str]:
+    """`text` in overlapping windows — the same slicing for both scan phases.
+
+    A generator rather than a list so a 1MB body is not copied in full before
+    the first window is examined; both callers stop at the first flagged
+    window, so the tail is usually never materialised.
+    """
+    if len(text) <= _SCAN_WINDOW_CHARS:
+        yield text
+        return
+    offset = 0
+    while offset < len(text):
+        yield text[offset : offset + _SCAN_WINDOW_CHARS]
+        offset += _SCAN_WINDOW_CHARS - _SCAN_OVERLAP_CHARS
+
 
 def _pattern_search(pattern: regex.Pattern[str], text: str) -> bool:
     """One pattern, one window, bounded time. Exceptions propagate — a scanner
@@ -38,6 +73,27 @@ def _pattern_search(pattern: regex.Pattern[str], text: str) -> bool:
     earlier version of this helper did exactly that, making the ``regex_error:``
     handler below unreachable."""
     return bool(pattern.search(text, timeout=_PATTERN_TIMEOUT_S))
+
+
+def _scan_heuristics_windowed(content: str) -> tuple[bool, list[str]]:
+    """`heuristic_scan` over the same windows the reject phase uses (#74).
+
+    Windowed for the reason stated on `_SCAN_WINDOW_CHARS`: this phase runs
+    `_regex`, whose stdlib fallback has no timeout, so the text handed to one
+    call is its only bound.
+
+    The verdict is unchanged by the split. Density is already a max over
+    40-word sub-windows and the base64 run needs 40 characters — both far
+    inside the 2KB overlap — so the maximum over windows equals the maximum
+    over the whole text. `test_windowing_does_not_change_the_verdict` pins that
+    rather than leaving it as an argument, and it fails if this stops looking
+    past the first window.
+    """
+    for window in _windows(content):
+        suspicious, flags = heuristic_scan(window)
+        if suspicious:
+            return True, flags
+    return False, []
 
 
 def _scan_reject_patterns(scan_content: str) -> list[str]:
@@ -79,10 +135,9 @@ class Warden:
     ) -> WardenVerdict:
         flags: list[str] = []
 
-        # Fix #4: scan in overlapping windows — no unscanned tail.
-        # Window: 50KB with 2KB overlap so patterns spanning a boundary are caught.
-        window_size = 50 * 1024
-        overlap = 2 * 1024
+        # Fix #4: scan in overlapping windows — no unscanned tail. See
+        # `_windows`; both phases below share it so they cannot drift apart.
+        #
         # Full fold (NFKD + invisible stripping + homoglyph folding) so a
         # zero-width space inside "ignore", or a Cyrillic i in it, doesn't
         # walk past patterns written in ASCII. Applied here rather than in the
@@ -90,16 +145,10 @@ class Warden:
         # directly and used to miss the Gate's sanitize pass entirely.
         content_norm = normalize_for_detection(content)
 
-        if len(content_norm) <= window_size:
-            flags.extend(_scan_reject_patterns(content_norm))
-        else:
-            offset = 0
-            while offset < len(content_norm):
-                chunk = content_norm[offset : offset + window_size]
-                flags.extend(_scan_reject_patterns(chunk))
-                if flags:
-                    break  # Found something — no need to continue
-                offset += window_size - overlap
+        for window in _windows(content_norm):
+            flags.extend(_scan_reject_patterns(window))
+            if flags:
+                break  # Found something — no need to continue
 
         if flags:
             return WardenVerdict(
@@ -109,7 +158,7 @@ class Warden:
                 confidence=0.9,
             )
 
-        suspicious, heuristic_flags = heuristic_scan(content_norm)
+        suspicious, heuristic_flags = _scan_heuristics_windowed(content_norm)
         if suspicious:
             flags.extend(heuristic_flags)
             return WardenVerdict(

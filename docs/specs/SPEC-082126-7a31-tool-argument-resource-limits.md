@@ -54,12 +54,12 @@ Sentinel enforces two independent limits after the cheap permission check and be
 
 Depth is measured iteratively and checked before JSON serialization. Payloads that exceed depth therefore do not enter recursive schema/serialization work. Once depth is acceptable, size is measured using compact UTF-8 JSON. Non-JSON-compatible argument objects fail closed because model/tool-call arguments are a JSON contract.
 
-Defaults live in `maistro.constants`. A deployment may tighten or explicitly raise them through:
+Defaults live in `maistro.constants` and are also the deployment security baseline. A deployment may freely tighten them through:
 
 - `MAISTRO_TOOL_ARGUMENT_MAX_BYTES`
 - `MAISTRO_TOOL_ARGUMENT_MAX_DEPTH`
 
-Invalid or non-positive override values fail Sentinel construction rather than silently falling back. The effective limit that caused a denial is included in the Sentinel violation/audit detail.
+Because both are maxima, raising either value weakens the boundary. A larger ceiling is therefore refused unless the operator separately sets `ALLOW_UNSAFE_RESOURCE_OVERRIDES=true`. The unsafe flag is deliberately distinct from `DEBUG`: widening a security boundary must be an explicit policy statement, not a side effect of a generic development mode. Invalid, non-positive, or ambiguous policy values fail Sentinel construction rather than silently falling back. The effective limit that caused a denial is included in the Sentinel violation/audit detail.
 
 This is an execution-boundary limit. HTTP request-body parsing has its own independent request-size boundary; this control does not claim to protect an upstream parser from a body that has already been materialized.
 
@@ -95,11 +95,14 @@ Feature: Tool-argument resource limits
     Then the call is denied by the same byte limit
 
   @AC-5
-  Scenario: Deployment overrides are explicit
-    Given an operator sets a tool-argument limit environment override
-    When Sentinel is constructed
-    Then that positive integer becomes the effective limit
-    And an invalid override fails construction loudly
+  Scenario: Deployment overrides cannot silently weaken the boundary
+    Given an operator sets a positive tool-argument limit environment override
+    When the override tightens the shipped maximum
+    Then it becomes the effective deployment limit
+    But when the override raises the maximum without an explicit unsafe-resource policy
+    Then Sentinel construction fails loudly
+    And an explicitly unsafe deployment may opt into the weaker maximum
+    And invalid limit or unsafe-policy values fail construction loudly
 
   @AC-6
   Scenario: Non-JSON arguments fail closed

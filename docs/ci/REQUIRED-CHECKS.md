@@ -77,13 +77,13 @@ which ones carry the hazard.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
-| CI | `archive` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
 | CI | `migrations` | every PR |
 | CI | `security` | every PR |
+| CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
@@ -94,7 +94,10 @@ which ones carry the hazard.
 | Formal Conformance | `formal-conformance` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | paths |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
+| quality | `coverage (MinIO)` | every PR |
+| quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
 | security | `Supply chain (pip-audit)` | every PR |
