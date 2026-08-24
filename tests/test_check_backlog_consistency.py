@@ -115,5 +115,74 @@ def test_the_range_id_form_parses(gate) -> None:
     assert gate.audit(backlog("**[engine-030..034] Five property tests — Proposed — v1.0**")) == []
 
 
+# --- item cross-references resolve (#30) ---------------------------------
+#
+# The `sh-` header's claim is that where an item has a prerequisite this
+# repository owns, it names it. A reference to an id that does not exist reads
+# as a recorded prerequisite while pointing at nothing — worse than recording
+# none, because it asserts the dependency is known and tracked.
+
+
+def test_a_dangling_item_reference_fails(gate) -> None:
+    failures = gate.audit(
+        backlog("**[engine-001] A thing — Proposed — v1.0**\n- Blocked-by: `[engine-999]`")
+    )
+
+    assert any("[engine-999]" in f and "not an item defined" in f for f in failures)
+
+
+def test_a_reference_to_a_defined_item_passes(gate) -> None:
+    failures = gate.audit(
+        backlog(
+            "**[engine-001] A thing — Proposed — v1.0**",
+            "**[engine-002] Another — Proposed — v1.0**\n- Blocked-by: `[engine-001]`",
+        )
+    )
+
+    assert failures == []
+
+
+def test_a_reference_into_a_range_form_passes(gate) -> None:
+    """`[engine-030..034]` defines five ids; naming any one of them is legitimate.
+
+    Without expanding the range, every such reference would read as dangling —
+    the check would fail the file it is meant to protect.
+    """
+    failures = gate.audit(
+        backlog(
+            "**[engine-030..034] Five property tests — Proposed — v1.0**",
+            "**[engine-001] A thing — Proposed — v1.0**\n- Substrate: `[engine-032]`",
+        )
+    )
+
+    assert failures == []
+
+
+def test_a_reference_outside_a_range_still_fails(gate) -> None:
+    """The expansion must be bounded, or it would launder any id near a range."""
+    failures = gate.audit(
+        backlog(
+            "**[engine-030..034] Five property tests — Proposed — v1.0**",
+            "**[engine-001] A thing — Proposed — v1.0**\n- Substrate: `[engine-035]`",
+        )
+    )
+
+    assert any("[engine-035]" in f for f in failures)
+
+
+def test_the_sh_header_states_a_disposition(gate) -> None:
+    """AC-4 of #30: every remaining item has one canonical owner/disposition.
+
+    Stated once for the whole `sh-` family rather than repeated per item, since
+    the disposition is identical for all 36 and a per-item marker would be 36
+    copies of one fact, drifting independently.
+    """
+    text = (ROOT / "BACKLOG.md").read_text()
+    bullet = text.split("- `sh-NNN`", 1)[1].split("\n\n", 1)[0]
+
+    assert "deferred-downstream" in bullet
+    assert "owned by Stronghold" in bullet
+
+
 def test_the_shipped_backlog_is_consistent(gate) -> None:
     assert gate.main() == 0
