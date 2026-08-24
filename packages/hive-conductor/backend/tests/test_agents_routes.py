@@ -1,14 +1,16 @@
 """Route-level coverage for routes/agents.py.
 
-Two distinct behavioural modes gate almost every handler:
-  - normal mode (default, `is_pm_poc_mode()` False): full CRUD against
-    `stores.agents`.
-  - PM POC mode (`is_pm_poc_mode()` True): the roster is read-only and
-    derived from `list_pm_agents`; create/update/delete/forge are 403.
+There used to be two behavioural modes here, and almost every handler branched
+between them: normal mode did full CRUD against `stores.agents`, while PM POC
+mode made the roster read-only, derived it from `list_pm_agents`, and answered
+403 to create/update/delete/forge. #129 retired the second, so the tests that
+pinned it are gone with it -- along with `POST /{agent_id}/invoke`, whose only
+gate it was.
 
-Both modes are exercised explicitly by monkeypatching
-`routes.agents.is_pm_poc_mode` rather than the environment variable, so
-tests don't leak global os.environ state between each other.
+What replaces it is not a third mode. `workspace_id` selects a workspace's own
+materialized roster and its absence selects the global one; every handler here
+has exactly one behaviour left, which is why nothing below monkeypatches
+anything to choose between them.
 """
 
 from __future__ import annotations
@@ -60,12 +62,11 @@ def _make_agent(aid: str = "a1", name: str = "Agent One") -> Agent:
 
 
 # --------------------------------------------------------------------------- #
-# Normal (non-PM-POC) mode — full CRUD against stores.agents
+# Full CRUD against stores.agents
 # --------------------------------------------------------------------------- #
 
 
 def test_list_agents_normal_mode_returns_store_contents(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     stores.agents["a1"] = _make_agent()
     r = authed_client.get("/v1/agents")
     assert r.status_code == 200
@@ -73,7 +74,6 @@ def test_list_agents_normal_mode_returns_store_contents(authed_client: Any, monk
 
 
 def test_get_agent_normal_mode_found(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     stores.agents["a1"] = _make_agent()
     r = authed_client.get("/v1/agents/a1")
     assert r.status_code == 200
@@ -81,14 +81,12 @@ def test_get_agent_normal_mode_found(authed_client: Any, monkeypatch) -> None:
 
 
 def test_get_agent_normal_mode_missing_404(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = authed_client.get("/v1/agents/missing")
     assert r.status_code == 404
     assert r.json()["detail"] == "agent not found"
 
 
 def test_create_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = admin_client.post(
         "/v1/agents",
         json={"name": "New Agent", "description": "d", "model": "gpt-4.1", "capabilities": ["c"]},
@@ -100,15 +98,7 @@ def test_create_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
     assert body["id"] in stores.agents
 
 
-def test_create_agent_pm_poc_mode_403(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    r = admin_client.post("/v1/agents", json={"name": "x"})
-    assert r.status_code == 403
-    assert r.json()["detail"] == "PM fleet is read-only in POC mode"
-
-
 def test_update_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     stores.agents["a1"] = _make_agent()
     r = admin_client.put("/v1/agents/a1", json={"name": "Renamed"})
     assert r.status_code == 200
@@ -117,19 +107,11 @@ def test_update_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
 
 
 def test_update_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = admin_client.put("/v1/agents/missing", json={"name": "x"})
     assert r.status_code == 404
 
 
-def test_update_agent_pm_poc_mode_403(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    r = admin_client.put("/v1/agents/a1", json={"name": "x"})
-    assert r.status_code == 403
-
-
 def test_delete_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     stores.agents["a1"] = _make_agent()
     r = admin_client.delete("/v1/agents/a1")
     assert r.status_code == 204
@@ -137,15 +119,8 @@ def test_delete_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
 
 
 def test_delete_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = admin_client.delete("/v1/agents/missing")
     assert r.status_code == 404
-
-
-def test_delete_agent_pm_poc_mode_403(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    r = admin_client.delete("/v1/agents/a1")
-    assert r.status_code == 403
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +129,6 @@ def test_delete_agent_pm_poc_mode_403(admin_client: Any, monkeypatch) -> None:
 
 
 def test_scan_agent_normal_mode_found(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     stores.agents["a1"] = _make_agent()
     r = admin_client.post("/v1/agents/a1/scan")
     assert r.status_code == 200
@@ -162,26 +136,7 @@ def test_scan_agent_normal_mode_found(admin_client: Any, monkeypatch) -> None:
 
 
 def test_scan_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = admin_client.post("/v1/agents/missing/scan")
-    assert r.status_code == 404
-
-
-def test_scan_agent_pm_poc_mode_found(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    monkeypatch.setattr(
-        "maistro.agents.pm_fleet.get_pm_def",
-        lambda aid: {"id": aid},
-    )
-    r = admin_client.post("/v1/agents/pm-1/scan")
-    assert r.status_code == 200
-    assert r.json() == {"findings": [], "status": "clean"}
-
-
-def test_scan_agent_pm_poc_mode_missing_404(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    monkeypatch.setattr("maistro.agents.pm_fleet.get_pm_def", lambda aid: None)
-    r = admin_client.post("/v1/agents/no-such-pm/scan")
     assert r.status_code == 404
 
 
@@ -191,7 +146,6 @@ def test_scan_agent_pm_poc_mode_missing_404(admin_client: Any, monkeypatch) -> N
 
 
 def test_forge_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = admin_client.post("/v1/agents/forge", json={"description": "do stuff"})
     assert r.status_code == 200
     body = r.json()
@@ -202,109 +156,7 @@ def test_forge_agent_normal_mode(admin_client: Any, monkeypatch) -> None:
 
 
 def test_forge_agent_custom_strategy(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
     r = admin_client.post(
         "/v1/agents/forge", json={"description": "do stuff", "strategy": "plan-execute"}
     )
     assert r.json()["config"]["strategy"] == "plan-execute"
-
-
-def test_forge_agent_pm_poc_mode_403(admin_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    r = admin_client.post("/v1/agents/forge", json={"description": "x"})
-    assert r.status_code == 403
-
-
-# --------------------------------------------------------------------------- #
-# PM POC mode list/get — derived from list_pm_agents
-# --------------------------------------------------------------------------- #
-
-
-def test_list_agents_pm_poc_mode_delegates(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-
-    sentinel_agent = _make_agent(aid="pm-1", name="PM One")
-    monkeypatch.setattr("routes.agents.get_engine", lambda: _FakeEngine([]))
-    monkeypatch.setattr("routes.agents.list_pm_agents", lambda tasks, user_id="": [sentinel_agent])
-
-    r = authed_client.get("/v1/agents")
-    assert r.status_code == 200
-    assert [a["id"] for a in r.json()] == ["pm-1"]
-
-
-def test_get_agent_pm_poc_mode_found(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    sentinel_agent = _make_agent(aid="pm-1", name="PM One")
-    monkeypatch.setattr("routes.agents.get_engine", lambda: _FakeEngine([]))
-    monkeypatch.setattr("routes.agents.list_pm_agents", lambda tasks, user_id="": [sentinel_agent])
-
-    r = authed_client.get("/v1/agents/pm-1")
-    assert r.status_code == 200
-    assert r.json()["id"] == "pm-1"
-
-
-def test_get_agent_pm_poc_mode_missing_404(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    monkeypatch.setattr("routes.agents.get_engine", lambda: _FakeEngine([]))
-    monkeypatch.setattr("routes.agents.list_pm_agents", lambda tasks, user_id="": [])
-
-    r = authed_client.get("/v1/agents/no-such-pm")
-    assert r.status_code == 404
-
-
-# --------------------------------------------------------------------------- #
-# /invoke
-# --------------------------------------------------------------------------- #
-
-
-def test_invoke_agent_not_pm_poc_mode_404(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: False)
-    r = authed_client.post("/v1/agents/a1/invoke", json={"capability": "poll_jira"})
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Agent invoke only available in PM POC mode"
-
-
-def test_invoke_agent_gated_capability_403(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-    r = authed_client.post("/v1/agents/a1/invoke", json={"capability": "create_epic"})
-    assert r.status_code == 403
-    assert "create_epic" in r.json()["detail"]
-    assert "epic" in r.json()["detail"]
-
-
-def test_invoke_agent_autonomous_capability_executes(authed_client: Any, monkeypatch) -> None:
-    monkeypatch.setattr("routes.agents.is_pm_poc_mode", lambda: True)
-
-    async def fake_execute(capability, payload, uid):
-        assert capability == "poll_jira"
-        assert payload == {"sprint": 1}
-        return {"issues": []}
-
-    monkeypatch.setattr("services.chat_completion._execute_tool", fake_execute)
-    logged: list[dict] = []
-    monkeypatch.setattr(
-        "routes.agents.log_audit",
-        lambda action, actor, target=None, detail=None, severity="info": logged.append(
-            {"action": action, "actor": actor, "target": target, "detail": detail}
-        ),
-    )
-
-    r = authed_client.post(
-        "/v1/agents/a1/invoke", json={"capability": "poll_jira", "payload": {"sprint": 1}}
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["status"] == "completed"
-    assert body["capability"] == "poll_jira"
-    assert body["result"] == {"issues": []}
-    assert logged[0]["action"] == "agent_invoke"
-    assert logged[0]["target"] == "a1"
-    assert logged[0]["detail"]["result_keys"] == ["issues"]
-
-
-class _FakeEngine:
-    def __init__(self, tasks: list) -> None:
-        self._tasks = tasks
-
-    def list_tasks(self, user_id: str = "") -> list:
-        return self._tasks

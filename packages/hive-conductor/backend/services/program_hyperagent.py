@@ -15,8 +15,8 @@ from maistro.agents.hyperagent import (
 from maistro.agents.pm_capabilities import is_autonomous
 from maistro.agents.program_context import apply_guidance
 from services import program_store as prog
+from services.agent_invocation import resolve_agent_task
 from services.engine import get_engine
-from services.pm_fleet import invoke_pm_agent, is_pm_poc_mode
 
 
 def _use_secret(store: object, user_id: str, provider_id: str) -> str | None:
@@ -48,25 +48,27 @@ def user_id_from_request(request: Request) -> str:
     return str(uid)
 
 
-def require_pm_poc(*, user_id: str | None = None, workspace_id: str | None = None) -> None:
-    """Gate the program hyperagent surface (the onboarding interview,
-    already generalized to any persona via `program_context.py`'s
-    per-use_case `INTERVIEW_TEMPLATES`). Passing `user_id` resolves
-    (membership-checked, any persona) against that specific workspace
-    instead of the legacy global flag -- omitted (every pre-Phase-H caller)
-    keeps the exact old behavior."""
-    if user_id is not None:
-        from services.workspace_mode import is_workspace_request_authorized
+def require_program_access(user_id: str, workspace_id: str | None = None) -> None:
+    """Gate the program hyperagent surface on workspace membership (#129).
 
-        ok = is_workspace_request_authorized(user_id, workspace_id)
-    else:
-        ok = is_pm_poc_mode()
-    if not ok:
+    The interview itself was generalized to any persona long ago, through
+    `program_context.py`'s per-use_case `INTERVIEW_TEMPLATES`; the gate in front
+    of it was the last thing here that still asked an environment variable.
+    `user_id` is required rather than optional now: the optional form existed
+    only so a caller that had not been re-pointed yet could fall through to
+    `is_pm_poc_mode()`, and there is no such caller left.
+
+    Renamed from `require_pm_poc` because the name was the claim -- nothing
+    about this surface is PM-specific, and any persona's workspace reaches it.
+    """
+    from services.workspace_mode import is_workspace_request_authorized
+
+    if not is_workspace_request_authorized(user_id, workspace_id):
         raise HTTPException(
             status_code=404,
             detail=(
-                "Program hyperagent only available in PM POC mode. "
-                "Set HIVE_POC_MODE=pm and MAISTRO_POC_MODE=pm, then restart Hive."
+                "The program hyperagent runs within a workspace. "
+                "Name a workspace you are a member of."
             ),
         )
 
@@ -75,9 +77,15 @@ async def apply_guidance_and_pulse(
     user_id: str,
     text: str,
     *,
+    workspace_id: str | None = None,
     max_pulse_actions: int = 2,
 ) -> dict[str, Any]:
-    """Record guidance and optionally queue autonomous fleet work."""
+    """Record guidance and optionally queue autonomous fleet work.
+
+    `workspace_id` names the roster the queued work resolves against (#129).
+    The pulse proposes bare agent names (`delivery`), and those only mean
+    something within a workspace whose persona materialized them.
+    """
     ctx = apply_guidance(prog.get_context(user_id), text)
     ctx = prog.save_context(ctx)
 
@@ -85,7 +93,9 @@ async def apply_guidance_and_pulse(
     pulse_error: str | None = None
     if ctx.interview_complete and max_pulse_actions > 0:
         try:
-            pulse_result = await run_program_pulse(user_id, max_actions=max_pulse_actions)
+            pulse_result = await run_program_pulse(
+                user_id, workspace_id=workspace_id, max_actions=max_pulse_actions
+            )
             queued = pulse_result.get("queued", [])
         except Exception:
             pulse_error = "Fleet pulse skipped (engine unavailable)"
@@ -109,8 +119,10 @@ async def apply_guidance_and_pulse(
     return out
 
 
-async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, Any]:
-    """Autonomous-only fleet tick."""
+async def run_program_pulse(
+    user_id: str, *, workspace_id: str | None = None, max_actions: int = 4
+) -> dict[str, Any]:
+    """Autonomous-only fleet tick, against `workspace_id`'s own roster."""
     from datetime import UTC, datetime
 
     ctx = prog.get_context(user_id)
@@ -139,7 +151,7 @@ async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, 
         if not is_autonomous(action.capability):
             continue
         try:
-            task_type, description, agent_id = invoke_pm_agent(
+            task_type, description, agent_id = resolve_agent_task(
                 action.agent_id,
                 action.capability,
                 {
@@ -147,6 +159,7 @@ async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, 
                     "hyperagent_reason": action.reason,
                     "program": prog.context_dict(user_id),
                 },
+                workspace_id=workspace_id,
             )
             from maistro.agents.program_context import context_for_task
 

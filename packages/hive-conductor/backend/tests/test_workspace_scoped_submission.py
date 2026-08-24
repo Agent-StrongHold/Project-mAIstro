@@ -18,15 +18,6 @@ import stores
 
 
 @pytest.fixture(autouse=True)
-def _pm_poc_mode_on(monkeypatch: pytest.MonkeyPatch):
-    import routes.work_items as work_items_routes
-    import services.workspace_mode as wm
-
-    monkeypatch.setattr(work_items_routes, "is_pm_poc_mode", lambda: True)
-    monkeypatch.setattr(wm, "is_pm_poc_mode", lambda: True)
-
-
-@pytest.fixture(autouse=True)
 def _clear_state():
     to_clear = (stores.workspaces, stores.work_item_drafts, stores.program_contexts, stores.agents)
     for store in to_clear:
@@ -129,9 +120,11 @@ def test_an_unscoped_submission_names_the_default_explicitly(admin_client, monke
 # --- work items (POST /v1/work-items/{id}/confirm) ------------------------
 
 
-def _ready_draft(client, ws_id: str | None) -> str:
-    query = f"?workspace_id={ws_id}" if ws_id else ""
-    r = client.post(f"/v1/work-items/suggest{query}", json={"work_type": "epic", "reason": "test"})
+def _ready_draft(client, ws_id: str) -> str:
+    r = client.post(
+        f"/v1/work-items/suggest?workspace_id={ws_id}",
+        json={"work_type": "epic", "reason": "test"},
+    )
     assert r.status_code == 200
     draft_id = r.json()["draft"]["id"]
     client.post(
@@ -147,17 +140,19 @@ def _ready_draft(client, ws_id: str | None) -> str:
     return draft_id
 
 
-def test_confirm_without_a_workspace_still_succeeds(admin_client, monkeypatch) -> None:
-    import routes.work_items as work_items_routes
+def test_a_draft_cannot_be_suggested_without_a_workspace(admin_client) -> None:
+    """The one #158 behaviour #129 changed, and deliberately.
 
-    engine = _CapturingEngine()
-    draft_id = _ready_draft(admin_client, None)
-    monkeypatch.setattr(work_items_routes, "get_engine", lambda: engine)
+    An unscoped draft used to be legal, and its confirmation submitted with
+    `workspace_id=None`. There is no roster to resolve its agent against, so
+    what it produced was a Run naming an agent from a global fleet the
+    deployment-wide POC flag synthesised. With that flag gone the draft has
+    to name a workspace up front. `/v1/tasks` is untouched -- an unscoped
+    *task* submission is still legal and still names the default explicitly.
+    """
+    r = admin_client.post("/v1/work-items/suggest", json={"work_type": "epic", "reason": "test"})
 
-    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
-
-    assert r.status_code == 200
-    assert engine.calls[0]["workspace_id"] is None
+    assert r.status_code == 404
 
 
 # --- the backend that cannot honour a Workspace ---------------------------
@@ -277,16 +272,3 @@ def test_confirm_refuses_a_non_member_before_the_pm_gate(
     r = authed_client.post(f"/v1/work-items/does-not-matter/confirm?workspace_id={ws_id}")
 
     assert r.status_code == 403
-
-
-def test_confirm_without_a_workspace_still_submits_unscoped(admin_client, monkeypatch) -> None:
-    import routes.work_items as work_items_routes
-
-    engine = _CapturingEngine()
-    draft_id = _ready_draft(admin_client, None)
-    monkeypatch.setattr(work_items_routes, "get_engine", lambda: engine)
-
-    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
-
-    assert r.status_code == 200
-    assert engine.calls[0]["workspace_id"] is None

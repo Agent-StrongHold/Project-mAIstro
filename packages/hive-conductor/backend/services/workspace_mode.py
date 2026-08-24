@@ -3,12 +3,20 @@
 Recon for the originally-scoped "full migration" (re-point all ~26
 `is_pm_poc_mode()`/`HIVE_POC_MODE` call sites, then delete the env var)
 found that framing was too broad: several of those call sites are
-legitimately global, process-level defaults resolved once at boot --
-`services/engine.py`'s executor selection, `settings_defaults.py`'s default
-log level/temperature, `logging_setup.py`'s default verbosity -- with no
-per-request "active workspace" to resolve against even in principle. Those
-are deliberately left alone; deleting `is_pm_poc_mode()`/`HIVE_POC_MODE`
-entirely would break them, not just rename something.
+legitimately global, process-level defaults resolved once at boot, with no
+per-request "active workspace" to resolve against even in principle.
+
+**#129 drew the line those two kinds of call site fall on, and it turned out
+to already exist in the code.** There were two byte-identical
+`is_pm_poc_mode()` functions, and they had disjoint callers: the copy in
+`settings_defaults.py` served every boot-time default (`logging_setup.py`'s
+verbosity, `stores.py`'s seeding, its own log level and temperature), and the
+copy in the PM-named `services/pm_fleet.py` served only per-request gates --
+this module, `routes/agents.py`, `routes/work_items.py`,
+`services/program_hyperagent.py`. So retiring POC mode as a *routing and
+authorization* concept meant deleting one function and none of the defaults.
+`settings_defaults.is_pm_poc_mode` stays, is still the answer to "what should
+this deployment default to", and is no longer reachable from any request.
 
 No persona is special-cased here. `pm_fleet` is one premade
 `PersonaTemplate` among any number of others (`content_creator`,
@@ -27,8 +35,6 @@ would qualify the same way `pm_fleet.yaml` does today.
 from __future__ import annotations
 
 import stores
-
-from services.pm_fleet import is_pm_poc_mode
 
 # routes/work_items.py's maistro.agents.pm_capabilities.agent_for_work_item()
 # dispatches to these agent names regardless of which workspace's persona is
@@ -55,15 +61,23 @@ def is_workspace_member(user_id: str, workspace_id: str | None) -> bool:
 
 
 def is_workspace_request_authorized(user_id: str, workspace_id: str | None) -> bool:
-    """True if `workspace_id` names a real workspace `user_id` is a member
-    of -- regardless of which persona it runs. Falls back to the legacy
-    global `is_pm_poc_mode()` flag for no workspace_id, an unresolvable
-    one, or one the caller isn't a member of (so a caller can never probe
-    another user's private workspace_id to flip gated behavior for
-    themselves)."""
-    if is_workspace_member(user_id, workspace_id):
-        return True
-    return is_pm_poc_mode()
+    """True if `workspace_id` names a real workspace `user_id` is a member of.
+
+    Membership is now the whole answer (#129). This used to fall back to the
+    global `is_pm_poc_mode()` flag for no workspace_id, an unresolvable one, or
+    one the caller was not a member of -- which meant a deployment with
+    `HIVE_POC_MODE=pm` set authorized *every* caller for gated program surfaces
+    whether or not they were in any workspace at all. A persona's membership is
+    the thing the gate was always trying to approximate, so it is what the gate
+    asks now, and the answer no longer depends on an environment variable.
+
+    Still identical to `is_workspace_member` in behaviour, and still spelled
+    separately: this one answers "may this caller see gated program UI", and
+    that one answers "may this caller file work into this workspace" (#158).
+    They agree today; the reason to keep them apart is that the second may
+    legitimately tighten without the first following it.
+    """
+    return is_workspace_member(user_id, workspace_id)
 
 
 def workspace_has_pm_fleet_agents(workspace_id: str) -> bool:

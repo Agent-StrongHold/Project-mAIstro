@@ -2,7 +2,7 @@
 
 Covers:
 - user_id_from_request: 401 when no user, returns id when set
-- require_pm_poc: 404 in non-PM mode, no-op in PM mode
+- require_program_access: 404 without a member workspace, no-op with one
 - apply_guidance_and_pulse: interview-incomplete branch (saves + returns
   context message)
 - apply_guidance_and_pulse: interview-complete branch (pulse succeeds)
@@ -58,23 +58,29 @@ def test_user_id_from_request_raises_401_when_no_id() -> None:
     assert ei.value.status_code == 401
 
 
-# --- require_pm_poc ------------------------------------------------------
+# --- require_program_access ----------------------------------------------
 
 
-def test_require_pm_poc_404_in_non_pm_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_program_access_404_without_a_member_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And with the POC flag on, which used to be the whole gate (#129)."""
     import services.program_hyperagent as ph
 
-    monkeypatch.setattr(ph, "is_pm_poc_mode", lambda: False)
+    monkeypatch.setenv("HIVE_POC_MODE", "pm")
+    monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
     with pytest.raises(HTTPException) as ei:
-        ph.require_pm_poc()
+        ph.require_program_access("u1", None)
     assert ei.value.status_code == 404
 
 
-def test_require_pm_poc_passes_in_pm_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_program_access_passes_for_a_member(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.program_hyperagent as ph
 
-    monkeypatch.setattr(ph, "is_pm_poc_mode", lambda: True)
-    ph.require_pm_poc()  # no raise
+    monkeypatch.setattr(
+        "services.workspace_mode.is_workspace_request_authorized", lambda uid, ws: True
+    )
+    ph.require_program_access("u1", "ws-1")  # no raise
 
 
 # --- apply_guidance_and_pulse -------------------------------------------
@@ -123,7 +129,9 @@ async def test_apply_guidance_pulse_succeeds(
     monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
     monkeypatch.setattr(ph, "propose_actions", lambda c, max_actions: [])
 
-    async def _stub_pulse(uid: str, *, max_actions: int) -> dict[str, Any]:
+    async def _stub_pulse(
+        uid: str, *, workspace_id: str | None = None, max_actions: int
+    ) -> dict[str, Any]:
         return {"queued": [{"task_id": "t1", "agent_id": "a", "capability": "c", "reason": "r"}]}
 
     monkeypatch.setattr(ph, "run_program_pulse", _stub_pulse)
@@ -244,7 +252,11 @@ async def test_run_program_pulse_submits_autonomous_action(
     monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [_Sugg()])
     monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
-    monkeypatch.setattr(ph, "invoke_pm_agent", lambda a, c, p: ("tt", "desc", "agent-1"))
+    monkeypatch.setattr(
+        ph,
+        "resolve_agent_task",
+        lambda a, c, p, workspace_id=None: ("tt", "desc", "agent-1"),
+    )
     monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
 
     submitted: list[Any] = []
@@ -288,7 +300,9 @@ async def test_run_program_pulse_submit_failure_swallowed(
     monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, max_actions: [_Action()])
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
     monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
-    monkeypatch.setattr(ph, "invoke_pm_agent", lambda a, c, p: ("tt", "desc", "agent"))
+    monkeypatch.setattr(
+        ph, "resolve_agent_task", lambda a, c, p, workspace_id=None: ("tt", "desc", "agent")
+    )
     monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
 
     class _Engine:

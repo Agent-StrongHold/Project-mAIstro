@@ -212,8 +212,10 @@ def test_no_new_lambda_s_s_in_critical_callsites() -> None:
     # Paths are relative to repo_root = parents[3] (the `packages/` dir).
     ALLOWLIST = {
         "hive-conductor/backend/services/mcp_client.py:51",
-        # Centralised secret helpers — one lambda per file (refactored from inline callsites)
-        "hive-conductor/backend/routes/agents.py:45",
+        # Centralised secret helpers — one lambda per file (refactored from inline callsites).
+        # `routes/agents.py` left this list in #129: `_build_invoke_context` read
+        # Atlassian PATs only for `POST /{agent_id}/invoke`, and both went with
+        # POC mode. One fewer place a secret is read, not one fewer line pinned.
         "hive-conductor/backend/services/program_hyperagent.py:25",
         "hive-conductor/backend/services/tool_primitives.py:66",
     }

@@ -26,8 +26,8 @@ from adapters.task_backend import WORKSPACE_NOT_ROUTABLE_DETAIL, WorkspaceNotRou
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import program_store as prog
+from services.agent_invocation import resolve_agent_task
 from services.engine import get_engine
-from services.pm_fleet import invoke_pm_agent, is_pm_poc_mode
 from services.workspace_mode import is_workspace_member, workspace_has_pm_fleet_agents
 
 from maistro.agents.pm_capabilities import WORK_ITEM_LABELS, WorkItemType
@@ -67,21 +67,26 @@ def _require_submittable_workspace(user_id: str, workspace_id: str | None) -> No
 
 
 def _require_pm(user_id: str, workspace_id: str | None) -> None:
-    if workspace_id:
-        is_member = is_workspace_member(user_id, workspace_id)
-        if is_member:
-            if workspace_has_pm_fleet_agents(workspace_id):
-                return
-            raise HTTPException(
-                status_code=404,
-                detail="This workspace's persona has no Jira/work-item-capable agents",
-            )
-        # Unknown workspace_id or the caller isn't a member -- fall back to
-        # the legacy global flag exactly as before, same as every other
-        # workspace-scoped route in this system.
-    if is_pm_poc_mode():
-        return
-    raise HTTPException(status_code=404, detail="Work items only available in PM POC mode")
+    """Refuse a caller with no workspace whose persona drafts work items (#129).
+
+    The legacy global flag used to answer for an absent, unresolvable or
+    non-member `workspace_id`, which meant a deployment running with
+    `HIVE_POC_MODE=pm` handed the Jira draft flow to every caller and drafted
+    against no workspace's roster at all. A persona that declares the agents
+    is now the only way in, and the two refusals are told apart on purpose: a
+    workspace whose persona has no such agents is a different problem from a
+    caller who named no workspace.
+    """
+    if not workspace_id or not is_workspace_member(user_id, workspace_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Work items are drafted within a workspace; name one you are a member of",
+        )
+    if not workspace_has_pm_fleet_agents(workspace_id):
+        raise HTTPException(
+            status_code=404,
+            detail="This workspace's persona has no Jira/work-item-capable agents",
+        )
 
 
 #: `project_id` a draft carries when it was suggested under no workspace.
@@ -107,6 +112,19 @@ def _draft_workspace(draft: WorkItemDraft) -> str | None:
     """
     scope = (draft.project_id or "").strip()
     return None if not scope or scope == GLOBAL_PROJECT_ID else scope
+
+
+def _require_pm_for_draft(user_id: str, draft: WorkItemDraft) -> None:
+    """Gate a draft-scoped route on the workspace the draft was suggested under.
+
+    Not on the query string. The frontend sends no `workspace_id` to these
+    routes -- `confirm_work_item` already reads the draft's own scope for the
+    same reason -- and with the global flag gone (#129) a gate that asked the
+    query string would refuse every request the UI actually makes. Reading the
+    draft is also the stricter answer: a caller cannot widen their access by
+    naming a different workspace than the one the draft belongs to.
+    """
+    _require_pm(user_id, _draft_workspace(draft))
 
 
 def _load_draft(draft_id: str, user_id: str) -> WorkItemDraft:
@@ -193,8 +211,9 @@ def get_work_item(
     draft_id: str, request: Request, workspace_id: str | None = None
 ) -> dict[str, Any]:
     uid = _user_id(request)
-    _require_pm(uid, workspace_id)
-    return {"draft": _load_draft(draft_id, uid).as_dict()}
+    draft = _load_draft(draft_id, uid)
+    _require_pm_for_draft(uid, draft)
+    return {"draft": draft.as_dict()}
 
 
 class ClarifyBody(BaseModel):
@@ -208,8 +227,9 @@ def clarify_work_item(
     draft_id: str, body: ClarifyBody, request: Request, workspace_id: str | None = None
 ) -> dict[str, Any]:
     uid = _user_id(request)
-    _require_pm(uid, workspace_id)
-    draft = apply_clarifying_answers(_load_draft(draft_id, uid), body.answers)
+    existing = _load_draft(draft_id, uid)
+    _require_pm_for_draft(uid, existing)
+    draft = apply_clarifying_answers(existing, body.answers)
     draft = _save_draft(draft)
     return {"draft": draft.as_dict()}
 
@@ -232,8 +252,8 @@ def patch_work_item(
     draft_id: str, body: PatchFieldsBody, request: Request, workspace_id: str | None = None
 ) -> dict[str, Any]:
     uid = _user_id(request)
-    _require_pm(uid, workspace_id)
     draft = _load_draft(draft_id, uid)
+    _require_pm_for_draft(uid, draft)
     if draft.status == "posted":
         raise HTTPException(status_code=400, detail="Already posted to Jira")
     updates = body.model_dump(exclude_none=True)
@@ -260,8 +280,8 @@ async def confirm_work_item(
     # workspace it cannot resolve, which would swallow the 403 a non-member is
     # owed and make the refusal depend on whether the legacy PM flag is on.
     _require_submittable_workspace(uid, workspace_id)
-    _require_pm(uid, workspace_id)
     draft = _load_draft(draft_id, uid)
+    _require_pm_for_draft(uid, draft)
     # The draft's own scope decides where the Run is filed, not the query
     # string: the frontend confirms without one, so reading the request here
     # would file a workspace-scoped draft in the default Project while its
@@ -284,7 +304,7 @@ async def confirm_work_item(
     # suggested from a specific workspace's context stays consistent
     # through to the queued task's `program` payload.
     engine = get_engine()
-    task_type, description, agent_id = invoke_pm_agent(
+    task_type, description, agent_id = resolve_agent_task(
         posted.agent_id,
         posted.capability,
         {
@@ -294,6 +314,11 @@ async def confirm_work_item(
             "jira_issue_key": result.get("issue_key"),
             "confirmed": True,
         },
+        # The workspace the draft was suggested under, so the agent name the
+        # draft carries (`delivery`) resolves against that workspace's own
+        # materialized roster (`ws-7.delivery`) rather than a global agent
+        # that merely shares the name.
+        workspace_id=posted.project_id,
     )
     prog_ctx = prog.context_dict(uid, posted.project_id)
     prog_ctx["confirmed"] = True
@@ -333,6 +358,6 @@ async def confirm_work_item(
 @router.delete("/{draft_id}", status_code=204)
 def cancel_work_item(draft_id: str, request: Request, workspace_id: str | None = None) -> None:
     uid = _user_id(request)
-    _require_pm(uid, workspace_id)
     draft = _load_draft(draft_id, uid)
+    _require_pm_for_draft(uid, draft)
     _save_draft(draft.model_copy(update={"status": "cancelled"}))
