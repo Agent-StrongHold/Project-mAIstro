@@ -92,12 +92,9 @@ def _is_setup_complete() -> bool:
 
 @router.get("/status")
 def setup_status() -> dict[str, Any]:
-    from settings_defaults import is_pm_poc_mode
-
     complete = _is_setup_complete()
     result: dict[str, Any] = {
         "setup_complete": complete,
-        "pm_poc_mode": is_pm_poc_mode(),
     }
     if complete:
         kv = _get_kv()
