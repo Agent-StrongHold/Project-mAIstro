@@ -192,6 +192,63 @@ def _outbound_fetch_census() -> list[tuple[Path, int]]:
     return census
 
 
+#: The module that owns the pool. It constructs the clients everything else
+#: borrows, so it is the one place a construction is not a bypass.
+_POOL_OWNER = "http.py"
+
+#: Constructing one of these is opening a connection outside the shared pool,
+#: and therefore outside the transport the outbound policy wraps.
+_PRIVATE_CLIENT_CTORS = frozenset({"AsyncClient", "Client"})
+
+
+def _constructs_private_client(tree: ast.Module) -> bool:
+    """Whether a module builds its own httpx client instead of borrowing one.
+
+    Construction, not import. `import httpx` is what a module writes to catch
+    `httpx.HTTPError`, and counting that as a bypass would flag five modules
+    that never open a socket — the fuzzy-match failure this file's docstring
+    warns about, where the finding names something nobody can act on.
+    `httpx.AsyncClient(...)` is unambiguous: it is a pool this process owns and
+    the outbound policy never sees.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _PRIVATE_CLIENT_CTORS:
+            value = func.value
+            if isinstance(value, ast.Name) and value.id == "httpx":
+                return True
+        elif isinstance(func, ast.Name) and func.id in _PRIVATE_CLIENT_CTORS:
+            return True
+    return False
+
+
+def _unpooled_fetch_modules() -> int:
+    """Census members that build their own client, and so bypass the seam.
+
+    The number that matters after #155 (ADR-082326-5386): the guard runs at the
+    transport `maistro.http` hands to every pooled client, so a module is
+    protected by routing through the pool rather than by remembering to call
+    anything. Every module counted here is a surface that policy cannot see.
+
+    `http.py` is excluded because it *is* the pool — the constructions there are
+    the ones the policy wraps.
+    """
+    count = 0
+    for path, _guards in _outbound_fetch_census():
+        if path.name == _POOL_OWNER:
+            continue
+        if _constructs_private_client(ast.parse(path.read_text(encoding="utf-8"))):
+            count += 1
+    return count
+
+
+def _pooled_fetch_modules() -> int:
+    """Census members the transport seam reaches: everything that is not a bypass."""
+    return _outbound_fetch_modules() - _unpooled_fetch_modules()
+
+
 def _outbound_fetch_modules() -> int:
     """Modules in the outbound-fetch census."""
     return len(_outbound_fetch_census())
@@ -226,6 +283,13 @@ def _ssrf_guard_call_sites() -> int:
 #: English noun phrase maps to which query over the tree.
 _COUNTED_CLAIMS: dict[str, tuple[str, ...]] = {
     "measured-outbound-http": ("_outbound_fetch_modules", "_guarded_fetch_modules"),
+    # After #155 the call-site count above stops being the coverage number: the
+    # guard runs at `maistro.http`'s transport, so a module is protected by
+    # routing through the pool, not by calling anything. Both claims are kept
+    # deliberately — the first is now evidence that call-site guarding is *not*
+    # how coverage is achieved, and reading it as coverage is the misreading
+    # this second claim exists to prevent.
+    "measured-outbound-seam": ("_pooled_fetch_modules", "_unpooled_fetch_modules"),
 }
 
 #: A number the document offers up for checking. Bold is the marking, so a
@@ -676,6 +740,8 @@ def check_counted_claims(text: str, findings: Findings) -> None:
         "_outbound_fetch_modules": _outbound_fetch_modules,
         "_guarded_fetch_modules": _guarded_fetch_modules,
         "_ssrf_guard_call_sites": _ssrf_guard_call_sites,
+        "_pooled_fetch_modules": _pooled_fetch_modules,
+        "_unpooled_fetch_modules": _unpooled_fetch_modules,
     }
 
     for marker, sources in _COUNTED_CLAIMS.items():
