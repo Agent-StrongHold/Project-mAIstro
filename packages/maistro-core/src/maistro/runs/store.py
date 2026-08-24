@@ -9,6 +9,7 @@ from typing import Any, Protocol, runtime_checkable
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.lifecycle import (
+    check_completion_is_earned,
     settle_open_node_run,
     transition_attempt,
     transition_node_run,
@@ -513,6 +514,7 @@ class InMemoryRunStore:
         first, so an illegal one settles nothing.
         """
         run = self._require_run(run_id)
+        check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
         settled = (
             [
@@ -526,6 +528,9 @@ class InMemoryRunStore:
         for node_run in settled:
             self._node_runs[node_run.node_run_id] = node_run
         return updated.model_copy(deep=True)
+
+    def _node_runs_of(self, run_id: str) -> list[NodeRun]:
+        return [nr for nr in self._node_runs.values() if nr.run_id == run_id]
 
     def _open_node_runs(self, run_id: str) -> list[NodeRun]:
         """Every NodeRun under this Run that has not reached a terminal status.

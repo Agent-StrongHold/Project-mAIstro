@@ -11,6 +11,7 @@ from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
+    check_completion_is_earned,
     settle_open_node_run,
     transition_attempt,
     transition_node_run,
@@ -419,6 +420,7 @@ class SqliteRunStore:
     ) -> Run:
         async with self._write_lock:
             run = await self._require_run(run_id)
+            check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
             settled: list[NodeRun] = []
             if target in TERMINAL_RUN_STATUSES:
@@ -493,6 +495,17 @@ class SqliteRunStore:
             (node_run_id,),
         )
         return model_of_json(NodeRun, row[0]) if row is not None else None
+
+    async def _node_runs_of(self, run_id: str) -> list[NodeRun]:
+        """Every NodeRun under a Run, without re-checking the Run exists.
+
+        `list_node_runs` is the public read and calls `_require_run`; this runs
+        inside `transition_run`, which has already required it.
+        """
+        cursor = await self._conn.execute(
+            "SELECT payload FROM canonical_node_runs WHERE run_id = ?", (run_id,)
+        )
+        return [model_of_json(NodeRun, row[0]) for row in await cursor.fetchall()]
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         await self._require_run(run_id)

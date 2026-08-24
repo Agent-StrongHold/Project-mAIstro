@@ -38,6 +38,7 @@ from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
+    check_completion_is_earned,
     settle_open_node_run,
     transition_attempt,
     transition_node_run,
@@ -318,6 +319,13 @@ class PgRunStore:
     ) -> Run:
         async with self._pool.acquire() as conn, conn.transaction():
             run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            # Read inside the Run's transaction, with its row already locked:
+            # checking against NodeRuns fetched on another connection would be
+            # checking a snapshot a concurrent writer may already have moved.
+            rows = await conn.fetch(
+                "SELECT payload FROM canonical_node_runs WHERE run_id = $1", run_id
+            )
+            check_completion_is_earned(target, [model_of(NodeRun, row["payload"]) for row in rows])
             updated = transition_run(run, target, at=at, result=result, error=error)
             # The cascade runs inside the Run's own transaction, with the Run
             # row already locked (ADR-082426-a47f). Lock order is Run then
