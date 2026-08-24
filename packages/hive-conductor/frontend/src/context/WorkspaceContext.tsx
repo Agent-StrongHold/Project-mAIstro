@@ -94,7 +94,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    // Inline IIFE (matches context/PocMode.tsx's fetch-on-mount shape)
+    // Inline IIFE: async work in an effect, cancelled on unmount.
     // rather than calling the named `refresh` function directly, which
     // avoids react-hooks/set-state-in-effect flagging a top-level effect
     // call that eventually setStates.
@@ -178,7 +178,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// Same established shape as context/PocMode.tsx (provider + hook, one file).
+// Provider and hook in one file, the established shape for this app's contexts.
 // eslint-disable-next-line react-refresh/only-export-components
 export function useWorkspaces(): WorkspaceCtxValue {
   return useContext(WorkspaceCtx);
