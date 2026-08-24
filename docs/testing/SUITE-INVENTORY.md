@@ -82,7 +82,7 @@ maistro-core comes from the replay-property work (#173) arriving via `develop`.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6881 | `ci.yml` |
+| `packages/maistro-core/tests` | 6882 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 202 | `ci.yml` |

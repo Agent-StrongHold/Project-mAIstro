@@ -99,6 +99,7 @@ which ones carry the hazard.
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
 | quality | `coverage (MinIO)` | every PR |
+| quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
