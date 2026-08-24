@@ -3,26 +3,42 @@
 This translates between OpenAI chat format and the Maistro conductor pipeline.
 Supports streaming SSE responses.
 
-Two things this endpoint did not do, and now does (#150).
+**The turn goes through the Conduit** (#142, ADR-082426-2192). It used to call
+`maistro.agents.conductor.run_task` directly — the executor the `TaskRunner`
+invokes, not an entry point — so it skipped the classifier, the intent registry,
+the router and the session store. `Container.route_request` is the seam every
+other chat turn in the process uses, and this door now uses it too.
 
-**It is scanned.** `CLAUDE.md`'s sixth decision is that all input is untrusted
-and the Warden scans at every trust boundary. This is an externally reachable
-boundary; it was not scanned. `Gate.process_input` is the reusable primitive for
-exactly that, and a `Gate()` self-wires a Warden, so the door is guarded by
-default rather than only when a deployment remembers to configure one. A blocked
-turn gets an ordinary OpenAI-shaped assistant message with
-`finish_reason="content_filter"` — a refusal is a normal answer, not a 500 — and
-never reaches `run_task`.
+That seam also owns the two things #150 had to build here for want of a
+Container, so they are gone from this module rather than maintained beside it:
 
-**Its turns have a canonical Run.** The same seam `route_request()` uses
-(ADR-082326-c126): one Run per turn, `run_id` returned additively, terminalized
-when the work ends. The Run is only RUNNING while the conductor is running, so a
-client that disconnects mid-stream cannot leave one open — by then it is already
-terminal, which is the true record: the work finished, the reader left.
+- **The Gate scan.** `CLAUDE.md`'s sixth decision is that all input is untrusted
+  and the Warden scans at every trust boundary. `Conduit.route_request` scans
+  first and answers a refusal as an ordinary OpenAI-shaped assistant message
+  with `finish_reason="content_filter"` — a refusal is a normal answer, not a
+  500 — and never reaches an agent.
+- **The canonical Run.** One Run per turn (ADR-082326-c126), terminalized by
+  `Container.route_request` however the turn ends, with `run_id` returned
+  additively.
 
-This endpoint still does not go through the Conduit. That is #142's, and needs a
-Container this app does not build; closing the unscanned door did not have to
-wait for it.
+What stays here is what is genuinely this endpoint's: the OpenAI request and
+response shapes, the SSE framing, the `X-Maistro-Run-Id` header, the
+abandoned-stream cleanup, and the 502/504 sanitisation that keeps upstream
+detail out of client-visible errors.
+
+Two lifecycle notes that do not move.
+
+`Container.route_request` closes the Run before returning, so by the time the
+stream starts the Run is already terminal — a client that disconnects mid-stream
+cannot leave one open. `_close_if_open` remains for the one case it cannot
+cover: a client that disconnects at the very first `yield`, before
+`route_request` is ever called, would otherwise strand a Run this module
+admitted for the response header.
+
+The Run is admitted here, not by `route_request`, for exactly that header: the
+streaming branch has to name the Run before the first byte, and the seam cannot
+hand it back until the turn is over. `route_request` is told about it so it does
+not admit a second.
 """
 
 from __future__ import annotations
@@ -33,21 +49,17 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from maistro.agents.conductor import run_task
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
-from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
-from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
-from maistro.security.gate import Gate
-from maistro.tasks.models import TaskCreate
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
 
@@ -64,44 +76,27 @@ CONTENT_FILTER = "content_filter"
 #: cannot read it.
 RUN_ID_HEADER = "X-Maistro-Run-Id"
 
-#: What a failed turn records on its Run. The exception text goes to the log
-#: only: `/runs/{run_id}` returns `Run.error` verbatim to anyone holding the
-#: run_id, and the SSE and HTTP responses already refuse to echo provider
-#: detail — a Run that carried it would be the same leak by a slower route.
-UPSTREAM_FAILURE = "upstream_error"
-INTERNAL_FAILURE = "internal_error"
-TIMEOUT_FAILURE = "timeout"
+#: What a failed turn records on its Run — re-exported from core, which now
+#: owns the mapping because `Container.route_request` is what writes it (#142).
+#: Kept as names here so a test or a client reading this module still finds
+#: them where they were.
 
-_gate: Gate | None = None
-_chat_admitter: ChatRunAdmitter | None = None
-_run_store: RunStore | None = None
+#: The process's Container (#142). None before the lifespan installs one, and
+#: in tests that exercise the response shapes without wiring a runtime.
+_container: Any = None
 
 
-def get_gate() -> Gate:
-    """The Gate this endpoint scans with, built on first use.
+def configure_container(container: Any) -> None:
+    """Install the Container this endpoint routes through, from the lifespan.
 
-    There is deliberately no way to install a different one. A bare `Gate()`
-    self-wires a Warden, so the door is scanned without any deployment having
-    to remember to arm it — and this app builds no Container, so there is no
-    shared Warden or strike tracker that a configured Gate could add. Offering
-    a setter nothing calls would be an unarmed control that reads as an armed
-    one; a deployment-supplied Gate belongs with the Container work in #142,
-    where the things it would carry actually exist.
+    One object rather than the three #150 installed separately (a Gate, an
+    admitter, a store). The Container carries all of them, already agreeing
+    with each other and with the rest of the process — which is the point of
+    building one, and why a Gate this module wired itself would now be the odd
+    one out rather than the safe default it was.
     """
-    global _gate
-    if _gate is None:
-        _gate = Gate()
-    return _gate
-
-
-def configure_chat_admission(
-    admitter: ChatRunAdmitter | None,
-    run_store: RunStore | None = None,
-) -> None:
-    """Install the seam chat turns are admitted through, from the lifespan."""
-    global _chat_admitter, _run_store
-    _chat_admitter = admitter
-    _run_store = run_store
+    global _container
+    _container = container
 
 
 class ChatMessage(BaseModel):
@@ -178,116 +173,97 @@ def _extract_user_message(request: ChatCompletionRequest) -> str:
     )
 
 
-async def _run_conductor(user_msg: str) -> str:
-    """Run the conductor pipeline and return the final answer text.
-
-    Raises appropriate exceptions for callers to handle.
-    """
-    task = TaskCreate(description=user_msg)
-    result = await run_task(task)
-    return result.final_answer or "Task completed successfully."
-
-
 def _auth_context(auth: AuthenticatedPrincipal | None) -> AuthContext | None:
-    """The Gate's identity view of an authenticated caller.
+    """The identity every strike path keys on.
 
-    Built rather than passed through: `AuthContext` is what every strike path
-    keys on, and handing the Gate an object that merely happens to have a
-    `user_id` would work until one of those paths reached for anything else.
+    Built rather than passed through: handing the pipeline an object that
+    merely happens to have a `user_id` would work until one of those paths
+    reached for anything else. `Container.route_request` also refuses to run
+    with `auth=None` while a permission table or strike tracker is armed, so
+    this is what keeps an authenticated caller from tripping that refusal.
     """
     if auth is None:
         return None
     return AuthContext(user_id=auth.user_id, roles=auth.roles)
 
 
-async def _scan(user_msg: str, auth: AuthenticatedPrincipal | None) -> str | None:
-    """The block reason, or None when the turn may proceed.
-
-    A Gate that raises must not become an open door, so a scan that fails for
-    its own reasons refuses the turn. That is the opposite of how the Run
-    admitter fails — a turn is answered without a Run, and refused without a
-    scan — because the two protect different things: one is a record, the other
-    is the boundary.
-    """
-    try:
-        verdict = await get_gate().process_input(
-            user_msg, task_type="chat", auth=_auth_context(auth)
-        )
-    except Exception:
-        logger.exception("chat_completions_gate_error")
-        return "Request could not be screened and was not run."
-    if not verdict.blocked:
-        return None
-    await logger.awarning("chat_completions_gate_block", reason=verdict.block_reason)
-    return f"Request blocked: {verdict.block_reason}"
-
-
 async def _admit_turn(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None,
 ) -> Run | None:
-    """Admit this turn as a canonical Run, or None when none is wired.
+    """Admit this turn as a canonical Run, or None when none can be.
+
+    Admitted here rather than left to `Container.route_request` because the
+    streaming branch names the Run in a response header, and headers go out
+    before the first byte — the seam cannot hand one back until the turn is
+    over. The Run is then passed to `route_request`, which adopts it instead
+    of admitting a second.
 
     Never refuses the turn. The chat path has no receipt to fall back on, so
     failing here would turn "this process cannot record the turn" into "this
-    process cannot answer" — the same rule `Container.route_request` follows.
+    process cannot answer" — the same rule the seam itself follows.
     """
-    if _chat_admitter is None or _run_store is None:
+    if _container is None or _container.chat_admitter is None:
         return None
     try:
-        run = await _chat_admitter.admit(
+        run = await _container.chat_admitter.admit(
             [m.model_dump() for m in request.messages],
             actor_principal_id=auth.user_id if auth else None,
         )
-        await _run_store.transition_run(run.run_id, RunStatus.QUEUED)
-        return await _run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        await _container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        running: Run = await _container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        return running
     except Exception:
         logger.exception("chat_completions_run_admission_failed")
         return None
 
 
-async def _close_turn(
+async def _route(
+    request: ChatCompletionRequest,
+    auth: AuthenticatedPrincipal | None,
     run: Run | None,
-    *,
-    error: str | None = None,
-    result: object | None = None,
-) -> None:
-    """Terminalize a turn's Run. A Run left RUNNING reads as a dead process."""
-    if run is None or _run_store is None:
-        return
-    target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
-    try:
-        await _run_store.transition_run(run.run_id, target, result=result, error=error)
-    except Exception:
-        logger.exception("chat_completions_run_close_failed", run_id=run.run_id)
+) -> tuple[str, str]:
+    """The turn's answer and its finish reason, from the Conduit.
 
+    `route_request` scans, classifies, resolves an agent, and terminalizes the
+    Run — including when the turn raises. So there is nothing to close here on
+    either path, and a refusal arrives as an ordinary answer carrying
+    `content_filter` rather than as a separate branch this module has to
+    recognise.
 
-def _failure_category(exc: BaseException) -> str:
-    """The failure a Run may record, with no provider detail in it."""
-    if isinstance(exc, TimeoutError):
-        return TIMEOUT_FAILURE
-    if isinstance(exc, LLMProviderError):
-        return UPSTREAM_FAILURE
-    return INTERNAL_FAILURE
-
-
-async def _conduct(user_msg: str, run: Run | None) -> str:
-    """Run the conductor, terminalizing the turn's Run either way.
-
-    The Run records a failure *category*, never the exception text. Both
-    response paths already sanitize upstream detail, and `/runs/{run_id}`
-    returns `Run.error` verbatim to anyone holding the run_id — which the
-    streaming path hands out in a header — so a Run carrying the raw message
-    would leak provider URLs and diagnostics by a slower route. The detail
-    stays in the log, where the handlers below already put it.
+    A turn that reaches here without a Container has nowhere to go. That is a
+    wiring failure, not a request failure, so it raises and the caller maps it
+    to a 500 like any other.
     """
-    try:
-        response_text = await _run_conductor(user_msg)
-    except BaseException as exc:
-        await _close_turn(run, error=_failure_category(exc))
-        raise
-    await _close_turn(run)
-    return response_text
+    if _container is None:
+        raise RuntimeError("chat completions received a request before a Container was wired")
+    result = await _container.route_request(
+        [m.model_dump() for m in request.messages],
+        auth=_auth_context(auth),
+        run=run,
+    )
+    return _answer_of(result)
+
+
+def _answer_of(result: dict[str, Any]) -> tuple[str, str]:
+    """The assistant text and finish reason inside an OpenAI-shaped result.
+
+    Defensive at every hop rather than indexing through: the shape comes from
+    whichever agent handled the turn, and a malformed one should degrade to an
+    empty answer that a client can render, not to a `KeyError` that becomes a
+    500 after the work already succeeded.
+    """
+    choices = result.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else {}
+    if not isinstance(first, dict):
+        return "", "stop"
+    message = first.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    finish = first.get("finish_reason")
+    return (
+        content if isinstance(content, str) else "",
+        finish if isinstance(finish, str) else "stop",
+    )
 
 
 def _text_chunks(chunk_id: str, model: str, text: str) -> Iterator[str]:
@@ -323,13 +299,13 @@ async def _close_if_open(run: Run) -> None:
     Idempotent by design: every ordinary path closes its own Run, so this reads
     the Run back and does nothing when it is already terminal.
     """
-    if _run_store is None:
+    if _container is None:
         return
     try:
-        current = await _run_store.get_run(run.run_id)
+        current = await _container.run_store.get_run(run.run_id)
         if current is None or current.status in TERMINAL_RUN_STATUSES:
             return
-        await _run_store.transition_run(run.run_id, RunStatus.CANCELLED, error=ABANDONED)
+        await _container.run_store.transition_run(run.run_id, RunStatus.CANCELLED, error=ABANDONED)
     except Exception:
         logger.exception("chat_completions_abandoned_run_close_failed", run_id=run.run_id)
 
@@ -382,28 +358,14 @@ async def _stream_turn(
     )
     yield f"data: {role_chunk.model_dump_json()}\n\n"
 
-    # For Phase 1, run the conductor and stream the final_answer in chunks.
+    # The whole answer is computed and then chunked — the endpoint has always
+    # worked this way, and routing through the Conduit does not change it. The
+    # refusal path is no longer separate: a Gate block arrives as an ordinary
+    # answer carrying `content_filter`, so it streams like any other.
     user_msg = _extract_user_message(request)
 
-    blocked = await _scan(user_msg, auth)
-    if blocked is not None:
-        # A refusal is an ordinary answer: the same chunks a real one would
-        # produce, finished as content_filter. `run_task` is never reached.
-        await _close_turn(run, result={"gate_blocked": True})
-        for chunk in _text_chunks(chunk_id, request.model, blocked):
-            yield chunk
-        filtered = ChatCompletionChunk(
-            id=chunk_id,
-            model=request.model,
-            choices=[StreamChoice(delta=DeltaMessage(), finish_reason=CONTENT_FILTER)],
-            run_id=run_id,
-        )
-        yield f"data: {filtered.model_dump_json()}\n\n"
-        yield "data: [DONE]\n\n"
-        return
-
     try:
-        response_text = await _conduct(user_msg, run)
+        response_text, finish_reason = await _route(request, auth, run)
     except TimeoutError:
         logger.error("chat_completions_timeout", user_msg=user_msg[:100])
         error_event = {"error": {"type": "timeout", "message": "LLM call timed out"}}
@@ -431,7 +393,7 @@ async def _stream_turn(
     finish_chunk = ChatCompletionChunk(
         id=chunk_id,
         model=request.model,
-        choices=[StreamChoice(delta=DeltaMessage(), finish_reason="stop")],
+        choices=[StreamChoice(delta=DeltaMessage(), finish_reason=finish_reason)],
         run_id=run_id,
     )
     yield f"data: {finish_chunk.model_dump_json()}\n\n"
@@ -458,16 +420,13 @@ async def chat_completions(
             headers=headers,
         )
 
-    # Non-streaming: run conductor and return full response
+    # Non-streaming: route the turn and return the whole answer. A Gate block
+    # needs no branch of its own — it arrives as an ordinary answer carrying
+    # `content_filter`, which is what a moderation-aware client already reads.
     user_msg = _extract_user_message(request)
 
-    blocked = await _scan(user_msg, auth)
-    if blocked is not None:
-        await _close_turn(run, result={"gate_blocked": True})
-        return _answer(request, blocked, run, finish_reason=CONTENT_FILTER)
-
     try:
-        response_text = await _conduct(user_msg, run)
+        response_text, finish_reason = await _route(request, auth, run)
     except TimeoutError:
         logger.error("chat_completions_timeout", user_msg=user_msg[:100])
         raise HTTPException(status_code=504, detail="LLM call timed out") from None
@@ -481,7 +440,7 @@ async def chat_completions(
         logger.exception("chat_completions_error", user_msg=user_msg[:100])
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
-    return _answer(request, response_text, run)
+    return _answer(request, response_text, run, finish_reason=finish_reason)
 
 
 def _answer(

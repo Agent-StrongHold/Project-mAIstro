@@ -8,6 +8,17 @@ from maistro.config.settings import Settings
 from maistro_server.main import _validate_startup
 
 
+@pytest.fixture(autouse=True)
+def _router_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ROUTER_API_KEY for every case that is not about ROUTER_API_KEY (#142).
+
+    The server builds a maistro-core Container so that chat turns reach the
+    Conduit, and `create_container` refuses an empty one — so `_validate_startup`
+    now checks it, and every other check here would otherwise trip over it first.
+    """
+    monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+
+
 class TestStartupValidation:
     """CRIT-02: App must refuse to start without API keys when require_auth=True."""
 
@@ -74,3 +85,31 @@ class TestWebhookSecretValidation:
     def test_disabled_without_secrets_passes(self) -> None:
         settings = Settings(require_auth=False, require_webhook_secrets=False)
         _validate_startup(settings)  # Should not raise
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+class TestRouterApiKeyValidation:
+    """#142: the server builds a Container, so it needs the key one requires.
+
+    Checked here rather than left to surface from `create_container`, which
+    raises a `ConfigError` several frames deep in lifespan — a stack trace that
+    reads as a bug rather than as a missing setting.
+    """
+
+    def test_an_unset_router_api_key_refuses_to_start(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ROUTER_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
+            _validate_startup(Settings(api_keys=["k"], require_auth=True))
+
+    def test_a_whitespace_only_router_api_key_is_not_a_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shape a .env file produces from `ROUTER_API_KEY= `. Accepting it
+        would move the failure back into container wiring, which is the thing
+        this check exists to prevent."""
+        monkeypatch.setenv("ROUTER_API_KEY", "   ")
+        with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
+            _validate_startup(Settings(api_keys=["k"], require_auth=True))
