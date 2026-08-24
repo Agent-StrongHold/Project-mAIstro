@@ -212,6 +212,19 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
 # (ADR-082426-6201).
 
 
+@pytest.mark.ac("ADR-082426-6201/AC-4")
+async def test_the_container_offers_no_a2a_broker() -> None:
+    """Asserting an absence, deliberately. A retired surface that nothing
+    checks comes back the next time someone reaches for a broker and finds the
+    old wiring in git history — and it comes back the same way it left, as an
+    attribute constructed, stored and read by nobody. `A2ABroker` itself stays
+    exported from `maistro.a2a` for downstream products (ADR-019); what must
+    stay gone is the Container's claim to offer one."""
+    container = await _container()
+
+    assert not hasattr(container, "a2a_broker")
+
+
 # --- Hierarchy (ADR-101) --------------------------------------------------------
 
 

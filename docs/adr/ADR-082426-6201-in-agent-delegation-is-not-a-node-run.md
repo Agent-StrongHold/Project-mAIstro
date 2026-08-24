@@ -23,7 +23,15 @@ blocked-by: []
 contracts:
   - boundary
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/runs/test_chat_execution.py
+  - packages/maistro-core/tests/agents/test_delegation.py
+  - packages/maistro-core/tests/test_container_wiring.py
+ac-modules:
+  AC-1: maistro.runs.chat_execution
+  AC-2: maistro.runs.chat_execution
+  AC-3: maistro.agents.base
+  AC-4: maistro.container
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -97,6 +105,26 @@ it survived three audits.
 `maistro.a2a`, and `maistro-core` is a library other products import (ADR-019); deleting a
 public class because *this* repo has no caller would be deciding for Stronghold and the
 canvas app. What goes is the claim that the Container offers one — the part that was untrue.
+
+## Acceptance Criteria
+
+Written here rather than in a spec because this decision is small enough to own
+its own evidence: three of the four criteria are a single assertion each, and a
+spec whose whole content would be this list adds a document without adding a
+claim.
+
+- [x] **AC-1**: A chat turn whose agent delegates leaves exactly one NodeRun —
+  the Run's shape follows the Graph, not the strategy's runtime choice of
+  delegate. Proven through the real chat seam with a really-delegating agent,
+  because an agent driven on its own has no RunStore and could not leave a
+  NodeRun whatever the decision said.
+- [x] **AC-2**: The Attempt records the agent that *answered* (the delegate),
+  not the agent that was asked.
+- [x] **AC-3**: `AgentResponse.delegation_chain` names the delegators outermost
+  first, at any depth, and is empty for a turn that delegated to nobody.
+- [x] **AC-4**: `Container` exposes no `a2a_broker` attribute. `A2ABroker` stays
+  exported from `maistro.a2a`; what is retired is the Container's claim to
+  offer one.
 
 ## Consequences
 

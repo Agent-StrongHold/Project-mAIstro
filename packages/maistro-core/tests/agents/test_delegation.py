@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from maistro.agents.base import Agent
 from maistro.agents.strategies.delegate import DelegateStrategy
 from maistro.types.agent import AgentIdentity, AgentResponse
@@ -162,6 +164,7 @@ class TestTheDelegationChainIsRecorded:
     which #223 taught to record the handling agent.
     """
 
+    @pytest.mark.ac("ADR-082426-6201/AC-3")
     async def test_the_delegator_is_named_on_the_answer(self) -> None:
         registry: dict[str, Agent] = {}
         registry["mason"] = _make_agent("mason", _RecordingStrategy("def add(): ..."))
@@ -180,6 +183,7 @@ class TestTheDelegationChainIsRecorded:
         assert result.agent_name == "mason"
         assert result.delegation_chain == ("coordinator",)
 
+    @pytest.mark.ac("ADR-082426-6201/AC-3")
     async def test_the_chain_is_outermost_first_however_deep_it_went(self) -> None:
         """Each level prepends on the way back out, so a reader gets the order
         the delegation happened in rather than the order it unwound."""
@@ -206,6 +210,7 @@ class TestTheDelegationChainIsRecorded:
         assert result.agent_name == "mason"
         assert result.delegation_chain == ("outer", "middle")
 
+    @pytest.mark.ac("ADR-082426-6201/AC-3")
     async def test_a_turn_that_delegates_to_nobody_carries_an_empty_chain(self) -> None:
         """The overwhelming majority of turns. An empty tuple rather than a
         one-element chain naming the agent that answered: the field records who
