@@ -194,8 +194,12 @@ async def test_runtime_cancellation_persists_cancelled_attempt_without_phantom_r
     assert attempts[-1].status is AttemptStatus.CANCELLED
     node_run = await store.get_node_run(node_run_id)
     run = await store.get_run(run_id)
-    assert node_run is not None and node_run.status is RunStatus.WAITING
-    assert run is not None and run.status is RunStatus.WAITING
+    # Terminal, not parked (#230). `service.cancel()` is a request to stop, so
+    # the retry decision has been made and it was *don't*. Parked here — which
+    # is what this asserted before — left a cancelled turn indistinguishable
+    # from a provider outage on any record that counts them.
+    assert node_run is not None and node_run.status is RunStatus.CANCELLED
+    assert run is not None and run.status is RunStatus.CANCELLED
 
 
 @pytest.mark.asyncio

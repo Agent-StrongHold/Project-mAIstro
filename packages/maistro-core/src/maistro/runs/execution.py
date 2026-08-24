@@ -16,7 +16,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.runs.model import AcceptedNodeOutcome, Attempt, AttemptStatus, NodeRun
-from maistro.runs.reconciliation import AttemptLifecycleReconciler, AttemptLifecycleStore
+from maistro.runs.reconciliation import (
+    AttemptLifecycleReconciler,
+    AttemptLifecycleStore,
+    CancellationCause,
+)
 from maistro.runs.store import RunIntegrityError
 from maistro.runtime import ExecutionCallable, ExecutionRuntime, RuntimeDeadlineExceeded
 
@@ -190,7 +194,12 @@ class AttemptExecutionService:
                 result=attempt_evidence_of(exc),
                 error="execution cancelled",
             )
-            await self._reconcile(terminal)
+            # REQUESTED: this coroutine was cancelled while running, which means
+            # something asked the work to stop. The NodeRun is terminal, not
+            # parked awaiting a retry decision that has already been taken
+            # (#230). Recovery's cancellations reconcile elsewhere and keep the
+            # parking default.
+            await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
             raise
         except RuntimeDeadlineExceeded as exc:
             terminal = await self._terminalize(
@@ -273,8 +282,13 @@ class AttemptExecutionService:
             fencing_token=fencing_token,
         )
 
-    async def _reconcile(self, attempt: Attempt) -> None:
-        await self._lifecycle.reconcile(attempt)
+    async def _reconcile(
+        self,
+        attempt: Attempt,
+        *,
+        cancellation: CancellationCause = CancellationCause.RECOVERED,
+    ) -> None:
+        await self._lifecycle.reconcile(attempt, cancellation=cancellation)
         if self._after_reconcile is not None:
             await self._after_reconcile(attempt.model_copy(deep=True))
 

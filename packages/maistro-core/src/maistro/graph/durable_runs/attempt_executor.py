@@ -18,7 +18,7 @@ from maistro.graph.nodes.base import NodeContext, NodeResult
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
-from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
 from . import executor as traversal
@@ -139,7 +139,12 @@ async def _reconcile_orphaned_attempts(
             AttemptStatus.CANCELLED,
             error="orphaned physical Attempt recovered after process loss",
         )
-        await lifecycle.reconcile(terminal)
+        # RECOVERED, stated rather than defaulted. This cancellation is
+        # bookkeeping — the process died and the physical record is being closed
+        # so a *fresh* Attempt can run — so the node must stay parked and owed.
+        # Terminalizing it would make crash recovery destroy the work it exists
+        # to resume (#230).
+        await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)
     latest = await store.get(record.run_id)
     if latest is None:
         raise KeyError(f"no such run: {record.run_id!r}")
