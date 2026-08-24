@@ -28,6 +28,25 @@ from maistro.runs.model import (
 from maistro.runs.store import RunIntegrityError
 
 
+class SupersededAttempt(RunIntegrityError):
+    """A worker tried to commit an outcome for an Attempt that is no longer current.
+
+    The fence on `transition_attempt` stops a stale worker writing to the
+    *physical* record. Nothing stopped it writing the *logical* one: matching
+    evidence for a superseded Attempt is exactly what a stale worker holds, so
+    "does this evidence match the persisted Attempt" was a check it always
+    passed (#238).
+    """
+
+    def __init__(self, attempt_id: str, current_attempt_id: str) -> None:
+        self.attempt_id = attempt_id
+        self.current_attempt_id = current_attempt_id
+        super().__init__(
+            f"Attempt {attempt_id!r} is superseded by {current_attempt_id!r}; "
+            "a stale worker cannot commit into a newer Attempt"
+        )
+
+
 class CancellationCause(Enum):
     """Why an Attempt is cancelled — the one thing its status cannot say (#230).
 
@@ -85,6 +104,8 @@ class AttemptLifecycleStore(Protocol):
     ) -> NodeRun: ...
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None: ...
+
+    async def list_attempts(self, node_run_id: str) -> list[Attempt]: ...
 
 
 def _same_accepted_projection(
@@ -165,7 +186,15 @@ class AttemptLifecycleReconciler:
         return parked
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
-        """Persist an explicit domain interpretation of completed physical evidence."""
+        """Persist an explicit domain interpretation of completed physical evidence.
+
+        Refuses a superseded Attempt (#238). The evidence check below asks
+        whether this outcome matches what was persisted, which a stale worker
+        passes trivially — it is holding a real result from a real Attempt that
+        has since been replaced. Whether that Attempt is still *the* Attempt is
+        a different question, and it is the one the fence answers one table
+        over.
+        """
         node_run = await self._require_node_run(outcome.node_run_id)
         persisted = await self._store.get_attempt(outcome.attempt_result.attempt_id)
         if persisted is None:
@@ -173,7 +202,23 @@ class AttemptLifecycleReconciler:
         physical = AttemptResult.from_attempt(persisted)
         if physical != outcome.attempt_result:
             raise RunIntegrityError("accepted outcome differs from persisted Attempt evidence")
+        await self._require_current_attempt(outcome.node_run_id, persisted.attempt_id)
         return await self._accept_node_outcome(node_run, outcome)
+
+    async def _require_current_attempt(self, node_run_id: str, attempt_id: str) -> None:
+        """Refuse a commit from any Attempt but the newest under this NodeRun.
+
+        Newest by ordinal rather than by list position: `create_attempt`
+        allocates ordinals under a row lock, so the highest one is the Attempt
+        that most recently claimed the NodeRun, whatever order a store returns
+        rows in.
+        """
+        attempts = await self._store.list_attempts(node_run_id)
+        if not attempts:  # pragma: no cover - the caller already loaded one
+            return
+        current = max(attempts, key=lambda attempt: attempt.ordinal)
+        if current.attempt_id != attempt_id:
+            raise SupersededAttempt(attempt_id, current.attempt_id)
 
     async def _ensure_run_running(self, run: Run) -> Run:
         if run.status in TERMINAL_RUN_STATUSES:
@@ -314,4 +359,9 @@ class AttemptLifecycleReconciler:
         return node_run
 
 
-__all__ = ["AttemptLifecycleReconciler", "AttemptLifecycleStore", "CancellationCause"]
+__all__ = [
+    "AttemptLifecycleReconciler",
+    "AttemptLifecycleStore",
+    "CancellationCause",
+    "SupersededAttempt",
+]
