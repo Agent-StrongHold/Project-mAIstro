@@ -7,6 +7,7 @@ handle() runs: Warden scan -> build context -> strategy.reason() -> post-turn.
 from __future__ import annotations
 
 import logging as _logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.types.agent import AgentResponse
@@ -801,7 +802,7 @@ class Agent:
         if trace:
             trace.update({"delegated_to": target_name})
 
-        return await target.handle(
+        delegated = await target.handle(
             messages=delegate_messages,
             auth=auth,
             session_id=session_id,
@@ -809,6 +810,15 @@ class Agent:
             status_callback=status_callback,
             classified_task_type=classified_task_type,
             _delegation_depth=depth + 1,
+        )
+        # Record who asked, on the way back out. The delegate's response is
+        # returned wholesale — that is what makes the answer the delegate's —
+        # so without this the agent that was actually asked is absent from
+        # every record of the turn (#225, ADR-082426-6201). Prepending at each
+        # level leaves the chain outermost-first however deep it went.
+        return replace(
+            delegated,
+            delegation_chain=(self.identity.name, *delegated.delegation_chain),
         )
 
     def _resolve_agent(self, name: str) -> Agent | None:

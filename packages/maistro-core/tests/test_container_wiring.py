@@ -41,7 +41,6 @@ async def test_container_exposes_all_new_subsystems() -> None:
         "identity_store",
         "token_store",
         "secret_store",
-        "a2a_broker",
         "harness_registry",
         "hierarchy",
         "golden_record_store",
@@ -202,24 +201,15 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
         await container.verify_capability_token(token)
 
 
-# --- A2A broker (ADR-058) ------------------------------------------------------
-
-
-async def test_a2a_broker_refuses_unknown_agents() -> None:
-    from datetime import UTC, datetime, timedelta
-
-    from maistro.a2a.broker import DelegationBudget, DelegationRefused
-
-    container = await _container()
-    budget = DelegationBudget(
-        deadline=datetime.now(UTC) + timedelta(minutes=5),
-        token_budget=1000,
-        trace_id="trace-a2a",
-    )
-    with pytest.raises(DelegationRefused, match="unknown calling agent"):
-        await container.a2a_broker.delegate(
-            from_agent="ghost", to="ghost2", task="do a thing", budget=budget
-        )
+# --- A2A broker (ADR-058): retired from the Container (#225) -------------------
+#
+# `Container.a2a_broker` was constructed, stored and read by nothing but this
+# file. The refusal it used to assert here — an unknown calling agent, an
+# unknown delegation target — is `A2ABroker`'s own behaviour and keeps its test
+# in `tests/a2a/test_broker.py::test_unknown_caller_and_target_refused`, run
+# against the class directly. What is gone with the wiring is only the claim
+# that the Container offers it, which is the claim that was untrue
+# (ADR-082426-6201).
 
 
 # --- Hierarchy (ADR-101) --------------------------------------------------------
