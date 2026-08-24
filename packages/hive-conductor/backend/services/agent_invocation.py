@@ -35,7 +35,8 @@ from typing import Any
 import stores
 from models.schemas import Agent
 
-from services.agent_materialization import agent_id_for
+from maistro.agents.hyperagent import RosterAgent
+from services.agent_materialization import agent_id_for, workspace_agents
 
 
 def _capabilities_of(agent: Agent) -> frozenset[str]:
@@ -68,6 +69,34 @@ def resolve_agent(agent_id: str, *, workspace_id: str | None = None) -> Agent | 
         if scoped is not None:
             return scoped
     return stores.agents.get(agent_id)
+
+
+def pulse_roster(workspace_id: str | None = None) -> list[RosterAgent]:
+    """What this workspace can be asked to do, for `propose_autonomous_actions`.
+
+    Ordered the way `resolve_agent` resolves: this workspace's own materialized
+    agents first, then the global workspace-less records `stores.agents` also
+    holds. The pulse matches a capability to the *first* declarer, so that
+    ordering is what makes a workspace's own agent win over a global agent
+    declaring the same capability — the same precedence a queued task already
+    gets, now applied one step earlier, when the action is proposed.
+
+    Names are spawn names (`delivery`, not `ws-7.delivery`) because that is
+    what `resolve_agent_task` takes, and a proposed action that could not be
+    handed straight to it would only be a name the next layer has to undo.
+    """
+    roster: list[RosterAgent] = []
+    if workspace_id:
+        roster.extend(
+            RosterAgent(name=_spawn_name(agent), capabilities=_capabilities_of(agent))
+            for agent in workspace_agents(workspace_id)
+        )
+    roster.extend(
+        RosterAgent(name=_spawn_name(agent), capabilities=_capabilities_of(agent))
+        for agent in stores.agents.values()
+        if not agent.workspace_id
+    )
+    return roster
 
 
 def resolve_agent_task(
@@ -127,4 +156,4 @@ def _describe(name: str, capability: str, payload: dict[str, Any]) -> str:
     return desc
 
 
-__all__ = ["resolve_agent", "resolve_agent_task"]
+__all__ = ["pulse_roster", "resolve_agent", "resolve_agent_task"]
