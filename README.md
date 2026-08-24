@@ -61,9 +61,28 @@ The line between shared runtime and product-specific code is defined in [`ADR-01
 uv sync                               # install every package in the workspace
 uv sync --extra bootstrap             # optional: maistro-install TUI / answers-file planner
 uv run pytest                         # run the test suite
-uv run alembic upgrade head           # apply DB migrations (needs Postgres)
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
+
+Then apply the migrations. They need a server to connect to, which is why this
+comes *after* `docker compose up` rather than before it:
+
+```bash
+set -a; . ./.env; set +a              # compose reads .env itself; your shell does not
+DATABASE_URL=postgresql://maistro:$DB_PASSWORD@127.0.0.1:5433/maistro \
+  uv run alembic upgrade head
+```
+
+`docker-compose.yml` publishes Postgres on **host port 5433**
+(`127.0.0.1:5433:5432`) while the defaults assume 5432, so a bare
+`alembic upgrade head` either fails to connect or — if some other PostgreSQL is
+listening on 5432 — migrates the wrong database. `DB_PASSWORD` comes from
+`.env`, which Compose interpolates for the container but does not export to
+your shell.
+
+Alembic and the application resolve that URL through the same function
+(`require_database_url`, [#187](https://github.com/Agent-StrongHold/Project-mAIstro/issues/187)),
+so `DATABASE_URL` and the `DB_*` variables both work and mean the same thing.
 
 The repo is a `uv` workspace: **nine Python packages**, plus the **`packages/hive-conductor`** reference app (frontend + backend + Docker).
 
