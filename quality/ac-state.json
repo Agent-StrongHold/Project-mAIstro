@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 498,
+    "criteria_declared": 502,
     "criteria_annotated": 214,
-    "markers_found": 210,
+    "markers_found": 214,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 6.8501
+    "design_coverage": 7.7634
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1009,6 +1009,11 @@
       "declared_status": "Accepted"
     },
     {
+      "id": "ADR-081626-f383",
+      "file": "docs/adr/ADR-081626-f383-execution-lease-fencing.md",
+      "declared_status": "Accepted"
+    },
+    {
       "id": "ADR-082",
       "file": "docs/adr/ADR-082-alerting-and-tracing.md",
       "declared_status": "Accepted"
@@ -1041,11 +1046,6 @@
     {
       "id": "ADR-094",
       "file": "docs/adr/ADR-094-cut-pydantic-ai-from-conductor.md",
-      "declared_status": "Accepted"
-    },
-    {
-      "id": "ADR-081626-f383",
-      "file": "docs/adr/ADR-2026-08-16-execution-lease-fencing.md",
       "declared_status": "Accepted"
     }
   ],
@@ -1081,8 +1081,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 6.8501,
-    "decisions": 101,
+    "percent": 7.7634,
+    "decisions": 102,
     "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1654,6 +1654,13 @@
         "percent": 0.0
       },
       {
+        "id": "ADR-081626-f383",
+        "declared_status": "Accepted",
+        "criteria": 0,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
         "id": "ADR-082",
         "declared_status": "Accepted",
         "criteria": 0,
@@ -1683,6 +1690,13 @@
       },
       {
         "id": "ADR-082426-6201",
+        "declared_status": "Accepted",
+        "criteria": 4,
+        "reachable": 4,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082426-e3ff",
         "declared_status": "Accepted",
         "criteria": 4,
         "reachable": 4,
@@ -1783,13 +1797,6 @@
         "id": "ADR-100",
         "declared_status": "Accepted",
         "criteria": 6,
-        "reachable": 0,
-        "percent": 0.0
-      },
-      {
-        "id": "ADR-081626-f383",
-        "declared_status": "Accepted",
-        "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       }
@@ -12647,6 +12654,19 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-081626-f383",
+      "file": "docs/adr/ADR-081626-f383-execution-lease-fencing.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-082",
       "file": "docs/adr/ADR-082-alerting-and-tracing.md",
       "declared_status": "Accepted",
@@ -12918,6 +12938,56 @@
       "gherkin_parse_errors": [],
       "declared_unproven": [],
       "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082426-e3ff",
+      "file": "docs/adr/ADR-082426-e3ff-the-fence-guards-the-worker-authored-write.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 4,
+      "own_detail": [
+        {
+          "id": "ADR-082426-e3ff/AC-1",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082426-e3ff/AC-2",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082426-e3ff/AC-3",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082426-e3ff/AC-4",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
     },
     {
       "id": "ADR-082426-f170",
@@ -13266,19 +13336,6 @@
       "specs": [
         "SPEC-070226-c4f8"
       ],
-      "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
-      "scenarios_without_ac_tag": [],
-      "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
-    },
-    {
-      "id": "ADR-081626-f383",
-      "file": "docs/adr/ADR-2026-08-16-execution-lease-fencing.md",
-      "declared_status": "Accepted",
-      "specs": [],
       "measurable_specs": 0,
       "own_criteria": 0,
       "own_detail": [],
