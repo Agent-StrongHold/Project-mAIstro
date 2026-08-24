@@ -3,8 +3,14 @@ id: ADR-082426-82c7
 title: "A schedule firing is claimed by its occurrence, not by the cursor"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-24
+accepted: 2026-08-24
+history:
+  - status: Proposed
+    date: 2026-08-24
+  - status: Accepted
+    date: 2026-08-24
 substrate:
   - maistro-engine#ADR-082126-f69c
 implements: []
