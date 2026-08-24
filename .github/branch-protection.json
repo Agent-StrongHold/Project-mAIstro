@@ -54,7 +54,14 @@
         "them. The gate `needs:` them, so a failed producer already blocks by",
         "leaving the gate at `Expected` — but a requirement that is only",
         "transitively enforced reads, on the PR page, as a check nobody decided",
-        "about. Requiring all three says which of them the merge contract covers."
+        "about. Requiring all three says which of them the merge contract covers.",
+        "",
+        "The service-backed jobs this change adds are required, not advisory. Each",
+        "exists because the suite it runs was passing without ever reaching a",
+        "server — `postgres (pg17/pg18)` for the stores, `object storage (MinIO)`",
+        "for the archive tiers, `coverage (PostgreSQL)` so the diff gate scores",
+        "that code from a run that could execute it. A job that catches a class of",
+        "defect nothing else can, left advisory, is a job whose red is optional."
       ],
       "required_status_checks": {
         "strict": true,
@@ -77,7 +84,11 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)"
         ]
       },
       "enforce_admins": false,
@@ -126,7 +137,11 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)"
         ]
       },
       "enforce_admins": false,
@@ -186,7 +201,11 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder"
+          "strike-ladder",
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)"
         ]
       },
       "enforce_admins": false,
