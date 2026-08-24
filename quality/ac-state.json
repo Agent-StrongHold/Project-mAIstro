@@ -12724,6 +12724,19 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-082326-5386",
+      "file": "docs/adr/ADR-082326-5386-outbound-http-policy-at-the-shared-client-seam.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-083",
       "file": "docs/adr/ADR-083-skills-mcp-trust.md",
       "declared_status": "Proposed",
