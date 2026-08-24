@@ -105,7 +105,12 @@ class TestResolveAgentTask:
             "program_manager", "fetch_program_state", {}, workspace_id="ws-1"
         )
         assert task_type == "program_manager"
-        assert agent_id == "ws-1.program_manager"
+        # The spawn name, not the store id. `maistro.agents.pm_runner`'s
+        # `_resolve_role` is keyed by bare name, so a scoped id resolves to no
+        # role and returns a synthetic `source="no_data"` result. The workspace
+        # travels on `submit_task(workspace_id=...)` instead, which is where a
+        # Run's scope belongs.
+        assert agent_id == "program_manager"
 
     def test_the_description_keeps_the_shape_three_surfaces_display(self) -> None:
         _materialized("ws-1", "intake", skills=["create_initiative"])
@@ -155,3 +160,36 @@ class TestResolveAgentTask:
         )
         task_type, _, _ = resolve_agent_task("builder", "run_build", {}, workspace_id="ws-1")
         assert task_type == "builder"
+
+
+class TestTheResolvedAgentIdIsTheExecutorsShape:
+    """Codex P1 on #216: a scoped id resolves to no role at execution.
+
+    `maistro.agents.pm_runner._resolve_role` looks the agent up in
+    `_PM_AGENT_TO_ROLE`, keyed by bare spawn name. Handing it
+    `ws-1.program_manager` misses, and its only fallback maps a *capability* to
+    a role via `PM_PRIMARY_CAPABILITY` — which covers each role's primary and
+    nothing else. So `create_epic`, `create_story`, `create_dev_task` and
+    `fetch_program_state` would all resolve to no role and return a synthetic
+    `source="no_data"` result instead of running the agent that was selected.
+    """
+
+    def test_the_executors_own_table_is_keyed_by_bare_name(self) -> None:
+        """Pinned against the real table, so this test fails if the executor
+        ever starts accepting scoped ids and this normalisation becomes
+        unnecessary — rather than silently outliving its reason."""
+        from maistro.agents.pm_runner import _PM_AGENT_TO_ROLE
+
+        assert "program_manager" in _PM_AGENT_TO_ROLE
+        assert not [key for key in _PM_AGENT_TO_ROLE if "." in key]
+
+    async def test_a_materialized_agent_resolves_to_a_name_that_table_holds(self) -> None:
+        from maistro.agents.pm_runner import _PM_AGENT_TO_ROLE
+
+        _materialized("ws-1", "program_manager", skills=["fetch_program_state"])
+
+        _task_type, _description, agent_id = resolve_agent_task(
+            "program_manager", "fetch_program_state", {}, workspace_id="ws-1"
+        )
+
+        assert agent_id in _PM_AGENT_TO_ROLE

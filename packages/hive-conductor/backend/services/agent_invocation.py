@@ -90,7 +90,18 @@ def resolve_agent_task(
     if capability not in _capabilities_of(agent):
         raise ValueError(f"Capability {capability!r} not valid for {agent_id}")
     name = _spawn_name(agent)
-    return name, _describe(name, capability, payload), agent.id
+    # The **spawn name**, not the store id. `maistro.agents.pm_runner`'s
+    # `_resolve_role` looks the agent up in `_PM_AGENT_TO_ROLE`, which is keyed
+    # by bare name; handing it `ws-7.program_manager` misses, and its fallback
+    # covers only each role's `PM_PRIMARY_CAPABILITY` -- so `create_epic`,
+    # `create_story` and `fetch_program_state` would resolve to no role at all
+    # and return a synthetic `source="no_data"` result instead of running.
+    #
+    # The workspace is not lost by this: the caller passes it to
+    # `submit_task(workspace_id=...)`, which is where a Run's scope belongs.
+    # Encoding it in the agent id instead would put scope in a field the
+    # executor parses as an identity.
+    return name, _describe(name, capability, payload), name
 
 
 def _describe(name: str, capability: str, payload: dict[str, Any]) -> str:

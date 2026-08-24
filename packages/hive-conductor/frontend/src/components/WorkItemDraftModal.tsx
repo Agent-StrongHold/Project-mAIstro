@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { labelForWorkType, type WorkItemType } from "../lib/pmCapabilities";
 import { useToast } from "./shared";
+import { useWorkspaces } from "../context/WorkspaceContext";
 
 type ClarifyingQuestion = {
   id: string;
@@ -50,6 +51,7 @@ export function WorkItemDraftModal({
   onPosted,
 }: Props) {
   const toast = useToast();
+  const { activeWorkspaceId } = useWorkspaces();
   const [draft, setDraft] = useState<WorkItemDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<"clarify" | "edit" | "review">("clarify");
@@ -79,11 +81,16 @@ export function WorkItemDraftModal({
         if (initialDraftId) {
           await loadDraft(initialDraftId);
         } else if (workType) {
-          const res = await apiPost<{ draft: WorkItemDraft }>("/v1/work-items/suggest", {
-            work_type: workType,
-            reason: reason ?? "",
-            hint: hint ?? "",
-          });
+          // Same as the list: a draft is suggested *within* a workspace, so
+          // the confirm has a roster to resolve its agent against later.
+          const res = await apiPost<{ draft: WorkItemDraft }>(
+            `/v1/work-items/suggest?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+            {
+              work_type: workType,
+              reason: reason ?? "",
+              hint: hint ?? "",
+            },
+          );
           if (!cancelled) {
             setDraft(res.draft);
             setStep("clarify");

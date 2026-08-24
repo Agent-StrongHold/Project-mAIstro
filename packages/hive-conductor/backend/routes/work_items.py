@@ -293,6 +293,27 @@ async def confirm_work_item(
             detail="this draft was suggested under a different workspace",
         )
     _require_submittable_workspace(uid, scope)
+    # Resolve the agent *before* the posting side effect. A workspace can pass
+    # `_require_pm` on one PM-shaped agent while this draft's work type targets
+    # another — an `epic` needs `program_manager`, and a persona declaring only
+    # `intake` qualifies for the gate but cannot serve the draft. Resolving
+    # after `_save_draft` marked the draft posted turned that into a 500 with
+    # the draft permanently posted and no task ever queued.
+    try:
+        resolve_agent_task(
+            draft.agent_id,
+            draft.capability,
+            {},
+            workspace_id=draft.project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"this workspace's persona has no agent {draft.agent_id!r} able to "
+                f"{draft.capability!r}; the draft was not posted"
+            ),
+        ) from exc
     try:
         posted, result = confirm_post_stub(draft)
     except ValueError as exc:
@@ -304,6 +325,9 @@ async def confirm_work_item(
     # suggested from a specific workspace's context stays consistent
     # through to the queued task's `program` payload.
     engine = get_engine()
+    # Re-described from the posted fields, which clarify/patch may have
+    # changed; the *resolution* already happened above, before anything was
+    # written, so this cannot be the call that fails after the side effect.
     task_type, description, agent_id = resolve_agent_task(
         posted.agent_id,
         posted.capability,

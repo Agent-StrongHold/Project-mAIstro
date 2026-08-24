@@ -216,7 +216,7 @@ def test_no_new_lambda_s_s_in_critical_callsites() -> None:
         # `routes/agents.py` left this list in #129: `_build_invoke_context` read
         # Atlassian PATs only for `POST /{agent_id}/invoke`, and both went with
         # POC mode. One fewer place a secret is read, not one fewer line pinned.
-        "hive-conductor/backend/services/program_hyperagent.py:25",
+        "hive-conductor/backend/services/program_hyperagent.py:28",
         "hive-conductor/backend/services/tool_primitives.py:66",
     }
     new = [h for h in hits if h not in ALLOWLIST]

@@ -161,3 +161,56 @@ def test_confirm_reads_back_the_drafts_own_project_id(admin_client, monkeypatch)
     assert r.status_code == 200
     assert captured["program_context"]["project_id"] == ws_id
     assert captured["program_context"]["program_name"] == ""
+
+
+def test_confirm_refuses_before_posting_when_the_persona_lacks_the_agent(
+    admin_client,
+) -> None:
+    """Codex P1 on #216: a 500 that left the draft permanently posted.
+
+    A persona can pass the capability gate on one PM-shaped agent — the
+    `field_ops` case above qualifies on `intake` alone — while an `epic` draft
+    targets `program_manager`. Resolving that agent *after* `_save_draft`
+    marked the draft posted turned the mismatch into a 500 with the draft
+    posted and no task ever queued: unrecoverable, because a posted draft
+    cannot be confirmed again.
+
+    Resolution now happens before the side effect, so the refusal is a 409 and
+    the draft is still there.
+    """
+    r = admin_client.post(
+        "/v1/workspaces/persona-templates",
+        json={
+            "id": "intake_only",
+            "display_name": "Intake Only",
+            "agents": [{"agent": "intake", "role": "Takes requests", "tools": ["create_epic"]}],
+        },
+    )
+    assert r.status_code == 201
+    ws_id = _create_workspace(admin_client, "intake_only")
+
+    r = admin_client.post(
+        f"/v1/work-items/suggest?workspace_id={ws_id}",
+        json={"work_type": "epic", "reason": "test"},
+    )
+    assert r.status_code == 200
+    draft_id = r.json()["draft"]["id"]
+    admin_client.post(
+        f"/v1/work-items/{draft_id}/clarify",
+        json={
+            "answers": {
+                "summary": "Do the thing",
+                "description": "Because reasons",
+                "parent_key": "X-1",
+            }
+        },
+    )
+
+    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
+
+    assert r.status_code == 409
+    # Still confirmable once the persona gains the agent — which a 500 after
+    # `_save_draft` would have made impossible.
+    still_there = admin_client.get(f"/v1/work-items/{draft_id}?workspace_id={ws_id}")
+    assert still_there.status_code == 200
+    assert still_there.json()["draft"]["status"] != "posted"
