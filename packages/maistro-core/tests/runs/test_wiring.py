@@ -19,7 +19,9 @@ from maistro.tasks.queue import TaskQueue
 
 
 async def test_without_a_connection_the_spine_is_in_memory() -> None:
-    scope_store, run_store, admitter = await wire_execution_spine(None, workspace_id="w1")
+    scope_store, run_store, admitter, _templates = await wire_execution_spine(
+        None, workspace_id="w1"
+    )
 
     assert isinstance(scope_store, InMemoryProjectScopeStore)
     assert isinstance(run_store, InMemoryRunStore)
@@ -28,7 +30,9 @@ async def test_without_a_connection_the_spine_is_in_memory() -> None:
 
 async def test_with_a_connection_the_spine_is_durable() -> None:
     async with aiosqlite.connect(":memory:") as conn:
-        scope_store, run_store, _admitter = await wire_execution_spine(conn, workspace_id="w1")
+        scope_store, run_store, _admitter, _templates = await wire_execution_spine(
+            conn, workspace_id="w1"
+        )
 
         assert type(scope_store).__name__ == "SqliteProjectScopeStore"
         assert type(run_store).__name__ == "SqliteRunStore"
@@ -37,7 +41,9 @@ async def test_with_a_connection_the_spine_is_durable() -> None:
 async def test_the_root_project_exists_before_the_first_submission() -> None:
     """Resolved eagerly: a Run store refuses a Graph in a Project that isn't
     there, so a lazy root turns misconfiguration into a first-task failure."""
-    scope_store, _run_store, _admitter = await wire_execution_spine(None, workspace_id="w1")
+    scope_store, _run_store, _admitter, _templates = await wire_execution_spine(
+        None, workspace_id="w1"
+    )
 
     root = await scope_store.root_for_workspace("w1")
 
@@ -50,7 +56,9 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
     same store the wiring handed back, in both backends."""
     conn = await aiosqlite.connect(":memory:") if durable else None
     try:
-        _scope_store, run_store, admitter = await wire_execution_spine(conn, workspace_id="w1")
+        _scope_store, run_store, admitter, _templates = await wire_execution_spine(
+            conn, workspace_id="w1"
+        )
         queue = TaskQueue(admitter=admitter)
 
         task = await queue.submit(TaskCreate(description="ship it", task_type="code"))
@@ -65,7 +73,9 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
 
 
 async def test_the_workspace_is_the_one_asked_for() -> None:
-    _scope_store, run_store, admitter = await wire_execution_spine(None, workspace_id="tenant-a")
+    _scope_store, run_store, admitter, _templates = await wire_execution_spine(
+        None, workspace_id="tenant-a"
+    )
     queue = TaskQueue(admitter=admitter)
 
     task = await queue.submit(TaskCreate(description="ship it"))

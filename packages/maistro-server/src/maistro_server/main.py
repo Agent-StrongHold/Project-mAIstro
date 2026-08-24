@@ -9,6 +9,7 @@ import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
@@ -75,6 +76,29 @@ def _validate_startup(settings: Settings) -> None:
         )
 
 
+async def _run_store_pool() -> Any:
+    """An asyncpg pool for the canonical spine, or None (#132).
+
+    None is an ordinary answer, not a degraded one: a deployment with no
+    PostgreSQL database gets the in-process store and is told so. Only a
+    *configured but unreachable* server is a startup failure, and that failure
+    belongs to `get_pool` rather than to a guess made here.
+
+    The URL comes from the one resolver alembic also uses (#187), so the spine
+    lands in the database the migrations describe rather than in whichever one a
+    second reading of the environment happened to name.
+    """
+    from maistro.config.database import resolve_database_url, to_asyncpg_dsn
+    from maistro.container import POSTGRES_SCHEMES
+
+    database_url = resolve_database_url()
+    if not database_url.startswith(POSTGRES_SCHEMES):
+        return None
+    from maistro.persistence import get_pool
+
+    return await get_pool(to_asyncpg_dsn(database_url))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start/stop the background task runner with the app lifecycle."""
@@ -117,18 +141,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Canonical execution identity (#41): every task submitted through /tasks
     # gets a Run over a one-node Graph, and the response carries its run_id.
-    # In-process store: this app talks to Postgres, and no Postgres Run store
-    # exists yet (#122), so Runs do not survive a restart here. Said out loud
-    # rather than left to be discovered, because a run_id that silently stops
-    # resolving is worse than one that was never promised.
-    scope_store, run_store, admitter = await wire_execution_spine(
-        None, workspace_id=settings.workspace_id
+    #
+    # Durable when this deployment names a PostgreSQL database (#132). The spine
+    # is the one thing that must not be ephemeral — it is what an audit, a
+    # recovery, a retry and a resumed HITL pause all read — so an in-process
+    # store is the fallback, not the default, and the log says which one is live
+    # rather than leaving a run_id that silently stops resolving to be
+    # discovered.
+    spine_pool = await _run_store_pool()
+    scope_store, run_store, admitter, _templates = await wire_execution_spine(
+        None, workspace_id=settings.workspace_id, pg_pool=spine_pool
     )
-    await logger.awarning(
-        "run_store_in_process_only",
-        workspace_id=settings.workspace_id,
-        detail="Runs admitted by /tasks are lost on restart until a durable store is wired (#122)",
-    )
+    if spine_pool is None:
+        await logger.awarning(
+            "run_store_in_process_only",
+            workspace_id=settings.workspace_id,
+            detail=(
+                "no PostgreSQL database is configured, so Runs admitted by /tasks "
+                "are lost on restart"
+            ),
+        )
     queue = configure_task_queue(admitter=admitter)
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.

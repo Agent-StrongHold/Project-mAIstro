@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -128,6 +129,17 @@ class InMemoryProjectScopeStore:
         self._root_by_workspace: dict[str, str] = {}
         self._memberships: dict[str, ProjectMembership] = {}
         self._resources: dict[str, ProjectScopedResource] = {}
+        # Set by the wiring once a Run store exists, so `delete()` refuses a
+        # Project that owns Runs. A callable rather than the store itself: this
+        # package must not learn the runs package's types, and the dependency
+        # already goes the other way (a Run store takes a Project store).
+        # PostgreSQL enforces the same rule with a foreign key, which needs no
+        # equivalent because the database can see both tables.
+        self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+
+    def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
+        """Register the predicate `delete()` consults for Run ownership."""
+        self._owns_runs = owns_runs
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's single Root Project."""
@@ -275,6 +287,8 @@ class InMemoryProjectScopeStore:
             raise ProjectNotEmpty("Project has scoped resources")
         if any(item.project_id == project_id for item in self._memberships.values()):
             raise ProjectNotEmpty("Project has ProjectMembership records")
+        if self._owns_runs is not None and await self._owns_runs(project_id):
+            raise ProjectNotEmpty("Project has canonical Runs")
         del self._projects[project_id]
 
     async def resolve_creation_defaults(

@@ -21,6 +21,7 @@ from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+from maistro.graph.templates import GraphTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -137,6 +138,12 @@ class Container:
     #: admitter because the two have different retention: a task's Run is kept
     #: as long as its receipt, a chat turn's is swept behind a small window.
     chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
+    #: Where a Graph definition comes from when a Run is not trivial work — a
+    #: schedule firing, or anything else that instantiates a drawn topology
+    #: rather than a one-node stand-in (#132). Optional in the same way the rest
+    #: of the spine is: a Container built directly, without `create_container`,
+    #: still routes requests — it just cannot resolve a template.
+    template_store: GraphTemplateStore | None = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -576,10 +583,16 @@ async def create_container(
     # separately-constructed default registry would disagree with the one the
     # rest of the container uses (POC mode, or any custom table).
     intent_registry = build_intent_registry()
-    project_scope_store, run_store, task_admitter = await wire_execution_spine(
+    (
+        project_scope_store,
+        run_store,
+        task_admitter,
+        graph_template_store,
+    ) = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
         intents=intent_registry,
+        pg_pool=pg_pool,
     )
     chat_admitter = wire_chat_admission(
         run_store,
@@ -773,6 +786,7 @@ async def create_container(
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
+        template_store=graph_template_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
@@ -905,15 +919,13 @@ _REQUIRED_PG_TABLES: Final = (
 def _asyncpg_dsn(database_url: str) -> str:
     """asyncpg speaks libpq DSNs, not SQLAlchemy's `+driver` spelling.
 
-    Either driver suffix is stripped, not only `+asyncpg`: the pool this DSN
-    opens is asyncpg's regardless of which spelling named the database, and a
-    `+psycopg` URL reaching asyncpg unchanged fails on the scheme rather than
-    on anything about the connection.
+    Delegates to `config.database.to_asyncpg_dsn` rather than restating the
+    rewrite: `to_sync_url` and this are the same question asked of two drivers,
+    and two copies of the scheme table drift (#187).
     """
-    for suffix in ("postgresql+asyncpg://", "postgresql+psycopg://"):
-        if database_url.startswith(suffix):
-            return "postgresql://" + database_url[len(suffix) :]
-    return database_url
+    from maistro.config.database import to_asyncpg_dsn
+
+    return to_asyncpg_dsn(database_url)
 
 
 async def _require_supported_postgres(conn: Any) -> None:
