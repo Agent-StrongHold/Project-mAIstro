@@ -303,7 +303,10 @@ export default function Missions() {
         message?: string;
         queued_tasks?: { task_id: string }[];
         interview?: { complete?: boolean };
-      }>("/v1/program/guidance", { text, task_id: active.id });
+      }>(
+        `/v1/program/guidance?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+        { text, task_id: active.id },
+      );
       const n = res.queued_tasks?.length ?? 0;
       const agentText =
         res.message ??

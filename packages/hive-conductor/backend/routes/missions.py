@@ -264,19 +264,25 @@ async def post_mission_guidance(
     mission_id: str,
     body: MissionGuidanceBody,
     request: Request,
+    workspace_id: str | None = None,
 ) -> dict[str, object]:
-    """Human guidance on a mission — feeds the meta hyperagent."""
+    """Human guidance on a mission — feeds the meta hyperagent.
+
+    Takes a `workspace_id` for the same reason `POST /program/guidance` does
+    (#129): the guidance may queue fleet work, and the agents it names resolve
+    against a workspace's own roster rather than a global one.
+    """
     from services.program_hyperagent import (
         apply_guidance_and_pulse,
-        require_pm_poc,
+        require_program_access,
         user_id_from_request,
     )
 
-    require_pm_poc()
+    uid = user_id_from_request(request)
+    require_program_access(uid, workspace_id)
     if not body.text.strip():
         raise HTTPException(status_code=422, detail="Guidance text required")
 
-    uid = user_id_from_request(request)
     log_audit("mission_guidance", uid, target=mission_id, detail={"chars": len(body.text)})
-    result = await apply_guidance_and_pulse(uid, body.text.strip())
+    result = await apply_guidance_and_pulse(uid, body.text.strip(), workspace_id=workspace_id)
     return {"ok": True, "mission_id": mission_id, **result}

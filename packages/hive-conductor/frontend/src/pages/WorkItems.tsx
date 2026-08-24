@@ -4,11 +4,13 @@ import { WorkItemDraftModal, type WorkItemDraft } from "../components/WorkItemDr
 import { apiGet } from "../lib/api";
 import { labelForWorkType, type WorkItemType } from "../lib/pmCapabilities";
 import { LoadingSpinner, PageHeader, useToast } from "../components/shared";
+import { useWorkspaces } from "../context/WorkspaceContext";
 
 type DraftRow = WorkItemDraft;
 
 export default function WorkItems() {
   const toast = useToast();
+  const { activeWorkspaceId } = useWorkspaces();
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -17,14 +19,18 @@ export default function WorkItems() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiGet<{ drafts: DraftRow[] }>("/v1/work-items");
+      // Work items are drafted within a workspace (#129), so a request naming
+      // none is refused. The active workspace has to travel with it.
+      const res = await apiGet<{ drafts: DraftRow[] }>(
+        `/v1/work-items?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+      );
       setDrafts(res.drafts ?? []);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Failed to load drafts", "error");
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, activeWorkspaceId]);
 
   useEffect(() => {
     void load();
