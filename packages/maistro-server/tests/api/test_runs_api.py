@@ -74,15 +74,49 @@ async def test_an_unknown_run_is_404(wired, client: TestClient) -> None:
     assert client.get("/runs/no-such-run").status_code == 404
 
 
-async def test_node_runs_are_empty_and_say_so(wired, client: TestClient) -> None:
-    """Honest about the gap: physical execution still runs around the graph
-    rather than through it (#42), so there are no NodeRuns yet."""
+async def test_node_runs_are_empty_until_the_task_executes(wired, client: TestClient) -> None:
+    """Empty because nothing has run yet, not because nothing ever will."""
     created = _submit(client)
 
     response = client.get(f"/runs/{created['run_id']}/node-runs")
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+async def test_an_executed_task_shows_its_real_node_run(wired, client: TestClient) -> None:
+    """The endpoint #130 added now has something behind it (#143).
+
+    Execution is driven here rather than by the server's own runner: the
+    fixture wires the spine without starting a worker pool, and the point being
+    checked is that the route reads back what the Attempt seam wrote.
+    """
+    from maistro.agents.types import CodeOutput, ConductorOutput
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.models import TaskCreate
+
+    created = _submit(client)
+
+    async def _executor(_request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(
+            success=True,
+            final_answer="done",
+            code=CodeOutput(description="generated", files_changed=["hello.py"]),
+        )
+
+    await TaskAttemptExecutor(wired).execute(
+        created["run_id"],
+        TaskCreate(description="Add a hello endpoint", workspace=WORKSPACE),
+        _executor,
+    )
+
+    body = client.get(f"/runs/{created['run_id']}/node-runs").json()
+    assert len(body) == 1
+    run = await wired.get_run(created["run_id"])
+    assert run is not None
+    assert body[0]["node_id"] == run.graph.materialize().nodes[0].node_id
+    assert body[0]["status"] == "completed"
+    assert body[0]["finished_at"] is not None
 
 
 async def test_node_runs_for_an_unknown_run_are_404(wired, client: TestClient) -> None:

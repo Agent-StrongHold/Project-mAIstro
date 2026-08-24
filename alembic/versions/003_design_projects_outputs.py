@@ -140,3 +140,14 @@ def downgrade() -> None:
     # Drop tables
     op.drop_table("design_outputs")
     op.drop_table("design_projects")
+
+    # And the scope anchors this migration created. `downgrade base` used to
+    # leave `orgs` and `teams` standing, so a full round trip did not return to
+    # base — the next `upgrade` then landed on a shape nobody had tested, and
+    # 003's own `CREATE TABLE IF NOT EXISTS` was what hid it.
+    #
+    # DROP before CREATE ordering matters in reverse: `teams.org_id` references
+    # `orgs.id`, so teams goes first. IF EXISTS because anyone who created these
+    # by hand to get past the original failure may have dropped them since.
+    op.execute("DROP TABLE IF EXISTS teams")
+    op.execute("DROP TABLE IF EXISTS orgs")
