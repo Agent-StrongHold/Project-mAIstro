@@ -11,21 +11,6 @@ import stores
 
 
 @pytest.fixture(autouse=True)
-def _pm_poc_mode_on(monkeypatch: pytest.MonkeyPatch):
-    """The whole /v1/program surface 404s outside PM POC mode
-    (require_pm_poc). Patch the legacy global flag at both places it's
-    actually read from: services.program_hyperagent (guidance/pulse's bare
-    require_pm_poc() calls) and services.workspace_mode (where
-    is_workspace_request_authorized's own module-level import resolves it,
-    used as the fallback for no/unresolvable/non-member workspace_id)."""
-    import services.program_hyperagent as ph
-    import services.workspace_mode as wm
-
-    monkeypatch.setattr(ph, "is_pm_poc_mode", lambda: True)
-    monkeypatch.setattr(wm, "is_pm_poc_mode", lambda: True)
-
-
-@pytest.fixture(autouse=True)
 def _clear_state():
     for key in list(stores.workspaces.keys()):
         stores.workspaces.pop(key, None)
@@ -47,12 +32,15 @@ def _create_workspace(admin_client, persona_template_id: str) -> str:
     return r.json()["id"]
 
 
-def test_omitted_workspace_id_uses_the_default_pm_fleet_scope(admin_client) -> None:
+def test_omitted_workspace_id_is_refused(admin_client) -> None:
+    """The default scope used to answer here, gated on the global POC flag.
+
+    That meant the deployment's `HIVE_POC_MODE` decided whether a caller could
+    read a program context at all, and the one they got belonged to no
+    workspace. Since #129 the program hyperagent runs within a workspace and
+    a request that names none is refused."""
     r = admin_client.get("/v1/program/context")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["context"]["project_id"] == "default"
-    assert body["interview"]["total_steps"] == 5  # pm_fleet's script length
+    assert r.status_code == 404
 
 
 def test_workspace_scoped_interview_uses_the_personas_own_script(admin_client) -> None:
@@ -73,23 +61,19 @@ def test_pm_fleet_workspace_gets_the_pm_fleet_script(admin_client) -> None:
     assert r.json()["interview"]["total_steps"] == 5
 
 
-def test_unknown_workspace_id_falls_back_to_default_scope(admin_client) -> None:
+def test_unknown_workspace_id_is_refused(admin_client) -> None:
     r = admin_client.get("/v1/program/context?workspace_id=does-not-exist")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["context"]["project_id"] == "default"
-    assert body["interview"]["total_steps"] == 5
+    assert r.status_code == 404
 
 
-def test_workspace_id_for_a_workspace_the_caller_is_not_a_member_of_falls_back(
+def test_workspace_id_for_a_workspace_the_caller_is_not_a_member_of_is_refused(
     admin_client, authed_client
 ) -> None:
+    """Indistinguishable from an unknown workspace, so a caller cannot probe
+    which workspace ids are real."""
     ws_id = _create_workspace(admin_client, "content_creator")
     r = authed_client.get(f"/v1/program/context?workspace_id={ws_id}")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["context"]["project_id"] == "default"
-    assert body["interview"]["total_steps"] == 5
+    assert r.status_code == 404
 
 
 def test_two_workspaces_track_independent_interview_progress(admin_client) -> None:
@@ -116,9 +100,9 @@ def test_two_workspaces_track_independent_interview_progress(admin_client) -> No
     r = admin_client.get(f"/v1/program/context?workspace_id={ws_a}")
     assert r.json()["context"]["interview_step"] == 1
 
-    # The global "default" scope (no workspace_id) is untouched by either.
-    r = admin_client.get("/v1/program/context")
-    assert r.json()["context"]["interview_step"] == 0
+    # And there is no third, global scope for either to leak into: a request
+    # naming no workspace is refused rather than answered from "default" (#129).
+    assert admin_client.get("/v1/program/context").status_code == 404
 
 
 def test_answer_uses_the_workspaces_persona_specific_field_mapping(admin_client) -> None:

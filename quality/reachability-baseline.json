@@ -127,6 +127,7 @@
     "maistro.sandbox.policy",
     "maistro.sandbox.protocol",
     "maistro.sandbox.selector",
+    "maistro.scheduling.admission",
     "maistro.security.auth_composite",
     "maistro.security.auth_cookie",
     "maistro.security.auth_demo_cookie",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -15,8 +16,10 @@ from maistro.agents.hyperagent import (
 from maistro.agents.pm_capabilities import is_autonomous
 from maistro.agents.program_context import apply_guidance
 from services import program_store as prog
+from services.agent_invocation import resolve_agent_task
 from services.engine import get_engine
-from services.pm_fleet import invoke_pm_agent, is_pm_poc_mode
+
+logger = logging.getLogger("hive.services.program_hyperagent")
 
 
 def _use_secret(store: object, user_id: str, provider_id: str) -> str | None:
@@ -48,25 +51,45 @@ def user_id_from_request(request: Request) -> str:
     return str(uid)
 
 
-def require_pm_poc(*, user_id: str | None = None, workspace_id: str | None = None) -> None:
-    """Gate the program hyperagent surface (the onboarding interview,
-    already generalized to any persona via `program_context.py`'s
-    per-use_case `INTERVIEW_TEMPLATES`). Passing `user_id` resolves
-    (membership-checked, any persona) against that specific workspace
-    instead of the legacy global flag -- omitted (every pre-Phase-H caller)
-    keeps the exact old behavior."""
-    if user_id is not None:
-        from services.workspace_mode import is_workspace_request_authorized
+#: The program store's project id for a caller in no workspace.
+#:
+#: Not reachable from a request any more (#129 refuses those), but
+#: `program_store` still defaults to it and pre-existing rows carry it.
+GLOBAL_PROJECT_ID = "default"
 
-        ok = is_workspace_request_authorized(user_id, workspace_id)
-    else:
-        ok = is_pm_poc_mode()
-    if not ok:
+
+def _scope(workspace_id: str | None) -> str:
+    """Which program context a workspace-scoped call reads and writes.
+
+    A workspace's guidance, interview progress and proposed actions belong to
+    that workspace. Reading `default` while the caller named `ws-a` writes
+    their guidance somewhere they will never see it again, and reports a
+    completed `ws-a` interview as incomplete.
+    """
+    return workspace_id or GLOBAL_PROJECT_ID
+
+
+def require_program_access(user_id: str, workspace_id: str | None = None) -> None:
+    """Gate the program hyperagent surface on workspace membership (#129).
+
+    The interview itself was generalized to any persona long ago, through
+    `program_context.py`'s per-use_case `INTERVIEW_TEMPLATES`; the gate in front
+    of it was the last thing here that still asked an environment variable.
+    `user_id` is required rather than optional now: the optional form existed
+    only so a caller that had not been re-pointed yet could fall through to
+    `is_pm_poc_mode()`, and there is no such caller left.
+
+    Renamed from `require_pm_poc` because the name was the claim -- nothing
+    about this surface is PM-specific, and any persona's workspace reaches it.
+    """
+    from services.workspace_mode import is_workspace_request_authorized
+
+    if not is_workspace_request_authorized(user_id, workspace_id):
         raise HTTPException(
             status_code=404,
             detail=(
-                "Program hyperagent only available in PM POC mode. "
-                "Set HIVE_POC_MODE=pm and MAISTRO_POC_MODE=pm, then restart Hive."
+                "The program hyperagent runs within a workspace. "
+                "Name a workspace you are a member of."
             ),
         )
 
@@ -75,17 +98,26 @@ async def apply_guidance_and_pulse(
     user_id: str,
     text: str,
     *,
+    workspace_id: str | None = None,
     max_pulse_actions: int = 2,
 ) -> dict[str, Any]:
-    """Record guidance and optionally queue autonomous fleet work."""
-    ctx = apply_guidance(prog.get_context(user_id), text)
+    """Record guidance and optionally queue autonomous fleet work.
+
+    `workspace_id` names the roster the queued work resolves against (#129).
+    The pulse proposes bare agent names (`delivery`), and those only mean
+    something within a workspace whose persona materialized them.
+    """
+    project_id = _scope(workspace_id)
+    ctx = apply_guidance(prog.get_context(user_id, project_id), text)
     ctx = prog.save_context(ctx)
 
     queued: list[dict[str, str]] = []
     pulse_error: str | None = None
     if ctx.interview_complete and max_pulse_actions > 0:
         try:
-            pulse_result = await run_program_pulse(user_id, max_actions=max_pulse_actions)
+            pulse_result = await run_program_pulse(
+                user_id, workspace_id=workspace_id, max_actions=max_pulse_actions
+            )
             queued = pulse_result.get("queued", [])
         except Exception:
             pulse_error = "Fleet pulse skipped (engine unavailable)"
@@ -109,11 +141,14 @@ async def apply_guidance_and_pulse(
     return out
 
 
-async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, Any]:
-    """Autonomous-only fleet tick."""
+async def run_program_pulse(
+    user_id: str, *, workspace_id: str | None = None, max_actions: int = 4
+) -> dict[str, Any]:
+    """Autonomous-only fleet tick, against `workspace_id`'s own roster."""
     from datetime import UTC, datetime
 
-    ctx = prog.get_context(user_id)
+    project_id = _scope(workspace_id)
+    ctx = prog.get_context(user_id, project_id)
     if not ctx.interview_complete:
         return {
             "queued": [],
@@ -125,6 +160,8 @@ async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, 
     suggestions = propose_work_item_suggestions(ctx, user_id)
     engine = get_engine()
     queued: list[dict[str, str]] = []
+    unavailable: list[str] = []
+    failed: list[str] = []
 
     if engine._backend is None:
         return {
@@ -139,14 +176,15 @@ async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, 
         if not is_autonomous(action.capability):
             continue
         try:
-            task_type, description, agent_id = invoke_pm_agent(
+            task_type, description, agent_id = resolve_agent_task(
                 action.agent_id,
                 action.capability,
                 {
                     **action.payload,
                     "hyperagent_reason": action.reason,
-                    "program": prog.context_dict(user_id),
+                    "program": prog.context_dict(user_id, project_id),
                 },
+                workspace_id=workspace_id,
             )
             from maistro.agents.program_context import context_for_task
 
@@ -159,6 +197,11 @@ async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, 
                 agent_id,
                 description,
                 user_id=user_id,
+                # The Run is filed in the workspace the pulse was requested for.
+                # `submit_task` reads an omitted workspace as the deployment's
+                # default, so autonomous work asked for in `ws-a` was admitted
+                # into another Project while carrying a `ws-a` agent.
+                workspace_id=workspace_id,
                 task_type=task_type,
                 agent_id=agent_id,
                 capability=action.capability,
@@ -172,21 +215,50 @@ async def run_program_pulse(user_id: str, *, max_actions: int = 4) -> dict[str, 
                     "reason": action.reason,
                 }
             )
-        except Exception as _exc:
-            __import__("logging").getLogger("hive.services.program_hyperagent").warning(
-                "error_swallowed file=%s line=%d: %s",
-                "packages/hive-conductor/backend/services/program_hyperagent.py",
-                137,
-                _exc,
+        except ValueError as exc:
+            # This workspace's persona has no such agent.
+            # `propose_autonomous_actions` names PM Fleet's roster
+            # (`program_manager`, `risk_dependency`, `reporting`, ...), so a
+            # workspace running any other persona produces one of these per
+            # action. Collected rather than swallowed: silently returning an
+            # empty `queued` beside a full `proposed` list reads as "the pulse
+            # ran and found nothing to do", when in fact nothing it proposed
+            # could ever run here.
+            logger.warning(
+                "pulse action %s/%s not available in workspace %s: %s",
+                action.agent_id,
+                action.capability,
+                workspace_id or "-",
+                exc,
             )
-            continue
+            unavailable.append(action.agent_id)
+        except Exception as exc:
+            logger.warning(
+                "pulse action %s/%s failed to queue: %s",
+                action.agent_id,
+                action.capability,
+                exc,
+            )
+            failed.append(action.agent_id)
 
     now = datetime.now(UTC).isoformat()
     prog.save_context(ctx.model_copy(update={"last_pulse_at": now, "updated_at": now}))
 
-    return {
+    result: dict[str, Any] = {
         "queued": queued,
         "proposed": [a.as_dict() for a in actions],
         "work_item_suggestions": [s.as_dict() for s in suggestions],
         "context": ctx.model_dump(mode="json"),
     }
+    if unavailable and not queued:
+        # Said once, plainly, rather than inferred from an empty list. Deriving
+        # the actions from the workspace's own roster is the real fix and is
+        # `propose_autonomous_actions`' to make (#221); until then a caller is
+        # at least told why their pulse queued nothing.
+        result["note"] = (
+            "This workspace's persona has none of the agents the pulse proposes "
+            f"({', '.join(sorted(set(unavailable)))}). No autonomous work was queued."
+        )
+    if failed:
+        result["failed"] = sorted(set(failed))
+    return result
