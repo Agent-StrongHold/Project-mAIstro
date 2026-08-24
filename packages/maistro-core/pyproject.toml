@@ -44,23 +44,21 @@ sandbox = []
 re2 = [
     "google-re2>=1.1",
 ]
-# The Archive tier (ADR-082226-d3dd) — cold records below durable memory, on any
+# The Archive tier (ADR-082226-f436) — cold records below durable memory, on any
 # S3-compatible store. Optional because the homelab deployment uses
 # `FilesystemArchiveStore`, which needs nothing, and because a deployment that
-# does not archive must not pay for a cloud SDK in its base install. The module
-# is imported lazily via `maistro.memory.archive.s3_archive_store`, so
-# `maistro-core` imports cleanly without this — proven by
-# tests/memory/archive/test_optional_dependency.py, not assumed.
+# does not archive must not pay for a cloud SDK in its base install. boto3 is
+# imported inside `S3ArchiveStore.__init__`, so `maistro-core` imports cleanly
+# without this — proven by tests/archive/test_optional_dependency.py, which
+# hides it from the import system, not assumed.
 #
 # S3-compatible, not AWS: `endpoint_url` is configurable, so MinIO, Cloudflare
 # R2 and Backblaze B2 work. CI exercises it against a real MinIO.
 s3 = [
-    # Two archive implementations landed in parallel and both are on this tree:
-    # `maistro/memory/archive/s3.py` (ADR-082226-d3dd) uses aioboto3, and
-    # `maistro/archive/s3.py` (ADR-082226-f436) deliberately uses synchronous
-    # boto3 in a worker thread. Until one is retired, the extra has to satisfy
-    # both or `--extra s3` breaks whichever it omits.
-    "aioboto3>=13.0",
+    # Synchronous boto3 in a worker thread, deliberately, rather than aioboto3:
+    # a second and less-used SDK is a poor trade for an operation whose defining
+    # property is that it happens rarely. aioboto3 was here only for the second
+    # archive implementation (ADR-082226-d3dd), which has been retired.
     "boto3>=1.34,<2",
 ]
 # Vendor-neutral tracing export. The agent tracing decorators use the OpenTelemetry
@@ -108,14 +106,13 @@ asgi = [
 ]
 # The widest extra set, and what `wheel-imports` installs before importing every
 # module in the wheel. `s3` belongs here even though the Archive tier is opt-in:
-# `maistro/memory/archive/s3.py` imports aioboto3 at module level (correctly —
-# it is a module behind an extra, not one with a fallback), so leaving it out
-# makes that sweep fail on a module that is working as designed.
+# the sweep constructs nothing, but keeping the SDK present means a failure in
+# that job is about the module rather than about a missing optional dependency.
 #
 # This does not weaken the base-install guarantee. `all` is the widest set, not
 # the default one; `maistro-core` with no extras still has no cloud SDK, which
-# tests/memory/archive/test_optional_dependency.py proves by hiding aioboto3
-# from the import system.
+# tests/archive/test_optional_dependency.py proves by hiding boto3 from the
+# import system.
 #
 # `re2` stays out for a different reason: it is a native extension whose absence
 # is a supported configuration (Warden falls back to `re`), so importing without

@@ -3,7 +3,7 @@ id: ADR-082226-f436
 title: "Object storage is an archive tier below durable memory, not a backup"
 repo: maistro-engine
 kind: adr
-status: Superseded
+status: Proposed
 created: 2026-08-22
 substrate:
   - maistro-engine#ADR-082226-5104
@@ -11,8 +11,7 @@ implements: []
 related:
   - maistro-engine#ADR-019
   - maistro-engine#ADR-087
-supersedes: []
-superseded-by:
+supersedes:
   - maistro-engine#ADR-082226-d3dd
 blocks: []
 blocked-by: []
@@ -24,25 +23,29 @@ owners:
   - '@BlakeMatthews-dev'
 ---
 
-> **Superseded by ADR-082226-d3dd.**
+> **Supersedes ADR-082226-d3dd.**
 >
 > Both records decided the same thing — an archive tier below durable memory,
 > on any S3-compatible or local object store, not a backup — and both were
-> implemented. `maistro.memory.archive` implemented this one, keyed by an
-> opaque string; `maistro.archive` implemented d3dd, content-addressed by
-> `<scope>/<sha256>`.
+> implemented. `maistro.archive` implemented this one; `maistro.memory.archive`
+> implemented d3dd.
 >
 > The code chose before the records did: `container.py` wires
 > `maistro.archive.wiring.build_archive_store`, and nothing ever imported
 > `maistro.memory.archive`. It sat in the reachability baseline from the day it
-> was written. Content addressing is also the better of the two answers here —
-> a digest in the key means a read can verify what it got, which is what makes
-> an archived record still authoritative rather than merely stored.
+> was written.
 >
-> `list_keys`, the one capability this design had and d3dd's did not, moved
-> across as `list_scope` before the implementation was deleted. Scope-at-a-time
-> rather than a free prefix, because half of a content-addressed key is a hash
-> and a prefix inside it selects an arbitrary bucket.
+> The designs differ in one substantive place, and it is decision 5. This record
+> keys an object by a content hash under a scope prefix; d3dd keys it
+> `{kind}/{id}` and keeps the digest on the stub row instead. Putting the digest
+> *in* the key is the better of the two, because it makes a read self-verifying
+> without a second lookup — which is what keeps an archived record authoritative
+> rather than merely stored.
+>
+> `list_keys`, the one capability d3dd's implementation had and this one's did
+> not, moved across as `list_scope` before that implementation was deleted.
+> Scope at a time rather than a free prefix, because half of a content-addressed
+> key is a hash and a prefix reaching into it selects an arbitrary bucket.
 
 # ADR-082226-f436: Object storage is an archive tier below durable memory, not a backup
 

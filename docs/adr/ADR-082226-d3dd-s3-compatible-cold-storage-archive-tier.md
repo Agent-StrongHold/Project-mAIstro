@@ -3,13 +3,15 @@ id: ADR-082226-d3dd
 title: "An Archive tier below durable memory, on any S3-compatible or local object store"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Superseded
 created: 2026-08-22
 substrate:
   - maistro-engine#ADR-082226-5104
 implements: []
 related: []
 supersedes: []
+superseded-by:
+  - maistro-engine#ADR-082226-f436
 blocks: []
 blocked-by: []
 contracts:
@@ -19,6 +21,24 @@ layer: Memory
 owners:
   - '@BlakeMatthews-dev'
 ---
+
+> **Superseded by ADR-082226-f436**, which decided the same thing on the same
+> day and is the one the code implements.
+>
+> `maistro.memory.archive` implemented this record and was never imported by
+> anything — `container.py` wires `maistro.archive.wiring.build_archive_store`,
+> and this tier sat in the reachability baseline from the day it was written. It
+> has now been deleted.
+>
+> The one substantive difference is decision 4 here against f436's decision 5.
+> This record keys an object `{kind}/{id}` and keeps the payload's SHA-256 on
+> the stub row; f436 puts the digest *in* the key, under a scope prefix. f436's
+> shape wins because it makes a read self-verifying without consulting the row
+> that pointed at it.
+>
+> Decision 3's `list_keys` was the one capability this design had that f436's
+> implementation lacked. It was ported as `list_scope` before the code here was
+> removed, so nothing was lost with the deletion.
 
 # ADR-082226-d3dd: An Archive tier below durable memory
 
