@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 499,
+    "criteria_declared": 502,
     "criteria_annotated": 214,
-    "markers_found": 211,
+    "markers_found": 214,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 6.8501
+    "design_coverage": 7.7634
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,8 +1081,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 6.8501,
-    "decisions": 101,
+    "percent": 7.7634,
+    "decisions": 102,
     "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1680,6 +1680,13 @@
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
+      },
+      {
+        "id": "ADR-082426-19ed",
+        "declared_status": "Accepted",
+        "criteria": 3,
+        "reachable": 3,
+        "percent": 100.0
       },
       {
         "id": "ADR-082426-6201",
@@ -12801,6 +12808,47 @@
       "gherkin_parse_errors": [],
       "declared_unproven": [],
       "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082426-19ed",
+      "file": "docs/adr/ADR-082426-19ed-a-run-cannot-claim-success-over-a-failed-node.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 3,
+      "own_detail": [
+        {
+          "id": "ADR-082426-19ed/AC-1",
+          "claimed": true,
+          "module": "maistro.runs.lifecycle",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082426-19ed/AC-2",
+          "claimed": true,
+          "module": "maistro.runs.lifecycle",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082426-19ed/AC-3",
+          "claimed": true,
+          "module": "maistro.runs.lifecycle",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_spine_conformance.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
     },
     {
       "id": "ADR-082426-2192",

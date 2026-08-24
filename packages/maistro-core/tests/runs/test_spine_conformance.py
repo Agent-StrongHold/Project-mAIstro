@@ -23,6 +23,7 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
+from maistro.runs.lifecycle import UnearnedRunCompletion
 from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
@@ -1365,21 +1366,6 @@ async def test_forged_evidence_is_still_refused_first(spine: Any) -> None:
     await _assert_forged_evidence_refused_first(spine)
 
 
-@pytest.fixture
-async def memory_spine() -> Any:
-    """The same shape `spine` yields, pinned to the store with no environment
-    gate — so a criterion marked on it is measurable wherever the suite runs."""
-    from maistro.projects.scope_store import InMemoryProjectScopeStore
-    from maistro.runs.store import InMemoryRunStore
-
-    projects = InMemoryProjectScopeStore()
-    root = await projects.create_root("workspace-fence")
-    project = await projects.create(
-        workspace_id="workspace-fence", parent_project_id=root.project_id, name="Fence"
-    )
-    return InMemoryRunStore(project_store=projects), "workspace-fence", project.project_id
-
-
 @pytest.mark.ac("ADR-082426-e3ff/AC-1")
 async def test_superseded_attempt_refused_in_memory(memory_spine: Any) -> None:
     await _assert_superseded_attempt_cannot_commit(memory_spine)
@@ -1398,3 +1384,133 @@ async def test_newest_is_by_ordinal_in_memory(memory_spine: Any) -> None:
 @pytest.mark.ac("ADR-082426-e3ff/AC-4")
 async def test_forged_evidence_refused_first_in_memory(memory_spine: Any) -> None:
     await _assert_forged_evidence_refused_first(memory_spine)
+
+
+# `memory_spine` lives in conftest.py beside `spine`, not here: two suites now
+# want it, and a fixture defined in one test file is invisible to the other.
+# ── a Run cannot claim success over a node that failed (#241) ──────────
+#
+# The same two-test split the fence uses above, for the same reason: the
+# parameterized test carries the all-three-stores claim in CI's postgres legs,
+# and the in-memory one carries the acceptance criterion in jobs that configure
+# no database. The assertions live once, in these helpers.
+
+
+async def _two_node_running_run(spine: Any) -> Any:
+    """A RUNNING Run over a two-node Graph, both NodeRuns RUNNING."""
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    nodes = []
+    for node_id in ("node-1", "node-2"):
+        node_run = await store.create_node_run(run.run_id, node_id=node_id)
+        await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        nodes.append(node_run)
+    return run, nodes
+
+
+async def _assert_completion_over_a_failed_node_refused(spine: Any) -> None:
+    """#241's reproduction, which needs no race: one node fails, the other
+    completes, and the domain asserts COMPLETED from its own receipt."""
+    store, _workspace, _project_id = spine
+    run, (failed, done) = await _two_node_running_run(spine)
+    await store.transition_node_run(failed.node_run_id, RunStatus.FAILED, error="boom")
+    await store.transition_node_run(done.node_run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(UnearnedRunCompletion) as caught:
+        await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    assert caught.value.node_id == "node-1"
+    assert caught.value.status is RunStatus.FAILED
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.status is RunStatus.RUNNING, "the refused transition must not have landed"
+    assert reloaded.result is None
+
+
+async def _assert_failure_over_a_failed_node_allowed(spine: Any) -> None:
+    """The asymmetry. Only success has to be earned — the domain must still be
+    able to report the failure it actually saw."""
+    store, _workspace, _project_id = spine
+    run, (failed, done) = await _two_node_running_run(spine)
+    await store.transition_node_run(failed.node_run_id, RunStatus.FAILED, error="boom")
+    await store.transition_node_run(done.node_run_id, RunStatus.COMPLETED)
+
+    settled = await store.transition_run(run.run_id, RunStatus.FAILED, error="node-1 failed")
+
+    assert settled.status is RunStatus.FAILED
+    assert settled.error == "node-1 failed"
+
+
+async def _assert_cancellation_over_completed_nodes_allowed(spine: Any) -> None:
+    """A caller cancelled the work (#230/#233). Every node that ran succeeded,
+    and the Run is still CANCELLED — that outcome came from outside any node,
+    and deriving the Run's status from the fold would erase it."""
+    store, _workspace, _project_id = spine
+    run, (first, second) = await _two_node_running_run(spine)
+    for node_run in (first, second):
+        await store.transition_node_run(node_run.node_run_id, RunStatus.COMPLETED)
+
+    settled = await store.transition_run(run.run_id, RunStatus.CANCELLED, error="user asked")
+
+    assert settled.status is RunStatus.CANCELLED
+
+
+async def _assert_a_retried_node_does_not_condemn_its_run(spine: Any) -> None:
+    """The case a naive "any FAILED NodeRun" rule would break, and it is not
+    rare — it is every retry-after-failure path. A re-execution is a *new*
+    NodeRun for the same node, so the node holds a failed one and a completed
+    one, and only the newest states its outcome."""
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    first = await store.create_node_run(run.run_id, node_id="node-1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.FAILED):
+        await store.transition_node_run(first.node_run_id, status)
+    second = await store.create_node_run(run.run_id, node_id="node-1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED):
+        await store.transition_node_run(second.node_run_id, status)
+
+    assert second.ordinal > first.ordinal
+    settled = await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    assert settled.status is RunStatus.COMPLETED
+
+
+async def test_completion_over_a_failed_node_is_refused(spine: Any) -> None:
+    await _assert_completion_over_a_failed_node_refused(spine)
+
+
+async def test_failure_over_a_failed_node_is_allowed(spine: Any) -> None:
+    await _assert_failure_over_a_failed_node_allowed(spine)
+
+
+async def test_cancellation_over_completed_nodes_is_allowed(spine: Any) -> None:
+    await _assert_cancellation_over_completed_nodes_allowed(spine)
+
+
+async def test_a_retried_node_does_not_condemn_its_run(spine: Any) -> None:
+    await _assert_a_retried_node_does_not_condemn_its_run(spine)
+
+
+@pytest.mark.ac("ADR-082426-19ed/AC-1")
+async def test_completion_over_a_failed_node_refused_in_memory(memory_spine: Any) -> None:
+    await _assert_completion_over_a_failed_node_refused(memory_spine)
+
+
+@pytest.mark.ac("ADR-082426-19ed/AC-2")
+async def test_failure_over_a_failed_node_allowed_in_memory(memory_spine: Any) -> None:
+    await _assert_failure_over_a_failed_node_allowed(memory_spine)
+
+
+@pytest.mark.ac("ADR-082426-19ed/AC-2")
+async def test_cancellation_over_completed_nodes_allowed_in_memory(memory_spine: Any) -> None:
+    await _assert_cancellation_over_completed_nodes_allowed(memory_spine)
+
+
+@pytest.mark.ac("ADR-082426-19ed/AC-3")
+async def test_a_retried_node_does_not_condemn_its_run_in_memory(memory_spine: Any) -> None:
+    await _assert_a_retried_node_does_not_condemn_its_run(memory_spine)

@@ -57,3 +57,23 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         yield store, WORKSPACE, project.project_id
     finally:
         await conn.close()
+
+
+@pytest.fixture
+async def memory_spine() -> Any:
+    """The same shape `spine` yields, pinned to the store with no environment
+    gate.
+
+    Acceptance-criterion markers go here rather than on `spine`.
+    `scripts/ac_outcome_plugin.py` counts a skip as no evidence — "an
+    environment-gated test that never ran is not evidence the criterion holds"
+    — and `spine`'s postgres leg skips wherever `MAISTRO_TEST_PG_DSN` is unset,
+    which includes the Quality gate job. A criterion marked on `spine` is
+    therefore pinned at `covered` forever, however green CI is.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(WORKSPACE)
+    project = await projects.create(
+        workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Durable"
+    )
+    return InMemoryRunStore(project_store=projects), WORKSPACE, project.project_id
