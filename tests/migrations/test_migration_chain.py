@@ -50,11 +50,24 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        # The canonical execution spine (012) and the template registry it
+        # instantiates Runs from (014). Six tables and one, not seven of a
+        # kind: `canonical_projects` and its two child tables are the scope a
+        # Run is owned by, and they are listed here rather than left implicit
+        # because a Run whose Project vanished is the orphan the foreign keys
+        # exist to refuse.
+        "canonical_attempts",
+        "canonical_node_runs",
+        "canonical_project_memberships",
+        "canonical_project_resources",
+        "canonical_projects",
+        "canonical_runs",
         "child_profiles",
         "design_outputs",
         "design_projects",
         "episodic_memories",
         "event_log",
+        "graph_templates",
         "handler_invocations",
         "knowledge_nodes",
         "learnings",
