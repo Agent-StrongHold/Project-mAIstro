@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from maistro.agents.base import Agent
 from maistro.agents.strategies.delegate import DelegateStrategy
 from maistro.types.agent import AgentIdentity, AgentResponse
@@ -146,3 +148,86 @@ class TestDelegation:
         assert isinstance(result, AgentResponse)
         assert result.agent_name == "coordinator"
         assert result.content == ""
+
+
+class TestTheDelegationChainIsRecorded:
+    """Who was asked, not only who answered (#225, ADR-082426-6201).
+
+    An in-agent delegation is deliberately *not* a NodeRun — the delegate is
+    chosen by a strategy at runtime, from data the Graph never saw, and a
+    NodeRun projects a Node in the Graph. So the chain is recorded on the
+    answer instead, which is the whole of what the decision costs and the whole
+    of what pays for it.
+
+    Before this, `_delegate` returned the delegate's response wholesale and the
+    agent that was actually asked appeared nowhere — including on the Attempt,
+    which #223 taught to record the handling agent.
+    """
+
+    @pytest.mark.ac("ADR-082426-6201/AC-3")
+    async def test_the_delegator_is_named_on_the_answer(self) -> None:
+        registry: dict[str, Agent] = {}
+        registry["mason"] = _make_agent("mason", _RecordingStrategy("def add(): ..."))
+        coordinator = _make_agent(
+            "coordinator",
+            DelegateStrategy(routing_table={"code": "mason"}, default_agent="mason"),
+            agent_resolver=registry.get,
+        )
+
+        result = await coordinator.handle(
+            messages=[{"role": "user", "content": "write me a function"}],
+            auth=_Auth(),
+            classified_task_type="code",
+        )
+
+        assert result.agent_name == "mason"
+        assert result.delegation_chain == ("coordinator",)
+
+    @pytest.mark.ac("ADR-082426-6201/AC-3")
+    async def test_the_chain_is_outermost_first_however_deep_it_went(self) -> None:
+        """Each level prepends on the way back out, so a reader gets the order
+        the delegation happened in rather than the order it unwound."""
+        registry: dict[str, Agent] = {}
+        registry["mason"] = _make_agent("mason", _RecordingStrategy("done"))
+        registry["middle"] = _make_agent(
+            "middle",
+            DelegateStrategy(routing_table={"code": "mason"}, default_agent="mason"),
+            agent_resolver=registry.get,
+        )
+        outer = _make_agent(
+            "outer",
+            DelegateStrategy(routing_table={"code": "middle"}, default_agent="middle"),
+            agent_resolver=registry.get,
+        )
+
+        result = await outer.handle(
+            messages=[{"role": "user", "content": "go"}],
+            auth=_Auth(),
+            classified_task_type="code",
+        )
+
+        assert result.content == "done"
+        assert result.agent_name == "mason"
+        assert result.delegation_chain == ("outer", "middle")
+
+    @pytest.mark.ac("ADR-082426-6201/AC-3")
+    async def test_a_turn_that_delegates_to_nobody_carries_an_empty_chain(self) -> None:
+        """The overwhelming majority of turns. An empty tuple rather than a
+        one-element chain naming the agent that answered: the field records who
+        *delegated*, and reading it as a list of participants would make every
+        ordinary turn look like a delegation of depth one."""
+        registry: dict[str, Agent] = {}
+        coordinator = _make_agent(
+            "coordinator",
+            DelegateStrategy(routing_table={}, default_agent=""),
+            agent_resolver=registry.get,
+        )
+
+        result = await coordinator.handle(
+            messages=[{"role": "user", "content": "hello"}],
+            auth=_Auth(),
+            classified_task_type="chat",
+        )
+
+        assert result.agent_name == "coordinator"
+        assert result.delegation_chain == ()

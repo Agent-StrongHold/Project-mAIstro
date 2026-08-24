@@ -99,6 +99,16 @@ class AgentResponse:
     # a failed delegation reported success.
     failed: bool = False
     error: str = ""
+    #: The agents that delegated to reach this answer, outermost first (#225).
+    #:
+    #: `BaseAgent._delegate` returns the *delegate's* response wholesale, so
+    #: `agent_name` names whoever finally answered and the agent that was asked
+    #: disappears — including from the Attempt, which #223 taught to record the
+    #: handling agent. An in-agent delegation is deliberately not a NodeRun
+    #: (ADR-082426-6201), so this is where the chain lives instead.
+    #:
+    #: Empty for the overwhelming majority of turns, which delegate to nobody.
+    delegation_chain: tuple[str, ...] = ()
 
     @classmethod
     def blocked_response(cls, reason: str) -> AgentResponse:

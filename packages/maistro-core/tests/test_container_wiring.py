@@ -41,7 +41,6 @@ async def test_container_exposes_all_new_subsystems() -> None:
         "identity_store",
         "token_store",
         "secret_store",
-        "a2a_broker",
         "harness_registry",
         "hierarchy",
         "golden_record_store",
@@ -202,24 +201,28 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
         await container.verify_capability_token(token)
 
 
-# --- A2A broker (ADR-058) ------------------------------------------------------
+# --- A2A broker (ADR-058): retired from the Container (#225) -------------------
+#
+# `Container.a2a_broker` was constructed, stored and read by nothing but this
+# file. The refusal it used to assert here — an unknown calling agent, an
+# unknown delegation target — is `A2ABroker`'s own behaviour and keeps its test
+# in `tests/a2a/test_broker.py::test_unknown_caller_and_target_refused`, run
+# against the class directly. What is gone with the wiring is only the claim
+# that the Container offers it, which is the claim that was untrue
+# (ADR-082426-6201).
 
 
-async def test_a2a_broker_refuses_unknown_agents() -> None:
-    from datetime import UTC, datetime, timedelta
-
-    from maistro.a2a.broker import DelegationBudget, DelegationRefused
-
+@pytest.mark.ac("ADR-082426-6201/AC-4")
+async def test_the_container_offers_no_a2a_broker() -> None:
+    """Asserting an absence, deliberately. A retired surface that nothing
+    checks comes back the next time someone reaches for a broker and finds the
+    old wiring in git history — and it comes back the same way it left, as an
+    attribute constructed, stored and read by nobody. `A2ABroker` itself stays
+    exported from `maistro.a2a` for downstream products (ADR-019); what must
+    stay gone is the Container's claim to offer one."""
     container = await _container()
-    budget = DelegationBudget(
-        deadline=datetime.now(UTC) + timedelta(minutes=5),
-        token_budget=1000,
-        trace_id="trace-a2a",
-    )
-    with pytest.raises(DelegationRefused, match="unknown calling agent"):
-        await container.a2a_broker.delegate(
-            from_agent="ghost", to="ghost2", task="do a thing", budget=budget
-        )
+
+    assert not hasattr(container, "a2a_broker")
 
 
 # --- Hierarchy (ADR-101) --------------------------------------------------------

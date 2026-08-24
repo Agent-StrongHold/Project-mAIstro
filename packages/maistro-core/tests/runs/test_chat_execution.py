@@ -359,3 +359,120 @@ class TestConstruction:
         container_store = None
         with pytest.raises(ValueError, match="timeout_s must be > 0"):
             ChatAttemptExecutor(container_store, timeout_s=0)  # type: ignore[arg-type]
+
+
+class TestInAgentDelegationCreatesNoNodeRun:
+    """ADR-082426-6201's first decision, proven where it is actually visible.
+
+    The other delegation tests drive `Agent.handle` directly, so they can show
+    the chain is built but not that the spine stayed one node deep — an agent
+    on its own has no RunStore to leave a NodeRun in. This drives a *real*
+    delegating agent through the chat seam, which is the only place both facts
+    are observable at once.
+    """
+
+    @staticmethod
+    def _delegating_conduit() -> Any:
+        """A Conduit stand-in that really delegates, rather than describing it.
+
+        `_Conduit` returns a canned dict; that would prove nothing here,
+        because the claim is about what the agent layer does underneath.
+        """
+        from maistro.agents.base import Agent
+        from maistro.agents.strategies.delegate import DelegateStrategy
+        from maistro.conduit import DISPATCHED_AGENT_KEY
+        from maistro.types.agent import AgentIdentity, ReasoningResult
+
+        class _Warden:
+            async def scan(self, _text: str, _surface: str) -> Any:
+                return type("V", (), {"clean": True, "flags": ()})()
+
+        class _Context:
+            async def build(
+                self, messages: list[dict[str, Any]], _identity: Any, **_kw: Any
+            ) -> tuple[list[dict[str, Any]], list[int]]:
+                return messages, []
+
+        class _Prompts:
+            async def get(self, _name: str) -> str:
+                return ""
+
+        class _Leaf:
+            async def reason(
+                self, _messages: Any, _model: Any, _llm: Any, **_kw: Any
+            ) -> ReasoningResult:
+                return ReasoningResult(response="delegated answer", done=True)
+
+        def _agent(name: str, strategy: Any, resolver: Any = None) -> Agent:
+            return Agent(
+                identity=AgentIdentity(name=name, model="test-model"),
+                strategy=strategy,
+                llm=object(),
+                context_builder=_Context(),
+                prompt_manager=_Prompts(),
+                warden=_Warden(),
+                agent_resolver=resolver,
+            )
+
+        registry: dict[str, Agent] = {"mason": _agent("mason", _Leaf())}
+        coordinator = _agent(
+            "coordinator",
+            DelegateStrategy(routing_table={"code": "mason"}, default_agent="mason"),
+            registry.get,
+        )
+
+        class _DelegatingConduit:
+            def __init__(self) -> None:
+                self.answer: Any = None
+
+            async def route_request(
+                self, messages: list[dict[str, Any]], **_kw: Any
+            ) -> dict[str, Any]:
+                auth = type("A", (), {"user_id": "u1", "org_id": "", "team_id": ""})()
+                self.answer = await coordinator.handle(
+                    messages=messages, auth=auth, classified_task_type="code"
+                )
+                return {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": self.answer.content},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    DISPATCHED_AGENT_KEY: self.answer.agent_name,
+                }
+
+        return _DelegatingConduit()
+
+    @pytest.mark.ac("ADR-082426-6201/AC-1")
+    async def test_a_delegated_turn_still_leaves_exactly_one_node_run(self) -> None:
+        """The decision, stated as a count. A delegate is chosen by a strategy
+        at runtime from data the Graph never saw, so it is not a Node in the
+        Graph and gets no NodeRun — the Run's shape stays the Graph's shape
+        however many agents the turn passed through.
+        """
+        container = await _container()
+        conduit = self._delegating_conduit()
+        container.conduit = conduit
+
+        result = await container.route_request(MESSAGES)
+
+        assert conduit.answer.delegation_chain == ("coordinator",), (
+            "the turn must really have delegated, or this proves nothing"
+        )
+        node_run, attempts = await _spine(container, result["run_id"])
+        assert node_run.status is RunStatus.COMPLETED
+        assert len(attempts) == 1
+
+    @pytest.mark.ac("ADR-082426-6201/AC-2")
+    async def test_the_attempt_names_the_agent_that_answered(self) -> None:
+        """The delegate, not the delegator: the Attempt records what ran. Who
+        was *asked* is `delegation_chain`'s job (AC-3), which is the split the
+        decision makes — one record each, neither guessing at the other's."""
+        container = await _container()
+        container.conduit = self._delegating_conduit()
+
+        result = await container.route_request(MESSAGES)
+
+        _, attempts = await _spine(container, result["run_id"])
+        assert attempts[0].result[ATTEMPT_AGENT_KEY] == "mason"
