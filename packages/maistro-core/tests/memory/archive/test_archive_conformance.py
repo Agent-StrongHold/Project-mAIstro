@@ -7,10 +7,12 @@ S3 leg runs against a **real MinIO** — a mocked object store proves the call w
 made with the arguments the test already knew, which is not the property worth
 checking about storage.
 
-The S3 leg skips without `MAISTRO_TEST_S3_ENDPOINT`. `ci.yml`'s `archive` job
-sets it against a MinIO service; locally, point it at any S3-compatible server.
-Skipping keeps the suite runnable on a laptop, but a skip is not a pass — the
-CI job is what makes the S3 leg mean anything.
+The S3 leg skips without `MAISTRO_TEST_S3_ENDPOINT`. `quality.yml`'s
+`coverage-archive` job sets it against a MinIO service; locally, point it at any
+S3-compatible server. Skipping keeps the suite runnable on a laptop, but a skip
+is not a pass — the CI job is what makes the S3 leg mean anything, and it sets
+`MAISTRO_REQUIRE_S3_LEGS` so that a server it cannot reach fails the job instead
+of quietly reporting green over an unrun leg.
 """
 
 from __future__ import annotations
@@ -68,6 +70,15 @@ async def store(request, tmp_path):
     if request.param == "filesystem":
         return FilesystemArchiveStore(tmp_path / "archive")
     if not S3_ENDPOINT:
+        if os.environ.get("MAISTRO_REQUIRE_S3_LEGS"):
+            # Set by the CI job that provides MinIO. There, a missing endpoint
+            # means the service failed to start, and skipping would report the
+            # absence of the gap rather than its closure — the same reason this
+            # leg runs against a real server instead of a mock.
+            raise RuntimeError(
+                "MAISTRO_REQUIRE_S3_LEGS is set but MAISTRO_TEST_S3_ENDPOINT is empty: "
+                "the S3 leg cannot run and must not be silently skipped"
+            )
         pytest.skip("MAISTRO_TEST_S3_ENDPOINT is unset; the S3 leg needs a real server")
     s3 = _s3_store()
     await s3.ensure_bucket()
