@@ -8,7 +8,12 @@ from typing import Any, Protocol, runtime_checkable
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.runs.lifecycle import transition_attempt, transition_node_run, transition_run
+from maistro.runs.lifecycle import (
+    settle_open_node_run,
+    transition_attempt,
+    transition_node_run,
+    transition_run,
+)
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -453,10 +458,45 @@ class InMemoryRunStore:
         result: object | None = None,
         error: str | None = None,
     ) -> Run:
+        """Advance one Run, settling its open NodeRuns when it terminalizes.
+
+        The cascade is ADR-082426-a47f's: a Run that says the work is over
+        while a node under it still says `running` is a record nothing can
+        read correctly, and every domain that terminalizes a Run does so from
+        its own outcome without knowing what nodes exist.
+
+        Every write lands together. The Run's own transition is validated
+        first, so an illegal one settles nothing.
+        """
         run = self._require_run(run_id)
         updated = transition_run(run, target, at=at, result=result, error=error)
+        settled = (
+            [
+                settle_open_node_run(node_run, target, at=at)
+                for node_run in self._open_node_runs(run_id)
+            ]
+            if target in TERMINAL_RUN_STATUSES
+            else []
+        )
         self._runs[run_id] = updated
+        for node_run in settled:
+            self._node_runs[node_run.node_run_id] = node_run
         return updated.model_copy(deep=True)
+
+    def _open_node_runs(self, run_id: str) -> list[NodeRun]:
+        """Every NodeRun under this Run that has not reached a terminal status.
+
+        Ordered by ordinal so the three backends settle in one order, which is
+        what lets a conformance suite compare their results directly.
+        """
+        return sorted(
+            (
+                node_run
+                for node_run in self._node_runs.values()
+                if node_run.run_id == run_id and node_run.status not in TERMINAL_RUN_STATUSES
+            ),
+            key=lambda node_run: node_run.ordinal,
+        )
 
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
         """Forget one terminal Run and everything hanging off it.
@@ -521,6 +561,7 @@ class InMemoryRunStore:
         accepted_outcome: AcceptedNodeOutcome | None = None,
     ) -> NodeRun:
         node_run = self._require_node_run(node_run_id)
+        self._refuse_under_terminal_run(node_run)
         if accepted_outcome is not None:
             if accepted_outcome.node_run_id != node_run_id:
                 raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
@@ -536,6 +577,20 @@ class InMemoryRunStore:
         )
         self._node_runs[node_run_id] = updated
         return updated.model_copy(deep=True)
+
+    def _refuse_under_terminal_run(self, node_run: NodeRun) -> None:
+        """Refuse to move a NodeRun whose Run has already finished.
+
+        `create_node_run` has always refused under a terminal Run; without the
+        same rule here a reconciliation that lands late rewrites the history of
+        a closed Run, and can undo the very cascade that settled it.
+        """
+        run = self._runs.get(node_run.run_id)
+        if run is not None and run.status in TERMINAL_RUN_STATUSES:
+            raise RunIntegrityError(
+                f"cannot transition NodeRun {node_run.node_run_id!r}: "
+                f"Run {run.run_id!r} is terminal ({run.status.value})"
+            )
 
     async def create_attempt(
         self,

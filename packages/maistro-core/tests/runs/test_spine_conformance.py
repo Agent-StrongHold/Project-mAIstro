@@ -679,3 +679,174 @@ async def test_an_attempt_under_a_terminal_node_run_is_refused(spine: Any) -> No
 
     with pytest.raises(RunIntegrityError, match="terminal NodeRun"):
         await store.create_attempt(node_run.node_run_id)
+
+
+# ── a Run cannot outlive its NodeRuns (#226, ADR-082426-a47f) ──────
+#
+# Both halves were reachable on the ordinary path before this: a Run reached
+# `completed` while its only node was still `running`, and that node could then
+# move to `failed` afterwards. Neither needed a race, and every domain that
+# terminalizes a Run does so from its own outcome without knowing what nodes
+# exist under it — so the rule belongs at the store, once, rather than in each
+# of them.
+
+
+async def _running_run_with_node(spine: Any) -> Any:
+    """A RUNNING Run whose single NodeRun is RUNNING too."""
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    return run, node_run
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT],
+)
+async def test_terminalizing_a_run_settles_its_open_node_run(
+    spine: Any, terminal: RunStatus
+) -> None:
+    """Whatever the Run ends as, an open node under it ends `cancelled`.
+
+    Not mirroring the Run: the node did not itself succeed, fail or time out,
+    and calling it `failed` under a failed Run invents a physical outcome it
+    never had and counts one failure twice.
+    """
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+
+    await store.transition_run(run.run_id, terminal)
+
+    settled = await store.get_node_run(node_run.node_run_id)
+    assert settled is not None
+    assert settled.status is RunStatus.CANCELLED
+    assert settled.finished_at is not None
+
+
+async def test_the_settled_node_run_says_which_run_ended_it(spine: Any) -> None:
+    """Otherwise a cascade is indistinguishable from nodes each cancelled on
+    their own, which is the one thing a reader is trying to tell apart."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+
+    await store.transition_run(run.run_id, RunStatus.FAILED, error="boom")
+
+    settled = await store.get_node_run(node_run.node_run_id)
+    assert settled is not None
+    assert settled.error == "cancelled because its Run terminalized as failed"
+
+
+async def test_every_open_node_run_is_settled_not_just_the_first(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    first = await store.create_node_run(run.run_id, node_id="node-1")
+    second = await store.create_node_run(run.run_id, node_id="node-2")
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    await store.transition_run(run.run_id, RunStatus.CANCELLED)
+
+    for node_run_id in (first.node_run_id, second.node_run_id):
+        settled = await store.get_node_run(node_run_id)
+        assert settled is not None
+        assert settled.status is RunStatus.CANCELLED
+
+
+async def test_a_parked_node_run_is_settled_too(spine: Any) -> None:
+    """WAITING is the state a failed Attempt parks its node in, awaiting a
+    retry decision. Once the Run is over that decision will never come, so
+    leaving it parked is the "a process died here" reading terminalization
+    exists to remove."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.WAITING)
+
+    await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    settled = await store.get_node_run(node_run.node_run_id)
+    assert settled is not None
+    assert settled.status is RunStatus.CANCELLED
+
+
+async def test_an_already_terminal_node_run_keeps_its_own_outcome(spine: Any) -> None:
+    """The cascade settles what is open. A node that finished on its own has an
+    outcome of its own, and overwriting it would lose the result."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    await store.transition_node_run(
+        node_run.node_run_id, RunStatus.FAILED, error="the node itself failed"
+    )
+
+    await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    settled = await store.get_node_run(node_run.node_run_id)
+    assert settled is not None
+    assert settled.status is RunStatus.FAILED
+    assert settled.error == "the node itself failed"
+
+
+async def test_a_non_terminal_run_transition_settles_nothing(spine: Any) -> None:
+    """The cascade is terminalization's, not every transition's. A Run parking
+    itself in WAITING has not finished, and its node may still be retried."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+
+    await store.transition_run(run.run_id, RunStatus.WAITING)
+
+    unchanged = await store.get_node_run(node_run.node_run_id)
+    assert unchanged is not None
+    assert unchanged.status is RunStatus.RUNNING
+
+
+async def test_an_illegal_run_transition_settles_nothing(spine: Any) -> None:
+    """The Run's own transition is validated first. A refused terminalization
+    that had already cancelled the nodes would leave the Run running with every
+    node under it dead."""
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+
+    # CREATED has no edge to FAILED.
+    with pytest.raises(Exception):  # noqa: B017 - the backends raise their own types
+        await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    unchanged = await store.get_node_run(node_run.node_run_id)
+    assert unchanged is not None
+    assert unchanged.status is RunStatus.CREATED
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.status is RunStatus.CREATED
+
+
+async def test_a_node_run_cannot_move_once_its_run_is_terminal(spine: Any) -> None:
+    """A reconciliation that lands late must not rewrite the history of a Run
+    that is closed — including by undoing the cascade that settled it."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    with pytest.raises(RunIntegrityError, match="is terminal"):
+        await store.transition_node_run(node_run.node_run_id, RunStatus.FAILED, error="late")
+
+    settled = await store.get_node_run(node_run.node_run_id)
+    assert settled is not None
+    assert settled.status is RunStatus.CANCELLED
+
+
+async def test_terminalizing_a_terminal_run_is_still_refused(spine: Any) -> None:
+    """So the cascade cannot run twice, and a second terminalization cannot
+    rewrite the first one's answer."""
+    store, _workspace, _project_id = spine
+    run, _node_run = await _running_run_with_node(spine)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(Exception):  # noqa: B017 - the backends raise their own types
+        await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.status is RunStatus.COMPLETED

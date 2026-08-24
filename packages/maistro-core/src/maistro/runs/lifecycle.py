@@ -170,6 +170,51 @@ def transition_node_run(
     return NodeRun.model_validate(values)
 
 
+#: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
+#:
+#: Not the Run's own terminal status. The node did not succeed, fail or time
+#: out — something outside it ended the work, and marking it `failed` under a
+#: failed Run would invent a physical outcome it never had and count one failure
+#: twice for anyone measuring node failures.
+CASCADED_NODE_RUN_STATUS = RunStatus.CANCELLED
+
+
+def cascaded_node_run_error(run_target: RunStatus) -> str:
+    """Why an open NodeRun was settled, naming the Run's own outcome.
+
+    The distinction is the whole value of the field here: without it a cascade
+    is indistinguishable from six nodes that were each cancelled individually.
+    """
+    return f"cancelled because its Run terminalized as {run_target.value}"
+
+
+def settle_open_node_run(
+    node_run: NodeRun,
+    run_target: RunStatus,
+    *,
+    at: datetime | None = None,
+) -> NodeRun:
+    """Settle one non-terminal NodeRun because its Run is terminalizing.
+
+    Every non-terminal status has an edge to CANCELLED, so this cannot fail on
+    a NodeRun the caller has already established is open.
+
+    A paused node's accepted outcome is superseded rather than carried over,
+    which `transition_node_run` already does for this target. That is not a
+    choice available here: `NodeRun` validates that its status *is* its accepted
+    outcome's `logical_status`, because an acceptance states the node's current
+    logical disposition rather than recording a past one. A cancelled node whose
+    acceptance still read `paused` would be a record claiming both. What the
+    paused node was paused for survives where it was written, on the Attempt.
+    """
+    return transition_node_run(
+        node_run,
+        CASCADED_NODE_RUN_STATUS,
+        at=at,
+        error=cascaded_node_run_error(run_target),
+    )
+
+
 def transition_attempt(
     attempt: Attempt,
     target: AttemptStatus,
@@ -200,8 +245,11 @@ def transition_attempt(
 
 __all__ = [
     "ATTEMPT_TRANSITIONS",
+    "CASCADED_NODE_RUN_STATUS",
     "RUN_TRANSITIONS",
     "InvalidLifecycleTransition",
+    "cascaded_node_run_error",
+    "settle_open_node_run",
     "transition_attempt",
     "transition_node_run",
     "transition_run",

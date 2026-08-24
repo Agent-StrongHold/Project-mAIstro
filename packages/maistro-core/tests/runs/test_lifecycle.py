@@ -6,7 +6,9 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.runs import (
+    AcceptedNodeOutcome,
     Attempt,
+    AttemptResult,
     AttemptStatus,
     GraphSnapshot,
     InvalidLifecycleTransition,
@@ -17,6 +19,7 @@ from maistro.runs import (
     transition_node_run,
     transition_run,
 )
+from maistro.runs.lifecycle import settle_open_node_run
 
 
 def _graph() -> Graph:
@@ -106,3 +109,86 @@ def test_attempt_yield_is_terminal_physical_outcome() -> None:
     assert yielded.finished_at is not None
     with pytest.raises(InvalidLifecycleTransition, match="yielded -> running"):
         transition_attempt(yielded, AttemptStatus.RUNNING)
+
+
+# ── settling an open NodeRun (#226, ADR-082426-a47f) ───────────────
+
+
+@pytest.mark.parametrize(
+    "run_target",
+    [RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT],
+)
+def test_an_open_node_run_settles_to_cancelled_whatever_its_run_did(
+    run_target: RunStatus,
+) -> None:
+    """The node did not itself succeed, fail or time out — something outside it
+    ended the work. Mirroring the Run's status would invent a physical outcome
+    the node never had."""
+    node_run = transition_node_run(
+        transition_node_run(NodeRun(run_id="run-1", node_id="node-1", ordinal=1), RunStatus.QUEUED),
+        RunStatus.RUNNING,
+    )
+
+    settled = settle_open_node_run(node_run, run_target)
+
+    assert settled.status is RunStatus.CANCELLED
+    assert settled.finished_at is not None
+    assert settled.error == f"cancelled because its Run terminalized as {run_target.value}"
+
+
+def test_every_open_status_can_be_settled() -> None:
+    """The cascade must not be able to fail part-way through because one node
+    happened to be parked rather than running."""
+    node_run = NodeRun(run_id="run-1", node_id="node-1", ordinal=1)
+    queued = transition_node_run(node_run, RunStatus.QUEUED)
+    running = transition_node_run(queued, RunStatus.RUNNING)
+    for open_node_run in (
+        node_run,
+        queued,
+        running,
+        transition_node_run(running, RunStatus.WAITING),
+    ):
+        assert settle_open_node_run(open_node_run, RunStatus.FAILED).status is RunStatus.CANCELLED
+
+
+def test_settling_supersedes_an_accepted_paused_outcome() -> None:
+    """`NodeRun` validates that its status *is* its accepted outcome's logical
+    status, so a settled node cannot keep an acceptance reading `paused` — the
+    record would claim both at once. The evidence survives on the Attempt."""
+    node_run = NodeRun(run_id="run-1", node_id="node-1", ordinal=1)
+    running = transition_node_run(
+        transition_node_run(node_run, RunStatus.QUEUED), RunStatus.RUNNING
+    )
+    attempt = transition_attempt(
+        transition_attempt(
+            Attempt(node_run_id=node_run.node_run_id, ordinal=1), AttemptStatus.RUNNING
+        ),
+        AttemptStatus.COMPLETED,
+        result={"paused": "for a human"},
+    )
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run.node_run_id,
+        attempt_result=AttemptResult.from_attempt(attempt),
+        logical_status=RunStatus.PAUSED,
+        result={"paused": "for a human"},
+    )
+    paused = transition_node_run(
+        running, RunStatus.PAUSED, result=outcome.result, accepted_outcome=outcome
+    )
+    assert paused.accepted_outcome is not None
+
+    settled = settle_open_node_run(paused, RunStatus.CANCELLED)
+
+    assert settled.status is RunStatus.CANCELLED
+    assert settled.accepted_outcome is None
+
+
+def test_settling_stamps_the_caller_s_clock() -> None:
+    """So every node in one cascade carries the same `finished_at` as the Run,
+    rather than a spread that reads like they ended at different moments."""
+    at = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+    node_run = NodeRun(run_id="run-1", node_id="node-1", ordinal=1)
+
+    settled = settle_open_node_run(node_run, RunStatus.CANCELLED, at=at)
+
+    assert settled.finished_at == at

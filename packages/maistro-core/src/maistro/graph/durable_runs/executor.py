@@ -25,7 +25,11 @@ from maistro.graph.execution_state import (
     thaw_json_value,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext, NodeResult
-from maistro.runs.lifecycle import transition_node_run, transition_run
+from maistro.runs.lifecycle import (
+    settle_open_node_run,
+    transition_node_run,
+    transition_run,
+)
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     GraphSnapshot,
@@ -1162,18 +1166,27 @@ def _running_run(run: Run) -> Run:
     return run
 
 
-def _cancel_unfinished_node_runs(record: DurableRunRecord) -> DurableRunRecord:
-    """Terminalize every unfinished sibling NodeRun when the parent run fails."""
+def _settle_open_node_runs(
+    record: DurableRunRecord,
+    run_target: RunStatus,
+) -> DurableRunRecord:
+    """Settle every open NodeRun because the parent Run is terminalizing.
+
+    The *rule* — what an open node settles to, and what its error says — is
+    `settle_open_node_run`'s, shared with the canonical stores
+    (ADR-082426-a47f). Only the walk is local, because a durable Graph run
+    holds its NodeRuns in one checkpointed record rather than as rows.
+
+    ``run_target`` is passed rather than assumed. This used to write "cancelled
+    because the durable run failed" on both paths, so a *cancelled* Run's nodes
+    claimed it had failed.
+    """
     node_runs = list(record.node_runs)
     changed = False
     for index, node_run in enumerate(node_runs):
         if node_run.status in TERMINAL_RUN_STATUSES:
             continue
-        node_runs[index] = transition_node_run(
-            node_run,
-            RunStatus.CANCELLED,
-            error="cancelled because the durable run failed",
-        )
+        node_runs[index] = settle_open_node_run(node_run, run_target)
         changed = True
     if not changed:
         return record
@@ -1188,7 +1201,7 @@ async def _mark_failed(
     store: DurableRunStore,
 ) -> DurableRunRecord:
     """Terminalize the parent Run and reconcile unfinished NodeRuns after failure."""
-    record = _cancel_unfinished_node_runs(record)
+    record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
     error = f"{error_code}: {error_message}"[:512]
     if run.status is not RunStatus.RUNNING:
