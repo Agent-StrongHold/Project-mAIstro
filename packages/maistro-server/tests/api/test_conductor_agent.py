@@ -169,3 +169,118 @@ class TestLastUserMessage:
         text, and guessing at a structure it does not understand would send
         something arbitrary to the conductor."""
         assert _last_user_message([{"role": "user", "content": [{"type": "text"}]}]) == ""
+
+
+# --- the wiring guards ----------------------------------------------------
+#
+# Small branches, each of which decides what happens when the process is not
+# in the state the happy path assumes. They are cheap to get wrong and
+# expensive to discover in production, which is the whole argument for pinning
+# them rather than letting the diff-coverage floor be met some other way.
+
+
+class TestBeforeAContainerIsWired:
+    async def test_routing_without_a_container_raises(self) -> None:
+        """A wiring failure, not a request failure. Raising lets the route's
+        own handler turn it into a 500 like any other, rather than inventing a
+        client-facing answer for a server that is not assembled."""
+        from maistro_server.api import chat_completions as chat_api
+        from maistro_server.api.chat_completions import ChatCompletionRequest, ChatMessage
+
+        chat_api.configure_container(None)
+        request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")])
+
+        with pytest.raises(RuntimeError, match="before a Container was wired"):
+            await chat_api._route(request, None, None)
+
+    async def test_closing_an_abandoned_run_without_a_container_is_a_no_op(self) -> None:
+        """Reached when a stream is torn down after teardown has already
+        cleared the Container. There is no store to write to, and raising
+        inside a generator's `finally` would replace whatever ended it."""
+        from types import SimpleNamespace
+
+        from maistro_server.api import chat_completions as chat_api
+
+        chat_api.configure_container(None)
+
+        # A stand-in rather than a real Run: nothing about it is read on this
+        # path, and building one would suggest otherwise.
+        await chat_api._close_if_open(SimpleNamespace(run_id="r-1"))  # type: ignore[arg-type]
+
+
+class TestAMalformedResultDegrades:
+    """`_answer_of` reads a shape produced by whichever agent handled the turn.
+
+    Defensive at every hop rather than indexing through: a malformed result
+    should become an empty answer a client can render, not a `KeyError` that
+    turns into a 500 after the work already succeeded.
+    """
+
+    def test_a_result_with_no_choices_is_an_empty_answer(self) -> None:
+        from maistro_server.api.chat_completions import _answer_of
+
+        assert _answer_of({}) == ("", "stop")
+
+    def test_a_choice_that_is_not_a_mapping_is_an_empty_answer(self) -> None:
+        from maistro_server.api.chat_completions import _answer_of
+
+        assert _answer_of({"choices": ["not a dict"]}) == ("", "stop")
+
+    def test_a_non_string_finish_reason_falls_back_to_stop(self) -> None:
+        from maistro_server.api.chat_completions import _answer_of
+
+        result = {"choices": [{"message": {"content": "hi"}, "finish_reason": 7}]}
+        assert _answer_of(result) == ("hi", "stop")
+
+    def test_a_well_formed_result_is_read_straight_through(self) -> None:
+        from maistro_server.api.chat_completions import _answer_of
+
+        result = {"choices": [{"message": {"content": "hi"}, "finish_reason": "content_filter"}]}
+        assert _answer_of(result) == ("hi", "content_filter")
+
+
+class TestWhereTheRouterKeyComesFrom:
+    """Not on `Settings` — it lives on `MaistroYamlConfig`, which
+    `config.loader` fills from `maistro.yaml` and the environment."""
+
+    def test_the_yaml_config_wins_when_it_has_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from maistro.config import settings as settings_module
+        from maistro_server.main import _router_api_key
+
+        monkeypatch.setenv("ROUTER_API_KEY", "from-the-environment")
+        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: _FakeYaml("from-the-file"))
+
+        assert _router_api_key() == "from-the-file"
+
+    def test_the_environment_answers_when_no_yaml_is_loaded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server started without a YAML file still has the environment, and
+        refusing to start it would be refusing the ordinary container
+        deployment."""
+        from maistro.config import settings as settings_module
+        from maistro_server.main import _router_api_key
+
+        monkeypatch.setenv("ROUTER_API_KEY", "from-the-environment")
+        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: None)
+
+        assert _router_api_key() == "from-the-environment"
+
+    def test_an_empty_yaml_value_falls_through_rather_than_winning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A loaded file with the key unset is not an answer of "no key" — the
+        environment is still the fallback the loader itself uses."""
+        from maistro.config import settings as settings_module
+        from maistro_server.main import _router_api_key
+
+        monkeypatch.setenv("ROUTER_API_KEY", "from-the-environment")
+        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: _FakeYaml(""))
+
+        assert _router_api_key() == "from-the-environment"
+
+
+class _FakeYaml:
+    def __init__(self, router_api_key: str) -> None:
+        self.router_api_key = router_api_key
+        self.agents_dir = ""

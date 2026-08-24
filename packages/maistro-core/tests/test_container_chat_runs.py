@@ -204,3 +204,42 @@ async def test_admission_defers_the_agent_when_no_hint_is_given() -> None:
     run = await container.run_store.get_run(result["run_id"])
     assert run is not None
     assert run.provenance[AGENT_SELECTION_KEY] == DEFERRED_AGENT_SELECTION
+
+
+async def test_a_caller_supplied_run_is_adopted_rather_than_duplicated() -> None:
+    """The seam a caller needs when it must name the Run before the answer.
+
+    `/v1/chat/completions` puts the run_id in a response header, and a
+    streaming response's headers are sent before the first byte — so it admits
+    the Run itself and hands it over. Without this, the turn would carry two:
+    the one the header advertised, and the one this method admitted and closed.
+    """
+    container = await _container()
+    container.conduit = _Conduit()
+    mine = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    await container.run_store.transition_run(mine.run_id, RunStatus.QUEUED)
+    await container.run_store.transition_run(mine.run_id, RunStatus.RUNNING)
+
+    result = await container.route_request([{"role": "user", "content": "hi"}], run=mine)
+
+    assert result["run_id"] == mine.run_id
+    runs = [run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]
+    assert len(runs) == 1, "a second Run was admitted for a turn that already had one"
+
+
+async def test_an_adopted_run_is_still_terminalized_here() -> None:
+    """Adopting it means owning it. A caller that hands its Run over and then
+    also closed it would be racing this method for the same transition; one
+    that hands it over and closes nothing would leave it RUNNING, which is what
+    recovery reads as a process that died."""
+    container = await _container()
+    container.conduit = _Conduit()
+    mine = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    await container.run_store.transition_run(mine.run_id, RunStatus.QUEUED)
+    await container.run_store.transition_run(mine.run_id, RunStatus.RUNNING)
+
+    await container.route_request([{"role": "user", "content": "hi"}], run=mine)
+
+    closed = await container.run_store.get_run(mine.run_id)
+    assert closed is not None
+    assert closed.status is RunStatus.COMPLETED

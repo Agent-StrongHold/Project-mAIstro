@@ -17,9 +17,13 @@ from maistro.runs.chat_admission import (
     CHAT_SOURCE,
     DEFAULT_TURN_NAME,
     DEFERRED_AGENT_SELECTION,
+    INTERNAL_FAILURE,
     REQUEST_ID_KEY,
     SESSION_ID_KEY,
+    TIMEOUT_FAILURE,
+    UPSTREAM_FAILURE,
     ChatRunAdmitter,
+    failure_category,
     last_user_message,
 )
 from maistro.runs.model import RunStatus
@@ -424,3 +428,39 @@ def test_a_malformed_response_still_yields_an_outcome() -> None:
     assert chat_turn_outcome({})["answer"] == ""
     assert chat_turn_outcome({"choices": []})["answer"] == ""
     assert chat_turn_outcome({"choices": [{"message": {"content": None}}]})["answer"] == ""
+
+
+class TestFailureCategory:
+    """What a failed chat turn records on its Run (#142).
+
+    A category, never the exception text. `/runs/{run_id}` returns `Run.error`
+    verbatim to anyone holding the run_id — which the streaming chat path puts
+    in a response header — and a provider error's message carries the endpoint
+    it called and can carry the key it sent. The detail belongs in the log,
+    which a run_id does not open.
+    """
+
+    def test_a_timeout_is_a_timeout(self) -> None:
+        assert failure_category(TimeoutError("waited 30s for https://provider.internal")) == (
+            TIMEOUT_FAILURE
+        )
+
+    def test_a_provider_error_is_an_upstream_failure(self) -> None:
+        from maistro.agents.types import LLMProviderError
+
+        assert failure_category(LLMProviderError("https://provider.internal key=sk-secret")) == (
+            UPSTREAM_FAILURE
+        )
+
+    def test_anything_else_is_internal(self) -> None:
+        assert failure_category(ValueError("boom")) == INTERNAL_FAILURE
+
+    def test_the_category_never_carries_the_message(self) -> None:
+        """The property, stated directly rather than left to the three cases
+        above to imply. A future category added without this in mind would be
+        the leak coming back."""
+        from maistro.agents.types import LLMProviderError
+
+        secret = "https://provider.internal/v1 key=sk-secret"
+        for exc in (TimeoutError(secret), LLMProviderError(secret), ValueError(secret)):
+            assert "sk-secret" not in failure_category(exc)
