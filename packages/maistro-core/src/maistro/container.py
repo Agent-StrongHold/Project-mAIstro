@@ -9,6 +9,7 @@ The Conduit pipeline handles the actual request flow:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
+from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
@@ -24,13 +26,20 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+from maistro.projects.scope_store import ProjectScopeStore
 from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome
+from maistro.runs.model import Run, RunStatus
+from maistro.runs.store import RunStore
+from maistro.runs.wiring import wire_chat_admission, wire_execution_spine
 from maistro.security.gate import Gate
+from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
+from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
 
@@ -115,11 +124,33 @@ class Container:
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
     project_store: ProjectStore = None  # type: ignore[assignment]  # wired in create_container
+    # Canonical execution spine (#41): the Project scope tree work is filed in,
+    # the Run store that holds its execution identity, and the seam that turns a
+    # directly-submitted task into a Run over a one-node Graph.
+    project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
+    run_store: RunStore = None  # type: ignore[assignment]
+    # Routing rather than bound: one Conductor process serves every Workspace
+    # its users belong to, so the Workspace is chosen per submission (#158).
+    # `config.workspace_id` remains the default for a submission that names none.
+    task_admitter: WorkspaceRoutingAdmitter = None  # type: ignore[assignment]
+    #: The seam a chat turn is admitted through (#131). Separate from the task
+    #: admitter because the two have different retention: a task's Run is kept
+    #: as long as its receipt, a chat turn's is swept behind a small window.
+    chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
     conduit: Any = None
+    #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
+    #: Cold storage for archived records (ADR-082226-f436), or None when the
+    #: deployment configured no archive tier. None is the default and an
+    #: ordinary answer, not a degraded mode.
+    archive_store: Any = None
+    #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
+    #: because the two are different objects with different APIs, and code that
+    #: branches on "is a database configured" needs to know which.
+    pg_pool: Any = None
     # Agent-harness DAG node adapters (dispatch/poll/cancel), keyed by
     # harness_type (e.g. "rsi_cycle"). Empty by default -- see
     # _wire_harness_adapters for why this container never auto-populates
@@ -218,13 +249,92 @@ class Container:
             )
             raise AgentError(msg)
 
-        result: dict[str, Any] = await self.conduit.route_request(
+        run = await self._admit_chat_turn(
             messages,
             auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
         )
+        try:
+            result: dict[str, Any] = await self.conduit.route_request(
+                messages,
+                auth=auth,
+                session_id=session_id,
+                intent_hint=intent_hint,
+            )
+        except BaseException as exc:
+            await self._close_chat_run(run, error=str(exc))
+            raise
+        await self._close_chat_run(run, result=chat_turn_outcome(result))
+        if run is not None:
+            # Additive. The OpenAI-compatible shape a caller parses is
+            # untouched; `run_id` is the handle for anyone who wants to follow
+            # the turn through the canonical spine, and is simply absent for a
+            # container with no chat admitter wired.
+            result["run_id"] = run.run_id
         return result
+
+    async def _admit_chat_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        auth: Any = None,
+        session_id: str | None = None,
+        intent_hint: str = "",
+    ) -> Run | None:
+        """Admit this turn as a canonical Run, or None when none is wired.
+
+        A turn is never refused for want of a Run. The chat path has no receipt
+        to fall back on — refusing here would turn "this process cannot record
+        the turn" into "this process cannot answer", which is a worse failure
+        than an unrecorded answer and not the one #41 asked for.
+        """
+        if self.chat_admitter is None:
+            return None
+        try:
+            run = await self.chat_admitter.admit(
+                messages,
+                session_id=session_id,
+                intent_hint=intent_hint,
+                known_task_types=self.config.task_types,
+                actor_principal_id=getattr(auth, "user_id", None) or None,
+            )
+            # Two hops: a Run is born CREATED and the lifecycle has no edge
+            # from there to RUNNING. Queued is momentarily true here — the turn
+            # is admitted and about to be dispatched — rather than a fiction
+            # invented to satisfy the table.
+            await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except Exception:
+            logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+            return None
+
+    async def _close_chat_run(
+        self,
+        run: Run | None,
+        *,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        """Terminalize a chat turn's Run, whichever way the turn ended.
+
+        A Run left RUNNING is what recovery scans read as a process that died,
+        so the one thing this must not do is leave the turn open — including
+        when the turn ended by raising, and including when the request itself
+        is cancelled. The write is shielded for that last case: `CancelledError`
+        is not an `Exception`, so without the shield a client disconnecting
+        during this await would abort the transition and leave behind exactly
+        the false "died here" signal the shield exists to prevent.
+        """
+        if run is None:
+            return
+        target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
+        try:
+            await asyncio.shield(
+                self.run_store.transition_run(run.run_id, target, result=result, error=error)
+            )
+        except Exception:
+            logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
 
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
@@ -376,7 +486,10 @@ class Container:
 
 
 async def create_container(
-    config: AgentConfig, *, harness_adapters: dict[str, HarnessAdapter] | None = None
+    config: AgentConfig,
+    *,
+    harness_adapters: dict[str, HarnessAdapter] | None = None,
+    pg_pool: Any = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -384,14 +497,55 @@ async def create_container(
     `_wire_harness_adapters` -- see that function for why this container
     cannot construct a real `RsiCycleHarnessAdapter` (`"rsi_cycle"`) on its
     own and instead leaves the map for the caller to populate.
+
+    `pg_pool`, if given, is a live `asyncpg.Pool` and selects the PostgreSQL
+    stores — durable events included (#135). When it is not given and
+    `config.database_url` names PostgreSQL, this container opens one itself
+    (#122).
+
+    Both paths exist, and the parameter is not vestigial now that the URL path
+    works. #135 landed first and could only offer the parameter, because
+    deciding which backend a URL names and owning the pool's lifetime was
+    #122's work and this container still refused `postgresql://` outright. #122
+    closed that. What the parameter still buys is a caller that already holds a
+    pool — a test with a fixture, an embedding application that opened its own
+    — being able to hand it over rather than have a second one opened against
+    the same server.
+
+    A supplied pool wins over the URL. The caller naming a concrete pool is
+    more specific than a string saying which server to reach, and silently
+    opening a second pool while the given one sat unused is the shape of bug
+    that reads as "PostgreSQL is configured and nothing is durable".
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
         raise ConfigError(msg)
 
+    # The outbound guard is on for every request this process makes (#155), so
+    # the endpoints it is *supposed* to reach have to be named before the first
+    # one. Seeded from configuration rather than a list kept here, so moving a
+    # gateway moves its allowance with it.
+    from maistro.config.settings import get_settings
+
+    configure_outbound_policy(
+        *configured_endpoints(config),
+        *configured_endpoints(get_settings()),
+    )
+
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
+    # Two different handles, deliberately not one. `db_pool` is the SQLite
+    # connection the durable-event stores are written against; `pg_pool` is an
+    # asyncpg pool. Collapsing them into one `Any` was how the durable-event
+    # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
+    # Held aside before the URL branch runs, because that branch rebinds
+    # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
+    # #135 first did — drops the parameter on the floor, and a caller-supplied
+    # pool silently becomes in-memory durable events: the exact failure #135
+    # exists to have fixed, reintroduced by the change that generalised it.
+    supplied_pg_pool = pg_pool
+    pg_pool = None
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -400,14 +554,39 @@ async def create_container(
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
+    elif config.database_url.startswith(POSTGRES_SCHEMES):
+        (
+            pg_pool,
+            quota_tracker,
+            learning_store,
+            outcome_store,
+            session_store,
+        ) = await _wire_postgres_backend(config.database_url)
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
         learning_store = InMemoryLearningStore()
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
+    pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
+    archive_store = build_archive_store(config.archive_url)
+    # Built here rather than below, because the admission seam routes on it: a
+    # separately-constructed default registry would disagree with the one the
+    # rest of the container uses (POC mode, or any custom table).
+    intent_registry = build_intent_registry()
+    project_scope_store, run_store, task_admitter = await wire_execution_spine(
+        db_pool,
+        workspace_id=config.workspace_id,
+        intents=intent_registry,
+    )
+    chat_admitter = wire_chat_admission(
+        run_store,
+        project_scope_store,
+        workspace_id=config.workspace_id,
+        intents=intent_registry,
+    )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
@@ -417,14 +596,10 @@ async def create_container(
     router = RouterEngine(quota_tracker)
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
-    intent_registry = build_intent_registry()
 
-    strike_tracker: StrikeTracker | None = None
-    if config.security.strike_tracking_enabled:
-        from maistro.security.strikes import InMemoryStrikeTracker
-
-        strike_tracker = InMemoryStrikeTracker()
-        logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
+    strike_tracker = _wire_strike_tracker(
+        enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
+    )
 
     gate = Gate(warden=warden, strike_tracker=strike_tracker)
 
@@ -432,11 +607,10 @@ async def create_container(
         build_permission_table,
         describe_permission_table,
     )
-    from maistro.security.sentinel.audit import InMemoryAuditLog
     from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
-    audit_log = InMemoryAuditLog()
+    audit_log = _wire_audit_log(pg_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -475,7 +649,18 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
-    if db_pool is not None:
+    # PostgreSQL first: a caller who supplied a pool asked for the durable
+    # backend, and `db_pool` (SQLite) may be set at the same time because the
+    # two cover different stores. Silently preferring SQLite here would give
+    # that caller in-memory-shaped durability on the one backend that can
+    # actually be shared between workers.
+    if pg_pool is not None:
+        (
+            durable_event_log,
+            trigger_store,
+            invocation_store,
+        ) = await _wire_pg_durable_events(pg_pool)
+    elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
@@ -485,6 +670,17 @@ async def create_container(
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
+        if pg_pool is not None:
+            # The durable-event stores (ADR-086) have a SQLite implementation
+            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
+            # here even though it configured a durable database. Saying so is
+            # the whole point of #122: the operator learns it now rather than
+            # after a restart drops the event log, triggers and invocations.
+            logger.warning(
+                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
+                "triggers and invocations are lost on restart. No PostgreSQL implementation "
+                "exists yet (#135)."
+            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -573,10 +769,16 @@ async def create_container(
         capabilities=capabilities,
         episodic_store=episodic_store,
         project_store=project_store,
+        project_scope_store=project_scope_store,
+        run_store=run_store,
+        task_admitter=task_admitter,
+        chat_admitter=chat_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
+        archive_store=archive_store,
         db_pool=db_pool,
+        pg_pool=pg_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
@@ -602,9 +804,225 @@ async def create_container(
         identity_linker=identity_linker,
     )
 
-    backend = "SQLite" if db_pool is not None else "InMemory"
+    # One word again, and only because this change is what makes it true.
+    #
+    # #135 had to report the stores and the durable events separately, because
+    # `pg_pool` reached the events and not the stores: saying "PostgreSQL" for
+    # both would have described a deployment whose learnings and outcomes were
+    # still in memory. That is #122's gap, and this branch closes it — a pool
+    # now selects PostgreSQL for the learnings, outcome, session and quota
+    # stores as well as for the event log, so the two words would always be the
+    # same word.
+    #
+    # The lesson survives the collapse: the line reports what is *wired*, not
+    # what was configured. If a future change makes one of these durable
+    # without the other, this splits again rather than rounding up.
+    if pg_pool is not None:
+        backend = "PostgreSQL"
+    elif db_pool is not None:
+        backend = "SQLite"
+    else:
+        backend = "InMemory"
     logger.info("Container wired (%s stores)", backend)
     return container
+
+
+def _wire_audit_log(pg_pool: Any) -> Any:
+    """Durable audit log on PostgreSQL, in-memory otherwise.
+
+    The audit log is the one store where losing history on restart is not an
+    inconvenience but a hole in the record the log exists to keep. `PgAuditLog`
+    is a true drop-in: same `log`/`get_entries` signatures, same `AuditEntry`
+    return type — checked, not assumed.
+    """
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    if pg_pool is None:
+        return InMemoryAuditLog()
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    return PgAuditLog(pg_pool)
+
+
+def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
+    """The strike ladder, which stays in-memory even on PostgreSQL — loudly.
+
+    `security.pg_strikes.PgStrikeTracker` looks like a drop-in and is not. Its
+    `get()` returns a dict where `Gate` does attribute access on a
+    `StrikeRecord`, and its `record_violation()` returns only
+    user_id/strike_count/escalated where `Gate` reads scrutiny_level,
+    locked_until and disabled as well. Wiring it would raise AttributeError on
+    the first security violation — the worst possible place to find out. Making
+    it usable needs an adapter, which is #134; until then the operator is told
+    that lockout state does not survive a restart rather than left to assume a
+    configured database means it does.
+    """
+    if not enabled:
+        return None
+    from maistro.security.strikes import InMemoryStrikeTracker
+
+    tracker = InMemoryStrikeTracker()
+    logger.info("Strike ladder armed (3-strike escalation via InMemoryStrikeTracker).")
+    if pg_pool is not None:
+        logger.warning(
+            "Strike ladder is in-memory despite a PostgreSQL backend: lockout state "
+            "resets on restart. PgStrikeTracker is not yet Gate-compatible (#134)."
+        )
+    return tracker
+
+
+#: URL schemes that select the PostgreSQL backend. `postgres://` is the legacy
+#: spelling libpq still accepts and operators still write; `+asyncpg` is what
+#: SQLAlchemy-shaped configuration produces; `+psycopg` is what
+#: `DatabaseSettings.sync_url` produces, and therefore what a `DB_*`-only
+#: deployment resolves to. Omitting that last one would send exactly the
+#: docker-compose case — five variables, no `DATABASE_URL` — to the in-memory
+#: branch, which is the defect #187 exists to have fixed.
+POSTGRES_SCHEMES: Final = (
+    "postgresql://",
+    "postgres://",
+    "postgresql+asyncpg://",
+    "postgresql+psycopg://",
+)
+
+#: Oldest PostgreSQL this engine supports. 17 is the floor because it is the
+#: oldest release still receiving fixes for the whole of this project's support
+#: window, and because `docker-compose.yml` has always run `pgvector:pg17`.
+#: 18 is the recommended version; 19 is expected to work and is where
+#: ADR-082226-5104's SQL/PGQ interest points.
+MIN_POSTGRES_VERSION: Final = 17
+
+#: Tables the PostgreSQL stores read and write. Checked at startup rather than
+#: discovered on the first request — see `_require_postgres_schema`.
+_REQUIRED_PG_TABLES: Final = (
+    "learnings",
+    "outcomes",
+    "quota_usage",
+    "sessions",
+)
+
+
+def _asyncpg_dsn(database_url: str) -> str:
+    """asyncpg speaks libpq DSNs, not SQLAlchemy's `+driver` spelling.
+
+    Either driver suffix is stripped, not only `+asyncpg`: the pool this DSN
+    opens is asyncpg's regardless of which spelling named the database, and a
+    `+psycopg` URL reaching asyncpg unchanged fails on the scheme rather than
+    on anything about the connection.
+    """
+    for suffix in ("postgresql+asyncpg://", "postgresql+psycopg://"):
+        if database_url.startswith(suffix):
+            return "postgresql://" + database_url[len(suffix) :]
+    return database_url
+
+
+async def _require_supported_postgres(conn: Any) -> None:
+    """Refuse a server too old for the SQL these stores rely on.
+
+    A version check at startup rather than a failure mid-request. The stores use
+    `ON CONFLICT ... DO UPDATE` with composite targets, partial unique indexes
+    and `JSONB` throughout — nothing exotic, but a server old enough to lack any
+    of it should say so once, at the point the operator can act on it.
+    """
+    version_num = int(await conn.fetchval("SHOW server_version_num"))
+    major = version_num // 10_000
+    if major < MIN_POSTGRES_VERSION:
+        version = await conn.fetchval("SHOW server_version")
+        msg = (
+            f"PostgreSQL {version} is older than the minimum supported major "
+            f"version {MIN_POSTGRES_VERSION}. Supported: {MIN_POSTGRES_VERSION}-19 "
+            f"(18 recommended)."
+        )
+        raise ConfigError(msg)
+
+
+async def _require_postgres_schema(conn: Any) -> None:
+    """Refuse a database that has not been migrated.
+
+    Without this the first request to touch a store raises `UndefinedTableError`
+    from somewhere deep in a handler, and the operator sees a 500 rather than
+    the one instruction that fixes it. The check is cheap and runs once.
+    """
+    missing = [
+        table
+        for table in _REQUIRED_PG_TABLES
+        if not await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+    ]
+    if missing:
+        msg = (
+            f"PostgreSQL is missing {len(missing)} table(s) the engine requires: "
+            f"{', '.join(missing)}. Run `alembic upgrade head` against this database."
+        )
+        raise ConfigError(msg)
+
+
+def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
+    """Which asyncpg pool the PostgreSQL-backed subsystems should use.
+
+    A supplied pool wins over whatever the URL produced. The caller naming a
+    concrete pool is more specific than a string naming a server, and opening a
+    second pool against the same database while the given one sits unused is
+    how "PostgreSQL is configured and nothing is durable" happens.
+
+    It replaces the pool only. The learnings, outcome, session and quota stores
+    are already built by the time this is called and keep whatever the URL
+    selected — that split is #122's contract, and #135's is that a caller
+    holding a pool can reach the durable-event stores with it.
+    """
+    return supplied if supplied is not None else from_url
+
+
+async def _wire_postgres_backend(
+    database_url: str,
+) -> tuple[
+    Any,
+    QuotaTracker,
+    LearningStore,
+    OutcomeStore,
+    SessionStore,
+]:
+    """Open an asyncpg pool and wire the durable PostgreSQL stores (#122).
+
+    ADR-082226-5104 makes PostgreSQL the durable system of record. Until this
+    existed, a `postgresql://` URL took the in-memory branch — learnings,
+    outcomes, sessions and quota all vanished on restart with nothing said.
+
+    Both preflight checks run against a real connection before any store is
+    built, because both failures are configuration errors an operator can fix in
+    a minute and neither is diagnosable from the exception it would otherwise
+    raise on some later request.
+    """
+    from maistro.persistence import get_pool
+    from maistro.persistence.pg_learnings import PgLearningStore
+    from maistro.persistence.pg_outcomes import PgOutcomeStore
+    from maistro.persistence.pg_quota import PgQuotaTracker
+    from maistro.persistence.pg_sessions import PgSessionStore
+
+    pool = await get_pool(_asyncpg_dsn(database_url))
+    try:
+        async with pool.acquire() as conn:
+            await _require_supported_postgres(conn)
+            await _require_postgres_schema(conn)
+    except BaseException:
+        # A failed preflight means no container, so the pool it opened has no
+        # owner. Leaving it holding connections to a database the operator is
+        # about to fix is how a retry finds the server still busy.
+        from maistro.persistence import close_pool
+
+        await close_pool()
+        raise
+
+    pg_learning_store = PgLearningStore(pool)
+    # The one store with an ensure_schema: an idempotent ALTER that adds the
+    # scope column its queries name. Harmless once the migration has run.
+    await pg_learning_store.ensure_schema()
+
+    quota_tracker: QuotaTracker = PgQuotaTracker(pool)
+    learning_store: LearningStore = pg_learning_store
+    outcome_store: OutcomeStore = PgOutcomeStore(pool)
+    session_store: SessionStore = PgSessionStore(pool)
+
+    return pool, quota_tracker, learning_store, outcome_store, session_store
 
 
 #: Schemes that deliberately select ephemeral in-memory stores.
@@ -641,13 +1059,16 @@ def _redact_url(database_url: str) -> str:
 def _require_ephemeral_is_deliberate(database_url: str) -> None:
     """Refuse a configured database this container cannot actually wire (#122).
 
-    Only ``sqlite:`` has a backend. Everything else fell through to in-memory
-    stores, so a deployment set to ``postgresql://…`` got learnings, outcomes,
-    sessions and quota that vanish on restart — with no error, no warning, and
-    nothing in the log saying the configured database had been ignored. A
-    misconfigured model gives visibly wrong answers; a misconfigured database
-    gives correct answers that quietly disappear, which is the worse failure and
-    the one `graph_runner.StubLLMNotAllowedError` exists to prevent elsewhere.
+    Reached only after the durable schemes have been tried: ``sqlite:`` and the
+    PostgreSQL schemes each have a backend above, so anything arriving here named
+    a database with no wiring behind it. Before #122 such a value fell through to
+    in-memory stores, so a deployment set to ``postgres:/typo`` got learnings,
+    outcomes, sessions and quota that vanish on restart — with no error, no
+    warning, and nothing in the log saying the configured database had been
+    ignored. A misconfigured model gives visibly wrong answers; a misconfigured
+    database gives correct answers that quietly disappear, which is the worse
+    failure and the one `graph_runner.StubLLMNotAllowedError` exists to prevent
+    elsewhere.
 
     Three cases, deliberately distinguished:
 
@@ -661,18 +1082,18 @@ def _require_ephemeral_is_deliberate(database_url: str) -> None:
         logger.warning(
             "No database_url configured; using in-memory stores. Learnings, outcomes, "
             "sessions and quota will not survive a restart. Set database_url to a "
-            "sqlite:///path/to/file.db URL for durability, or memory:// to select "
-            "this deliberately."
+            "postgresql:// or sqlite:///path/to/file.db URL for durability, or "
+            "memory:// to select this deliberately."
         )
         return
     if database_url.startswith(_EPHEMERAL_SCHEMES):
         return
     msg = (
         f"database_url {_redact_url(database_url)!r} names a backend this build "
-        "cannot wire. Supported: sqlite:///path/to/file.db (durable), sqlite:// "
-        "(in-memory) and memory:// (explicitly ephemeral). Falling back to "
-        "in-memory would discard the data you configured a database to keep -- "
-        "see issue #122."
+        "cannot wire. Supported: postgresql://user@host/db (durable), "
+        "sqlite:///path/to/file.db (durable), sqlite:// (in-memory) and "
+        "memory:// (explicitly ephemeral). Falling back to in-memory would "
+        "discard the data you configured a database to keep -- see issue #122."
     )
     raise ConfigError(msg)
 
@@ -748,6 +1169,28 @@ async def _wire_sqlite_durable_events(
     await sqlite_trigger_store.ensure_schema()
     await sqlite_invocation_store.ensure_schema()
     return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
+
+
+async def _wire_pg_durable_events(
+    pool: Any,
+) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+    """Wire the durable-event stores onto a caller-supplied `asyncpg.Pool` (#135).
+
+    All three share one pool rather than opening their own, matching
+    `persistence/pg_*` and leaving connection lifetime with the caller — which
+    also means a single `ensure_event_schema` covers all three tables, instead
+    of three `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
+    pool connections the way the SQLite twin's serial calls cannot.
+    """
+    from maistro.events.pg_stores import (
+        PgEventLog,
+        PgInvocationStore,
+        PgTriggerStore,
+        ensure_event_schema,
+    )
+
+    await ensure_event_schema(pool)
+    return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
 
 
 def _wire_a2a_broker(agents: dict[str, Agent]) -> A2ABroker:

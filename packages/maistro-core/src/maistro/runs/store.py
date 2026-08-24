@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+from collections.abc import Iterator
 from datetime import datetime
+from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.graph.definitions import Graph
@@ -19,6 +22,7 @@ from maistro.runs.model import (
     RunStatus,
     evidence_values_equal,
 )
+from maistro.runs.sources import ADMISSION_SOURCE, EPHEMERAL_ADMISSION_SOURCES
 
 
 class RunNotFound(KeyError):
@@ -164,15 +168,106 @@ class RunStore(Protocol):
         fencing_token: str | None = None,
     ) -> Attempt: ...
 
+    async def delete_run(self, run_id: str) -> bool: ...
+
+
+#: Retention bound for the in-memory store. Not a tuning knob so much as an
+#: admission that this store is used by long-lived processes: maistro-server
+#: creates one Run per submitted task, and nothing else evicts them. `TaskQueue`
+#: met the smaller version of this problem and answered it the same way, with
+#: the same two numbers — prune terminal entries down to a target rather than
+#: trimming one at a time, so the cost is amortised.
+MAX_IN_MEMORY_RUNS = 10_000
+RUN_PRUNE_TARGET = 8_000
+
 
 class InMemoryRunStore:
-    """Reference lifecycle store for canonical Run -> NodeRun -> Attempt state."""
+    """Reference lifecycle store for canonical Run -> NodeRun -> Attempt state.
 
-    def __init__(self, *, project_store: ProjectScopeStore) -> None:
+    Bounded: terminal Runs are evicted oldest-first once the store exceeds
+    :data:`MAX_IN_MEMORY_RUNS`. Only terminal ones — evicting a live Run would
+    delete the execution identity of work still running, which is worse than the
+    memory it reclaims. A store that is entirely live at the limit therefore
+    keeps growing, and that is the correct failure: it means the process has ten
+    thousand unfinished Runs, which is a different problem and should look like
+    one.
+    """
+
+    def __init__(
+        self,
+        *,
+        project_store: ProjectScopeStore,
+        max_runs: int = MAX_IN_MEMORY_RUNS,
+        prune_target: int = RUN_PRUNE_TARGET,
+    ) -> None:
+        if prune_target > max_runs:
+            raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
-        self._runs: dict[str, Run] = {}
+        self._max_runs = max_runs
+        self._prune_target = prune_target
+        self._runs: OrderedDict[str, Run] = OrderedDict()
         self._node_runs: dict[str, NodeRun] = {}
         self._attempts: dict[str, Attempt] = {}
+
+    def _prune_terminal_runs(self) -> None:
+        """Evict the oldest terminal Runs once the store exceeds its bound.
+
+        Ephemeral sources first (:data:`EPHEMERAL_ADMISSION_SOURCES`). Without
+        that ordering this bound is source-agnostic, so a burst of chat turns
+        evicts the oldest *task* Runs to make room for itself — thousands of
+        task receipts left holding a `run_id` that no longer resolves, which is
+        the exact cross-eviction the chat retention policy claims to prevent
+        (ADR-082326-c126). The admitter's own window cannot prevent it either,
+        because this runs inside `create_run`, before any admitter sees the new
+        Run.
+        """
+        if len(self._runs) <= self._max_runs:
+            return
+        budget = len(self._runs) - self._prune_target
+        for run_id in list(islice(self._evictable(ephemeral_only=True), budget)):
+            self._forget_run(run_id)
+        # Durable-source Runs are touched only if the store is *still* over its
+        # hard bound — never merely to reach the softer prune target. Falling
+        # through on the target would evict a task Run for every chat turn once
+        # the ephemeral supply ran out, which is the same cross-eviction by a
+        # slower route.
+        if len(self._runs) <= self._max_runs:
+            return
+        remaining = len(self._runs) - self._prune_target
+        for run_id in list(islice(self._evictable(ephemeral_only=False), remaining)):
+            self._forget_run(run_id)
+
+    def _evictable(self, *, ephemeral_only: bool) -> Iterator[str]:
+        """Terminal Run ids in admission order, oldest first."""
+        for run_id, run in self._runs.items():
+            if run.status not in TERMINAL_RUN_STATUSES:
+                continue
+            source = run.provenance.get(ADMISSION_SOURCE)
+            if ephemeral_only and source not in EPHEMERAL_ADMISSION_SOURCES:
+                continue
+            yield run_id
+
+    def _forget_run(self, run_id: str) -> None:
+        """Drop a Run and everything hanging off it.
+
+        The NodeRuns and Attempts go with it. Leaving them would keep the larger
+        half of the memory while removing the index into it — a leak that is
+        also unreachable.
+        """
+        del self._runs[run_id]
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id == run_id
+        }
+        for node_run_id in node_run_ids:
+            del self._node_runs[node_run_id]
+        for attempt_id in [
+            attempt_id
+            for attempt_id, attempt in self._attempts.items()
+            if attempt.node_run_id in node_run_ids
+        ]:
+            del self._attempts[attempt_id]
 
     async def create_run(
         self,
@@ -211,6 +306,7 @@ class InMemoryRunStore:
             provenance=dict(provenance or {}),
         )
         self._runs[run.run_id] = run
+        self._prune_terminal_runs()
         return run.model_copy(deep=True)
 
     async def get_run(self, run_id: str) -> Run | None:
@@ -230,6 +326,32 @@ class InMemoryRunStore:
         updated = transition_run(run, target, at=at, result=result, error=error)
         self._runs[run_id] = updated
         return updated.model_copy(deep=True)
+
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
+        """Forget one terminal Run and everything hanging off it.
+
+        False when the Run does not exist, so a retention sweep that races
+        another sweep is a no-op rather than an error. Refuses a non-terminal
+        Run: deleting the execution identity of work that is still running
+        would leave the work itself running with nothing recording it, which is
+        worse than the memory it reclaims. ``force`` is for a caller that has
+        already established the Run is abandoned.
+        """
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        if run.status not in TERMINAL_RUN_STATUSES and not force:
+            raise RunIntegrityError(
+                f"cannot delete Run {run_id!r} in non-terminal status {run.status.value!r}"
+            )
+        children = [child.run_id for child in self._runs.values() if child.parent_run_id == run_id]
+        if children:
+            raise RunIntegrityError(
+                f"cannot delete Run {run_id!r} while {len(children)} child Run(s) reference it; "
+                "delete the descendants first"
+            )
+        self._forget_run(run_id)
+        return True
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = self._require_run(run_id)

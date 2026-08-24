@@ -54,7 +54,7 @@ point of [#161](https://github.com/Agent-StrongHold/Project-mAIstro/issues/161):
   would have called that check "every PR" while it reported `skipped` on every
   PR not based on `main`.
 
-### Caveat for #162: a check that reports `skipped`
+### Resolved by #162: a check that reports `skipped`
 
 A job that declines to run still produces a check run, with conclusion
 `skipped`. Whether branch protection accepts that as satisfying a required check
@@ -62,14 +62,31 @@ depends on configuration, so **a check that can report `skipped` must not be
 added to the required set without deciding that explicitly**. Today that is
 `Container scan + SBOM + cosign`, observed skipping on PR #167.
 
-### Caveat for #162: paths-filtered checks and "Expected"
+**Decided:** required on `main`, not on `develop`. Its job `if:` tests
+`base_ref == 'main'`, so on a `main`-based PR it runs and reports for real,
+and on any other base it never runs — which is precisely where the `skipped`
+ambiguity lives. Requiring it only where it executes removes the question
+instead of answering it. See [`BRANCH-PROTECTION.md`](BRANCH-PROTECTION.md).
+
+### Resolved by #162: paths-filtered checks and "Expected"
 
 A required check whose workflow does not trigger never reports, and classic
 branch protection leaves the PR waiting on an `Expected` status forever. So a
-**paths-filtered check must not be added to the required set as-is.** The two
-ways out are a always-running job that early-exits when the paths do not match,
-or leaving the check advisory. Decide per check in #162; this file only records
-which ones carry the hazard.
+**paths-filtered check must not be added to the required set as-is.**
+
+**Decided:** both paths-filtered checks were fixed rather than left advisory,
+so the `Runs on` column above no longer contains a `paths` row at all.
+`Registry CI` lost its filter (it validates the ADR → spec → AC chain, the fifth
+of #160's five mandates, and its filter had grown to match nearly every PR
+anyway); `Cage Guard` now runs on every PR and passes unless the diff touches
+`cage/` or `eval/` — it previously had no success path at all, so it could not
+have been required under any configuration. Reasoning in
+[`BRANCH-PROTECTION.md`](BRANCH-PROTECTION.md).
+
+A future `paths:`-filtered check reintroduces the hazard, so the rule stands:
+make the job always run and early-exit, or record it as advisory in
+`.github/branch-protection.json`. `scripts/check-branch-protection.py` will not
+let it be silently neither.
 
 ## The checks
 
@@ -78,25 +95,29 @@ which ones carry the hazard.
 | Workflow | Check name | Runs on |
 |---|---|---|
 | CI | `docker-build` | every PR |
+| CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
-| CI | `migrations` | every PR |
+| CI | `object storage (MinIO)` | every PR |
+| CI | `postgres (pg17)` | every PR |
+| CI | `postgres (pg18)` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
-| Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | paths |
+| Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | every PR |
 | CodeQL Advanced | `Analyze (actions)` | base `main` |
 | CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
 | CodeQL Advanced | `Analyze (python)` | base `main` |
 | Formal Conformance | `formal-conformance` | every PR |
-| Registry CI | `Validate ADR/spec front-matter` | paths |
+| Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
 | quality | `coverage (MinIO)` | every PR |
+| quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |

@@ -18,6 +18,10 @@ from adapters.task_backend import TaskRecord
 
 logger = logging.getLogger("hive.engine")
 
+#: The Workspace name both this app and maistro-core default to. Only a
+#: deployment that changed it needs the warning below.
+DEFAULT_WORKSPACE_ID = "default"
+
 if TYPE_CHECKING:
     from config import Settings
 
@@ -56,6 +60,17 @@ class EngineService:
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "episodic_store", None)
 
+    @property
+    def task_admitter(self) -> Any:
+        """The core Container's seam onto the canonical Run spine, or None.
+
+        None is a real answer, like `episodic_store` above: without the bridge
+        there is no Run store in this process, and a task queue told to admit
+        against nothing would fail every submission.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "task_admitter", None)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
@@ -66,11 +81,12 @@ class EngineService:
                 self._agent_port = bridge
                 self._configured = True
             except Exception as exc:
-                import logging
-
-                logging.getLogger("hive.engine").warning(
-                    "maistro-core bridge failed (%s) — falling back to stub", exc
-                )
+                # The module logger, not a function-local `import logging`:
+                # that import bound `logging` as a local for the whole
+                # function, so the later handler's `logging.getLogger(...)`
+                # raised UnboundLocalError whenever this branch was not taken —
+                # turning any failure below into a different, wrong error.
+                logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
                 self._agent_port = StubAgentPort()
         else:
             self._agent_port = StubAgentPort()
@@ -105,7 +121,7 @@ class EngineService:
                     executor = run_task
                     logger.info("LocalTaskBackend (demo) using engineering conductor executor")
 
-                backend = LocalTaskBackend(executor=executor)
+                backend = LocalTaskBackend(executor=executor, admitter=self.task_admitter)
                 await backend.start()
                 self._backend = backend
                 if pm_mode:
@@ -122,14 +138,26 @@ class EngineService:
                     base_url=settings.maistro_base_url,
                     api_key=settings.maistro_router_api_key,
                 )
+                if settings.hive_default_workspace_id != DEFAULT_WORKSPACE_ID:
+                    # This deployment's tasks are admitted by a separate
+                    # maistro-server, which reads its own WORKSPACE_ID. A Hive
+                    # that customized its default without an identical remote
+                    # setting silently files every unscoped submission outside
+                    # the Workspace it thinks it configured -- said out loud,
+                    # because the symptom is a correct-looking Run in the wrong
+                    # Project rather than an error.
+                    logger.warning(
+                        "hive_default_workspace_id=%s is not applied to the remote task "
+                        "server; set the same WORKSPACE_ID there or unscoped submissions "
+                        "will land in its own default",
+                        settings.hive_default_workspace_id,
+                    )
                 logger.info(
                     "MaistroServerTaskBackend wired — production tasks via %s",
                     settings.maistro_base_url,
                 )
         except Exception as exc:
-            logging.getLogger("hive.engine").warning(
-                "TaskBackend setup failed (%s) — mission dispatch disabled", exc
-            )
+            logger.warning("TaskBackend setup failed (%s) — mission dispatch disabled", exc)
 
     def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and
@@ -188,11 +216,19 @@ class EngineService:
         description: str,
         *,
         user_id: str = "",
+        workspace_id: str | None = None,
         task_type: str | None = None,
         agent_id: str | None = None,
         capability: str | None = None,
         program_context: dict | None = None,
     ) -> TaskRecord:
+        """Submit one task, optionally under a named Hive Workspace (#158).
+
+        `workspace_id` must already be authorized by the route that accepted the
+        request — this service does not know Hive's membership model and does
+        not check it. None means the deployment's default Workspace, which is
+        what every caller that names no Workspace still gets.
+        """
         if self._backend is None:
             raise RuntimeError("TaskQueue not available")
         from maistro.agents.pm_capabilities import is_gated, normalize_capability
@@ -224,11 +260,13 @@ class EngineService:
                 program_context=pctx,
             ),
             user_id=user_id,
+            workspace_id=workspace_id,
         )
         logger.info(
-            "task_submitted id=%s user=%s agent=%s capability=%s type=%s",
+            "task_submitted id=%s user=%s workspace=%s agent=%s capability=%s type=%s",
             rec.id,
             user_id or "-",
+            workspace_id or "-",
             agent_id or "-",
             capability or "-",
             task_type or "-",
@@ -252,6 +290,17 @@ class EngineService:
         if remove is not None:
             return bool(remove(task_id))
         return False
+
+    @property
+    def supports_clear(self) -> bool:
+        """Whether this deployment's backend can bulk-clear tasks.
+
+        `MaistroServerTaskBackend` cannot: it has no `remove_where`, so
+        `clear_tasks` returns 0 and a caller is told a clear succeeded that
+        removed nothing. A UI that can read this can decline to offer the
+        control instead of reporting "cleared 0" as a success.
+        """
+        return self._backend is not None and hasattr(self._backend, "remove_where")
 
     def clear_tasks(self, *, status: str | None = None) -> int:
         if self._backend is None:

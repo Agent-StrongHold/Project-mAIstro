@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
+    # The Workspace a submission that names none lands in (#158). Passed
+    # explicitly into `AgentConfig.workspace_id` rather than left to core's own
+    # default, so "which Workspace did this Run go to" has one answer this
+    # deployment states, not two that happen to agree.
+    hive_default_workspace_id: str = "default"
     maistro_agents_dir: str = "agents"
     maistro_llm_base_url: str | None = None
     maistro_llm_api_key: SecretStr | None = None

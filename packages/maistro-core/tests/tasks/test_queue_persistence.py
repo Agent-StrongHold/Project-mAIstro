@@ -8,6 +8,7 @@ failing write is logged and swallowed, never surfaced to the caller.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -83,8 +84,14 @@ async def test_submit_and_status_changes_upsert_records(
     assert final.id == task.task_id
     assert final.description == "persist me"
     assert final.workspace == "ws"
-    assert final.started_at is not None and final.started_at.tzinfo is None
-    assert final.completed_at is not None and final.completed_at.tzinfo is None
+    # Aware UTC, not naive wall-clock. The `_naive()` helper that stripped
+    # tzinfo went away with #122: the columns are TIMESTAMPTZ now, and a naive
+    # value written into one is interpreted in whatever the server's TimeZone
+    # happens to be — correct on a UTC server and silently wrong elsewhere.
+    assert final.started_at is not None and final.started_at.tzinfo is not None
+    assert final.started_at.utcoffset() == timedelta(0)
+    assert final.completed_at is not None and final.completed_at.tzinfo is not None
+    assert final.completed_at.utcoffset() == timedelta(0)
 
 
 async def test_rejected_transition_persists_nothing(

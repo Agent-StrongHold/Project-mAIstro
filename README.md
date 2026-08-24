@@ -64,24 +64,25 @@ uv run pytest                         # run the test suite
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
 
-Then apply the migrations. The two environment settings are not optional:
+Then apply the migrations. They need a server to connect to, which is why this
+comes *after* `docker compose up` rather than before it:
 
 ```bash
 set -a; . ./.env; set +a              # compose reads .env itself; your shell does not
-DB_PORT=5433 uv run alembic upgrade head
+DATABASE_URL=postgresql://maistro:$DB_PASSWORD@127.0.0.1:5433/maistro \
+  uv run alembic upgrade head
 ```
 
-`docker-compose.yml` publishes Postgres on **host port 5433** (`127.0.0.1:5433:5432`),
-while `DatabaseSettings` defaults to 5432 — so a bare `alembic upgrade head`
-either fails to connect or, if some other PostgreSQL is listening on 5432,
-migrates the wrong database. `DB_PASSWORD` comes from `.env`, which Compose
-interpolates for the container but does not export to your shell.
+`docker-compose.yml` publishes Postgres on **host port 5433**
+(`127.0.0.1:5433:5432`) while the defaults assume 5432, so a bare
+`alembic upgrade head` either fails to connect or — if some other PostgreSQL is
+listening on 5432 — migrates the wrong database. `DB_PASSWORD` comes from
+`.env`, which Compose interpolates for the container but does not export to
+your shell.
 
-`alembic` reads `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`,
-not `DATABASE_URL` — the two are separate configuration paths today, which is
-[#122](https://github.com/Agent-StrongHold/Project-mAIstro/issues/122), and the
-reason this needs spelling out at all. `DB_USER` and `DB_NAME` default to
-`maistro`, matching Compose; only the port and password differ.
+Alembic and the application resolve that URL through the same function
+(`require_database_url`, [#187](https://github.com/Agent-StrongHold/Project-mAIstro/issues/187)),
+so `DATABASE_URL` and the `DB_*` variables both work and mean the same thing.
 
 The repo is a `uv` workspace: **nine Python packages**, plus the **`packages/hive-conductor`** reference app (frontend + backend + Docker).
 

@@ -55,7 +55,13 @@ re2 = [
 # S3-compatible, not AWS: `endpoint_url` is configurable, so MinIO, Cloudflare
 # R2 and Backblaze B2 work. CI exercises it against a real MinIO.
 s3 = [
+    # Two archive implementations landed in parallel and both are on this tree:
+    # `maistro/memory/archive/s3.py` (ADR-082226-d3dd) uses aioboto3, and
+    # `maistro/archive/s3.py` (ADR-082226-f436) deliberately uses synchronous
+    # boto3 in a worker thread. Until one is retired, the extra has to satisfy
+    # both or `--extra s3` breaks whichever it omits.
     "aioboto3>=13.0",
+    "boto3>=1.34,<2",
 ]
 # Vendor-neutral tracing export. The agent tracing decorators use the OpenTelemetry
 # API directly (see observability/tracing.py); installing this extra + setting an OTLP

@@ -136,6 +136,11 @@ class MaistroCoreBridge:
             litellm_url=llm_base or "http://localhost:4000",
             litellm_key=llm_key,
             agents_dir=settings.maistro_agents_dir,
+            # Stated, not inherited (#158). Core defaults this to "default" too,
+            # so the value is the same today — but a Hive that changed its
+            # default Workspace and a core that did not would then disagree
+            # about where unscoped Runs live, silently.
+            workspace_id=settings.hive_default_workspace_id,
         )
 
         self._container = await create_container(config)

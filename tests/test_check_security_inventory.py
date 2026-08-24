@@ -19,6 +19,7 @@ in, and the property that matters is which documents it *rejects*.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import textwrap
@@ -174,33 +175,73 @@ def test_an_unseeded_control_class_is_not_guessed_at(gate):
 # --------------------------------------------------------------------------
 
 
+def _other_markers(gate) -> str:
+    """Every counted claim except `measured-outbound-http`, stated correctly.
+
+    The tests below are about one claim, but `check_counted_claims` reports a
+    missing marker for *every* entry in `_COUNTED_CLAIMS` — so a fixture
+    document naming only one would fail for the others and the assertion under
+    test would never be reached. Composed from the registry rather than
+    hard-coded, so adding a claim does not silently break these.
+    """
+    computed = {
+        "_outbound_fetch_modules": gate._outbound_fetch_modules,
+        "_guarded_fetch_modules": gate._guarded_fetch_modules,
+        "_ssrf_guard_call_sites": gate._ssrf_guard_call_sites,
+        "_pooled_fetch_modules": gate._pooled_fetch_modules,
+        "_unpooled_fetch_modules": gate._unpooled_fetch_modules,
+    }
+    lines = []
+    for marker, sources in gate._COUNTED_CLAIMS.items():
+        if marker == "measured-outbound-http":
+            continue
+        numbers = " and ".join(f"**{computed[name]()}**" for name in sources)
+        lines.append(f"   Measured (`{marker}`) — {numbers} of them.")
+    return "\n".join(lines)
+
+
+def _findings_for(findings, marker: str) -> list[str]:
+    return [f for f in findings.drifted_counts if f.startswith(f"{marker}:")]
+
+
 def test_a_tagged_count_that_disagrees_with_the_code_fails(gate, monkeypatch):
     monkeypatch.setitem(gate.__dict__, "_outbound_fetch_modules", lambda: 25)
     monkeypatch.setitem(gate.__dict__, "_guarded_fetch_modules", lambda: 3)
 
-    text = _limitations(
-        """
+    text = (
+        _limitations(
+            """
         1. **SSRF coverage.** Measured (`measured-outbound-http`) — **11** modules import an
            HTTP client and **3** call sites invoke a guard.
         """
+        )
+        + "\n"
+        + _other_markers(gate)
+        + "\n"
     )
     findings = gate.Findings()
     gate.check_counted_claims(text, findings)
 
-    assert len(findings.drifted_counts) == 1
-    assert "(11, 3)" in findings.drifted_counts[0]
-    assert "(25, 3)" in findings.drifted_counts[0]
+    reported = _findings_for(findings, "measured-outbound-http")
+    assert len(reported) == 1
+    assert "(11, 3)" in reported[0]
+    assert "(25, 3)" in reported[0]
 
 
 def test_a_tagged_count_that_matches_the_code_passes(gate, monkeypatch):
     monkeypatch.setitem(gate.__dict__, "_outbound_fetch_modules", lambda: 25)
     monkeypatch.setitem(gate.__dict__, "_guarded_fetch_modules", lambda: 3)
 
-    text = _limitations(
-        """
+    text = (
+        _limitations(
+            """
         1. **SSRF coverage.** Measured (`measured-outbound-http`) — **25** modules import an
            HTTP client and **3** call sites invoke a guard.
         """
+        )
+        + "\n"
+        + _other_markers(gate)
+        + "\n"
     )
     findings = gate.Findings()
     gate.check_counted_claims(text, findings)
@@ -210,12 +251,19 @@ def test_a_tagged_count_that_matches_the_code_passes(gate, monkeypatch):
 
 def test_deleting_the_marker_fails_rather_than_silently_unchecking(gate):
     """Otherwise the cheapest way to fix a wrong number is to stop checking it,
-    which is the failure mode a ratchet exists to prevent."""
+    which is the failure mode a ratchet exists to prevent.
+
+    Asserted over every registered claim, not just one: a marker that can be
+    deleted unnoticed is the hole, and a test pinned to a single name leaves
+    that hole open for every claim added afterwards.
+    """
     findings = gate.Findings()
     gate.check_counted_claims(_limitations("1. **SSRF coverage.** It is fine.\n"), findings)
 
-    assert len(findings.drifted_counts) == 1
-    assert "marker is gone" in findings.drifted_counts[0]
+    assert len(findings.drifted_counts) == len(gate._COUNTED_CLAIMS)
+    assert all("marker is gone" in f for f in findings.drifted_counts)
+    for marker in gate._COUNTED_CLAIMS:
+        assert _findings_for(findings, marker), f"{marker} can be deleted unnoticed"
 
 
 def test_an_untagged_number_is_left_alone(gate):
@@ -249,6 +297,57 @@ def test_guard_call_sites_are_counted_as_calls_not_as_text(gate):
     assert gate._ssrf_guard_call_sites() > 0
     assert census.get(guard_module, 0) == 0
     assert gate._ssrf_guard_call_sites() == sum(census.values())
+
+
+class TestTheSeamCensus:
+    """`_pooled_fetch_modules` / `_unpooled_fetch_modules` (#155).
+
+    Once the guard moves to `maistro.http`'s transport, "how many call sites
+    call the guard" stops being the coverage question and "how many modules
+    open a connection the transport never sees" starts being it. These pin the
+    classifier, because a wrong answer here is a security document stating a
+    coverage figure nobody measured.
+    """
+
+    def test_importing_httpx_is_not_a_bypass(self, gate):
+        """`import httpx` is what a module writes to catch `httpx.HTTPError`.
+
+        Counting it would flag several modules that never open a socket — a
+        finding nobody can act on, which is the failure mode this file's own
+        docstring warns about.
+        """
+        tree = ast.parse("import httpx\n\ntry:\n    pass\nexcept httpx.HTTPError:\n    pass\n")
+
+        assert not gate._constructs_private_client(tree)
+
+    def test_constructing_a_client_is_a_bypass(self, gate):
+        assert gate._constructs_private_client(ast.parse("import httpx\nc = httpx.AsyncClient()\n"))
+        assert gate._constructs_private_client(ast.parse("import httpx\nc = httpx.Client()\n"))
+
+    def test_a_bare_imported_constructor_is_a_bypass(self, gate):
+        """`from httpx import AsyncClient` then `AsyncClient()` opens the same
+        unpooled connection as the attribute form."""
+        tree = ast.parse("from httpx import AsyncClient\nc = AsyncClient()\n")
+
+        assert gate._constructs_private_client(tree)
+
+    def test_the_two_counts_partition_the_census(self, gate):
+        """Pooled and unpooled must add up, or one of them is being quietly
+        dropped and the document's ratio describes nothing."""
+        assert gate._pooled_fetch_modules() + gate._unpooled_fetch_modules() == (
+            gate._outbound_fetch_modules()
+        )
+
+    def test_the_pool_itself_is_not_counted_as_a_bypass(self, gate):
+        """`http.py` constructs the clients everything else borrows — the ones
+        the outbound policy wraps. Counting it would make the seam permanently
+        report a hole in itself."""
+        pool = gate._CORE_SRC / "http.py"
+        assert pool.is_file()
+        assert gate._constructs_private_client(ast.parse(pool.read_text(encoding="utf-8"))), (
+            "the pool must construct clients, or this exclusion is guarding nothing"
+        )
+        assert gate._unpooled_fetch_modules() < gate._outbound_fetch_modules()
 
 
 def test_the_outbound_fetch_census_finds_the_modules_that_open_connections(gate):

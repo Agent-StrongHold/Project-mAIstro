@@ -39,6 +39,21 @@ _PM_FLEET_AGENT_NAMES = frozenset(
 )
 
 
+def is_workspace_member(user_id: str, workspace_id: str | None) -> bool:
+    """True only if `workspace_id` names a real workspace `user_id` belongs to.
+
+    Strict where `is_workspace_request_authorized()` is permissive: no fallback
+    to the legacy global flag. Submitting work *into* a workspace has to be an
+    unambiguous yes -- there is no sensible legacy reading of "file this Run in
+    a workspace the caller is not in" (#158), where there is one for "is this
+    caller allowed to see gated UI at all".
+    """
+    if not workspace_id:
+        return False
+    workspace = stores.workspaces.get(workspace_id)
+    return workspace is not None and any(m.user_id == user_id for m in workspace.members)
+
+
 def is_workspace_request_authorized(user_id: str, workspace_id: str | None) -> bool:
     """True if `workspace_id` names a real workspace `user_id` is a member
     of -- regardless of which persona it runs. Falls back to the legacy
@@ -46,10 +61,8 @@ def is_workspace_request_authorized(user_id: str, workspace_id: str | None) -> b
     one, or one the caller isn't a member of (so a caller can never probe
     another user's private workspace_id to flip gated behavior for
     themselves)."""
-    if workspace_id is not None:
-        workspace = stores.workspaces.get(workspace_id)
-        if workspace is not None and any(m.user_id == user_id for m in workspace.members):
-            return True
+    if is_workspace_member(user_id, workspace_id):
+        return True
     return is_pm_poc_mode()
 
 

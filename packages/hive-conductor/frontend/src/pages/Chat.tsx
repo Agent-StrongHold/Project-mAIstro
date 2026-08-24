@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { usePmPoc } from "../context/PocMode";
 
 type Role = "user" | "assistant";
 type StepStatus = "running" | "done" | "error";
@@ -28,14 +27,6 @@ interface Session {
   messages: Message[];
   createdAt: Date;
 }
-
-const PM_SUGGESTED_PROMPTS_HEADING =
-  "AI Project Manager — ask about your sprint, run research, generate documents";
-const PM_SUGGESTED_PROMPTS = [
-  "What are my top blockers this sprint?",
-  "Research competitors to Cursor AI",
-  "Draft a PRD for real-time collaboration",
-];
 
 const SUGGESTED_PROMPTS_HEADING = "Chat, then turn it into an agent, a DAG, or a recurring workflow";
 const SUGGESTED_PROMPTS = [
@@ -184,9 +175,8 @@ function ToolSteps({ steps }: { steps: ToolStep[] }) {
 }
 
 export default function ChatPage() {
-  const pmPoc = usePmPoc();
-  const suggestedPromptsHeading = pmPoc ? PM_SUGGESTED_PROMPTS_HEADING : SUGGESTED_PROMPTS_HEADING;
-  const suggestedPrompts = pmPoc ? PM_SUGGESTED_PROMPTS : SUGGESTED_PROMPTS;
+  const suggestedPromptsHeading = SUGGESTED_PROMPTS_HEADING;
+  const suggestedPrompts = SUGGESTED_PROMPTS;
   const [models, setModels] = useState<string[]>([]);
   const MODELS = models;
   const [sessions, setSessions] = useState<Session[]>([createSession()]);

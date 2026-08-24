@@ -3,19 +3,50 @@ name: Cage Guard — Auto-reject PRs touching cage/ or eval/
 permissions:
   contents: read
 
+# Runs on every PR and *passes* unless the diff touches the immutable paths
+# (#162). It used to trigger only on those paths, which made it unrequirable in
+# two ways at once: on a normal PR it never reported, so branch protection would
+# wait on an `Expected` status forever; and it had no success path at all — the
+# single step was `exit 1`. A check that can only ever fail cannot be a required
+# check, so under branch protection it would have stayed advisory, and a failing
+# advisory check does not block a merge. The guard would have been decorative
+# exactly when it mattered.
 on:
   pull_request:
-    paths:
-      - 'packages/hive-conductor/cage/**'
-      - 'packages/hive-conductor/eval/**'
+
+concurrency:
+  group: cage-guard-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   block:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge-base diff below needs both sides of the range.
+          fetch-depth: 0
+
       - name: Reject immutable path changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo "::error::❌ This PR modifies cage/ or eval/ — these paths are IMMUTABLE."
+          set -euo pipefail
+          # `...` is the merge base, so this is what the PR changed rather than
+          # everything that has landed on the base branch since it forked.
+          touched=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+            'packages/hive-conductor/cage' \
+            'packages/hive-conductor/eval')
+          if [ -z "$touched" ]; then
+            echo "OK: this PR does not modify cage/ or eval/."
+            exit 0
+          fi
+          echo "::error::This PR modifies cage/ or eval/ — these paths are IMMUTABLE."
           echo "::error::The Turing Cage and Eval suite cannot be modified by automated processes."
           echo "::error::If this is a legitimate human-initiated change, a repo admin must merge manually."
+          echo "Files:"
+          while IFS= read -r file; do
+            echo "  - $file"
+          done <<< "$touched"
           exit 1

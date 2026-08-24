@@ -62,6 +62,119 @@ jobs:
           packages/maistro-rsi/src
           packages/maistro-design/src
 
+  postgres:
+    # A real PostgreSQL, because the alternative was proving nothing. Every
+    # `test_pg_*.py` module mocks the connection and asserts on the SQL string,
+    # which cannot catch a missing table, a column the store writes and the
+    # schema lacks, or a naive/aware timestamp mismatch — and #122 found all
+    # three once a server was actually there.
+    #
+    # Matrixed over the supported majors so "PostgreSQL 17-19" is a tested
+    # claim rather than a README line. 19 is absent only because no pgvector
+    # image ships for it yet; add it here the day one does.
+    name: postgres (pg${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["17", "18"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      # First, because it drives alembic itself and ends on an empty database:
+      # applying the chain and then asking these tests to apply it again is a
+      # different scenario from the one they were written for (#177).
+      - name: The chain applies to an empty database, and reverses
+        run: uv run pytest tests/migrations/test_migration_chain.py -v --tb=short
+      # The migration chain is itself under test here: it could not run to
+      # completion against a clean database before this change.
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+      - name: Migrations are reversible
+        run: |
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Persistence conformance
+        run: uv run pytest packages/maistro-core/tests/persistence -v --tb=short
+      - name: Container wires the PostgreSQL backend
+        run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short
+
+  object-storage:
+    # MinIO, not moto. The default `test` job already runs the archive suite
+    # against an in-process moto server, which is a real HTTP S3 implementation
+    # and enough to catch our own mistakes. MinIO is what people actually run,
+    # so it is what catches the difference between "S3-compatible" and
+    # "compatible with the parts moto implements" (ADR-082226-f436 decision 3).
+    name: object storage (MinIO)
+    runs-on: ubuntu-latest
+    env:
+      MAISTRO_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: maistro
+      AWS_SECRET_ACCESS_KEY: maistro-secret
+      AWS_DEFAULT_REGION: us-east-1
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev --extra s3
+      # `docker run`, not a `services:` container. MinIO's own image needs an
+      # explicit `server /data` command and service containers cannot set one,
+      # which is why this used `bitnami/minio` — a repackaging that starts the
+      # server by default. Bitnami withdrew that tag and the job began failing
+      # on `manifest unknown`, so the dependency on someone else's repackaging
+      # is gone: the upstream image, pinned, started here.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=maistro \
+            -e MINIO_ROOT_PASSWORD=maistro-secret \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "minio ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "minio did not become ready" >&2
+          docker logs minio >&2 || true
+          exit 1
+      - name: Archive conformance against MinIO
+        run: uv run pytest packages/maistro-core/tests/archive -v --tb=short
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -146,6 +259,59 @@ jobs:
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
+  durable-events:
+    # The PostgreSQL legs of the durable-event suites (#135) skip without a
+    # server, and a skipped leg is untested rather than passing — which is how
+    # "durable events" stayed in-memory on PostgreSQL unnoticed in the first
+    # place. This job is what makes those legs actually run.
+    #
+    # Plain postgres:17, not pgvector/pgvector:pg17: nothing here needs the
+    # `vector` extension, because the schema-agreement test renders revision
+    # 004 on its own rather than walking the chain from 001.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
+      # Turns "no server, skip" into a failure, in this job only. Without it a
+      # misconfigured service container would leave this job green with every
+      # PostgreSQL leg skipped — reporting the absence of the gap rather than
+      # its closure.
+      MAISTRO_REQUIRE_PG_LEGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Durable event stores conform across memory, SQLite and PostgreSQL
+        run: uv run pytest packages/maistro-core/tests/events -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+      # Named file, not the directory: `test_migration_chain.py` walks the chain
+      # from 001, whose first statement is `CREATE EXTENSION vector` — which the
+      # plain postgres:17 above cannot serve. It runs in `postgres` instead,
+      # which is on the pgvector image.
+      - name: Migration 004 and ensure_event_schema describe the same tables
+        run: uv run pytest tests/migrations/test_event_schema_agreement.py -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+
   strike-ladder:
     # The PostgreSQL leg of the strike conformance suite (#134) skips without a
     # server, and the plain `test` job has none — so the suite that exists to
@@ -153,6 +319,10 @@ jobs:
     # `InMemoryStrikeTracker`. A skipped leg is untested, not passing, and that
     # is precisely how the original defect survived: `PgStrikeTracker` returned
     # `dict` from both methods and nothing ran it against `Gate`'s expectations.
+    #
+    # A separate job from `durable-events` above, not a second step in it: they
+    # want different databases, and a shared server would let one suite's
+    # leftover schema decide whether the other's passes.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -327,55 +497,14 @@ jobs:
       # PR that does the renaming, which after #161 is every PR.
       - name: PR check contract matches the workflows
         run: python3 scripts/check-required-checks.py
+      # And the ruleset that pins branch protection against those names (#162).
+      # Offline only: it checks that every required context is a real check
+      # name, that no branch requires one that cannot report there, and that
+      # every PR check is required somewhere or excused by name. The last is
+      # what makes adding a gate a decision rather than a default — a new job
+      # fails this step until someone says whether it is part of the merge
+      # contract. Live verification (--verify) needs admin scope and is run by
+      # hand, not here.
+      - name: Branch-protection ruleset matches the check names
+        run: python3 scripts/check-branch-protection.py
 
-  # The alembic chain, applied to a real PostgreSQL server (#177).
-  #
-  # No workflow had a `postgres` service before this, which is why a migration
-  # chain that could not apply to an empty database had never failed a build:
-  # `alembic upgrade head` died at 003 on a foreign key to `orgs.id`, a table
-  # nothing creates, and transactional DDL rolled 001 and 002 back with it —
-  # leaving zero tables at the first command of every documented Postgres setup
-  # path. Nothing ran it, so nothing caught it.
-  #
-  # `pgvector/pgvector:pg17`, the exact image docker-compose.yml runs — not
-  # plain `postgres:17`. Migration 001 opens with
-  # `CREATE EXTENSION IF NOT EXISTS vector`, which the stock image cannot
-  # satisfy: `extension "vector" is not available`. The stock image was this
-  # job's first red run, and the catch is the point — a job that tests a
-  # different server from the one the project deploys is a job that can go
-  # green over a deployment that would not start.
-  #
-  # It is also why "verified locally" was not enough: this container's
-  # PostgreSQL 18 happens to ship `vector.control`, so the chain passed here
-  # while depending on an extension CI did not have. The local pass proved the
-  # migrations were right, not that the environment was.
-  migrations:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: maistro_test
-        ports:
-          - 5432:5432
-        # Without this the job races the server: `alembic upgrade` would fail
-        # with a connection error that reads exactly like the bug this job
-        # exists to catch.
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
-      - run: uv sync --locked --extra dev
-      - name: Migration chain applies to an empty database
-        env:
-          MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/maistro_test
-        run: uv run pytest tests/migrations -v --tb=short

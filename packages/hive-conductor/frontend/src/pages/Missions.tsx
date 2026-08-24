@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../lib/api";
-import { usePmPoc } from "../context/PocMode";
-import { PM_NAV_MISSIONS, PM_NAV_PROGRAM } from "../lib/pmBranding";
+import { useWorkspaces } from "../context/WorkspaceContext";
 import {
   Card, Hex, Modal, SearchInput, StatCard, LoadingSpinner, PageHeader, useToast,
   ConfirmDialog, EmptyState,
@@ -28,6 +26,13 @@ type Mission = {
   tags: string[];
   metadata: Record<string, unknown>;
 };
+
+/** The engine owns this mission's lifecycle, so every status change on it is
+ *  refused with a 409. The backend says so on the record rather than each
+ *  surface guessing from deployment mode (#190 review). */
+function isEngineBacked(m: Mission): boolean {
+  return m.metadata?.engine_backed === true;
+}
 
 type AgentOption = { id: string; name: string };
 
@@ -126,13 +131,16 @@ const inputBase: React.CSSProperties = {
 };
 
 export default function Missions() {
-  const pmPoc = usePmPoc();
+  const { activeWorkspaceId } = useWorkspaces();
   const toast = useToast();
   const [rows, setRows] = useState<Mission[]>([]);
   const [sel, setSel] = useState<Mission | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterTab>("All");
   const [search, setSearch] = useState("");
+  // Whether this deployment's task backend can bulk-clear at all. Defaults to
+  // false so a control that might not work is never offered before we know.
+  const [clearSupported, setClearSupported] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
@@ -177,6 +185,22 @@ export default function Missions() {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [thread]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/health")
+      .then((r) => r.json())
+      .then((h: { task_clear_supported?: boolean }) => {
+        if (!cancelled) setClearSupported(h.task_clear_supported === true);
+      })
+      .catch(() => {
+        // A health check that cannot be read is not a reason to break the
+        // page; the bulk-clear controls simply stay hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const filtered = useMemo(() => {
     let list = rows;
     const statusFilter = FILTER_MAP[filter];
@@ -205,7 +229,13 @@ export default function Missions() {
         priority: newPriority,
       };
       if (newAgent) body.assigned_agents = [newAgent];
-      const created = await apiPost<Mission>("/v1/tasks", body);
+      // The workspace the user is actually looking at. Without it every
+      // mission created from a selected workspace was filed in the
+      // deployment default instead, silently.
+      const scoped = activeWorkspaceId
+        ? `/v1/tasks?workspace_id=${encodeURIComponent(activeWorkspaceId)}`
+        : "/v1/tasks";
+      const created = await apiPost<Mission>(scoped, body);
       setShowCreate(false);
       setNewTitle("");
       setNewDesc("");
@@ -315,21 +345,18 @@ export default function Missions() {
   return (
     <div style={{ minHeight: "calc(100vh - 60px)" }}>
       <PageHeader
-        title={pmPoc ? PM_NAV_MISSIONS : "Missions"}
-        subtitle={
-          pmPoc
-            ? "Autonomous fleet tasks (poll Jira, scan risks, research). Jira writes use Jira drafts on Program."
-            : "Multi-step tasks assigned to AI agents"
-        }
-        helpHref={pmPoc ? undefined : "/docs#missions"}
+        title="Missions"
+        subtitle="Multi-step tasks assigned to AI agents"
+        helpHref="/docs#missions"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            {pmPoc && (
-              <Link to="/agents" className="btn" style={{ fontSize: 9, padding: "2px 8px" }}>
-                {PM_NAV_PROGRAM}
-              </Link>
-            )}
-            {pmPoc && rows.some((m) => m.status === "completed") && (
+            {/* Kept (#190) -- these are working bulk-clear controls with real
+                handlers, so dropping the POC branch would have deleted them
+                and orphaned clearCompletedMissions / clearFailedMissions. But
+                only offered where clearing actually works: the production task
+                backend has no bulk removal, so the handler would report
+                "Cleared 0" as a success. `/health` says which it is. */}
+            {clearSupported && rows.some((m) => m.status === "completed") && (
               <button
                 type="button"
                 className="btn"
@@ -339,7 +366,7 @@ export default function Missions() {
                 Clear completed
               </button>
             )}
-            {pmPoc && rows.some((m) => m.status === "failed") && (
+            {clearSupported && rows.some((m) => m.status === "failed") && (
               <button
                 type="button"
                 className="btn"
@@ -349,11 +376,9 @@ export default function Missions() {
                 Clear failed
               </button>
             )}
-            {!pmPoc && (
-              <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setShowCreate(true)}>
-                + new
-              </button>
-            )}
+            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setShowCreate(true)}>
+              + new
+            </button>
           </div>
         }
       />
@@ -471,17 +496,12 @@ export default function Missions() {
                     {active.metadata.error}
                   </div>
                 )}
-                {active.status === "failed" && pmPoc && !active.metadata?.error && (
-                  <div style={{ marginTop: 8, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>
-                    Likely from before the PM stub fix (no LLM). Use <strong>Clear failed</strong>, then invoke an agent again from Agent Fleet.
-                  </div>
-                )}
               </div>
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginLeft: 12 }}>
                 {active.status === "pending" && (
                   <button onClick={() => void patchStatus(active.id, "running")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Start</button>
                 )}
-                {active.status === "running" && (
+                {!isEngineBacked(active) && active.status === "running" && (
                   <>
                     <button onClick={() => void patchStatus(active.id, "completed")} style={{ ...btnBase, background: "#5a9a4a", color: "#fff", borderColor: "#5a9a4a" }}>Complete</button>
                     <button onClick={() => void patchStatus(active.id, "failed")} style={{ ...btnBase, background: "#c4452a", color: "#fff", borderColor: "#c4452a" }}>Fail</button>
@@ -490,7 +510,7 @@ export default function Missions() {
                 )}
                 {(active.status === "completed" || active.status === "failed") && (
                   <>
-                    {!pmPoc && (
+                    {!isEngineBacked(active) && (
                       <button onClick={() => void patchStatus(active.id, "pending")} style={{ ...btnBase, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Restart</button>
                     )}
                     <button onClick={() => setConfirmDelete(true)} style={{ ...btnBase, color: "#c4452a", borderColor: "#c4452a" }}>Delete</button>

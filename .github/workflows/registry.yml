@@ -6,23 +6,19 @@ name: Registry CI
 # 2026-06-06; measured before flipping: 268 files, 0 warnings).
 
 on:
+  # No `paths:` filter, deliberately (#162). This job validates the ADR -> spec
+  # -> AC chain, which is the fifth of the five mandates #160 wants CI to hold,
+  # so it has to be a *required* check. A required check whose workflow never
+  # triggers never reports, and classic branch protection leaves the PR waiting
+  # on an `Expected` status forever — so a paths-filtered check cannot be
+  # required as-is. See docs/ci/REQUIRED-CHECKS.md.
+  #
+  # The filter was also already close to unfalsifiable: it had grown to include
+  # `tests/**` and `packages/**/tests/**` (PR #479, for markers) plus
+  # `pyproject.toml`, which between them match nearly every PR in this
+  # repository. Removing it costs ~20s of runner time on the PRs it did not
+  # already match, and buys a check that can be required by name.
   pull_request:
-    paths:
-      - 'docs/adr/**'
-      - 'docs/specs/**'
-      - 'packages/maistro-registry/**'
-      - 'tests/tools/registry/**'
-      - 'tests/tools/test_lint_lifecycle.py'
-      - 'tools/lint_lifecycle.py'
-      - 'quality/lifecycle-baseline.json'
-      - 'pyproject.toml'
-      - '.github/workflows/registry.yml'
-      # The AC-traceability gate reads @pytest.mark.ac markers out of every
-      # test root, so a PR that only deletes or renames a marker must still
-      # trigger this workflow — without these paths the gate advertised
-      # traceability it could not enforce (PR #479 review).
-      - 'packages/**/tests/**'
-      - 'tests/**'
   push:
     branches:
       - main
