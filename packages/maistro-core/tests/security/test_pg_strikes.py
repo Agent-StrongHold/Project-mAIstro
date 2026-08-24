@@ -35,13 +35,25 @@ class FakeConnection:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self._fetchrow_results: list[FakeRecord | None] = []
+        #: `_read` joins the violation rows onto the record, so the fake needs
+        #: `fetch` as well as `fetchrow` (#134). Defaults to empty rather than
+        #: raising: most tests here assert the SQL a call emits, not the
+        #: violations it reads back.
+        self._fetch_results: list[list[FakeRecord]] = []
 
     def queue_fetchrow(self, row: dict[str, Any] | None) -> None:
         self._fetchrow_results.append(FakeRecord(row) if row is not None else None)
 
+    def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
+        self._fetch_results.append([FakeRecord(r) for r in rows])
+
     async def fetchrow(self, query: str, *args: Any) -> FakeRecord | None:
         self.calls.append(Call("fetchrow", query, args))
         return self._fetchrow_results.pop(0) if self._fetchrow_results else None
+
+    async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
+        self.calls.append(Call("fetch", query, args))
+        return self._fetch_results.pop(0) if self._fetch_results else []
 
     async def execute(self, query: str, *args: Any) -> None:
         self.calls.append(Call("execute", query, args))
@@ -74,6 +86,28 @@ class FakePool:
 
     async def fetchrow(self, query: str, *args: Any) -> FakeRecord | None:
         return await self._conn.fetchrow(query, *args)
+
+
+def strike_row(**overrides: Any) -> dict[str, Any]:
+    """A full `security_strikes` row.
+
+    `_read` builds a `StrikeRecord` from every column, so a partial fixture row
+    raises KeyError rather than testing anything (#134). Spelling the whole row
+    out once also means a new column shows up here as one edit instead of eight
+    silent gaps.
+    """
+    row: dict[str, Any] = {
+        "user_id": "u1",
+        "strike_count": 1,
+        "scrutiny_level": "elevated",
+        "locked_until": None,
+        "disabled": False,
+        "last_violation_at": None,
+        "last_appeal": "",
+        "last_appeal_at": None,
+    }
+    row.update(overrides)
+    return row
 
 
 @pytest.fixture
@@ -147,10 +181,14 @@ def test_init_falls_back_to_deploy_target_db_url_env(monkeypatch: pytest.MonkeyP
 async def test_record_violation_first_strike_sets_elevated(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
-    conn.queue_fetchrow({"user_id": "u1", "strike_count": 1, "scrutiny_level": "elevated"})
+    # Twice: the upsert reads one row, then `_read` re-reads the escalated one.
+    conn.queue_fetchrow(strike_row(strike_count=1))
+    conn.queue_fetchrow(strike_row(strike_count=1))
     tracker = PgStrikeTracker(db_url="postgres://x")
     result = await tracker.record_violation(user_id="u1", flags=("flag_a",), detail="d")
-    assert result == {"user_id": "u1", "strike_count": 1, "escalated": True}
+    assert result.user_id == "u1"
+    assert result.strike_count == 1
+    assert result.scrutiny_level == "elevated"
     executed_queries = [c.query for c in conn.calls if c.method == "execute"]
     assert any("scrutiny_level='elevated'" in q for q in executed_queries)
 
@@ -158,10 +196,11 @@ async def test_record_violation_first_strike_sets_elevated(
 async def test_record_violation_second_strike_locks_account(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
-    conn.queue_fetchrow({"user_id": "u1", "strike_count": 2})
+    conn.queue_fetchrow(strike_row(strike_count=2))
+    conn.queue_fetchrow(strike_row(strike_count=2, scrutiny_level="locked"))
     tracker = PgStrikeTracker(db_url="postgres://x")
     result = await tracker.record_violation(user_id="u1", flags=("flag_a", "flag_b"))
-    assert result["strike_count"] == 2
+    assert result.strike_count == 2
     executed_queries = [c.query for c in conn.calls if c.method == "execute"]
     assert any("scrutiny_level='locked'" in q for q in executed_queries)
 
@@ -169,10 +208,12 @@ async def test_record_violation_second_strike_locks_account(
 async def test_record_violation_third_strike_disables_account(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
-    conn.queue_fetchrow({"user_id": "u1", "strike_count": 3})
+    conn.queue_fetchrow(strike_row(strike_count=3))
+    conn.queue_fetchrow(strike_row(strike_count=3, scrutiny_level="disabled", disabled=True))
     tracker = PgStrikeTracker(db_url="postgres://x")
     result = await tracker.record_violation(user_id="u1", flags=("flag_a",))
-    assert result["strike_count"] == 3
+    assert result.strike_count == 3
+    assert result.disabled is True
     executed_queries = [c.query for c in conn.calls if c.method == "execute"]
     assert any("disabled=TRUE" in q for q in executed_queries)
 
@@ -180,7 +221,8 @@ async def test_record_violation_third_strike_disables_account(
 async def test_record_violation_inserts_violation_row_with_truncated_detail(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
-    conn.queue_fetchrow({"user_id": "u1", "strike_count": 1})
+    conn.queue_fetchrow(strike_row(strike_count=1))
+    conn.queue_fetchrow(strike_row(strike_count=1))
     tracker = PgStrikeTracker(db_url="postgres://x")
     long_detail = "x" * 2000
     await tracker.record_violation(
@@ -211,33 +253,33 @@ async def test_get_returns_none_for_unknown_user(
 async def test_get_marks_disabled_user_as_locked(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
-    conn.queue_fetchrow({"user_id": "u1", "disabled": True, "locked_until": None})
+    conn.queue_fetchrow(strike_row(disabled=True, locked_until=None))
     tracker = PgStrikeTracker(db_url="postgres://x")
     result = await tracker.get("u1")
     assert result is not None
-    assert result["is_locked"] is True
+    assert result.is_locked is True
 
 
 async def test_get_marks_user_with_future_lockout_as_locked(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
     future = datetime.now(UTC) + timedelta(hours=1)
-    conn.queue_fetchrow({"user_id": "u1", "disabled": False, "locked_until": future})
+    conn.queue_fetchrow(strike_row(disabled=False, locked_until=future))
     tracker = PgStrikeTracker(db_url="postgres://x")
     result = await tracker.get("u1")
     assert result is not None
-    assert result["is_locked"] is True
+    assert result.is_locked is True
 
 
 async def test_get_marks_user_with_expired_lockout_as_not_locked(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
     past = datetime.now(UTC) - timedelta(hours=1)
-    conn.queue_fetchrow({"user_id": "u1", "disabled": False, "locked_until": past})
+    conn.queue_fetchrow(strike_row(disabled=False, locked_until=past))
     tracker = PgStrikeTracker(db_url="postgres://x")
     result = await tracker.get("u1")
     assert result is not None
-    assert result["is_locked"] is False
+    assert result.is_locked is False
 
 
 async def test_is_locked_returns_false_for_unknown_user(
@@ -250,7 +292,7 @@ async def test_is_locked_returns_false_for_unknown_user(
 async def test_is_locked_returns_true_for_disabled_user(
     patch_asyncpg: FakePool, conn: FakeConnection
 ) -> None:
-    conn.queue_fetchrow({"user_id": "u1", "disabled": True, "locked_until": None})
+    conn.queue_fetchrow(strike_row(disabled=True, locked_until=None))
     tracker = PgStrikeTracker(db_url="postgres://x")
     assert await tracker.is_locked("u1") is True
 

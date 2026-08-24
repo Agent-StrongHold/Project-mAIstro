@@ -326,3 +326,105 @@ async def test_scan_decodes_base64_payload_layer2_when_layer1_clean() -> None:
     verdict = await warden.scan(f"normal text {payload}", "user_input")
     assert verdict.clean is False
     assert any(f.startswith("encoded_instructions") for f in verdict.flags)
+
+
+# --- scan bounds: what actually stops a pathological input (#74) -------------
+#
+# Warden runs two engines with different protections, and #74 asks whether the
+# documented ones are exercised on the real path rather than merely present.
+#
+#   reject phase   `regex`, per-search `timeout=0.5s`, fails closed
+#                  -> `test_catastrophic_pattern_times_out_and_fails_closed`
+#   heuristic      `_regex` (RE2, or stdlib `re` when google-re2 is absent —
+#                  it is an OPTIONAL extra), and the stdlib fallback has **no
+#                  timeout of any kind**
+#
+# So the only bound the heuristic phase has is the amount of text it is handed,
+# and before #74 it was handed the whole document while the reject phase beside
+# it was windowed. These pin the bound and the equivalence that makes windowing
+# it safe.
+
+
+def test_both_scan_phases_use_the_same_windowing() -> None:
+    """They drifted once. The shared helper is what stops them drifting again."""
+    import maistro.security.warden.detector as detector_mod
+
+    assert detector_mod._SCAN_OVERLAP_CHARS < detector_mod._SCAN_WINDOW_CHARS
+    windows = list(detector_mod._windows("x" * (detector_mod._SCAN_WINDOW_CHARS * 2)))
+    assert len(windows) > 1
+    assert all(len(w) <= detector_mod._SCAN_WINDOW_CHARS for w in windows)
+
+
+def test_windows_leave_no_unscanned_tail() -> None:
+    import maistro.security.warden.detector as detector_mod
+
+    text = "".join(chr(ord("a") + i % 26) for i in range(detector_mod._SCAN_WINDOW_CHARS * 3 + 17))
+
+    covered = "".join(list(detector_mod._windows(text)))
+
+    # Every character appears in at least one window (overlap makes it longer).
+    assert len(covered) >= len(text)
+    assert text[-100:] in list(detector_mod._windows(text))[-1]
+
+
+def test_a_short_text_is_one_window() -> None:
+    """The common case must not pay for the loop."""
+    import maistro.security.warden.detector as detector_mod
+
+    assert list(detector_mod._windows("short")) == ["short"]
+
+
+async def test_windowing_does_not_change_the_verdict() -> None:
+    """The equivalence the windowing argument rests on.
+
+    Density is a max over 40-word sub-windows and the base64 run needs 40
+    characters — both far inside the 2KB overlap — so the max over windows is
+    the max over the whole text. If that were wrong, a payload placed just past
+    the first window would stop being flagged, which is the failure this asserts
+    against.
+    """
+    import maistro.security.warden.detector as detector_mod
+
+    # Deliberately trips the HEURISTIC phase only. A payload that also matches
+    # a reject pattern would prove nothing here: the reject phase loops every
+    # window on its own, so the test would pass even with the heuristic loop
+    # broken — which is exactly what the first version of this test did.
+    payload = (
+        "urgent critical emergency comply obey assistant execute eval import "
+        "instead actually really "
+    )
+    filler = "the quick brown fox jumps over the lazy dog. "
+    assert _scan_reject_patterns(payload * 3) == [], "payload must not trip the reject phase"
+
+    # Placed deliberately beyond the first window boundary.
+    far = filler * (detector_mod._SCAN_WINDOW_CHARS // len(filler) + 40) + payload * 3
+
+    verdict = await Warden().scan(far, "tool_result")
+
+    assert verdict.clean is False
+    assert any("high_instruction_density" in f for f in verdict.flags)
+
+
+async def test_a_large_benign_input_is_bounded(monkeypatch: Any) -> None:
+    """With google-re2 absent — the shape a plain `pip install maistro-core`
+    gets — the heuristic phase runs on stdlib `re` with no timeout. Measured
+    linear on the current pattern set (0.77ms/1KB, 34.85ms/50KB); this asserts
+    the bound rather than leaving that as a one-off observation, so a future
+    pattern with nested quantifiers fails here instead of in production.
+    """
+    import time
+
+    import maistro.security.warden._regex as regex_mod
+
+    monkeypatch.setattr(regex_mod, "_RE2_AVAILABLE", False)
+
+    text = "the quick brown fox jumps over the lazy dog. " * 12_000  # ~530KB
+
+    started = time.monotonic()
+    verdict = await Warden().scan(text, "user_input")
+    elapsed = time.monotonic() - started
+
+    assert verdict.clean is True
+    # Generous for a loaded runner; the point is "bounded", not "fast".
+    # Catastrophic backtracking here would not finish at all.
+    assert elapsed < 20
