@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 import pytest
 
@@ -20,6 +21,50 @@ posix_exec_only = pytest.mark.skipif(
     sys.platform == "win32",
     reason="LocalSandbox.exec is POSIX-only (bash + os.killpg/SIGKILL); it runs inside an sbx Linux microVM",
 )
+
+#: Process states that mean "this pid is not executing any more". `Z` is a
+#: zombie — killed, exited, still holding its slot until a parent reaps it — and
+#: `X`/`x` are the kernel's dead states.
+_DEAD_STATES = frozenset({"Z", "X", "x"})
+
+
+def still_running(pid: int) -> bool:
+    """Whether `pid` names a process that is still executing.
+
+    `os.kill(pid, 0)` does not answer this, and the difference is the whole
+    reason the group-kill test below was flaky. A process killed by SIGKILL
+    stays visible as a zombie until its parent reaps it, and answers signal 0
+    for that entire window. The `sleep` in that test is a *grand*child: the
+    sandbox kills the process group, `bash` dies with it, and the orphaned
+    `sleep` is reparented to whatever init the host provides. Reaping an orphan
+    is that init's job, and a container's PID 1 is often an ordinary process
+    that never does it — so the zombie can outlive any deadline the test picks,
+    and `os.kill` reports "the group kill failed" about a process the kernel has
+    already killed.
+
+    Read the state from procfs instead, which distinguishes the two. The comm
+    field is parenthesised and may itself contain spaces and parentheses, so
+    split on the *last* `)` rather than tokenising the whole line.
+
+    Where there is no procfs — macOS, which this suite still runs on — fall back
+    to the signal probe. It is wrong only inside the zombie window and right
+    everywhere else, which is the best available answer on that platform.
+    """
+    import os
+    import pathlib
+
+    if not pathlib.Path("/proc").is_dir():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in _DEAD_STATES
 
 
 class FakeContainer:
@@ -214,8 +259,15 @@ class TestLocalSandbox:
     @pytest.mark.asyncio
     async def test_timeout_kills_the_whole_process_group(self, tmp_path):
         """sandbox-15: a timed-out command's children die with it — a spawned
-        `sleep` must not outlive exec()."""
-        import os
+        `sleep` must not outlive exec().
+
+        The liveness check is `still_running`, not `os.kill(pid, 0)`. The child
+        here is orphaned by the group kill and becomes a zombie the instant it
+        dies; on a host whose init does not reap orphans promptly it stays one,
+        and a signal probe then reports a containment failure about a process
+        the kernel has already killed. See `still_running` for the detail.
+        """
+        import asyncio as _asyncio
 
         from maistro_rsi.sandbox.local import LocalSandbox
 
@@ -224,17 +276,47 @@ class TestLocalSandbox:
         assert code == 124
 
         child_pid = int((tmp_path / "child.pid").read_text().strip())
-        # SIGKILL was sent to the process group; give the kernel a beat to reap.
-        import asyncio as _asyncio
-
+        # SIGKILL is asynchronous, so still poll — but for "stopped executing",
+        # which a zombie satisfies and a running process does not.
         for _ in range(20):
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
+            if not still_running(child_pid):
                 break
             await _asyncio.sleep(0.1)
         else:
             pytest.fail(f"child {child_pid} survived the group kill")
+
+    @posix_exec_only
+    def test_still_running_reads_a_zombie_as_stopped(self):
+        """The property the test above depends on, pinned directly.
+
+        A zombie is the exact state a killed orphan sits in, and the reason
+        `os.kill(pid, 0)` was the wrong instrument: it answers "does this pid
+        exist", and a zombie does. Fork a child that exits immediately and do
+        not reap it, so the pid is unambiguously a zombie while it is checked.
+        """
+        import os
+        import pathlib
+
+        if not pathlib.Path("/proc").is_dir():
+            pytest.skip("no procfs; still_running falls back to the signal probe")
+
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - the child never returns
+            os._exit(0)
+        try:
+            for _ in range(50):
+                if not still_running(pid):
+                    break
+                time.sleep(0.02)
+            else:
+                pytest.fail(f"child {pid} never reached a dead state")
+
+            # It is a zombie, not gone: the pid still exists and still answers
+            # signal 0. That is precisely what the old check got wrong.
+            assert pathlib.Path(f"/proc/{pid}").is_dir()
+            os.kill(pid, 0)
+        finally:
+            os.waitpid(pid, 0)
 
 
 @pytest.fixture

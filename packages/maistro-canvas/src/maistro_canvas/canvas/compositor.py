@@ -102,7 +102,15 @@ def _transform_layer_image(
     # Center the rotated image on the intended position
     cx = paste_x - img.width // 2 + (round(src.width * scale) if scale > 0 else src.width) // 2
     cy = paste_y - img.height // 2 + (round(src.height * scale) if scale > 0 else src.height) // 2
-    frame.paste(img, (cx, cy), img)
+    # No mask. `paste(img, pos, img)` uses the layer's own alpha as the mask,
+    # and PIL blends *every* channel against the destination through it — so on
+    # this transparent-black frame an `opacity=0.5` layer came out at alpha 64
+    # rather than 128 (the opacity applied twice) and its colour blended toward
+    # black, (255,0,0,128) landing as (128,0,0,64). The frame is fully
+    # transparent and this is a single layer, so a straight copy is what was
+    # meant; blending happens later, in `_alpha_composite_frame`. Found by the
+    # first tests this module ever had (#171).
+    frame.paste(img, (cx, cy))
     return frame
 
 
