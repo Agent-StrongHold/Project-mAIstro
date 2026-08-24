@@ -1,4 +1,6 @@
 {
   "_comment": "Gaps in hand-maintained security enumerations that predate scripts/check_enumerations.py. This is a ratchet, not an allowlist: a NEW gap fails the build, and so does a stale entry here. Fix a gap, delete its line. Do not add entries without fixing or filing the underlying gap.",
-  "tolerated": {}
+  "tolerated": {
+    "routes::POST /v1/voice/intent": "public mutating route \u2014 reachable without authentication (dispatch bypasses auth before the scope table)"
+  }
 }
