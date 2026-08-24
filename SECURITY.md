@@ -68,7 +68,7 @@ docstring for what it cannot check):
 
 | Limit | Value | File:constant | Purpose |
 |---|---|---|---|
-| Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py` (`window_size = 50 * 1024`, `overlap = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
+| Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py` (`_SCAN_WINDOW_CHARS = 50 * 1024`, `_SCAN_OVERLAP_CHARS = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
 | Warden pattern-match timeout | 0.5 s | `security/warden/detector.py` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
 | Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
 | Skill body size | 50,000 chars | `skills/parser.py` (`MAX_SKILL_BODY_LENGTH`) | Context-window-stuffing protection, enforced at both parse (`parser.py`) and import (`import_pipeline.py`) |
@@ -137,7 +137,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | Present at three call sites, in two divergent implementations, and enforced nowhere — see Known Limitation 1 for what each guard does and does not cover. (`security/patterns.py::BLOCKED_HOST_PATHS` is a **filesystem** path blocklist — `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, Docker socket paths — and is unrelated despite the name.) | `partial` — the guarded surfaces reject a metadata or LAN address stated up front; nothing stops a *new* caller from fetching unguarded, and nothing re-checks a redirect |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — one validator, `security/ssrf.py::validate_outbound_url` (and its off-loop twin `avalidate_outbound_url`), refuses any URL that is not http(s) with a resolvable host on the public internet: it checks every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refuses a name it cannot resolve at all. Callers that reach it: `tools/browser/client.py` awaits `avalidate_outbound_url`, and `skills/marketplace.py` and `skills/import_pipeline.py` go through the `_block_ssrf` adapter. `tools/net_guard.py` is a deprecation shim that re-exports `validate_outbound_url` rather than reimplementing it. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — the guard itself is sound; its *reach* is the gap, and the measured figure is in Known Limitation 1 rather than restated here, because a second copy of a number is a second thing to drift (#155) |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -162,43 +162,39 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **Two divergent SSRF guards, each checking one URL once, and nothing makes a new caller
-   use either.** Every caller-influenced outbound fetch that exists today reaches a guard — the
-   skill marketplace and the import pipeline call `skills/marketplace.py::_block_ssrf`, and the
-   browser tool calls `tools/net_guard.py::validate_outbound_url` — and both reject a literal
-   metadata/LAN address (`169.254.169.254`, RFC1918) and resolve the hostname before allowing it.
-   That is **less protection than "guarded" suggests**, and the gap is the same in both:
-   - Each validates the URL it is handed and then passes it to another network stack that will
-     follow its own redirects. `BrowserClient.browse` checks once before `Agent.run()`; the import
-     pipeline checks once before `http_client.get()`. A public URL that 302s to
-     `169.254.169.254` is never re-checked at the destination.
-   - The DNS answer used for the check is not the one used for the connection, so a name that
-     resolves publicly at check time and inward a moment later is admitted. The resolution step
-     raises the cost of DNS rebinding; it does not close it.
+1. **One SSRF validator, and nothing makes a new outbound caller use it.** The guard is
+   `validate_outbound_url` in `security/ssrf.py`, together with its off-loop twin
+   `avalidate_outbound_url`; both accept only http(s) URLs whose host resolves to a public address, checking *every* address
+   the name resolves to and raising `SSRFBlockedError` when it cannot be resolved at all. That
+   normalises the usual obfuscations (`2852039166`, `0x7f000001`, `127.1`,
+   `[::ffff:169.254.169.254]`, `metadata.google.internal`) to the address they denote.
+   There is exactly one implementation: `tools/net_guard.py` re-exports `validate_outbound_url`
+   as a deprecation shim for downstream importers, and `skills/marketplace.py::_block_ssrf` is a
+   thin adapter over it rather than a second checker (#154 existed to delete the second copy).
 
-   The remaining limitations are that these are **two independent implementations that
-   disagree**, and that neither is enforced:
-   - `_block_ssrf` allowlists schemes (http/https only); `validate_outbound_url` denylists them
-     (`file://`, `gopher://`, `ftp://`, `dict://`, `ldap://`) and so passes anything not on that
-     list.
-   - `_block_ssrf` raises `ValueError`; `validate_outbound_url` raises `SSRFBlockedError`. A
-     caller that catches one does not catch the other.
-   - `_block_ssrf` is a private function in `skills/marketplace.py` imported across module
-     boundaries by `skills/import_pipeline.py`, rather than living in the shared guard.
-   - Nothing — no gate, no protocol, no wrapper — requires a *new* outbound-HTTP caller to invoke
-     either one. Measured (`measured-outbound-http`) — of the **32** modules under `maistro-core`
-     that can open an outbound connection, **3** call a guard. Both figures come from one census,
-     which an earlier revision of this line did not: it compared modules importing an HTTP client
-     against guard *call sites*, and those two sets turned out to have no member in common, since
-     all three guarded modules fetch through an injected client or a browser rather than by
-     importing a library. The unguarded callers (`skills/connectors.py`,
-     `tasks/progress_webhook.py` and the rest) reach hard-coded or operator-configured hosts, so
-     none of them is currently exploitable — but that is a property of what those call sites
-     happen to fetch, not of a boundary anything enforces.
+   The limitation is **reach**, not soundness. Measured (`measured-outbound-http`) — of the
+   **32** modules under `maistro-core` that can open an outbound connection, **3** call the
+   guard. Both figures come from one census, which an earlier revision of this line did not: it
+   compared modules importing an HTTP client against guard *call sites*, and those two sets
+   turned out to have no member in common, since the guarded modules fetch through an injected
+   client or a browser rather than by importing a library.
 
-   Consolidating on `tools/net_guard.py` and enforcing it at the HTTP-client boundary is the open
-   work. `security/patterns.py::BLOCKED_HOST_PATHS` is a *filesystem*-path blocklist and is
-   unrelated to SSRF despite the name.
+   The unguarded callers reach hard-coded or operator-configured hosts, so none of them is
+   currently exploitable — but that is a property of what those call sites happen to fetch, not
+   of a boundary anything enforces. Two deserve naming, because their destination is the most
+   likely to become caller-influenced: `tasks/progress_webhook.py` posts to a webhook URL, and
+   `agents/strategies/tool_http.py` fetches whatever a tool call names. Nearly all of them route
+   through `maistro.http.shared_client`, so there is one seam that would reach them — but the
+   engine also legitimately calls internal LLM gateways through it, so switching it on needs a
+   policy for those rather than a blanket refusal. Tracked as #155.
+
+   Two further limits, stated rather than implied. The guard resolves the name and the HTTP
+   client resolves it again when it connects, so a name that answers differently between those
+   two lookups is admitted; resolving raises the cost of DNS rebinding without closing it. And
+   redirect hops are checked only where the caller validates each hop, which none of the current
+   call sites does — a public URL that 302s to `169.254.169.254` is not re-checked at the
+   destination.
+
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.

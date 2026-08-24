@@ -28,8 +28,8 @@ import os
 import time
 from typing import Any
 
+from maistro.security.ssrf import SSRFBlockedError, avalidate_outbound_url
 from maistro.tools.browser.types import BrowseResult, Citation, SearchResult
-from maistro.tools.net_guard import SSRFBlockedError, validate_outbound_url
 
 
 class BrowserToolError(RuntimeError):
@@ -197,7 +197,7 @@ class BrowserClient:
             "possible."
         )
         try:
-            validate_outbound_url(url)
+            await avalidate_outbound_url(url)
         except SSRFBlockedError as exc:
             raise BrowserToolError(f"browse blocked by SSRF guard: {exc}") from exc
         try:
