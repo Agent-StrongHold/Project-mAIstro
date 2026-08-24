@@ -137,7 +137,7 @@ currently holds belongs to `Run`/`Invocation`.
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on the Invocation, not a side ledger | #56, #63 |
 | External integrations | `maistro.integrations` exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from a product route | #34 |
 | Delivery gateway | none | `5/5` | CONNECT | ADR-047 | a delivery effect recorded as an Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/54` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `11/55` | MIGRATE — construction is not enforcement | ADR-073, ADR-072, ADR-072726-0d6b | an E2E Conductor chat proving Warden/Sentinel ran on the real path | #66, #67, #68, #69, #70 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id on registration, bcrypt upgrade on login | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — ADR-068's approver matrix is decided but unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | a beyond-authority action resolving an approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |

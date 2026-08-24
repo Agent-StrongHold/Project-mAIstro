@@ -14,6 +14,7 @@ import logging
 
 import httpx
 
+from maistro.http import get_shared_client
 from maistro.protocols.notification import Notification
 
 logger = logging.getLogger("maistro.integrations.ntfy")
@@ -43,8 +44,13 @@ class NtfyClient:
         self._base_url = base_url.rstrip("/")
         self._default_topic = default_topic
         self._access_token = access_token
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        # Never: the pool owns the shared client, and closing it here would
+        # close it for every other caller on this loop.
+        self._owns_client = False
+        # The shared pool, so this integration is covered by the outbound
+        # policy at its transport (#155) rather than opting itself out by
+        # building a private client.
+        self._client = client or get_shared_client(timeout=timeout)
 
     async def send(self, notification: Notification) -> None:
         if not self._base_url:

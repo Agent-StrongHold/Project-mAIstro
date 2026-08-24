@@ -12,6 +12,7 @@ import httpx
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.http import get_shared_client
 from maistro.tasks.models import TaskResponse
 
 logger = structlog.get_logger()
@@ -63,8 +64,14 @@ class ProgressWebhookNotifier:
     ) -> None:
         self._post_url = post_url.strip()
         self._api_key = api_key
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=5.0)
+        # The shared pool, not a private client (#155). This posts to a URL
+        # somebody registered, which makes it one of the two most
+        # caller-influenced destinations in the engine — and a client built
+        # here bypasses the outbound policy at the pool's transport entirely.
+        # An injected client is still honoured, for tests and for a caller that
+        # has its own.
+        self._owns_client = False
+        self._client = client or get_shared_client(timeout=5.0)
 
     async def notify(self, payload: ConductorProgressPayload) -> None:
         if not self._post_url:
