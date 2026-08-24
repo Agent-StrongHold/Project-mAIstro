@@ -7,8 +7,12 @@ Companion to [`ROADMAP.md`](ROADMAP.md). Items are tagged by the part of the pro
 - `turing-NNN` — autonoetic variant
 - `sh-NNN` — multi-tenant variant (Stronghold). **Not actionable in this repository.**
   Stronghold is a planned downstream product that will *import* the engine (root `CLAUDE.md`);
-  no Stronghold code lives here. These items are kept for traceability and to record which
-  engine work they depend on — they are not a second system to build alongside the engine.
+  no Stronghold code lives here. Every `sh-` item is owned by Stronghold and dispositioned
+  *deferred-downstream* — it is not a second system to build alongside the engine. Where an
+  item has a prerequisite that **is** actionable here, it names that engine work, because that
+  prerequisite is the part this repository owns. Items naming none have no recorded engine
+  prerequisite; that is a statement about what is written down, not a claim that none exists.
+  Enforced by `scripts/check-backlog-consistency.py` (#30).
 
 Maintained per [`ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Status follows the
 [`ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md) lifecycle, and where an item names an
