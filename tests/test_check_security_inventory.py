@@ -232,8 +232,23 @@ def test_an_untagged_number_is_left_alone(gate):
 
 def test_guard_call_sites_are_counted_as_calls_not_as_text(gate):
     """A grep matches the two `def` lines and every docstring mention, which is
-    how a document ends up claiming more coverage than exists."""
-    assert gate._ssrf_guard_call_sites() == 3
+    how a document ends up claiming more coverage than exists.
+
+    Asserted as a property rather than as a literal. This test used to pin the
+    number to `== 3`, which made it the same unmeasured figure the gate exists
+    to catch: adding the async guard entry point moved the tree to 4 and the
+    test failed for having been right. The invariant is that a *call* counts
+    and a mention does not, and it holds at any total — `ssrf.py` defines all
+    the guards and names each of them many times over in prose, so a
+    text-matching census would score it highest of any module, while a
+    call-counting one scores it zero.
+    """
+    census = dict(gate._outbound_fetch_census())
+    guard_module = gate._CORE_SRC / "security" / "ssrf.py"
+
+    assert gate._ssrf_guard_call_sites() > 0
+    assert census.get(guard_module, 0) == 0
+    assert gate._ssrf_guard_call_sites() == sum(census.values())
 
 
 def test_the_outbound_fetch_census_finds_the_modules_that_open_connections(gate):
