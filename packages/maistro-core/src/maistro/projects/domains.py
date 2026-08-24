@@ -29,8 +29,17 @@ class DomainConfig(TypedDict, total=False):
 
 # Curated set the standard maistro frontends know how to render.
 #
+# `pm_fleet` **stays**, and #129 asked for that call to be recorded rather than
+# left implicit. The POC *mode* is what was retired — the global flag that
+# changed routing, navigation and setup defaults — not the domain. A domain is
+# a curated config an integration can declare it targets; `pm_fleet` is one of
+# six such configs and reads no differently from `canvas_creative` beside it,
+# and `personas/templates/pm_fleet.yaml` remains a persona template for exactly
+# the same reason. Removing it would delete a working configuration to make a
+# point about a flag that no longer exists.
+#
 # Order = priority for the v0.2/v0.3 shipping plan:
-#   1. pm_fleet         — current POC; heaviest investment
+#   1. pm_fleet         — first shipped domain; heaviest investment
 #   2. canvas_creative  — SECOND priority. The maistro-canvas substrate
 #                         (image-gen + composite + Lulu print-on-demand) is
 #                         already nearly complete; ship it as the second

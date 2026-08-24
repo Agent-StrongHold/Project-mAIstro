@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from maistro.config.database import resolve_database_url
 from maistro.config.settings import MaistroYamlConfig, set_yaml_config, validate_cors_origins
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,12 @@ def _load_raw_yaml(config_path: Path) -> dict[str, Any]:
 def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, str | None]:
     """Overlay top-level secret/URL env vars onto ``raw``. Returns the override map."""
     env_overrides: dict[str, str | None] = {
-        "database_url": os.getenv("DATABASE_URL"),
+        # Not a bare `os.getenv("DATABASE_URL")`: the resolver also composes
+        # one from `DB_*` when `DATABASE_URL` is unset, which is what stops
+        # alembic and the container from targeting different databases (#187).
+        # `or None` preserves the "no override" contract of this map -- an
+        # unresolvable database leaves whatever the YAML said.
+        "database_url": resolve_database_url() or None,
         "litellm_url": os.getenv("LITELLM_URL"),
         "litellm_key": os.getenv("LITELLM_MASTER_KEY"),
         "router_api_key": os.getenv("ROUTER_API_KEY"),
