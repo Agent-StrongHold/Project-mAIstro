@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
-import { usePmPoc } from "../context/PocMode";
-import { PM_NAV_INTEGRATIONS } from "../lib/pmBranding";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
 
@@ -17,7 +15,6 @@ type Tool = {
 };
 
 export default function MCP() {
-  const pmPoc = usePmPoc();
   const toast = useToast();
   const [servers, setServers] = useState<Server[]>([]);
   const [tools, setTools] = useState<Tool[]>([]);
@@ -80,23 +77,18 @@ export default function MCP() {
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (deleteTarget) void removeServer(deleteTarget.id); }} title="Remove Server" message={`Remove "${deleteTarget?.name ?? ""}" from MCP?`} />
 
       <PageHeader
-        title={pmPoc ? PM_NAV_INTEGRATIONS : "MCP"}
-        subtitle={
-          pmPoc
-            ? `${servers.length} MCP servers · ${tools.length} tools — container runtime, not Cursor`
-            : `${servers.length} servers · ${tools.length} tools — multi-MCP orchestration in this sandbox`
-        }
-        helpHref={pmPoc ? undefined : "/docs#mcp"}
+        title="MCP"
+        subtitle={`${servers.length} servers · ${tools.length} tools — multi-MCP orchestration in this sandbox`}
+        helpHref="/docs#mcp"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
             <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void testConnections()}>
               Test connection
             </button>
-            {!pmPoc && (
-              <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setAdding(true)}>
-                + add server
-              </button>
-            )}
+            {/* POC mode *hid* this; retiring the flag restores it for everyone (#190). */}
+            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setAdding(true)}>
+              + add server
+            </button>
           </div>
         }
       />
@@ -111,11 +103,6 @@ export default function MCP() {
           Launch env vars — <strong>not</strong> via Cursor. Canonical manifests live in MAISTRO{" "}
           <code style={{ fontFamily: "var(--mono)", fontSize: 10 }}>container_registry/MCP_servers/</code>.
         </p>
-        {pmPoc && (
-          <p style={{ fontFamily: "var(--hand)", fontSize: 12, margin: "0 0 10px", lineHeight: 1.4, color: "var(--pencil)" }}>
-            PM demo: Jira <em>creates</em> use <strong>Jira drafts</strong> (suggest → confirm). Autonomous tasks may read/sync via MCP when configured.
-          </p>
-        )}
         <p style={{ fontFamily: "var(--hand)", fontSize: 11, margin: "0 0 8px", color: "var(--pencil)" }}>
           Atlassian Rovo endpoint: {ROVO_MCP_URL}. Local dev engineers may optionally use{" "}
           <code style={{ fontFamily: "var(--mono)", fontSize: 10 }}>.cursor/mcp.json</code> — that path does not run in production sandboxes.
