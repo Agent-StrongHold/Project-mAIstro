@@ -74,7 +74,6 @@
         "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'OVERLAY'",
         "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'PROOF'",
         "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'SCREEN'",
-        "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'lease_expires_at'",
         "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'leased_by'",
         "packages/maistro-core/src/maistro/a2a/delegate.py::unused variable 'assigned_at'",
         "packages/maistro-core/src/maistro/agents/circuit_breaker.py::unused attribute '_success_count'",
@@ -1544,9 +1543,6 @@
       "message_regex": "unused (function|class|method|variable|attribute)",
       "rationale": "Experimental and product-adjacent package APIs are retained as planned implementation surfaces pending per-package hardening specs.",
       "findings": [
-        "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::unused attribute 'lease_expires_at'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::unused attribute 'lease_expires_at'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::unused attribute 'lease_expires_at'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::unused attribute 'leased_by'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::unused attribute 'leased_by'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/runner.py::unused attribute 'leased_by'",

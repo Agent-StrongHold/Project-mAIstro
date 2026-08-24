@@ -377,7 +377,10 @@ class Container:
 
 
 async def create_container(
-    config: AgentConfig, *, harness_adapters: dict[str, HarnessAdapter] | None = None
+    config: AgentConfig,
+    *,
+    harness_adapters: dict[str, HarnessAdapter] | None = None,
+    pg_pool: Any = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -385,6 +388,18 @@ async def create_container(
     `_wire_harness_adapters` -- see that function for why this container
     cannot construct a real `RsiCycleHarnessAdapter` (`"rsi_cycle"`) on its
     own and instead leaves the map for the caller to populate.
+
+    `pg_pool`, if given, is a live `asyncpg.Pool` and selects the PostgreSQL
+    durable-event stores over the SQLite and in-memory ones (#135). It is a
+    parameter rather than something built from `config.database_url` on
+    purpose: deciding *which* backend a URL names, opening the pool and owning
+    its lifetime is #122's work, and this container still refuses a
+    `postgresql://` URL outright (see `_require_ephemeral_is_deliberate`). What
+    #135 is about is that even a caller who already had a pool in hand had no
+    way to get durable events onto it — the selection was `db_pool is not
+    None`, and `db_pool` is a *SQLite* connection, so PostgreSQL deployments
+    kept their event log, trigger registry and invocation history in process
+    memory and lost all three on restart.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -487,7 +502,18 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
-    if db_pool is not None:
+    # PostgreSQL first: a caller who supplied a pool asked for the durable
+    # backend, and `db_pool` (SQLite) may be set at the same time because the
+    # two cover different stores. Silently preferring SQLite here would give
+    # that caller in-memory-shaped durability on the one backend that can
+    # actually be shared between workers.
+    if pg_pool is not None:
+        (
+            durable_event_log,
+            trigger_store,
+            invocation_store,
+        ) = await _wire_pg_durable_events(pg_pool)
+    elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
@@ -615,7 +641,13 @@ async def create_container(
     )
 
     backend = "SQLite" if db_pool is not None else "InMemory"
-    logger.info("Container wired (%s stores)", backend)
+    # Named separately: `backend` describes the learnings/outcomes/sessions/quota
+    # stores, which PostgreSQL does not yet reach (#122). Reporting one word for
+    # both is what let "durable events" read as durable while they were not.
+    events_backend = (
+        "PostgreSQL" if pg_pool is not None else ("SQLite" if db_pool is not None else "InMemory")
+    )
+    logger.info("Container wired (%s stores, %s durable events)", backend, events_backend)
     return container
 
 
@@ -760,6 +792,28 @@ async def _wire_sqlite_durable_events(
     await sqlite_trigger_store.ensure_schema()
     await sqlite_invocation_store.ensure_schema()
     return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
+
+
+async def _wire_pg_durable_events(
+    pool: Any,
+) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+    """Wire the durable-event stores onto a caller-supplied `asyncpg.Pool` (#135).
+
+    All three share one pool rather than opening their own, matching
+    `persistence/pg_*` and leaving connection lifetime with the caller — which
+    also means a single `ensure_event_schema` covers all three tables, instead
+    of three `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
+    pool connections the way the SQLite twin's serial calls cannot.
+    """
+    from maistro.events.pg_stores import (
+        PgEventLog,
+        PgInvocationStore,
+        PgTriggerStore,
+        ensure_event_schema,
+    )
+
+    await ensure_event_schema(pool)
+    return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
 
 
 def _wire_a2a_broker(agents: dict[str, Agent]) -> A2ABroker:
