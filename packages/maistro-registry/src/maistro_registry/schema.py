@@ -261,4 +261,27 @@ class FrontMatter(BaseModel):
         if self.status.value == "Implemented" and self.implemented is None:
             raise ValueError("ADR-097: Implemented requires an implemented date")
 
+        # A dated history only works as an audit trail when the duplicated
+        # lifecycle metadata agrees with it. Intermediate states may be skipped
+        # under ADR-097, so only compare a metadata date when that transition is
+        # actually present in history (the current Accepted/Implemented states
+        # necessarily have such an entry because current status == latest).
+        accepted_entries = [entry for entry in self.history if entry.status.value == "Accepted"]
+        if self.accepted is not None and accepted_entries:
+            accepted_history_date = accepted_entries[-1].date
+            if self.accepted != accepted_history_date:
+                raise ValueError(
+                    "ADR-097: accepted date must match the Accepted lifecycle history entry"
+                )
+
+        implemented_entries = [
+            entry for entry in self.history if entry.status.value == "Implemented"
+        ]
+        if self.implemented is not None and implemented_entries:
+            implemented_history_date = implemented_entries[-1].date
+            if self.implemented != implemented_history_date:
+                raise ValueError(
+                    "ADR-097: implemented date must match the Implemented lifecycle history entry"
+                )
+
         return self
