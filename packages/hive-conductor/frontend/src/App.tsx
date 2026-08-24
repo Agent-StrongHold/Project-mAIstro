@@ -5,10 +5,9 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ModeProvider } from "./components/ModeToggle";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
-import { PocModeProvider, usePmPoc } from "./context/PocMode";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Agents from "./pages/Agents";
-import Fleet from "./pages/Fleet";
+import { PocModeProvider } from "./context/PocMode";
 import AuditLog from "./pages/AuditLog";
 import Chat from "./pages/Chat";
 import CLI from "./pages/CLI";
@@ -129,8 +128,6 @@ function OnboardingGate() {
 }
 
 function AppRoutes() {
-  const pmPoc = usePmPoc();
-
   return (
     <Routes>
       <Route path="/setup" element={<Setup />} />
@@ -140,14 +137,14 @@ function AppRoutes() {
           <AuthGuard>
             <Routes>
               <Route path="/" element={<AppShell />}>
-                <Route index element={<Navigate to={pmPoc ? "chat" : "dashboard"} replace />} />
+                <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<Dashboard />} />
                 <Route path="chat" element={<Chat />} />
                 <Route path="missions" element={<Missions />} />
                 <Route path="dags" element={<DagBuilder />} />
                 <Route path="dag-runs" element={<DagRuns />} />
                 <Route path="schedules" element={<Schedules />} />
-                <Route path="agents" element={pmPoc ? <Fleet /> : <Agents />} />
+                <Route path="agents" element={<Agents />} />
                 <Route path="work-items" element={<WorkItems />} />
                 <Route path="knowledge" element={<KnowledgeBase />} />
                 <Route path="decks" element={<DeckBuilder />} />
@@ -184,6 +181,14 @@ export default function App() {
     <ErrorBoundary>
       <ToastProvider>
         <ModeProvider>
+          {/* Retained deliberately. Routing, navigation and the post-setup
+              landing page no longer branch on POC mode (#129), but five pages
+              — Login, Chat, Settings, MCP and Missions — still call
+              usePmPoc() for copy and for a few PM-only actions. Dropping the
+              provider would pin those to the context default of false, which
+              would change their behaviour by accident rather than by
+              decision. They are retired in a follow-up, where which of those
+              actions survive is a question with an answer. */}
           <PocModeProvider>
             <AppRoutes />
           </PocModeProvider>
