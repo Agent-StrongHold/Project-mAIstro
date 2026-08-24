@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../lib/api";
+import { useWorkspaces } from "../context/WorkspaceContext";
 import {
   Card, Hex, Modal, SearchInput, StatCard, LoadingSpinner, PageHeader, useToast,
   ConfirmDialog, EmptyState,
@@ -130,6 +131,7 @@ const inputBase: React.CSSProperties = {
 };
 
 export default function Missions() {
+  const { activeWorkspaceId } = useWorkspaces();
   const toast = useToast();
   const [rows, setRows] = useState<Mission[]>([]);
   const [sel, setSel] = useState<Mission | null>(null);
@@ -227,7 +229,13 @@ export default function Missions() {
         priority: newPriority,
       };
       if (newAgent) body.assigned_agents = [newAgent];
-      const created = await apiPost<Mission>("/v1/tasks", body);
+      // The workspace the user is actually looking at. Without it every
+      // mission created from a selected workspace was filed in the
+      // deployment default instead, silently.
+      const scoped = activeWorkspaceId
+        ? `/v1/tasks?workspace_id=${encodeURIComponent(activeWorkspaceId)}`
+        : "/v1/tasks";
+      const created = await apiPost<Mission>(scoped, body);
       setShowCreate(false);
       setNewTitle("");
       setNewDesc("");
