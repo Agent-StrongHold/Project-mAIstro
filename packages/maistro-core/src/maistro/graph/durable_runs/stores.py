@@ -78,7 +78,21 @@ def _answer_record(
         )
 
     paused_index = _paused_node_run_index(record, node_id)
-    answered = {**answer, "answered_at": datetime.now(UTC).isoformat()}
+    # The pause payload the *node* wrote is the only server-side fact in a
+    # resume, and `_pause_metadata_after_answer` is about to delete it. Stamp it
+    # onto the answer first, after the caller's keys so a submitted `_pause`
+    # cannot displace it.
+    #
+    # `agent.delegate_remote` is why this exists: it paused carrying the child
+    # Run's id, and on resume could only read the answer, so the canonical
+    # execution identity either vanished or was whatever the responder claimed.
+    # A node that needs to know which execution it paused on must not have to
+    # ask the party it was waiting for.
+    pauses_before = record.graph_state.metadata.get("pauses", {})
+    own_pause = pauses_before.get(node_id) if isinstance(pauses_before, Mapping) else None
+    answered: dict[str, Any] = {**answer, "answered_at": datetime.now(UTC).isoformat()}
+    if isinstance(own_pause, Mapping):
+        answered["_pause"] = dict(own_pause)
     metadata = dict(record.graph_state.metadata)
     answers = dict(record.hitl_answers)
     answers[node_id] = answered
