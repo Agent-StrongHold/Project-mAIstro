@@ -138,7 +138,6 @@
     "maistro.security.auth_jwt",
     "maistro.security.auth_static",
     "maistro.security.guardrail",
-    "maistro.security.pg_strikes",
     "maistro.security.secure_random",
     "maistro.security.task_policy",
     "maistro.security.trust_boundary",
