@@ -15,6 +15,26 @@ python3 scripts/check-suite-inventory.py            # check (what CI runs)
 python3 scripts/check-suite-inventory.py --update   # rewrite the counts below
 ```
 
+## Resolving a merge conflict here
+
+This file conflicts between any two branches that both add tests, because both
+edit the same counts. **Regenerate; do not hand-merge.** Taking either side
+gives a number that matches neither branch, and hand-adding the two deltas is
+guesswork that happens to be right until it is not:
+
+```bash
+git checkout --theirs docs/testing/SUITE-INVENTORY.md   # placeholder, either side
+python3 scripts/check-suite-inventory.py --update       # the real answer
+```
+
+Then rewrite the paragraph above the table so it explains the merged number
+rather than one branch's half of it. The count is the alarm, not the record —
+its whole value is that a suite silently dropping out of collection changes it,
+and a hand-merged number is one that was never measured.
+
+`quality/ac-state.json` conflicts the same way and for the same reason;
+regenerate it with `python3 scripts/check-ac-state.py --run-tests --ratchet`.
+
 The gate compares **counts, not node-ID sets** — a checked-in manifest of ~9,500
 node IDs would churn on every `@parametrize` tweak, and the rename case it would
 catch is already covered by the suites actually *running* in CI. What counts
@@ -51,21 +71,9 @@ every branch adding tests rewrote the same lines and collided with every other
 such branch on merge (#208). Notes moved out so this file could stay purely
 derived.
 
-One maistro-rsi node ID pins the property the sandbox group-kill test depends
-on (#152): a zombie reads as stopped. The old check asked `os.kill(pid, 0)`,
-which a killed-but-unreaped process answers for as long as nothing reaps it, so
-the suite reported a containment failure about a process the kernel had already
-killed. Forking a child that exits without being reaped makes that state
-unambiguous, so the helper's semantics are held rather than assumed.
-
-Four more maistro-core node IDs close #68's deployment-policy gap: raising the
-byte or depth ceiling now fails without the explicit unsafe-resource override,
-the explicit override is covered, and malformed override values fail startup
-instead of silently selecting a policy.
-
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 6612 | `ci.yml` |
+| `packages/maistro-core/tests` | 6632 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 189 | `ci.yml` |
@@ -74,7 +82,7 @@ instead of silently selecting a policy.
 | `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |
 | `packages/maistro-canvas/tests` | 250 | `ci.yml` |
 | `packages/maistro-turing/backend/tests` | 26 | `ci.yml` (own invocation) |
-| `tests/` (root) | 927 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
+| `tests/` (root) | 936 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
 | `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
 | `packages/hive-conductor/backend/tests` | 1231 | `ci.yml` (bare python) |
 | `packages/hive-conductor/tests/e2e` | 23 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
