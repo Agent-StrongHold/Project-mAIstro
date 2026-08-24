@@ -117,7 +117,16 @@ _POOLED_CLIENT_MODULE = "maistro.http"
 #: the number the document states is how many call sites are protected, and a
 #: guard nobody calls protects nothing. A module that calls one is also, by
 #: construction, a module that fetches.
-_SSRF_GUARD_FUNCTIONS = frozenset({"_block_ssrf", "validate_outbound_url"})
+#:
+#: ``avalidate_outbound_url`` is the same guard with its resolution moved off the
+#: event loop (#154), not a second one. It has to be seeded explicitly: this set
+#: is matched by name, so the async form was invisible here, and the browser tool
+#: — the one caller that switched to it — was counted as unguarded. That is the
+#: shape of error this gate exists to stop, arriving through the gate itself, so
+#: a new guard entry point belongs here in the same change that introduces it.
+_SSRF_GUARD_FUNCTIONS = frozenset(
+    {"_block_ssrf", "validate_outbound_url", "avalidate_outbound_url"}
+)
 
 #: Where the counted claims below are measured from.
 _CORE_SRC = ROOT / "packages" / "maistro-core" / "src" / "maistro"

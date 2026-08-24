@@ -43,6 +43,11 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked --extra dev
       - run: bash scripts/verify-monorepo-layout.sh
+      # Before anything expensive: a merge marker on the branch means the merge
+      # was never finished, and one reached `develop` in a file no other gate
+      # reads (#154).
+      - name: No conflict markers in tracked files
+        run: python scripts/check-merge-markers.py
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: >-
