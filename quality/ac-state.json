@@ -9,16 +9,16 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 177,
-    "specs_with_ac_heading": 169,
-    "specs_with_ac_ids": 31,
+    "specs": 178,
+    "specs_with_ac_heading": 170,
+    "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 478,
-    "criteria_annotated": 207,
-    "markers_found": 196,
+    "criteria_declared": 485,
+    "criteria_annotated": 214,
+    "markers_found": 203,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 231,
+    "gherkin_criteria": 238,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 9,
@@ -1769,9 +1769,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 1,
-        "covered": 1,
+        "covered": 0,
         "passing": 0,
-        "reachable": 7
+        "reachable": 8
       },
       "tier": "declared",
       "criteria": [
@@ -1853,7 +1853,7 @@
           "scenario": [
             "Secret payloads persist as hash and metadata only"
           ],
-          "rung": "covered"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-070226-2b70/AC-7",
@@ -4570,7 +4570,7 @@
           ],
           "form": "gherkin",
           "scenario": [
-            "Deployment overrides are explicit"
+            "Deployment overrides cannot silently weaken the boundary"
           ],
           "rung": "reachable"
         },
@@ -4584,6 +4584,121 @@
           "form": "gherkin",
           "scenario": [
             "Non-JSON arguments fail closed"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082226-2a10",
+      "file": "docs/specs/SPEC-082226-2a10-resource-security-floors.md",
+      "layer": "Governance",
+      "declared_status": "Implemented",
+      "implements": [
+        "- maistro-engine#ADR-038"
+      ],
+      "has_ac_heading": true,
+      "criteria_total": 7,
+      "annotated": 7,
+      "gherkin_criteria": 7,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 7
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082226-2a10/AC-1",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Shipped defaults equal the declared baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-2",
+          "claimed": false,
+          "module": "maistro.config.settings",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Operators may tighten every protected limit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-3",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Routine configuration cannot weaken the baseline"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-4",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Unsafe development weakening is explicit"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-7",
+          "claimed": false,
+          "module": "maistro.security.resource_policy",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A disabled burst throttle is read as the limiter reads it"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-5",
+          "claimed": false,
+          "module": "maistro.agents.circuit_breaker",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_resource_policy.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Circuit breaker uses deployment policy"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082226-2a10/AC-6",
+          "claimed": false,
+          "module": "maistro_server.api.health",
+          "covered_by": [
+            "packages/maistro-server/tests/api/test_resource_policy_health.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Effective values are observable"
           ],
           "rung": "reachable"
         }
@@ -8496,13 +8611,15 @@
       "id": "ADR-038",
       "file": "docs/adr/ADR-038-reliability-taxonomy.md",
       "declared_status": "Accepted",
-      "specs": [],
-      "measurable_specs": 0,
+      "specs": [
+        "SPEC-082226-2a10"
+      ],
+      "measurable_specs": 1,
       "own_criteria": 0,
       "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-039",
@@ -10692,9 +10809,45 @@
       "tier": "unmeasured"
     },
     {
+      "id": "ADR-082226-4cd4",
+      "file": "docs/adr/ADR-082226-4cd4-strike-tracker-protocol-contract.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-082226-5104",
       "file": "docs/adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md",
       "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082226-d3dd",
+      "file": "docs/adr/ADR-082226-d3dd-s3-compatible-cold-storage-archive-tier.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082326-5386",
+      "file": "docs/adr/ADR-082326-5386-outbound-http-policy-at-the-shared-client-seam.md",
+      "declared_status": "Proposed",
       "specs": [],
       "measurable_specs": 0,
       "own_criteria": 0,

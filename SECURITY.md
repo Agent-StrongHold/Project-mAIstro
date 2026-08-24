@@ -137,7 +137,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — one validator, `security/ssrf.py::validate_outbound_url` (and its off-loop twin `avalidate_outbound_url`), refuses any URL that is not http(s) with a resolvable host on the public internet: it checks every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refuses a name it cannot resolve at all. Callers that reach it: `tools/browser/client.py` awaits `avalidate_outbound_url`, and `skills/marketplace.py` and `skills/import_pipeline.py` go through the `_block_ssrf` adapter. `tools/net_guard.py` is a deprecation shim that re-exports `validate_outbound_url` rather than reimplementing it. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — the guard itself is sound; its *reach* is the gap, and the measured figure is in Known Limitation 1 rather than restated here, because a second copy of a number is a second thing to drift (#155) |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at the seam, proxy mounts included; the measured reach and the one bypass are in Known Limitation 1 rather than restated here, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -162,38 +162,46 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **One SSRF validator, and nothing makes a new outbound caller use it.** The guard is
-   `validate_outbound_url` in `security/ssrf.py`, together with its off-loop twin
-   `avalidate_outbound_url`; both accept only http(s) URLs whose host resolves to a public address, checking *every* address
-   the name resolves to and raising `SSRFBlockedError` when it cannot be resolved at all. That
-   normalises the usual obfuscations (`2852039166`, `0x7f000001`, `127.1`,
-   `[::ffff:169.254.169.254]`, `metadata.google.internal`) to the address they denote.
-   There is exactly one implementation: `tools/net_guard.py` re-exports `validate_outbound_url`
-   as a deprecation shim for downstream importers, and `skills/marketplace.py::_block_ssrf` is a
-   thin adapter over it rather than a second checker (#154 existed to delete the second copy).
+1. **SSRF protection is applied at the shared-client transport, not at call sites.**
+   `validate_outbound_url` in `security/ssrf.py` refuses anything that is not http(s) with a
+   resolvable host, and checks every address the host resolves to — which normalises the
+   obfuscations (`2852039166`, `0x7f000001`, `127.1`, `[::ffff:169.254.169.254]`,
+   `metadata.google.internal`) to the address they denote. A host that cannot be resolved is
+   refused rather than allowed.
 
-   The limitation is **reach**, not soundness. Measured (`measured-outbound-http`) — of the
-   **32** modules under `maistro-core` that can open an outbound connection, **3** call the
-   guard. Both figures come from one census, which an earlier revision of this line did not: it
-   compared modules importing an HTTP client against guard *call sites*, and those two sets
-   turned out to have no member in common, since the guarded modules fetch through an injected
-   client or a browser rather than by importing a library.
+   It used to be a function each call site had to remember to call. That is still visible in the
+   code and is worth stating, because it is the thing this change makes *stop* mattering:
+   measured (`measured-outbound-http`), of the **33** modules in `maistro-core` that can open an
+   outbound connection, **4** call the guard directly. Read as a coverage figure that number is
+   wrong now, and it was the honest figure before — which is the whole argument for moving the
+   control.
 
-   The unguarded callers reach hard-coded or operator-configured hosts, so none of them is
-   currently exploitable — but that is a property of what those call sites happen to fetch, not
-   of a boundary anything enforces. Two deserve naming, because their destination is the most
-   likely to become caller-influenced: `tasks/progress_webhook.py` posts to a webhook URL, and
-   `agents/strategies/tool_http.py` fetches whatever a tool call names. Nearly all of them route
-   through `maistro.http.shared_client`, so there is one seam that would reach them — but the
-   engine also legitimately calls internal LLM gateways through it, so switching it on needs a
-   policy for those rather than a blanket refusal. Tracked as #155.
+   What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
+   hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
+   shared pool. Measured (`measured-outbound-seam`) — **32** of the census route through the pool
+   and **1** builds its own client. Redirect hops are validated per hop, because httpx re-enters
+   the transport for each one. `tasks/progress_webhook` and `integrations/ntfy` built private
+   clients and were moved onto the pool so the seam actually reaches them.
 
-   Two further limits, stated rather than implied. The guard resolves the name and the HTTP
-   client resolves it again when it connects, so a name that answers differently between those
-   two lookups is admitted; resolving raises the cost of DNS rebinding without closing it. And
-   redirect hops are checked only where the caller validates each hop, which none of the current
-   call sites does — a public URL that 302s to `169.254.169.254` is not re-checked at the
-   destination.
+   The remaining bypass is `cli/_approvals.py`, and it is not an oversight: it builds a
+   *synchronous* `httpx.Client` against the operator's own conductor at `127.0.0.1:8101`, and the
+   pool is async-only, so there is nothing for it to borrow. It is named here rather than
+   exempted in the checker, because a bypass that stops being counted is a bypass nobody will
+   notice growing.
+
+   Configured destinations are allowed by exact origin (scheme, host, port), seeded from settings
+   rather than a hand-maintained list, so the engine still reaches its own LiteLLM/Ollama
+   gateway. An allowance names one endpoint; it does not widen to other ports on that host or to
+   private addresses generally.
+
+   Proxy egress is covered: httpx builds its own mounts from `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+   and each of them is wrapped, so a deployment behind a proxy is both guarded and still able to
+   reach its proxy.
+
+   Two limits, stated rather than implied: the guard resolves the name and the HTTP client
+   resolves it again when it connects, so a name that answers differently between those two
+   lookups is not caught; and a transport that fabricates responses (`httpx.MockTransport`, which
+   is how the test suite avoids the network) is not wrapped, because it opens no socket.
 
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by

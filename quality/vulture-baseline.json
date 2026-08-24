@@ -160,7 +160,6 @@
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'max_overflow'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'mistral'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'model_groups'",
-        "packages/maistro-core/src/maistro/config/settings.py::unused variable 'ntfy'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'phoenix_endpoint'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'pool_recycle'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'promotion_threshold'",
