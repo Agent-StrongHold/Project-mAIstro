@@ -24,6 +24,7 @@ import pytest
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
@@ -1018,3 +1019,139 @@ async def test_deleting_a_run_releases_its_occurrence(spine: Any) -> None:
     readmitted = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     assert readmitted.run_id != run.run_id
+
+
+# ── the three physical failures are told apart (#230, ADR-082426-f170) ──
+#
+# Before this they were not: cancelled, timed-out and failed Attempts all
+# parked their NodeRun in WAITING, so a user cancelling their own work looked
+# exactly like a provider being down on any record that counts NodeRuns.
+
+
+async def _terminal_attempt(spine: Any, node_run: Any, status: AttemptStatus) -> Any:
+    store, _workspace, _project_id = spine
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
+    assert attempt.execution_lease is not None
+    token = attempt.execution_lease.fencing_token
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    return await store.transition_attempt(
+        attempt.attempt_id, status, error="ended", fencing_token=token
+    )
+
+
+async def test_a_requested_cancellation_terminalizes_its_node_run(spine: Any) -> None:
+    """The retry decision has been made, and it was *don't*. Parked would mean
+    "awaiting a decision" — which is what made a cancelled turn and an outage
+    indistinguishable."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+
+    await AttemptLifecycleReconciler(store).reconcile(
+        attempt, cancellation=CancellationCause.REQUESTED
+    )
+
+    settled = await store.get_node_run(node_run.node_run_id)
+    reloaded = await store.get_run(run.run_id)
+    assert settled is not None and settled.status is RunStatus.CANCELLED
+    assert reloaded is not None and reloaded.status is RunStatus.CANCELLED
+
+
+async def test_a_recovered_cancellation_still_parks_its_node_run(spine: Any) -> None:
+    """Crash recovery closes the physical record so a *fresh* Attempt can run.
+    Terminalizing here would make recovery destroy the work it exists to
+    resume."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+
+    await AttemptLifecycleReconciler(store).reconcile(
+        attempt, cancellation=CancellationCause.RECOVERED
+    )
+
+    parked = await store.get_node_run(node_run.node_run_id)
+    reloaded = await store.get_run(run.run_id)
+    assert parked is not None and parked.status is RunStatus.WAITING
+    assert reloaded is not None and reloaded.status is RunStatus.WAITING
+
+
+async def test_recovery_is_the_default_so_a_caller_that_forgets_loses_nothing(
+    spine: Any,
+) -> None:
+    """The two mistakes are not symmetric: defaulting to parked leaves a less
+    informative record, defaulting to terminal destroys resumable work."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+
+    await AttemptLifecycleReconciler(store).reconcile(attempt)
+
+    parked = await store.get_node_run(node_run.node_run_id)
+    assert parked is not None and parked.status is RunStatus.WAITING
+
+
+@pytest.mark.parametrize("status", [AttemptStatus.FAILED, AttemptStatus.TIMED_OUT])
+async def test_a_failure_and_a_timeout_still_park(spine: Any, status: AttemptStatus) -> None:
+    """Both are plausibly retryable, and whether to retry belongs to a policy
+    above this layer — which is what WAITING is for. Only cancellation is a
+    decision already taken."""
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    attempt = await _terminal_attempt(spine, node_run, status)
+
+    await AttemptLifecycleReconciler(store).reconcile(
+        attempt, cancellation=CancellationCause.REQUESTED
+    )
+
+    parked = await store.get_node_run(node_run.node_run_id)
+    reloaded = await store.get_run(run.run_id)
+    assert parked is not None and parked.status is RunStatus.WAITING
+    assert reloaded is not None and reloaded.status is RunStatus.WAITING
+
+
+async def test_the_three_outcomes_do_not_collapse_into_one(spine: Any) -> None:
+    """Stated as one assertion because the defect was the *collapse*, not any
+    single mapping: all three used to read `waiting`, and asserting each alone
+    would not have caught that."""
+    store, _workspace, _project_id = spine
+    reconciler = AttemptLifecycleReconciler(store)
+    seen: dict[str, RunStatus] = {}
+
+    for label, status, cause in (
+        ("cancelled", AttemptStatus.CANCELLED, CancellationCause.REQUESTED),
+        ("timed_out", AttemptStatus.TIMED_OUT, CancellationCause.RECOVERED),
+        ("failed", AttemptStatus.FAILED, CancellationCause.RECOVERED),
+    ):
+        _run, node_run = await _running_run_with_node(spine)
+        attempt = await _terminal_attempt(spine, node_run, status)
+        await reconciler.reconcile(attempt, cancellation=cause)
+        settled = await store.get_node_run(node_run.node_run_id)
+        assert settled is not None
+        seen[label] = settled.status
+
+    assert seen["cancelled"] is RunStatus.CANCELLED
+    assert seen["timed_out"] is seen["failed"] is RunStatus.WAITING
+
+
+async def test_a_cancelled_node_does_not_cancel_a_run_with_live_siblings(spine: Any) -> None:
+    """One cancelled branch does not decide for the others — the same rule
+    `_park_run_if_inactive` already applied to parking."""
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    cancelled_node = await store.create_node_run(run.run_id, node_id="node-1")
+    sibling = await store.create_node_run(run.run_id, node_id="node-2")
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    for node_run_id in (cancelled_node.node_run_id, sibling.node_run_id):
+        await store.transition_node_run(node_run_id, RunStatus.QUEUED)
+        await store.transition_node_run(node_run_id, RunStatus.RUNNING)
+    attempt = await _terminal_attempt(spine, cancelled_node, AttemptStatus.CANCELLED)
+
+    await AttemptLifecycleReconciler(store).reconcile(
+        attempt, cancellation=CancellationCause.REQUESTED
+    )
+
+    reloaded = await store.get_run(run.run_id)
+    still_running = await store.get_node_run(sibling.node_run_id)
+    assert reloaded is not None and reloaded.status is RunStatus.RUNNING
+    assert still_running is not None and still_running.status is RunStatus.RUNNING

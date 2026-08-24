@@ -10,6 +10,7 @@ a projected result authoritative for the logical NodeRun.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from maistro.runs.model import (
@@ -25,6 +26,31 @@ from maistro.runs.model import (
     evidence_values_equal,
 )
 from maistro.runs.store import RunIntegrityError
+
+
+class CancellationCause(Enum):
+    """Why an Attempt is cancelled — the one thing its status cannot say (#230).
+
+    `AttemptStatus.CANCELLED` carries two meanings that need opposite logical
+    projections, and no amount of reading the persisted Attempt tells them
+    apart:
+
+    ``REQUESTED``
+        Someone asked this work to stop. The retry decision has been made and
+        it was *don't*, so the NodeRun is terminal.
+
+    ``RECOVERED``
+        A process died mid-Attempt and the physical record is being closed out
+        so a *fresh* Attempt can run — `_reconcile_orphaned_attempts`'s case.
+        The node is still owed, so it parks exactly as a failure does.
+
+    Two members, deliberately not three: this says why a cancellation happened,
+    not what state anything is in, and it must not become a second lifecycle
+    (`scripts/check-execution-lifecycles.py`).
+    """
+
+    REQUESTED = "requested"
+    RECOVERED = "recovered"
 
 
 @runtime_checkable
@@ -88,8 +114,21 @@ class AttemptLifecycleReconciler:
         await self._ensure_run_running(run)
         return await self._ensure_node_run_running(node_run)
 
-    async def reconcile(self, attempt: Attempt) -> NodeRun:
-        """Reconcile one already-persisted terminal Attempt into logical activity."""
+    async def reconcile(
+        self,
+        attempt: Attempt,
+        *,
+        cancellation: CancellationCause = CancellationCause.RECOVERED,
+    ) -> NodeRun:
+        """Reconcile one already-persisted terminal Attempt into logical activity.
+
+        ``cancellation`` is read only for a CANCELLED Attempt, and says which of
+        its two meanings this one is. It defaults to ``RECOVERED`` — the parking
+        behaviour every caller had before #230 — because the two mistakes are
+        not symmetric: defaulting to parked leaves a less informative record,
+        while defaulting to terminal would make crash recovery destroy the work
+        it exists to resume.
+        """
         if attempt.status not in TERMINAL_ATTEMPT_STATUSES:
             raise RunIntegrityError("cannot reconcile a non-terminal Attempt")
 
@@ -114,6 +153,12 @@ class AttemptLifecycleReconciler:
                 result=physical.result,
             )
             return await self._accept_node_outcome(node_run, outcome)
+
+        if (
+            attempt.status is AttemptStatus.CANCELLED
+            and cancellation is CancellationCause.REQUESTED
+        ):
+            return await self._cancel_node_run(node_run, attempt)
 
         parked = await self._park_node_run(node_run, attempt)
         await self._park_run_if_inactive(parked.run_id)
@@ -204,15 +249,55 @@ class AttemptLifecycleReconciler:
             error=attempt.error,
         )
 
+    async def _cancel_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:
+        """Terminalize a NodeRun whose Attempt was cancelled on request (#230).
+
+        Parked would be the wrong record: WAITING means "awaiting a retry
+        decision", and here that decision has been made. Left parked, a
+        cancelled turn is indistinguishable on any dashboard from a provider
+        being down — which is the reading terminalization exists to prevent.
+        """
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            return node_run
+        cancelled = await self._store.transition_node_run(
+            node_run.node_run_id,
+            RunStatus.CANCELLED,
+            error=attempt.error,
+        )
+        await self._cancel_run_if_inactive(cancelled.run_id)
+        return cancelled
+
+    async def _cancel_run_if_inactive(self, run_id: str) -> Run:
+        """Carry a requested cancellation up to the Run, if nothing else is live.
+
+        The same shape as `_park_run_if_inactive` and the same reason it is
+        conditional: a sibling node still running means the Run is still
+        running, and one cancelled branch does not decide for the others.
+
+        CANCELLED rather than WAITING, because a Run parked awaiting a decision
+        that has already been taken is the defect #226 removed one level up.
+        The durable Graph executor reached the same answer independently in
+        `_persist_cancelled_run`.
+        """
+        run = await self._require_run(run_id)
+        if run.status is not RunStatus.RUNNING:
+            return run
+        if await self._has_active_node_run(run_id):
+            return run
+        return await self._store.transition_run(run_id, RunStatus.CANCELLED)
+
+    async def _has_active_node_run(self, run_id: str) -> bool:
+        node_runs = await self._store.list_node_runs(run_id)
+        return any(
+            node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
+            for node_run in node_runs
+        )
+
     async def _park_run_if_inactive(self, run_id: str) -> Run:
         run = await self._require_run(run_id)
         if run.status is not RunStatus.RUNNING:
             return run
-        node_runs = await self._store.list_node_runs(run_id)
-        if any(
-            node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
-            for node_run in node_runs
-        ):
+        if await self._has_active_node_run(run_id):
             return run
         return await self._store.transition_run(run_id, RunStatus.WAITING)
 
@@ -229,4 +314,4 @@ class AttemptLifecycleReconciler:
         return node_run
 
 
-__all__ = ["AttemptLifecycleReconciler", "AttemptLifecycleStore"]
+__all__ = ["AttemptLifecycleReconciler", "AttemptLifecycleStore", "CancellationCause"]
