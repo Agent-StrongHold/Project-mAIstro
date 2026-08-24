@@ -36,17 +36,20 @@ _FORBIDDEN_FOR_CANVAS = frozenset({"hive", "backend", "maistro_server"})
 
 # #36 invariant 6: compatibility owners must never silently read as canonical.
 # A direct public type alias is the concrete shape this repository has today.
-# Every allowed identity is reviewed here and must also sit beneath the explicit
-# banner in its source file. A new alias is therefore a red build until somebody
-# decides whether it is canonical, compatibility-only, or should not exist.
+# Every allowed identity is reviewed here and must also be explicitly described
+# as compatibility-only in its source file. A new alias is therefore a red build
+# until somebody decides whether it is canonical, compatibility-only, or should
+# not exist.
 _COMPATIBILITY_ALIAS_LEDGER = frozenset(
     {
+        "builders/dag.py::GraphSpec=GraphConfig",
         "types/config.py::MaistroConfig=AgentConfig",
         "types/errors.py::MaistroError=AgentError",
         "types/errors.py::StrongholdError=AgentError",
+        "workspaces/model.py::WorkspaceMember=WorkspaceMembership",
     }
 )
-_COMPATIBILITY_BANNER = "Backwards compat aliases"
+_COMPATIBILITY_BANNERS = ("Backwards compat aliases", "Backward-compatible alias")
 
 
 def _iter_python_files(root: Path) -> list[Path]:
@@ -107,6 +110,16 @@ def _violations(
     return found
 
 
+def _looks_like_public_type_name(name: str) -> bool:
+    """Return whether ``name`` looks like a public class/type identity.
+
+    ALL_CAPS assignments are constants, not type-owner aliases. Keeping this
+    predicate deliberately narrow prevents the architecture gate from silently
+    expanding into a generic assignment linter.
+    """
+    return bool(name) and name[0].isupper() and not name.isupper()
+
+
 def _public_direct_aliases(root: Path) -> dict[str, Path]:
     """Return direct public type aliases as stable path/name identities.
 
@@ -126,7 +139,9 @@ def _public_direct_aliases(root: Path) -> dict[str, Path]:
             target = node.targets[0]
             if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Name):
                 continue
-            if not target.id[:1].isupper() or not node.value.id[:1].isupper():
+            if not _looks_like_public_type_name(target.id) or not _looks_like_public_type_name(
+                node.value.id
+            ):
                 continue
             rel = py.relative_to(root).as_posix()
             aliases[f"{rel}::{target.id}={node.value.id}"] = py
@@ -137,14 +152,17 @@ def _compatibility_alias_violations(root: Path) -> list[str]:
     """Refuse unreviewed, stale, or unbannered compatibility-owner aliases."""
     aliases = _public_direct_aliases(root)
     found = set(aliases)
-    violations = [f"unreviewed public alias: {item}" for item in sorted(found - _COMPATIBILITY_ALIAS_LEDGER)]
+    violations = [
+        f"unreviewed public alias: {item}"
+        for item in sorted(found - _COMPATIBILITY_ALIAS_LEDGER)
+    ]
     violations.extend(
         f"stale compatibility alias ledger entry: {item}"
         for item in sorted(_COMPATIBILITY_ALIAS_LEDGER - found)
     )
     for identity in sorted(found & _COMPATIBILITY_ALIAS_LEDGER):
         source = aliases[identity].read_text(encoding="utf-8")
-        if _COMPATIBILITY_BANNER not in source:
+        if not any(banner in source for banner in _COMPATIBILITY_BANNERS):
             violations.append(f"compatibility alias is not bannered: {identity}")
     return violations
 
@@ -219,3 +237,9 @@ def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
     (planted / "alias.py").write_text("OldCanonical = NewCanonical\n", encoding="utf-8")
     aliases = _public_direct_aliases(planted)
     assert "alias.py::OldCanonical=NewCanonical" in aliases
+
+    # Constants are not compatibility type owners and must stay outside this
+    # focused architecture gate.
+    (planted / "constants.py").write_text("OLD_CONSTANT = NEW_CONSTANT\n", encoding="utf-8")
+    aliases = _public_direct_aliases(planted)
+    assert "constants.py::OLD_CONSTANT=NEW_CONSTANT" not in aliases
