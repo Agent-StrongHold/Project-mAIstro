@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import string
 import time
 
 import pytest
 
-from maistro.security.redact import redact
+from maistro.security.redact import (
+    _ENTROPY_BITS_PER_CHAR_THRESHOLD,
+    _MIN_SECRET_LENGTH,
+    _looks_like_secret,
+    _shannon_entropy,
+    redact,
+)
 
 
 def _jwt(header: str, payload: str, signature: str) -> str:
@@ -597,3 +604,45 @@ class TestRedactScaling:
         1 KB unbroken word run caused before the anchors went in.
         """
         assert self._best(text[:1024]) < 0.010
+
+
+class TestLooksLikeSecretLengthGuard:
+    """Both outcomes of the `_MIN_SECRET_LENGTH` guard (#157).
+
+    Naming the two thresholds so `check-security-inventory.py` can verify
+    SECURITY.md's claims left this predicate reachable only through `redact`,
+    which never drove the short-input arc. A named constant that no test
+    exercises is a documented number nothing holds to its meaning.
+    """
+
+    @staticmethod
+    def _high_entropy_run(length: int) -> str:
+        """Build a mixed-charset, high-entropy run without writing one down.
+
+        Assembled rather than literal for the reason given on `_jwt` above: a
+        contiguous 32-character key-shaped string trips secret scanners on a
+        fresh clone, and the fixture is not a credential.
+        """
+        alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits
+        # Stride by a co-prime of the alphabet length so the sample cycles
+        # through all three character classes instead of repeating a run.
+        return "".join(alphabet[(i * 7) % len(alphabet)] for i in range(length))
+
+    def test_a_run_shorter_than_the_minimum_is_not_a_secret(self):
+        short = self._high_entropy_run(_MIN_SECRET_LENGTH - 1)
+        assert len(short) < _MIN_SECRET_LENGTH
+        assert _looks_like_secret(short) is False
+
+    def test_a_long_mixed_high_entropy_run_is_a_secret(self):
+        long = self._high_entropy_run(_MIN_SECRET_LENGTH * 2)
+        assert _shannon_entropy(long) > _ENTROPY_BITS_PER_CHAR_THRESHOLD
+        assert _looks_like_secret(long) is True
+
+    def test_the_minimum_length_is_inclusive(self):
+        """Exactly `_MIN_SECRET_LENGTH` is long enough — the guard is `<`."""
+        exact = self._high_entropy_run(_MIN_SECRET_LENGTH)
+        assert _looks_like_secret(exact) is True
+
+    def test_length_alone_does_not_make_a_secret(self):
+        """A long single-class run clears the guard and fails on entropy."""
+        assert _looks_like_secret("a" * (_MIN_SECRET_LENGTH * 2)) is False
