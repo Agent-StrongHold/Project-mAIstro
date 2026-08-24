@@ -3,8 +3,14 @@ id: ADR-082426-f170
 title: "A requested cancellation is not a parked failure, and the Attempt cannot say which it is"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-24
+accepted: 2026-08-24
+history:
+  - status: Proposed
+    date: 2026-08-24
+  - status: Accepted
+    date: 2026-08-24
 substrate:
   - maistro-engine#ADR-081226-a66b
 implements: []
