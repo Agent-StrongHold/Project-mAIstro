@@ -603,3 +603,39 @@ async def test_list_all_maps_rows_to_learning_dataclasses(
     assert learning.rca_prevention == "validate first"
     assert learning.success_after_use == 2
     assert learning.failure_after_use == 1
+
+
+# --- trigger_keys decoding -------------------------------------------------
+
+
+def test_trigger_keys_decode_from_every_shape_a_pool_can_hand_back() -> None:
+    """The column is JSONB and asyncpg's codec for it is `str` both ways.
+
+    So the decoder has to handle the text this store writes *and* the list a
+    pool that registered its own JSON codec would hand back — the same store
+    class runs against both, and `maistro.persistence._register_json_codecs`
+    is exactly such a pool. Reading a text row with `list(...)` split the JSON
+    into single characters, which is why this is a function with a test rather
+    than a call site.
+    """
+    from maistro.persistence.pg_learnings import _dump_keys, _load_keys
+
+    assert _load_keys(_dump_keys(["timeout", "retry"])) == ["timeout", "retry"]
+    assert _load_keys(["timeout", "retry"]) == ["timeout", "retry"]
+    assert _load_keys(b'["timeout"]') == ["timeout"]
+    assert _load_keys([1, 2]) == ["1", "2"]
+
+
+def test_a_malformed_trigger_keys_row_costs_that_row_and_no_others() -> None:
+    """Returning `[]` rather than raising is the decision under test.
+
+    A learning whose keys cannot be read is one learning without keys; raising
+    would fail every query that happened to touch it, which turns one bad row
+    into an outage of the whole store.
+    """
+    from maistro.persistence.pg_learnings import _load_keys
+
+    assert _load_keys(None) == []
+    assert _load_keys("not json at all") == []
+    assert _load_keys('{"not": "an array"}') == []
+    assert _load_keys(object()) == []
