@@ -20,6 +20,7 @@ import pytest
 
 from maistro.archive import (
     ArchivedRecordNotFound,
+    ArchiveError,
     ArchiveIntegrityError,
     ArchiveKey,
     ArchiveStore,
@@ -168,3 +169,160 @@ def _overwrite(store: Any, key: ArchiveKey, payload: bytes) -> None:
 
 def test_both_backends_satisfy_the_protocol(store: Any) -> None:
     assert isinstance(store, ArchiveStore)
+
+
+# ── listing a scope (#133 scope item 2: put / get / list / delete) ──
+
+
+async def _keys_in(store: Any, scope: str) -> set[str]:
+    return {str(key) async for key in store.list_scope(scope)}
+
+
+async def test_a_scope_lists_what_was_archived_to_it(store: Any) -> None:
+    first = await store.put(b"one", scope="learnings")
+    second = await store.put(b"two", scope="learnings")
+
+    assert await _keys_in(store, "learnings") == {str(first), str(second)}
+
+
+async def test_a_scope_does_not_list_another_scopes_objects(store: Any) -> None:
+    """Scope is the isolation boundary, so listing one must not reach another —
+    and the same bytes in two scopes are two objects."""
+    mine = await store.put(b"shared bytes", scope="learnings")
+    await store.put(b"shared bytes", scope="episodic")
+
+    assert await _keys_in(store, "learnings") == {str(mine)}
+
+
+async def test_an_empty_scope_lists_nothing_rather_than_raising(store: Any) -> None:
+    """Asking what is archived under a scope nothing has archived to is a
+    reasonable question with a short answer."""
+    assert await _keys_in(store, "never-written") == set()
+
+
+async def test_a_deleted_object_leaves_the_listing(store: Any) -> None:
+    kept = await store.put(b"kept", scope="learnings")
+    removed = await store.put(b"removed", scope="learnings")
+
+    await store.delete(removed)
+
+    assert await _keys_in(store, "learnings") == {str(kept)}
+
+
+async def test_every_listed_key_reads_back(store: Any) -> None:
+    """A listing that names keys `get` cannot resolve is worse than no listing:
+    a caller iterating a scope to rehydrate it would fail partway through."""
+    payloads = [f"record {index}".encode() for index in range(5)]
+    for payload in payloads:
+        await store.put(payload, scope="learnings")
+
+    found = [await store.get(key) async for key in store.list_scope("learnings")]
+
+    assert sorted(found) == sorted(payloads)
+
+
+async def test_listing_is_lazy_enough_to_stop_early(store: Any) -> None:
+    """The reason it is an iterator. A scope is the tier everything cold
+    accumulates in, so a caller wanting one key must not pay for all of them."""
+    for index in range(10):
+        await store.put(f"record {index}".encode(), scope="learnings")
+
+    seen = []
+    async for key in store.list_scope("learnings"):
+        seen.append(key)
+        break
+
+    assert len(seen) == 1
+
+
+# ── S3 pagination ─────────────────────────────────────────────────
+#
+# Backend-specific rather than conformance, because paging is: the filesystem
+# backend reads a directory in one `scandir` and has no truncation to follow.
+# Still here rather than in `test_s3_error_paths.py` because it needs the live
+# server — a stub returning a hand-written `NextContinuationToken` would be
+# asserting that the loop reads the key we told it to read.
+
+
+async def test_a_truncated_listing_follows_the_continuation_token(s3_bucket: Any) -> None:
+    """The property the paging loop exists for.
+
+    S3 truncates at 1000 keys by default, so a listing that ignores
+    `NextContinuationToken` returns a prefix of the answer and looks correct in
+    any test below that size — a scope silently losing its tail is exactly the
+    "archived is not gone" claim failing. `page_size` shrinks the boundary to
+    where a real server will actually cross it.
+    """
+    from maistro.archive import S3ArchiveStore
+
+    store = S3ArchiveStore(BUCKET, client=s3_bucket, page_size=2)
+    archived = {str(await store.put(f"record {index}".encode(), scope=SCOPE)) for index in range(7)}
+
+    assert len(archived) == 7, "distinct payloads must be distinct keys"
+    assert await _keys_in(store, SCOPE) == archived
+
+
+async def test_paging_stops_when_the_last_page_is_not_truncated(s3_bucket: Any) -> None:
+    """The other arc: a listing that fits in one page must not ask for a
+    second. Requests are counted rather than inferred, because an extra
+    round trip on every listing is invisible to a result-only assertion."""
+    from maistro.archive import S3ArchiveStore
+
+    calls: list[dict[str, Any]] = []
+    original = s3_bucket.list_objects_v2
+
+    def counting(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    s3_bucket.list_objects_v2 = counting
+    store = S3ArchiveStore(BUCKET, client=s3_bucket, page_size=10)
+    await store.put(PAYLOAD, scope=SCOPE)
+
+    assert await _keys_in(store, SCOPE) != set()
+    assert len(calls) == 1, f"one page of one key took {len(calls)} requests"
+
+
+def test_a_page_size_below_one_is_refused() -> None:
+    """A zero or negative `MaxKeys` is rejected by the service mid-listing,
+    which surfaces as a failed archive read rather than a configuration error.
+    Refusing at construction puts the complaint where the mistake is."""
+    from maistro.archive import S3ArchiveStore
+
+    with pytest.raises(ArchiveError, match="page_size must be at least 1"):
+        S3ArchiveStore(BUCKET, client=object(), page_size=0)
+
+
+async def test_a_missing_bucket_is_an_outage_not_a_missing_record(s3_bucket: Any) -> None:
+    """The failure decision 6 of the ADR exists to prevent, one layer down.
+
+    `head_object` answers a bare `404` with no error code, and answers the
+    *same* 404 whether the key is absent from a healthy bucket or the bucket
+    does not exist — the two responses are byte-identical apart from the
+    request id. So `exists()` reading that 404 as "no such record" would report
+    every archived record absent whenever the bucket name is wrong, the bucket
+    is deleted, or the credential can no longer see it: an outage
+    indistinguishable from deletion, in the tier least likely to be watched.
+
+    `get` is not exposed to this — `get_object` distinguishes `NoSuchKey` from
+    `NoSuchBucket` — which is exactly why the gap was only ever visible here.
+    """
+    from maistro.archive import S3ArchiveStore
+
+    store = S3ArchiveStore("bucket-that-does-not-exist", client=s3_bucket)
+
+    with pytest.raises(ArchiveError, match="not reachable"):
+        await store.exists(ArchiveKey.for_payload(PAYLOAD, scope=SCOPE))
+
+
+async def test_a_missing_object_in_a_healthy_bucket_is_still_just_absent(
+    s3_bucket: Any,
+) -> None:
+    """The other arc. The bucket check must not turn an ordinary miss into an
+    error — `exists()` answering False for a key nobody archived is the whole
+    point of having it."""
+    from maistro.archive import S3ArchiveStore
+
+    store = S3ArchiveStore(BUCKET, client=s3_bucket)
+
+    assert await store.exists(ArchiveKey.for_payload(b"never archived", scope=SCOPE)) is False

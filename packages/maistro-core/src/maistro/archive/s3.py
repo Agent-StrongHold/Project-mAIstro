@@ -21,10 +21,14 @@ hop is irrelevant next to the network round trip.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from maistro.archive.filesystem import verify
 from maistro.archive.types import ArchivedRecordNotFound, ArchiveError, ArchiveKey
+
+logger = logging.getLogger("maistro.archive.s3")
 
 #: Install hint used when the extra is missing. Named here so the message is the
 #: same wherever it surfaces.
@@ -42,6 +46,7 @@ class S3ArchiveStore:
         region_name: str | None = None,
         aws_access_key_id: str | None = None,
         aws_secret_access_key: str | None = None,
+        page_size: int | None = None,
         client: Any = None,
     ) -> None:
         """Bind to a bucket.
@@ -51,12 +56,23 @@ class S3ArchiveStore:
         Passing none of them falls back to boto3's own resolution chain, which is
         correct on an instance with a role attached.
 
+        `page_size` caps the keys `list_scope` asks for per request. Left at
+        `None` the service decides (1000 on every implementation seen), which is
+        the right default: a scope is listed rarely and a smaller page only buys
+        more round trips. It is a parameter because the continuation loop is
+        otherwise unobservable below a thousand objects — an operator tuning
+        memory per page and a test proving the loop actually follows the token
+        want the same knob.
+
         `client` is for tests and for a caller that has already built a
         configured client; supplying it skips the boto3 import entirely.
         """
         if not bucket.strip():
             raise ArchiveError("bucket must be a non-empty string")
+        if page_size is not None and page_size < 1:
+            raise ArchiveError(f"page_size must be at least 1, not {page_size}")
         self._bucket = bucket
+        self._page_size = page_size
         if client is not None:
             self._client = client
             return
@@ -122,9 +138,74 @@ class S3ArchiveStore:
             self._client.head_object(Bucket=self._bucket, Key=str(key))
         except Exception as exc:
             if self._is_missing(exc):
+                self._require_bucket(exc)
                 return False
             raise
         return True
+
+    def _require_bucket(self, cause: Exception) -> None:
+        """Refuse to read a 404 as "no such record" when the bucket is gone.
+
+        `head_object` answers a bare `404` with no error code, and it answers
+        the same 404 whether the key is absent from a healthy bucket or the
+        bucket itself does not exist — verified against a live server, where
+        the two responses are byte-identical apart from the request id. `get`
+        is not exposed to this (`get_object` distinguishes `NoSuchKey` from
+        `NoSuchBucket`), so this is `exists()`'s problem alone.
+
+        Getting it wrong is the failure decision 6 of the ADR exists to
+        prevent: a misconfigured bucket name, a deleted bucket or a credential
+        that can no longer see it would report every archived record as
+        absent — an outage indistinguishable from deletion, in the tier least
+        likely to be watched.
+
+        One extra call, and only on a miss. A hit never pays it, and a miss is
+        the case where being wrong is expensive.
+        """
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+        except Exception as exc:
+            raise ArchiveError(
+                f"archive bucket {self._bucket!r} is not reachable, so whether "
+                f"this object exists is unknown; refusing to report it absent"
+            ) from exc
+
+    async def list_scope(self, scope: str) -> AsyncIterator[ArchiveKey]:
+        """Every key under `scope`, one page at a time.
+
+        `list_objects_v2` caps a response at 1000 keys and hands back a
+        continuation token, so a scope larger than that is only fully listed by
+        following it — a single call would silently return a prefix of the
+        answer, which is worse than a slow one. Each page is fetched on a
+        worker thread and yielded before the next is requested, so a caller
+        that stops early stops the paging with it.
+        """
+        # Constructed rather than concatenated, so an unsafe scope is refused
+        # by `ArchiveKey`'s own validation before it reaches the bucket.
+        prefix = f"{ArchiveKey(scope=scope, digest='0' * 64).scope}/"
+        token: str | None = None
+        while True:
+            page = await asyncio.to_thread(self._page, prefix, token)
+            for entry in page.get("Contents", ()):
+                name = str(entry.get("Key", ""))
+                try:
+                    yield ArchiveKey.parse(name)
+                except ArchiveError:
+                    # Something else put an object here whose name is not a
+                    # key. Skipped rather than raised: one foreign object must
+                    # not make the whole scope unlistable.
+                    logger.warning("skipping unparseable archive object %r", name)
+            token = page.get("NextContinuationToken")
+            if not page.get("IsTruncated") or not token:
+                return
+
+    def _page(self, prefix: str, token: str | None) -> dict[str, Any]:
+        request: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
+        if self._page_size is not None:
+            request["MaxKeys"] = self._page_size
+        if token:
+            request["ContinuationToken"] = token
+        return dict(self._client.list_objects_v2(**request))
 
     async def delete(self, key: ArchiveKey) -> None:
         # S3 delete is already idempotent — deleting an absent key succeeds —

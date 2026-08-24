@@ -15,6 +15,13 @@ Two servers are honoured, in order of fidelity:
   a stub of our own code, so it keeps the suite meaningful on a laptop.
 
 With neither, the S3 parametrisation skips and the filesystem backend still runs.
+
+A skip is not a pass, though, so `MAISTRO_REQUIRE_S3_LEGS` turns the fallbacks
+off: with it set, an unreachable `MAISTRO_TEST_S3_ENDPOINT` fails rather than
+quietly dropping to moto or to a skip. `quality.yml`'s MinIO coverage job sets
+it, because there a missing endpoint means the service failed to start — and a
+green job over an unrun leg reports the absence of the gap rather than its
+closure, which is the same reason this leg runs against a real server at all.
 """
 
 from __future__ import annotations
@@ -42,6 +49,12 @@ def s3_endpoint() -> Iterator[str | None]:
     if configured:
         yield configured
         return
+
+    if os.getenv("MAISTRO_REQUIRE_S3_LEGS"):
+        raise RuntimeError(
+            "MAISTRO_REQUIRE_S3_LEGS is set but MAISTRO_TEST_S3_ENDPOINT is empty: "
+            "the S3 leg must run against the configured server, not moto and not a skip"
+        )
 
     try:
         from moto.server import ThreadedMotoServer
@@ -76,6 +89,11 @@ def s3_endpoint() -> Iterator[str | None]:
 def s3_bucket(s3_endpoint: str | None) -> Any:
     """An empty bucket on the live endpoint, or a skip."""
     if s3_endpoint is None:
+        if os.getenv("MAISTRO_REQUIRE_S3_LEGS"):
+            raise RuntimeError(
+                "MAISTRO_REQUIRE_S3_LEGS is set but no S3 endpoint resolved: "
+                "the S3 leg must not be silently skipped"
+            )
         pytest.skip("no S3-compatible endpoint: install moto or set MAISTRO_TEST_S3_ENDPOINT")
     boto3 = pytest.importorskip("boto3")
 

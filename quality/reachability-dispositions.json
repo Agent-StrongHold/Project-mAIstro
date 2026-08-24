@@ -611,19 +611,6 @@
       ]
     },
     {
-      "id": "archive-tier",
-      "subsystem": "Memory",
-      "disposition": "CONNECT",
-      "rationale": "The Archive tier's store layer (ADR-082226-d3dd): protocol, filesystem and S3-compatible implementations. Correct design with no production entry point yet \u2014 archiving is off by default and the policy that decides what goes cold is deliberately the follow-on, since it hangs off the memory-decay path rather than a second sweeper (#133 scope item 5). Both implementations are exercised by a shared conformance suite, the S3 one against a real MinIO in CI, so this is unwired rather than unproven.",
-      "root": "maistro.container wiring an ArchiveStore when one is configured",
-      "modules": [
-        "maistro.memory.archive",
-        "maistro.memory.archive.filesystem",
-        "maistro.memory.archive.s3",
-        "maistro.protocols.archive"
-      ]
-    },
-    {
       "id": "scheduling-run-admission",
       "subsystem": "Recurrence / schedules",
       "disposition": "CONNECT",
