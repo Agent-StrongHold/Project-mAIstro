@@ -29,6 +29,7 @@ from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.security.gate import Gate
+from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.config import AgentConfig
@@ -77,12 +78,13 @@ if TYPE_CHECKING:
     )
     from maistro.protocols.quota import QuotaTracker
     from maistro.protocols.scorer import Scorer
+    from maistro.protocols.strikes import StrikeTracker
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
+    from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
-    from maistro.security.strikes import InMemoryStrikeTracker
     from maistro.skills.import_pipeline import (
         PolicyAttachmentStore,
         SkillImportRequest,
@@ -168,7 +170,7 @@ class Container:
     elevation_store: ElevationStore = None  # type: ignore[assignment]
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
-    strike_tracker: InMemoryStrikeTracker | None = None
+    strike_tracker: StrikeTracker | None = None
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -403,6 +405,17 @@ async def create_container(
         msg = "ROUTER_API_KEY is required."
         raise ConfigError(msg)
 
+    # The outbound guard is on for every request this process makes (#155), so
+    # the endpoints it is *supposed* to reach have to be named before the first
+    # one. Seeded from configuration rather than a list kept here, so moving a
+    # gateway moves its allowance with it.
+    from maistro.config.settings import get_settings
+
+    configure_outbound_policy(
+        *configured_endpoints(config),
+        *configured_endpoints(get_settings()),
+    )
+
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
     db_pool: Any = None
@@ -449,7 +462,7 @@ async def create_container(
     context_builder = ContextBuilder()
     intent_registry = build_intent_registry()
 
-    strike_tracker: InMemoryStrikeTracker | None = None
+    strike_tracker: StrikeTracker | None = None
     if config.security.strike_tracking_enabled:
         from maistro.security.strikes import InMemoryStrikeTracker
 
@@ -1005,6 +1018,9 @@ def build_node_resolver(
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     usage_log: InMemoryUsageLog | None = None,
+    a2a_delegator: Any = None,
+    guest_peers: Any = None,
+    run_store: RunStore | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -1013,9 +1029,21 @@ def build_node_resolver(
     DagRegistry callers are projected onto canonical Graph at their product
     boundary. Dependency-injected node kinds and plain registry nodes share
     the same resolution path in either representation.
+
+    ``run_store`` is the **canonical** `maistro.runs.store.RunStore`
+    (``get_run``/``create_run``/``transition_run``), not the durable executor's
+    `DurableRunStore` (``get``/``create``/``update``). The two names are close
+    enough to swap by accident, they share no method, and the parameter was
+    typed ``Any``: passing the executor's `InMemoryDurableRunStore` type-checked
+    and then raised `AttributeError` on the first accepted delegation, after the
+    work had already been dispatched. The annotation is the fix -- there is no
+    adapter here, because a `DurableRunRecord` is a checkpoint of one graph
+    execution and a `Run` is the execution's canonical identity, and pretending
+    either can stand in for the other is what produced the confusion.
     """
     from maistro.graph.definitions import Graph
     from maistro.graph.nodes import get_node
+    from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
@@ -1042,6 +1070,19 @@ def build_node_resolver(
             return AgentSpawnHarnessNode(adapters=resolved_adapters)
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
+        if kind == "agent.delegate_remote":
+            # Previously fell through to `get_node(kind)()`, which constructs
+            # the node with `a2a_delegator=None` and `guest_peers=None` -- so in
+            # the only resolver production uses, every delegation returned
+            # `status="failed"` with "no a2a_delegator configured". A returned
+            # failure reads like the target agent declining, so nothing
+            # surfaced it (#147). `run_store` is what lets the node file the
+            # delegated work as a canonical child Run.
+            return AgentDelegateRemoteNode(
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                run_store=run_store,
+            )
         return get_node(kind)()
 
     return _resolver

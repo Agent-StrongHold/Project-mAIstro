@@ -123,6 +123,19 @@ request ──► conduit ──► classifier ──► orchestrator ──► 
 
 ## v1 feature status
 
+<!-- release-status:begin -->
+> **Released:** none &nbsp;·&nbsp; **Version in the tree:** 0.9.0 &nbsp;·&nbsp; **Next release target:** 1.0.0
+>
+> **Nothing has been released yet** — the repository has no release tags. A row marked
+> **Complete** means the code does what its name says today; it does not mean you can
+> install it. Versioning is lockstep across the monorepo from the root `VERSION` file
+> ([`ADR-073126-c4e1`](docs/adr/ADR-073126-c4e1-release-and-versioning-process.md)).
+> Each number above is a labelled field, and `scripts/check-release-consistency.py`
+> fails CI when any of them stops matching what it comes from: `Released` against the
+> repository's `vX.Y.Z` tags, `Version in the tree` against `VERSION`, and
+> `Next release target` against `CHANGELOG.md`'s pending heading.
+<!-- release-status:end -->
+
 Every row below was verified against the code, not against intent. **Status means what a
 user actually gets**, not whether a module exists — this repo has repeatedly shipped correct,
 tested modules with no call path, so "the code is there" is not the bar.

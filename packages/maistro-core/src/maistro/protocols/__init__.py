@@ -28,6 +28,7 @@ from maistro.protocols.scorer import Score, Scorer
 from maistro.protocols.secrets import SecretBackend, SecretResult
 from maistro.protocols.skills import SkillForge, SkillLoader, SkillMarketplace
 from maistro.protocols.spec import SpecStore, SpecVerifier
+from maistro.protocols.strikes import StrikeTracker
 from maistro.protocols.tools import ToolExecutor, ToolPlugin, ToolRegistry
 from maistro.protocols.tracing import Span, Trace, TracingBackend
 
@@ -63,6 +64,7 @@ __all__ = [
     "Span",
     "SpecStore",
     "SpecVerifier",
+    "StrikeTracker",
     "ToolExecutor",
     "ToolPlugin",
     "ToolRegistry",

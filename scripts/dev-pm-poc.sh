@@ -21,5 +21,5 @@ if [[ ! -x "$UVICORN" ]]; then
 fi
 
 echo "PM POC: MAISTRO_POC_MODE=$MAISTRO_POC_MODE HIVE_POC_MODE=$HIVE_POC_MODE"
-echo "Hive API: http://127.0.0.1:8101  (health: /health pm_poc_mode)"
+echo "Hive API: http://127.0.0.1:8101  (health: /health)"
 exec "$UVICORN" main:app --host 127.0.0.1 --port 8101 --reload

@@ -160,6 +160,7 @@
     "maistro.tools.approval.types",
     "maistro.tools.git.shadow",
     "maistro.tools.media",
+    "maistro.tools.net_guard",
     "maistro.tools.reversibility",
     "maistro.tools.reversibility_registry",
     "maistro.workspaces",

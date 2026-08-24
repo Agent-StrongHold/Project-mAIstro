@@ -612,6 +612,16 @@
       ]
     },
     {
+      "id": "tools-net-guard-compat",
+      "subsystem": "Tool execution",
+      "disposition": "LIBRARY",
+      "rationale": "Compatibility re-export. The SSRF guard moved to maistro.security.ssrf in #154; maistro-core is imported by downstream products (AGENTS.md), so the published path stays importable and warns. Nothing in this repository imports it, and nothing should -- an in-repo caller would be a caller of the deprecated path. Unreachable here is the intended state, not pending wiring, and it is removed when the deprecation window closes rather than connected.",
+      "root": "downstream importers of maistro-core",
+      "modules": [
+        "maistro.tools.net_guard"
+      ]
+    },
+    {
       "id": "archive-tier",
       "subsystem": "Memory",
       "disposition": "CONNECT",
