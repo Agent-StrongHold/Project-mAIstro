@@ -237,6 +237,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Fetch the base images first, retrying (#204). This job used to fail on a
+      # registry reset before touching a line of repository content — a red
+      # required check that nobody could re-run, because the GitHub App gets
+      # `403 Resource not accessible by integration` on `rerun-failed-jobs`.
+      #
+      # Only the fetch is retried. A genuine build failure still fails on its
+      # first attempt below, so this buys reliability without hiding breakage.
+      # The image list is parsed from the Dockerfiles rather than written here,
+      # so it cannot drift from what is actually built.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+
       - run: docker build -t maistro-engine:test .
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
 
