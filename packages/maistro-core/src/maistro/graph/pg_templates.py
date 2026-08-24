@@ -38,7 +38,7 @@ class PgGraphTemplateStore:
             row = await conn.fetchrow(
                 """INSERT INTO graph_templates
                        (template_id, version, workspace_id, name, content_hash, payload)
-                   VALUES ($1, $2, $3, $4, $5, $6)
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)
                    ON CONFLICT (template_id, version) DO UPDATE
                        SET payload = EXCLUDED.payload
                        WHERE graph_templates.content_hash = EXCLUDED.content_hash

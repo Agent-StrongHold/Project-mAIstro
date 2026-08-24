@@ -108,6 +108,19 @@ class TestLifespan:
     """Drive the lifespan context manager directly (bypassing TestClient's
     worker-thread portal, which cannot register OS signal handlers)."""
 
+    @pytest.fixture(autouse=True)
+    def _no_database_configured(self, monkeypatch: pytest.MonkeyPatch):
+        """These tests are about the runner, the webhook and the engine.
+
+        The lifespan also builds a spine pool now (#132), and it resolves which
+        database from the environment (#187) -- so a developer who happens to
+        export `DATABASE_URL` or the `DB_*` set made these three tests reach for
+        a real server and fail for a reason none of them is about. Clearing the
+        whole resolver input keeps them answering their own question.
+        """
+        for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+            monkeypatch.delenv(name, raising=False)
+
     async def test_lifespan_starts_and_stops_runner(self) -> None:
         test_app = MagicMock()
         test_app.state = MagicMock()

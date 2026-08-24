@@ -62,7 +62,7 @@ class PgProjectScopeStore:
             await conn.execute(
                 """INSERT INTO canonical_projects
                    (project_id, workspace_id, parent_project_id, is_root, payload)
-                   VALUES ($1, $2, NULL, TRUE, $3)
+                   VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
                    ON CONFLICT DO NOTHING""",
                 root.project_id,
                 root.workspace_id,
@@ -99,7 +99,7 @@ class PgProjectScopeStore:
             await conn.execute(
                 """INSERT INTO canonical_projects
                    (project_id, workspace_id, parent_project_id, is_root, payload)
-                   VALUES ($1, $2, $3, FALSE, $4)""",
+                   VALUES ($1, $2, $3, FALSE, $4::text::jsonb)""",
                 project.project_id,
                 project.workspace_id,
                 project.parent_project_id,
@@ -265,7 +265,7 @@ class PgProjectScopeStore:
             await conn.execute(
                 """INSERT INTO canonical_project_memberships
                    (membership_id, workspace_id, project_id, principal_id, payload)
-                   VALUES ($1, $2, $3, $4, $5)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)
                    ON CONFLICT (membership_id) DO UPDATE SET
                      workspace_id = EXCLUDED.workspace_id,
                      project_id = EXCLUDED.project_id,
@@ -313,7 +313,7 @@ class PgProjectScopeStore:
             written = await conn.fetchval(
                 """INSERT INTO canonical_project_resources
                    (resource_id, workspace_id, project_id, resource_type, payload)
-                   VALUES ($1, $2, $3, $4, $5)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)
                    ON CONFLICT (resource_id) DO UPDATE SET
                      workspace_id = EXCLUDED.workspace_id,
                      project_id = EXCLUDED.project_id,
@@ -371,7 +371,7 @@ class PgProjectScopeStore:
 
     async def _update_project(self, project: Project, *, conn: Any = None) -> None:
         sql = """UPDATE canonical_projects
-                 SET parent_project_id = $1, payload = $2
+                 SET parent_project_id = $1, payload = $2::text::jsonb
                  WHERE project_id = $3"""
         params = (project.parent_project_id, json_of(project), project.project_id)
         if conn is not None:

@@ -143,7 +143,7 @@ class PgRunStore:
                 """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
                     parent_node_run_id, status, payload, retention_expires_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
                 run.run_id,
                 run.workspace_id,
                 run.project_id,
@@ -321,7 +321,7 @@ class PgRunStore:
             await conn.execute(
                 """INSERT INTO canonical_node_runs
                    (node_run_id, run_id, node_id, ordinal, status, payload)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
                 node_run.node_run_id,
                 node_run.run_id,
                 node_run.node_id,
@@ -436,7 +436,7 @@ class PgRunStore:
                 await conn.execute(
                     """INSERT INTO canonical_attempts
                        (attempt_id, node_run_id, ordinal, status, payload)
-                       VALUES ($1, $2, $3, $4, $5)""",
+                       VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
                     attempt.attempt_id,
                     attempt.node_run_id,
                     attempt.ordinal,
@@ -535,7 +535,7 @@ class PgRunStore:
         if _PAYLOAD_TABLES.get(table) != column:
             raise ValueError("unsupported canonical execution table")
         await conn.execute(
-            f"UPDATE {table} SET status = $1, payload = $2 WHERE {column} = $3",  # nosec B608
+            f"UPDATE {table} SET status = $1, payload = $2::text::jsonb WHERE {column} = $3",  # nosec B608
             model.status.value,
             json_of(model),
             identity,

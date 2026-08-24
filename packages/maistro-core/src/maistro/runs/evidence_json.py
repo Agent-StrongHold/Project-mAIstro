@@ -86,6 +86,21 @@ def json_of(model: Any) -> str:
     `model_dump_json()` cannot be used: with `ser_json_inf_nan="constants"` it
     emits the bare `NaN` token, which is not JSON and which the reader would
     have to be configured to accept.
+
+    **Every SQL statement that binds this to a `jsonb` column must cast the
+    parameter `$n::text::jsonb`.** Bound plainly, what reaches the column
+    depends on how the pool was built: asyncpg's default jsonb encoder is
+    `str`, so a raw `asyncpg.create_pool` stores the object, while
+    `maistro.persistence.get_pool` registers a `json.dumps` codec that encodes
+    this text *again* and stores a jsonb **string**. That is not a read-side
+    problem `decode_payload` can absorb -- the row itself is wrong, and a
+    reader on the other kind of pool gets a `str` where a model belongs. The
+    cast makes the parameter `text` on the wire, so no JSON codec ever applies
+    and PostgreSQL does the parsing; verified `object` under both pools.
+
+    Which is the same rule `decode_payload` states for reads, applied to the
+    other direction: a store may not depend on how somebody else built the
+    pool.
     """
     return json.dumps(payload_of(model))
 
