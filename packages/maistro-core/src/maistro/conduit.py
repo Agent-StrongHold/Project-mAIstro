@@ -39,6 +39,11 @@ async def determine_execution_tier(intent: Intent, agent: Any = None) -> Intent:
 #: moderation needs no Maistro-specific case for a Gate block.
 CONTENT_FILTER = "content_filter"
 
+#: Where `route_request` names the agent that handled the turn (#223). Present
+#: only when one did: a refusal, an empty roster or a turn with no message
+#: never reached an agent, and a blank name would read as one that did.
+DISPATCHED_AGENT_KEY = "agent"
+
 
 def _stop_response(content: str, *, finish_reason: str = "stop") -> dict[str, Any]:
     """Build an OpenAI-compatible single-message response."""
@@ -183,7 +188,12 @@ class Conduit:
         agent = self.container.agents.get(agent_name)
 
         if agent is None:
-            agent = next(iter(self.container.agents.values())) if self.container.agents else None
+            # The fallback rebinds the *name* as well as the agent. It used not
+            # to, so `agent_name` went on naming the agent the registry asked
+            # for rather than the one that ran — which only ever reached a log
+            # line, and now reaches an Attempt's durable record (#223). A record
+            # naming an agent that did not run is worse than one naming none.
+            agent_name, agent = next(iter(self.container.agents.items()), ("", None))
 
         if agent is None:
             return _stop_response("No agents available.")
@@ -223,4 +233,12 @@ class Conduit:
             logger.exception("Agent %s failed", agent_name)
             raise
 
-        return _as_response(result)
+        response = _as_response(result)
+        # Additive, and the same shape `run_id` is added in one level up: the
+        # OpenAI fields a client parses are untouched, and this names the agent
+        # that actually handled the turn for anyone recording what ran. Only
+        # the dispatch path sets it — a refusal, an empty roster or a turn with
+        # no message never reached an agent, so there is nothing to name and
+        # the key is absent rather than blank.
+        response[DISPATCHED_AGENT_KEY] = agent_name
+        return response
