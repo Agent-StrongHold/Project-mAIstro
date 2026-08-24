@@ -23,6 +23,8 @@ contracts:
   - boundary
   - behavioral
 tests: []
+ac-modules:
+  AC-1: maistro_server.api.chat_completions
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -110,6 +112,13 @@ order and with the same rules — a turn is refused without a scan, and answered
 The endpoint keeps only what is genuinely its own: the OpenAI request and response shapes, the
 SSE framing, the `X-Maistro-Run-Id` header, the abandoned-stream cleanup, and the 502/504
 sanitisation that keeps upstream detail out of client-visible errors.
+
+## Acceptance Criteria
+
+<!-- ac-state: unproven AC-1 - this decision landed before ADR-level AC marker wiring; #142/#222 product-path tests exist and the marker retrofit remains measured governance debt -->
+- [ ] **AC-1**: An ordinary OpenAI-compatible chat turn traverses the process's single
+  `Container.route_request` seam and returns a `run_id` that resolves in that same Container's
+  RunStore; no endpoint-local second execution spine is created.
 
 ## Consequences
 
