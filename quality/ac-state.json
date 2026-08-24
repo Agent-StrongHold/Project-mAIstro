@@ -5937,7 +5937,7 @@
           ],
           "form": "gherkin",
           "scenario": [
-            "Deployment overrides are explicit"
+            "Deployment overrides cannot silently weaken the boundary"
           ],
           "rung": "reachable"
         },
@@ -12661,6 +12661,19 @@
     {
       "id": "ADR-082226-4478",
       "file": "docs/adr/ADR-082226-4478-retire-single-purpose-endpoints-for-one-governed-tool-surface.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082226-4cd4",
+      "file": "docs/adr/ADR-082226-4cd4-strike-tracker-protocol-contract.md",
       "declared_status": "Proposed",
       "specs": [],
       "measurable_specs": 0,
