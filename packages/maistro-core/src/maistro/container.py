@@ -129,18 +129,14 @@ class Container:
     # directly-submitted task into a Run over a one-node Graph.
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
-<<<<<<< HEAD
-    task_admitter: TaskRunAdmitter = None  # type: ignore[assignment]
-    #: The seam a chat turn is admitted through (#131). Separate from the task
-    #: admitter because the two have different retention: a task's Run is kept
-    #: as long as its receipt, a chat turn's is swept behind a small window.
-    chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
-=======
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
     # `config.workspace_id` remains the default for a submission that names none.
     task_admitter: WorkspaceRoutingAdmitter = None  # type: ignore[assignment]
->>>>>>> origin/develop
+    #: The seam a chat turn is admitted through (#131). Separate from the task
+    #: admitter because the two have different retention: a task's Run is kept
+    #: as long as its receipt, a chat turn's is swept behind a small window.
+    chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
