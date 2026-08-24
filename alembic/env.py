@@ -16,11 +16,20 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    """Get database URL from settings (avoids hardcoded credentials)."""
-    from maistro.config.settings import DatabaseSettings
+    """The one resolved database URL, shared with the container (#187).
 
-    db = DatabaseSettings()
-    return db.sync_url
+    This used to read `DatabaseSettings` directly, which meant alembic and
+    `maistro.container` answered "which database" from different environment
+    variables with nothing reconciling them: setting only `DB_*` -- what
+    `docker-compose.yml` does -- migrated one database and then ran with
+    in-memory stores. `require_database_url` is the shared answer, and it
+    raises rather than falling back to the `DatabaseSettings` defaults, so an
+    empty environment reports "no database configured" instead of a connection
+    error against a `localhost` nobody asked for.
+    """
+    from maistro.config.database import require_database_url, to_sync_url
+
+    return to_sync_url(require_database_url())
 
 
 def run_migrations_offline() -> None:

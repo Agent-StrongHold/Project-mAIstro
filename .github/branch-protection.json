@@ -5,7 +5,7 @@
     "",
     "Every field here follows ADR-095's protection table, which is the accepted",
     "decision and the source of truth. An earlier draft of this file diverged from",
-    "it in four places without saying so \u2014 the review caught all four. A governance",
+    "it in four places without saying so — the review caught all four. A governance",
     "artifact that quietly contradicts the governing ADR is worse than none, because",
     "it looks authoritative.",
     "",
@@ -21,7 +21,7 @@
   "base_coupled_to": {
     "$comment": [
       "Checks whose scope the contract can see is base-coupled, but whose target",
-      "branch it cannot read \u2014 a job `if:` narrows on a GitHub expression, and",
+      "branch it cannot read — a job `if:` narrows on a GitHub expression, and",
       "evaluating that language is out of scope for the contract generator.",
       "",
       "Declared rather than guessed, for the same reason the advisory map is:",
@@ -38,17 +38,28 @@
     "develop": {
       "$comment": [
         "ADR-095: PR-gated, 0 required approvals, linear history, no force-push,",
-        "no deletion. The 15 checks that run on every PR regardless of base.",
+        "no deletion. The checks that run on every PR regardless of base.",
         "",
         "CodeQL and the container scan are absent because they do not run on a",
-        "develop-based PR at all \u2014 requiring a check that never reports leaves",
-        "the PR waiting on an `Expected` status forever."
+        "develop-based PR at all — requiring a check that never reports leaves",
+        "the PR waiting on an `Expected` status forever.",
+        "",
+        "`archive` is gone: #212 moved that MinIO leg into quality.yml so its",
+        "coverage joins the combined report, and it reports as `coverage (MinIO)`",
+        "now. Branch protection keys by bare name, so the old context was a",
+        "requirement that could never be satisfied — the failure mode this file",
+        "and its checker exist to make impossible.",
+        "",
+        "Both coverage producers are required alongside the gate that consumes",
+        "them. The gate `needs:` them, so a failed producer already blocks by",
+        "leaving the gate at `Expected` — but a requirement that is only",
+        "transitively enforced reads, on the PR page, as a check nobody decided",
+        "about. Requiring all three says which of them the merge contract covers."
       ],
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "archive",
-        "docker-build",
+          "docker-build",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",
@@ -60,9 +71,13 @@
           "formal-conformance",
           "Validate ADR/spec front-matter",
           "exact-debt-ledger",
-          "Quality gate (Pillars 1\u20134, 7, 8)",
+          "Quality gate (Pillars 1–4, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)",
-          "Supply chain (pip-audit)"
+          "Supply chain (pip-audit)",
+          "coverage (no services)",
+          "coverage (MinIO)",
+          "Coverage gate (publish-set floor + diff coverage)",
+          "strike-ladder"
         ]
       },
       "enforce_admins": false,
@@ -86,15 +101,14 @@
         "ADR-095's stabilization tier: develop -> integration -> main. Same",
         "protection as develop, and the same 15 checks for the same reason.",
         "",
-        "Omitting it left the promotion path open \u2014 a change could reach",
+        "Omitting it left the promotion path open — a change could reach",
         "integration directly, or red, and then be promoted to main through a",
         "gate that only ever inspected the integration->main hop."
       ],
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "archive",
-        "docker-build",
+          "docker-build",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",
@@ -106,9 +120,13 @@
           "formal-conformance",
           "Validate ADR/spec front-matter",
           "exact-debt-ledger",
-          "Quality gate (Pillars 1\u20134, 7, 8)",
+          "Quality gate (Pillars 1–4, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)",
-          "Supply chain (pip-audit)"
+          "Supply chain (pip-audit)",
+          "coverage (no services)",
+          "coverage (MinIO)",
+          "Coverage gate (publish-set floor + diff coverage)",
+          "strike-ladder"
         ]
       },
       "enforce_admins": false,
@@ -134,20 +152,19 @@
         "it, and a tautological test passes every gate in the chain.",
         "",
         "Nineteen checks: the fifteen above plus the four that only run on a",
-        "main-based PR \u2014 CodeQL's three matrix legs, and the container scan",
+        "main-based PR — CodeQL's three matrix legs, and the container scan",
         "whose job `if:` tests base_ref == 'main'. On main they report, so on",
         "main they are required.",
         "",
         "enforce_admins stays false here, per ADR-095: 'a solo maintainer/agent",
         "isn't deadlocked'. It is also load-bearing for the cage guard, whose",
         "own failure message says an admin may merge a legitimate cage/eval",
-        "change manually \u2014 true only while admins can bypass a required check."
+        "change manually — true only while admins can bypass a required check."
       ],
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "archive",
-        "docker-build",
+          "docker-build",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",
@@ -159,13 +176,17 @@
           "formal-conformance",
           "Validate ADR/spec front-matter",
           "exact-debt-ledger",
-          "Quality gate (Pillars 1\u20134, 7, 8)",
+          "Quality gate (Pillars 1–4, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)",
           "Supply chain (pip-audit)",
           "Container scan + SBOM + cosign",
           "Analyze (actions)",
           "Analyze (javascript-typescript)",
-          "Analyze (python)"
+          "Analyze (python)",
+          "coverage (no services)",
+          "coverage (MinIO)",
+          "Coverage gate (publish-set floor + diff coverage)",
+          "strike-ladder"
         ]
       },
       "enforce_admins": false,
@@ -189,7 +210,7 @@
     "$comment": [
       "Checks that run on PRs and are deliberately NOT required, each with the",
       "reason. check-branch-protection.py fails when a PR check is in neither",
-      "this map nor a branch's contexts \u2014 so adding a gate to CI forces a",
+      "this map nor a branch's contexts — so adding a gate to CI forces a",
       "decision about whether it is part of the merge contract, rather than",
       "letting it default to advisory by being forgotten."
     ]
@@ -201,7 +222,7 @@
       "Auto-merge is safe only once the contexts above are required: GitHub's",
       "auto-merge waits for *required* checks, so arming it with none configured",
       "merges immediately. That ordering is the whole reason #162 is blocked by",
-      "#161 \u2014 the names have to exist and be stable first.",
+      "#161 — the names have to exist and be stable first.",
       "",
       "Linear history is required on all three branches (ADR-095), so merges are",
       "squash or rebase, never merge commits."

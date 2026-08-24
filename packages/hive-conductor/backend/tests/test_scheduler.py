@@ -212,19 +212,62 @@ def test_tick_swallows_evaluation_errors(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_evaluate_fires_a_due_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
-    fired: list[datetime] = []
+    fired: list[tuple[datetime, bool]] = []
 
     async def _capture(
-        self: Any, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+        self: Any,
+        sid: str,
+        schedule: Any,
+        *,
+        scheduled_for: datetime | None = None,
+        catchup: bool = False,
     ) -> None:
         assert scheduled_for is not None
-        fired.append(scheduled_for)
+        fired.append((scheduled_for, catchup))
 
     monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _capture)
     now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
     stub = _schedule_stub("s", "tpl", cron="0 * * * *", last_run=now - timedelta(hours=1))
     asyncio.run(_ScheduleRunner()._evaluate_schedule("s", stub, now=now))
-    assert fired == [datetime(2026, 8, 21, 12, 0, tzinfo=UTC)]
+    # The catch-up flag reaches the fire path. `evaluate()` distinguishes a
+    # backfill from an on-time fire, and that distinction used to be dropped
+    # between the decision and the Run (#145).
+    #
+    # `catchup=True` here is correct, not incidental: the 12:00 occurrence is
+    # being evaluated at 12:05, which is past `_fresh_boundary`'s one-minute
+    # window. The on-time case is asserted separately below, so this test
+    # distinguishes the two rather than recording whichever it happens to get.
+    assert fired == [(datetime(2026, 8, 21, 12, 0, tzinfo=UTC), True)]
+
+
+def test_an_on_time_fire_is_not_marked_as_a_catch_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The counterweight to the catch-up assertion above.
+
+    Without this, threading `catchup` through would look correct while always
+    passing `True` — a flag that is never `False` carries no information.
+    """
+    from services.scheduler import _ScheduleRunner
+
+    fired: list[tuple[datetime, bool]] = []
+
+    async def _capture(
+        self: Any,
+        sid: str,
+        schedule: Any,
+        *,
+        scheduled_for: datetime | None = None,
+        catchup: bool = False,
+    ) -> None:
+        assert scheduled_for is not None
+        fired.append((scheduled_for, catchup))
+
+    monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _capture)
+    # Evaluated within the freshness window of its own occurrence.
+    now = datetime(2026, 8, 21, 12, 0, 30, tzinfo=UTC)
+    stub = _schedule_stub("s", "tpl", cron="0 * * * *", last_run=now - timedelta(hours=1))
+    asyncio.run(_ScheduleRunner()._evaluate_schedule("s", stub, now=now))
+
+    assert fired == [(datetime(2026, 8, 21, 12, 0, tzinfo=UTC), False)]
 
 
 def test_an_in_flight_schedule_does_not_stack_a_second_run(
@@ -237,7 +280,12 @@ def test_an_in_flight_schedule_does_not_stack_a_second_run(
     fired: list[str] = []
 
     async def _capture(
-        self: Any, sid: str, schedule: Any, *, scheduled_for: datetime | None = None
+        self: Any,
+        sid: str,
+        schedule: Any,
+        *,
+        scheduled_for: datetime | None = None,
+        catchup: bool = False,
     ) -> None:
         fired.append(sid)
 
@@ -323,9 +371,67 @@ def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
         registry.deregister("sched-synth")
 
 
-def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
-    """A mission_template_id that is not a registered DAG audits the fire and
-    produces no run (no other mission-template kind is executable yet)."""
+def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
+    """#46 asks for schedule provenance retained *on the Run*, not beside it.
+
+    It lived only in the `schedule_run` audit line, so a Run a schedule fired
+    was indistinguishable from one a person started — you could go Run → audit
+    → schedule, but nothing on the Run itself said where it came from. Tasks
+    (#41) and chat turns (#131) both carry theirs on the Run; scheduling was
+    the outlier (#145).
+    """
+    import stores
+    from services.dag_agents import get_registry
+    from services.scheduler import _ScheduleRunner
+
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "sched-prov",
+            "name": "Sched Prov",
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+    stub = _schedule_stub("s-prov", "sched-prov")
+    stores.schedules._data["s-prov"] = stub  # type: ignore[attr-defined]
+    try:
+        scheduled_for = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+        asyncio.run(
+            _ScheduleRunner()._fire_schedule(
+                "s-prov", stub, scheduled_for=scheduled_for, catchup=True
+            )
+        )
+
+        from services.dag_agents import _run_store
+
+        runs = [r.run for r in _run_store._rows.values()]  # type: ignore[attr-defined]
+        scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-prov"]
+        assert len(scheduled) == 1, "exactly one Run, and it names its schedule"
+        provenance = scheduled[0].provenance
+
+        assert provenance["admission_source"] == "schedule"
+        assert provenance["scheduled_for"] == scheduled_for.isoformat()
+        assert provenance["catchup"] is True
+        # The executor's own marker survives the merge — a Run that claimed a
+        # different executor than the one that walked it would be worse than
+        # one that claimed none.
+        assert provenance["executor"] == "durable_graph"
+    finally:
+        stores.schedules._data.pop("s-prov", None)  # type: ignore[attr-defined]
+        registry.deregister("sched-prov")
+
+
+def test_fire_schedule_unresolved_template_says_so_instead_of_going_quiet() -> None:
+    """An unregistered target is reported, not silently skipped (#145).
+
+    This used to be a bare `return` after `last_run` had already been stamped,
+    so the schedule looked like it had fired: no warning, no audit line, no
+    Run. `DagRegistry` is an in-process dict, so an empty registry is the
+    normal state after a restart — exactly when an operator most needs to be
+    told that a schedule is firing into nothing.
+    """
     import stores
     from services.scheduler import _ScheduleRunner
 
@@ -337,7 +443,9 @@ def test_fire_schedule_unresolved_template_keeps_log_only_behavior() -> None:
         new_entries = [
             e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-noop"
         ]
-        assert [e["action"] for e in new_entries] == ["schedule_fire"]
+        assert [e["action"] for e in new_entries] == ["schedule_fire", "schedule_run"]
+        assert new_entries[1]["detail"]["error"] == "template_not_registered"
+        assert "run_id" not in new_entries[1]["detail"], "nothing ran, so nothing to name"
     finally:
         stores.schedules._data.pop("s-noop", None)  # type: ignore[attr-defined]
 
