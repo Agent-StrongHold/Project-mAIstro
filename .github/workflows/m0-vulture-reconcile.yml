@@ -1,0 +1,44 @@
+name: M0 Vulture reconcile
+
+on:
+  push:
+    branches: [chatgpt/m0-closeout]
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m0-closeout
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install pinned analyzer
+        run: uv pip install --system vulture==2.16
+
+      - name: Regenerate the exact blocking ledger
+        run: |
+          python scripts/check-vulture-baseline.py --update packages/*/src \
+            --min-confidence 60 --exclude '*/third_party/*'
+          python scripts/check-vulture-baseline.py packages/*/src \
+            --min-confidence 60 --exclude '*/third_party/*'
+
+      - name: Commit reviewed scan scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "m0-closeout-bot"
+          git config user.email "m0-closeout-bot@users.noreply.github.com"
+          git rm .github/workflows/m0-vulture-reconcile.yml
+          git add quality/vulture-baseline.json
+          git commit -m "Reconcile Vulture ledger with blocking CI scope"
+          git push origin HEAD:chatgpt/m0-closeout
