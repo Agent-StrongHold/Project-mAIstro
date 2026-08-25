@@ -173,10 +173,6 @@ class Container:
     conduit: Any = None
     #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
-    #: Cold storage for archived records (ADR-082226-f436), or None when the
-    #: deployment configured no archive tier. None is the default and an
-    #: ordinary answer, not a degraded mode.
-    archive_store: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -945,7 +941,6 @@ async def create_container(
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
-        archive_store=archive_store,
         db_pool=db_pool,
         pg_pool=pg_pool,
         resilience_policies=resilience_policies,

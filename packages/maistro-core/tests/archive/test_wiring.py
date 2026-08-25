@@ -107,6 +107,15 @@ def test_an_unknown_backend_is_refused_and_says_what_works(url: str) -> None:
 
 
 async def test_the_container_wires_it_from_config(tmp_path: Path) -> None:
+    """The tier reaches the store that uses it, not just the Container (#275).
+
+    This used to assert `container.archive_store` — that the Container had
+    built an object. It passed for as long as the archive tier had no consumer
+    at all, which is precisely the state `quality/wiring-reads-baseline.json`
+    recorded and #273 removed. Asserting against the run store is what would
+    actually break if `create_container` stopped handing the tier to
+    `wire_execution_spine`.
+    """
     from maistro.container import create_container
     from maistro.types.config import AgentConfig
 
@@ -114,16 +123,18 @@ async def test_the_container_wires_it_from_config(tmp_path: Path) -> None:
         AgentConfig(router_api_key="k", archive_url=f"file://{tmp_path}/archive")
     )
 
-    assert isinstance(container.archive_store, FilesystemArchiveStore)
+    assert isinstance(container.run_store._archive_store, FilesystemArchiveStore)
 
 
 async def test_the_container_defaults_to_no_archive() -> None:
+    """No archive URL means the run store has no tier — today's behaviour, and
+    what f436 decision 9 requires of the default."""
     from maistro.container import create_container
     from maistro.types.config import AgentConfig
 
     container = await create_container(AgentConfig(router_api_key="k"))
 
-    assert container.archive_store is None
+    assert container.run_store._archive_store is None
 
 
 # ── URLs are configuration, and configuration gets logged ─────────
