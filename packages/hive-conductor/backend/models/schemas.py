@@ -100,7 +100,19 @@ class Schedule(BaseModel):
     cron_expression: str
     mission_template_id: str
     enabled: bool = True
+    # The zone `cron_expression` is read in. Defaulted rather than required so
+    # a row persisted before the column keeps loading and keeps firing, in UTC
+    # exactly as it did — `services/scheduler.py` used to hardcode that.
+    timezone: str = "UTC"
+    # Bounded recurrence: fire this many times, then disable. `None` is
+    # unbounded, which is what every schedule predating this column was.
+    # Enforced on the canonical cursor (`maistro.scheduling`), not here.
+    max_runs: int | None = None
     last_run: datetime | None = None
+    # The Run that claimed the most recent occurrence. A projection of the
+    # canonical cursor's `last_run_id`, so a caller holding a schedule can
+    # reach the Run it produced (#46) instead of only a timestamp.
+    last_run_id: str | None = None
     next_run: datetime | None = None
     created_at: datetime
     updated_at: datetime
