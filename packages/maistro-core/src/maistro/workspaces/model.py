@@ -68,6 +68,8 @@ class WorkspaceMembership(BaseModel):
         return self.role is WorkspaceRole.OWNER
 
 
+# Backward-compatible alias: WorkspaceMembership is the canonical identity;
+# WorkspaceMember remains only for pre-convergence import compatibility.
 WorkspaceMember = WorkspaceMembership
 
 
