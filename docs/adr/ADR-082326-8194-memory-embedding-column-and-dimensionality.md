@@ -3,8 +3,9 @@ id: ADR-082326-8194
 title: "Embedding vectors live on the memory rows, at one declared dimension"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-23
+accepted: 2026-08-25
 substrate:
   - maistro-engine#ADR-082226-5104
 implements: []
@@ -14,7 +15,15 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - tests/migrations/test_memory_embeddings.py
+  - packages/maistro-core/tests/memory/learnings/test_durable_hybrid.py
+history:
+  - status: Proposed
+    date: 2026-08-23
+  - status: Accepted
+    date: 2026-08-25
+    reason: "The implementation and PostgreSQL evidence have landed; 1536 dimensions and HNSW are now the accepted schema posture required to close #188."
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
