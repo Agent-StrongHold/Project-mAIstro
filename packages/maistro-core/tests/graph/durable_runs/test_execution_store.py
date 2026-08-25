@@ -146,3 +146,120 @@ async def test_retry_reuses_logical_node_run_and_appends_second_attempt() -> Non
     assert persisted.attempts[1].resume_checkpoint_id == "checkpoint-1"
     assert persisted.attempts[1].status is AttemptStatus.COMPLETED
     assert persisted.attempts[1].result == "recovered"
+
+
+# ── lease renewal and reclamation on the fourth store (#232) ───────────
+#
+# `DurableRunExecutionStore` is a RunStore-shaped view over one durable Run,
+# and it needs these for the same reason the other three do: a durable Graph
+# node is executed by a process that can die exactly like a task worker, and
+# `AttemptExecutionService` renews through whatever store it was handed.
+
+
+@pytest.mark.asyncio
+async def test_a_durable_lease_is_renewed_and_keeps_its_token() -> None:
+    from datetime import timedelta
+
+    store, record, node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="graph-worker", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    renewed = await execution_store.renew_lease(
+        attempt.attempt_id,
+        fencing_token=lease.fencing_token,
+        ttl=timedelta(seconds=60),
+        at=lease.expires_at - timedelta(seconds=5),
+    )
+
+    assert renewed.execution_lease is not None
+    assert renewed.execution_lease.expires_at > lease.expires_at
+    assert renewed.execution_lease.fencing_token == lease.fencing_token
+    persisted = await execution_store.get_attempt(attempt.attempt_id)
+    assert persisted is not None
+    assert persisted.execution_lease is not None
+    assert persisted.execution_lease.expires_at == renewed.execution_lease.expires_at
+
+
+@pytest.mark.asyncio
+async def test_a_durable_lease_that_lapses_is_reclaimed() -> None:
+    from datetime import timedelta
+
+    store, record, node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="graph-worker", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    await execution_store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=lease.fencing_token
+    )
+
+    assert await execution_store.reclaim_expired_attempts(now=lease.expires_at) != []
+    settled = await execution_store.get_attempt(attempt.attempt_id)
+    assert settled is not None
+    assert settled.status is AttemptStatus.CANCELLED
+    assert "graph-worker" in (settled.error or "")
+
+
+@pytest.mark.asyncio
+async def test_a_live_durable_lease_is_left_alone_and_reclaim_is_idempotent() -> None:
+    from datetime import timedelta
+
+    store, record, node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="graph-worker", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    assert (
+        await execution_store.reclaim_expired_attempts(now=lease.expires_at - timedelta(seconds=1))
+        == []
+    )
+
+    first = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    second = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(hours=1)
+    )
+
+    assert len(first) == 1
+    assert second == []
+
+
+@pytest.mark.asyncio
+async def test_a_durable_attempt_without_a_ttl_is_never_reclaimed() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    store, record, node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    attempt = await execution_store.create_attempt(node_run_id, lease_holder="graph-worker")
+
+    assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is None
+    assert (
+        await execution_store.reclaim_expired_attempts(now=datetime.now(UTC) + timedelta(days=365))
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_renewing_an_unknown_durable_attempt_is_refused() -> None:
+    from datetime import timedelta
+
+    from maistro.runs.store import AttemptNotFound
+
+    store, record, _node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.renew_lease(
+            "no-such-attempt", fencing_token="t", ttl=timedelta(seconds=30)
+        )
