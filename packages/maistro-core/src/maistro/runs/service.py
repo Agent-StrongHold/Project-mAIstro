@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from maistro.graph.definitions import Graph
@@ -28,12 +29,21 @@ class RunExecutionService:
         store: RunStore,
         runtime: ExecutionRuntime,
         reconciler: AttemptReconciler | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> None:
+        """``lease_ttl`` opts this service's Attempts into crash recovery.
+
+        Passed straight down to `AttemptExecutionService`, which holds the
+        heartbeat (ADR-082526-b36a). Present here because this is the seam a
+        domain constructs — without it a deployment has no way to opt in, and
+        the recovery mechanism is reachable only in tests.
+        """
         self._store = store
         self._attempts = AttemptExecutionService(
             store=store,
             runtime=runtime,
             reconciler=reconciler,
+            lease_ttl=lease_ttl,
         )
 
     async def create_run(
