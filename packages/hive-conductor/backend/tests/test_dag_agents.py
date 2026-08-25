@@ -119,7 +119,7 @@ def test_the_container_constructs_both_delegation_dependencies() -> None:
     assert GuestPeerManager() is not None
 
 
-@pytest.mark.ac("ADR-082526-3ca6/AC-2")
+@pytest.mark.ac("ADR-082526-3ca6/AC-4")
 def test_the_delegate_node_is_wired_from_the_container(monkeypatch) -> None:
     """The defect this issue was reopened for.
 
@@ -140,7 +140,7 @@ def test_the_delegate_node_is_wired_from_the_container(monkeypatch) -> None:
     assert node._run_store is container.run_store
 
 
-@pytest.mark.ac("ADR-082526-3ca6/AC-5")
+@pytest.mark.ac("ADR-082526-3ca6/AC-4")
 def test_the_node_gets_the_canonical_run_store_not_the_durable_one(monkeypatch) -> None:
     """Two stores whose names are one word apart and whose methods share nothing.
 
@@ -162,7 +162,7 @@ def test_the_node_gets_the_canonical_run_store_not_the_durable_one(monkeypatch) 
     )
 
 
-@pytest.mark.ac("ADR-082526-3ca6/AC-3")
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     """A Conductor running standalone must behave as it did, not fail to start."""
     import services.dag_agents as dag_agents
@@ -179,7 +179,7 @@ def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     assert node._a2a_delegator is None
 
 
-@pytest.mark.ac("ADR-082526-3ca6/AC-3")
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -> None:
     """Resolving a node must not be the thing that breaks a DAG execution."""
     import services.dag_agents as dag_agents
@@ -192,7 +192,7 @@ def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -
     assert dag_agents._resolve_nodes_with() is dag_agents._fallback_node_resolver
 
 
-@pytest.mark.ac("ADR-082526-3ca6/AC-2")
+@pytest.mark.ac("ADR-082526-3ca6/AC-4")
 def test_ordinary_node_kinds_are_unaffected_by_the_wiring(monkeypatch) -> None:
     """The delegate special case must not change how everything else resolves."""
     import services.dag_agents as dag_agents

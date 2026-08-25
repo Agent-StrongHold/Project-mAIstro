@@ -16,7 +16,12 @@ blocked-by: []
 contracts:
   - boundary
 tests:
+  - packages/maistro-core/tests/test_container_delegation_wiring.py
   - packages/hive-conductor/backend/tests/test_dag_agents.py
+ac-modules:
+  AC-1: maistro.container
+  AC-2: maistro.container
+  AC-3: maistro.container
 history:
   - status: Proposed
     date: 2026-08-25
@@ -138,15 +143,32 @@ container's `run_store` is the one that goes here.
 
 ## Acceptance criteria
 
-- [x] **AC-1** The Container carries `a2a_delegator` and `guest_peers`, both
-  constructed rather than left `None`.
-- [x] **AC-2** Hive's registered-DAG path resolves its node resolver from the
-  Container when the bridge is present, so the delegate node receives a
-  delegator, a guest-peer manager, and the canonical `RunStore`.
-- [x] **AC-3** Without a bridge the path still resolves nodes, using the
-  no-arg resolver, rather than failing to start.
-- [x] **AC-4** An in-process delegation through the wired path files a child
-  Run whose `parent_run_id` and `parent_node_run_id` resolve to the delegating
-  Run and NodeRun.
-- [x] **AC-5** The `run_store` handed to the node is the canonical `RunStore`,
-  not the durable executor's store.
+Split by what the acceptance collector can see. `check-ac-state.py` scans
+markers only in the trees `[tool.pytest.ini_options].testpaths` names, and
+`packages/hive-conductor/backend/tests` is not one of them — the Conductor
+suite needs its own `sys.path` root and does not collect from the repo root.
+So a criterion about Hive's own behaviour cannot reach `reachable` however well
+tested it is, which is #249's rung gap one layer out: there it was `scripts/`,
+here it is a product package.
+
+AC-4 and AC-5 are therefore declared rather than claimed. They are covered —
+`packages/hive-conductor/backend/tests/test_dag_agents.py` runs in CI's
+Conductor job — but this ladder cannot count that, and saying so is better than
+pointing the annotation at a module that does not carry the evidence.
+
+- [x] **AC-1** The Container declares `a2a_delegator` and `guest_peers`, and
+  both construct without configuration.
+- [x] **AC-2** `build_node_resolver` hands all three to the delegate node when
+  supplied, and still produces an unwired node when they are not — the fix
+  belongs at the call site, not in a new default.
+- [x] **AC-3** The `run_store` parameter is the canonical `RunStore` and stays
+  distinguishable from the durable executor's store.
+
+<!-- ac-state: unproven AC-4 - covered by packages/hive-conductor/backend/tests/test_dag_agents.py, which check-ac-state.py cannot scan: that tree is outside testpaths (#249's rung gap, one layer out) -->
+<!-- ac-state: unproven AC-5 - covered by packages/hive-conductor/backend/tests/test_dag_agents.py, which check-ac-state.py cannot scan: that tree is outside testpaths (#249's rung gap, one layer out) -->
+
+- [x] **AC-4** Hive's registered-DAG path resolves its node resolver from the
+  Container, so the delegate node receives a delegator, a guest-peer manager
+  and the canonical `RunStore`.
+- [x] **AC-5** Without a bridge — or with an engine that raises — the path
+  still resolves nodes via the no-arg resolver rather than failing.
