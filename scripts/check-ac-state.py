@@ -746,6 +746,168 @@ def declared_unproven(text: str) -> set[str]:
     return found
 
 
+# ─── the chain in the *absent* direction, as one definition (#164) ────────────
+#
+# The three absence counters were computed inline in `main` and nowhere else,
+# which made them a report. Turning them into a per-change mandate needs the
+# same question asked of a *past* revision, where nothing can be imported and no
+# test can be run — so the populations move here, behind one text-only
+# derivation that both sides call.
+#
+# One derivation, not two, is the load-bearing part. A fact derived one way for
+# head and another way for base can differ for reasons that have nothing to do
+# with the change, and every such difference would read as a violation this PR
+# introduced. So `main` gives up its inline copies and asks the same function.
+
+
+@dataclass(frozen=True)
+class ChainFacts:
+    """One document's answers to the three absence questions.
+
+    Text-only, for the same reason `_criteria_in` is: this runs against
+    `git show <base>:<path>`, where there is no working tree to import from.
+    """
+
+    id: str
+    kind: str
+    file: str
+    status: str
+    implements: tuple[str, ...]
+    has_criteria: bool
+    has_ac_heading: bool
+    non_measurable: bool
+
+
+def chain_facts(path: str, text: str) -> ChainFacts | None:
+    """`text` as a chain participant, or None when it is not one.
+
+    The corpus filter is the same one `_spec_files` and `collect_adrs` apply —
+    `kind: spec` anywhere under `docs/specs`, and a top-level `docs/adr/ADR-*.md`
+    — because a document counted on one side of the comparison and not the other
+    is a spurious violation waiting to happen.
+    """
+    fm = _frontmatter(text)
+    parts = Path(path).parts
+    if parts[:2] == ("docs", "specs") and KIND_RE.search(fm):
+        kind = "spec"
+    elif len(parts) == 3 and parts[:2] == ("docs", "adr") and parts[2].startswith("ADR-"):
+        kind = "adr"
+    else:
+        return None
+    doc_id = (ID_RE.search(fm) or [None, Path(path).stem])[1]
+    return ChainFacts(
+        id=doc_id,
+        kind=kind,
+        file=path,
+        status=(STATUS_RE.search(fm) or [None, "?"])[1],
+        implements=tuple(adr_refs(_list_field(fm, IMPLEMENTS_RE))),
+        # `_criteria_in` is section-scoped bullets plus tagged scenarios, which
+        # is exactly what `collect_specs` counts as a spec's criteria and what
+        # `collect_adrs` counts as an ADR's own — one rule, both kinds.
+        has_criteria=bool(_criteria_in(text, doc_id)),
+        has_ac_heading=bool(AC_HEADING_RE.search(text)),
+        non_measurable=declares_non_measurable(text),
+    )
+
+
+#: The counters that answer "is the link absent?", as opposed to "is it broken?".
+ABSENCE_COUNTERS = (
+    "specs_implementing_nothing",
+    "adrs_without_implementing_spec",
+    "specs_declaring_no_criteria",
+)
+
+
+def absent_links(facts: dict[str, ChainFacts]) -> dict[str, set[str]]:
+    """The three absent-link populations over a whole corpus, keyed by counter.
+
+    A whole corpus rather than a document at a time, because one of the three is
+    not a property of any single document: whether an ADR is implemented depends
+    on every spec's `implements`, so deleting a reference in one file can put a
+    different file's decision into the population.
+    """
+    implemented = {ref for f in facts.values() if f.kind == "spec" for ref in f.implements}
+    specs = {i: f for i, f in facts.items() if f.kind == "spec"}
+    return {
+        # `implements: []` is valid front matter, so a spec naming no ADR was
+        # clean. That made "specs map to ADRs" mean "specs do not *mis*-map".
+        "specs_implementing_nothing": {i for i, f in specs.items() if not f.implements},
+        # Owed once the decision is taken. Carrying its own criteria counts:
+        # ADR-063..066 hold 147 scenarios written before the spec split, and
+        # calling those uncovered would report measured work as missing.
+        "adrs_without_implementing_spec": {
+            i
+            for i, f in facts.items()
+            if f.kind == "adr"
+            and f.status in DECISION_TAKEN
+            and i not in implemented
+            and not f.has_criteria
+        },
+        # Split from `specs_awaiting_retrofit` deliberately. That counter holds
+        # documents with an acceptance heading and no ids yet — "criteria not
+        # written". These have neither, which is a different statement, and
+        # merging them let "there are none" hide inside "there are none *yet*".
+        "specs_declaring_no_criteria": {
+            i
+            for i, f in specs.items()
+            if not f.has_criteria and not f.has_ac_heading and not f.non_measurable
+        },
+    }
+
+
+def new_absent_links(base: dict[str, set[str]], head: dict[str, set[str]]) -> dict[str, list[str]]:
+    """Per counter, the documents this change put into the population.
+
+    Set difference on document ids, not on counts, and that is the entire point
+    of #164's reopening. The aggregate ceiling is blind to a PR that adds one
+    orphan spec while a legacy one is fixed: the count is unchanged, so the
+    ratchet is satisfied while a new absent link entered the repository. Ids
+    cannot net off against each other.
+    """
+    return {name: sorted(head[name] - base[name]) for name in ABSENCE_COUNTERS}
+
+
+def absence_rows(
+    populations: dict[str, set[str]],
+    facts: dict[str, ChainFacts],
+    counter: str,
+    *,
+    with_status: bool = False,
+) -> list[dict[str, Any]]:
+    """One absent-link population as report rows, ordered by file.
+
+    By file rather than by id so the report keeps the order it had when each
+    population was a comprehension over a sorted directory walk — a reordered
+    artefact is a diff a reviewer has to read past to find the real change.
+    """
+    rows = []
+    for doc_id in sorted(populations[counter], key=lambda i: facts[i].file):
+        row: dict[str, Any] = {"id": doc_id, "file": facts[doc_id].file}
+        if with_status:
+            row["declared_status"] = facts[doc_id].status
+        rows.append(row)
+    return rows
+
+
+def working_tree_facts() -> dict[str, ChainFacts]:
+    """The same chain facts, read from the checkout rather than from a revision.
+
+    Same `chain_facts` as the base side, deliberately, rather than adapting the
+    richer structures `collect_specs`/`collect_adrs` build. Those carry the
+    ladder and the module graph, neither of which a past revision can be asked
+    about; deriving head from them and base from text would make the two sides
+    answerable to different code.
+    """
+    facts: dict[str, ChainFacts] = {}
+    for directory in (SPEC_DIR, ADR_DIR):
+        for path in sorted(directory.rglob("*.md")):
+            rel = str(path.relative_to(ROOT))
+            found = chain_facts(rel, path.read_text(encoding="utf-8"))
+            if found is not None:
+                facts[found.id] = found
+    return facts
+
+
 def _file_at(rev: str, path: str) -> str | None:
     """`path` as of `rev`, or None when it did not exist there."""
     try:
@@ -776,14 +938,19 @@ def _criteria_in(text: str, doc_id: str) -> dict[str, bool]:
     return {f"{doc_id}/{short}": boxes.get(short, False) for short in shorts}
 
 
-def snapshot_at(rev: str) -> dict[str, bool] | None:
-    """Every criterion in the corpus as of `rev`. None when `rev` is unreadable.
+def corpus_at(rev: str) -> tuple[dict[str, bool], dict[str, ChainFacts]] | None:
+    """The whole corpus as of `rev`: every criterion, and every chain fact.
 
-    None rather than an empty dict, and the caller refuses rather than
-    proceeding: an unreadable base makes *every* criterion look new, which would
-    turn the mandate from a gate on this PR into a demand that the whole
-    corpus be retrofitted at once. A gate that fires on everything gets turned
-    off, which is worse than one that stops and says why.
+    One walk for both. The mandate asks two questions of the same revision and
+    each answer costs a `git show` per document, so splitting them would double
+    ~200 subprocesses to re-read files that were already open.
+
+    None rather than an empty result, and the caller refuses rather than
+    proceeding: an unreadable base makes *every* criterion look new and *every*
+    absent link look introduced, which would turn the mandate from a gate on
+    this PR into a demand that the whole corpus be retrofitted at once. A gate
+    that fires on everything gets turned off, which is worse than one that stops
+    and says why.
     """
     try:
         listing = subprocess.run(
@@ -799,7 +966,8 @@ def snapshot_at(rev: str) -> dict[str, bool] | None:
     if listing.returncode != 0:
         return None
 
-    snapshot: dict[str, bool] = {}
+    criteria: dict[str, bool] = {}
+    facts: dict[str, ChainFacts] = {}
     for path in listing.stdout.split():
         if not path.endswith(".md"):
             continue
@@ -808,8 +976,17 @@ def snapshot_at(rev: str) -> dict[str, bool] | None:
             continue
         fm = _frontmatter(text)
         doc_id = (ID_RE.search(fm) or [None, Path(path).stem])[1]
-        snapshot.update(_criteria_in(text, doc_id))
-    return snapshot
+        criteria.update(_criteria_in(text, doc_id))
+        found = chain_facts(path, text)
+        if found is not None:
+            facts[found.id] = found
+    return criteria, facts
+
+
+def snapshot_at(rev: str) -> dict[str, bool] | None:
+    """Every criterion in the corpus as of `rev`. None when `rev` is unreadable."""
+    corpus = corpus_at(rev)
+    return None if corpus is None else corpus[0]
 
 
 def touched_since(base: dict[str, bool], head: dict[str, bool]) -> set[str]:
@@ -1106,33 +1283,16 @@ def main(argv: list[str]) -> int:
     # implemented by nothing, and both were clean. That makes "specs map to
     # ADRs" mean "specs do not *mis*-map to ADRs" — a much weaker claim than the
     # one a green build is read as supporting.
-    orphan_specs = [
-        {"id": s["id"], "file": s["file"]} for s in specs if not adr_refs(s["implements"])
-    ]
-
-    # An ADR is owed an implementation once the decision is taken. Carrying its
-    # own criteria counts: ADR-063..066 hold 147 scenarios written before the
-    # spec split, and calling those uncovered would report measured work as
-    # missing.
-    implemented_adrs = {ref for s in specs for ref in adr_refs(s["implements"])}
-    uncovered_adrs = [
-        {"id": a["id"], "file": a["file"], "declared_status": a["declared_status"]}
-        for a in adrs
-        if a["declared_status"] in DECISION_TAKEN
-        and a["id"] not in implemented_adrs
-        and not a["own_criteria"]
-    ]
-
-    # Split out of `specs_awaiting_retrofit` deliberately. That counter holds
-    # documents with an acceptance heading and no ids yet — "criteria not
-    # written". These have no heading and no criteria at all, which is a
-    # different statement, and merging the two let "there are none" hide inside
-    # "there are none *yet*".
-    silent_specs = [
-        {"id": s["id"], "file": s["file"]}
-        for s in specs
-        if not s["criteria_total"] and not s["has_ac_heading"] and not s["declares_non_measurable"]
-    ]
+    #
+    # Computed by `absent_links` rather than here, so the report and the
+    # per-change mandate cannot drift apart. The rows keep the shape they had.
+    working = working_tree_facts()
+    populations = absent_links(working)
+    orphan_specs = absence_rows(populations, working, "specs_implementing_nothing")
+    uncovered_adrs = absence_rows(
+        populations, working, "adrs_without_implementing_spec", with_status=True
+    )
+    silent_specs = absence_rows(populations, working, "specs_declaring_no_criteria")
 
     # ---- distance rather than debt (#166) --------------------------------
     coverage, coverage_rows = design_coverage(specs, adrs)
@@ -1246,14 +1406,24 @@ def main(argv: list[str]) -> int:
 
     if args.mandate:
         print()
-        exit_code = run_mandate(args.mandate, specs, adrs) or exit_code
+        exit_code = run_mandate(args.mandate, specs, adrs, working) or exit_code
     return exit_code
 
 
-def run_mandate(base_rev: str, specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> int:
-    """Zero tolerance on the criteria this change created or newly claimed."""
-    base = snapshot_at(base_rev)
-    if base is None:
+def run_mandate(
+    base_rev: str,
+    specs: list[dict[str, Any]],
+    adrs: list[dict[str, Any]],
+    working: dict[str, ChainFacts],
+) -> int:
+    """Zero tolerance on what this change created, in both mandates.
+
+    One base read serves both. Both run even when the first fails: a PR should
+    see everything it has to fix in one go, not discover the second gate after
+    pushing a fix for the first.
+    """
+    corpus = corpus_at(base_rev)
+    if corpus is None:
         print(
             f"FAIL: could not read the criteria corpus at {base_rev!r}.\n\n"
             "  On a shallow clone, fetch the base first (`fetch-depth: 0`).\n"
@@ -1263,7 +1433,19 @@ def run_mandate(base_rev: str, specs: list[dict[str, Any]], adrs: list[dict[str,
             "  turned off."
         )
         return 1
+    base, base_facts = corpus
+    criterion_code = _criterion_mandate(base_rev, base, specs, adrs)
+    print()
+    chain_code = chain_mandate(base_rev, base_facts, working)
+    return criterion_code or chain_code
 
+
+def _criterion_mandate(
+    base_rev: str,
+    base: dict[str, bool],
+    specs: list[dict[str, Any]],
+    adrs: list[dict[str, Any]],
+) -> int:
     head = {c["id"]: c["claimed"] for d in (*specs, *adrs) for c in _criteria_of(d)}
     touched = touched_since(base, head)
 
@@ -1292,6 +1474,72 @@ def run_mandate(base_rev: str, specs: list[dict[str, Any]], adrs: list[dict[str,
         "  To declare one deliberately unproven, put the reason in the document\n"
         "  where a reviewer will see it:\n\n"
         "      <!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->\n"
+    )
+    return 1
+
+
+#: What each absent link costs the reader, and what closing it takes. Keyed by
+#: counter so the message a PR gets is about the link it actually broke rather
+#: than a paragraph covering all three.
+_ABSENCE_HELP = {
+    "specs_implementing_nothing": (
+        "a spec that names no ADR",
+        "Name the decision it implements in `implements:`. If the spec predates\n"
+        "  any ADR, the decision has to be written down before the spec can be\n"
+        "  said to implement one — do not guess which ADR it belongs to.",
+    ),
+    "adrs_without_implementing_spec": (
+        "a taken decision nothing implements",
+        "Either write a spec whose `implements:` names it, give the ADR its own\n"
+        "  **AC-N** criteria, or leave the ADR `Proposed` until it is owed an\n"
+        "  implementation. Accepting a decision is the moment the debt starts.",
+    ),
+    "specs_declaring_no_criteria": (
+        "a spec that states nothing checkable",
+        "Add an `## Acceptance criteria` heading with **AC-N** ids, or declare\n"
+        "  the document non-measurable *with a reason* where a reviewer sees it:\n\n"
+        "      <!-- ac-state: non-measurable - a glossary, nothing to assert -->",
+    ),
+}
+
+
+def chain_mandate(
+    base_rev: str,
+    base_facts: dict[str, ChainFacts],
+    working: dict[str, ChainFacts],
+) -> int:
+    """Zero tolerance on absent links this change introduced (#164).
+
+    The three counters above this are ratchets, and #164's acceptance asks for
+    something a ratchet cannot give. A ceiling compares *totals*, so a change
+    that adds one orphan spec while a legacy orphan is fixed leaves the count
+    where it was and passes — the new absent link is paid for by an unrelated
+    old one. Comparing the populations by document id instead means nothing nets
+    off: a document that was not in the population at the base and is in it at
+    the head is this change's, whatever else moved.
+    """
+    introduced = new_absent_links(absent_links(base_facts), absent_links(working))
+    total = sum(len(v) for v in introduced.values())
+
+    print(f"chain mandate (absent links introduced since {base_rev}):")
+    for name in ABSENCE_COUNTERS:
+        print(f"  {name:<32}: {len(introduced[name])}")
+    if not total:
+        print("\nOK: this change adds no spec, decision or criterion-less document to the chain.")
+        return 0
+
+    print()
+    for name in ABSENCE_COUNTERS:
+        for doc_id in introduced[name]:
+            print(f"  {doc_id}  {working[doc_id].file}  ({_ABSENCE_HELP[name][0]})")
+    print("\nFAIL: this change introduces an absent link in the ADR → spec → AC chain.\n")
+    for name in ABSENCE_COUNTERS:
+        if introduced[name]:
+            print(f"  {name} — {_ABSENCE_HELP[name][0]}\n  {_ABSENCE_HELP[name][1]}\n")
+    print(
+        "  Pre-existing violations stay on quality/ac-state-ceilings.json and fall\n"
+        "  over time. These are not pre-existing: this change put them there, and\n"
+        "  a ceiling comparing totals would have let an unrelated fix pay for them."
     )
     return 1
 
