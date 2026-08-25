@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.archive.protocols import ArchiveStore
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.lifecycle import (
@@ -164,6 +165,42 @@ def is_purgeable(run: Run, cutoff: datetime) -> bool:
     )
 
 
+#: How long a Run must have been terminal before the archive sweep considers it
+#: cold. A default, not a policy: ADR-082226-f436 open question 1 declined to
+#: freeze a number nobody had data for, and decision 10 leaves the horizon to
+#: deployment configuration. Ninety days is long enough that nothing routine is
+#: archived and short enough that the tier is exercised.
+DEFAULT_ARCHIVE_AFTER = timedelta(days=90)
+
+
+def is_archivable(run: Run, cutoff: datetime, *, archive_after: timedelta) -> bool:
+    """Whether the archive sweep may move this Run's payload (f436 decision 10).
+
+    The mirror of :func:`is_purgeable`, and deliberately its complement on the
+    first condition rather than a second date of its own:
+
+    - **`retention_expires_at is None`** — nobody chose a deletion date, so the
+      Run is kept indefinitely. A Run *with* a deadline is purge-eligible and is
+      never archived; decision 2 is explicit that archiving is not a way to
+      avoid deciding deletion. Because the field is either null or not, the two
+      populations cannot overlap, which is the property a separate
+      `archive_after` column on the Run would have destroyed.
+    - **terminal** — same reason as purging. Live work keeps its payload where
+      it can be read without a network round trip.
+    - **terminal for longer than `archive_after`** — measured from
+      `finished_at`, which a terminal Run always has (`_validate_finished_at`).
+      A Run that somehow lacks one is not archived rather than being treated as
+      infinitely old, because "no timestamp" is not evidence of coldness.
+    """
+    if run.retention_expires_at is not None:
+        return False
+    if run.status not in TERMINAL_RUN_STATUSES:
+        return False
+    if run.finished_at is None:
+        return False
+    return run.finished_at <= cutoff - archive_after
+
+
 #: States a Run may be created directly in — the entry states a caller can
 #: honestly know at admission. Anything terminal is excluded: work that has not
 #: started cannot have ended.
@@ -318,10 +355,16 @@ class InMemoryRunStore:
         project_store: ProjectScopeStore,
         max_runs: int = MAX_IN_MEMORY_RUNS,
         prune_target: int = RUN_PRUNE_TARGET,
+        archive_store: ArchiveStore | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        # None is the default and means the tier is off (f436 decision 9): no
+        # archive store configured is today's behaviour unchanged, with no
+        # warning, because warning on a deliberate choice is how operators
+        # learn to ignore warnings.
+        self._archive_store = archive_store
         self._max_runs = max_runs
         self._prune_target = prune_target
         self._runs: OrderedDict[str, Run] = OrderedDict()
@@ -506,6 +549,43 @@ class InMemoryRunStore:
         for run_id in doomed[:limit]:
             await self.delete_run(run_id, force=True)
         return min(len(doomed), limit)
+
+    async def archive_cold_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        archive_after: timedelta = DEFAULT_ARCHIVE_AFTER,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Archive up to ``limit`` cold Runs. Returns how many went.
+
+        The counterpart of :meth:`purge_expired_runs`, and deliberately not part
+        of it: :func:`is_archivable` and :func:`is_purgeable` select disjoint
+        populations, because f436 decision 2 refuses to let archiving stand in
+        for a deletion decision.
+
+        This store keeps the Run resident after archiving, which is not a
+        shortcut. `InMemoryRunStore` is the reference implementation of the
+        *protocol*, not a tier that saves bytes — it is already bounded by
+        eviction. What it must prove is the contract the durable stores are held
+        to: that the payload reaches the archive, and that a read afterwards
+        still returns the record rather than an empty result.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if self._archive_store is None:
+            return 0
+        cutoff = now if now is not None else datetime.now(UTC)
+        cold = [
+            run
+            for run in self._runs.values()
+            if is_archivable(run, cutoff, archive_after=archive_after)
+        ]
+        for run in cold[:limit]:
+            await self._archive_store.put(
+                run.model_dump_json().encode("utf-8"), scope=run.project_id
+            )
+        return min(len(cold), limit)
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.
