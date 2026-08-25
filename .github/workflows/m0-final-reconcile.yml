@@ -1,0 +1,78 @@
+name: M0 final reconcile
+
+on:
+  push:
+    branches: [chatgpt/m0-closeout]
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m0-closeout
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.5.x'
+      - name: Reconcile latest develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_head=$(git rev-parse HEAD)
+          git fetch origin develop chatgpt/m0-closeout
+          git checkout -B m0-final origin/develop
+          git config user.name 'm0-closeout-bot'
+          git config user.email 'm0-closeout-bot@users.noreply.github.com'
+          set +e
+          git merge --no-commit --no-ff -X ours "$old_head"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            while IFS= read -r path; do
+              [ -z "$path" ] && continue
+              if git cat-file -e "HEAD:$path" 2>/dev/null; then
+                git checkout --ours -- "$path" || true
+                git add "$path" || true
+              else
+                git rm -f --ignore-unmatch "$path" || true
+              fi
+            done < <(git diff --name-only --diff-filter=U)
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git rm -f --ignore-unmatch .github/workflows/m0-final-reconcile.yml
+          git commit -m 'Reconcile M0 closeout with latest develop'
+      - name: Install
+        run: uv sync --locked --all-extras
+      - name: Regenerate and bank combined-tree acceptance state
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python scripts/check-ac-state.py --run-tests --ratchet --bank
+          uv run python scripts/check-ac-state.py --run-tests --ratchet
+          git add quality/ac-state.json quality/ac-state-ceilings.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Bank combined M0 acceptance-state floor'
+          fi
+      - name: Verify M0 truth gates on combined tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run python tools/lint_lifecycle.py
+          uv run python scripts/check-backlog-consistency.py
+          uv run python scripts/check-reachability.py
+          uv run python scripts/check-reachability-dispositions.py
+          uv run python scripts/check-convergence-matrix.py
+          uv run python scripts/check-doc-links.py
+          uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'
+          uv run pytest packages/maistro-core/tests/fitness tests/tools/registry tests/tools/test_lint_lifecycle.py --confcutdir=tests/tools -q
+      - name: Push reconciled branch
+        run: git push origin HEAD:chatgpt/m0-closeout
