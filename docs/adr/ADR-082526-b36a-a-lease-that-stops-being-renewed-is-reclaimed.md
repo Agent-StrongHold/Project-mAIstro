@@ -19,6 +19,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/runs/test_spine_conformance.py
+  - packages/maistro-core/tests/runs/test_execution_fencing.py
 ac-modules:
   AC-1: maistro.runs.lifecycle
   AC-2: maistro.runs.lifecycle
@@ -26,6 +27,8 @@ ac-modules:
   AC-4: maistro.runs.store
   AC-5: maistro.runs.lifecycle
   AC-6: maistro.runs.lifecycle
+  AC-7: maistro.runs.execution
+  AC-8: maistro.runs.execution
 history:
   - status: Proposed
     date: 2026-08-25
@@ -101,6 +104,24 @@ Attempt is distinguishable from one a user cancelled — the distinction ADR-082
 to keep. From there the NodeRun parks for retry through that ADR's `RECOVERED` cause, which is
 already the right shape and needed no new path.
 
+### The executor holds the heartbeat, because the executor is what dies
+
+`AttemptExecutionService` takes the TTL and does two things with it: every Attempt it creates
+carries an expiring lease, and a heartbeat renews that lease **from this process** while the
+executor runs, at a third of the TTL so one lost tick under load does not look like death.
+
+Putting the heartbeat here rather than in each domain is what makes the mechanism true rather
+than available. The work runs *in* this process, so if the process dies the heartbeat dies with
+it and the lease lapses on its own — nothing has to notice the death, which is the only design
+that survives `SIGKILL`. Every path that reaches `execute_node` — tasks, chat, graph — gets
+this from one seam.
+
+The heartbeat is stopped in a `finally` nested *inside* the executor call, so it is always
+stopped before any terminalization: a renewal landing between the executor stopping and the
+Attempt terminalizing would race the terminal write. A failed renewal stops the heartbeat
+rather than killing the work — the store may be briefly unreachable, and the correct response
+is the same as death, which is safe.
+
 ### No TTL means no reclamation, ever
 
 An Attempt with no lease, or a lease with no `expires_at`, is never expired. This is what keeps
@@ -130,6 +151,15 @@ configured), for the reason recorded in `conftest.py`.
 - [x] **AC-4**: Reclamation is idempotent — two sweepers, or one restarted, is normal.
 - [x] **AC-5**: An Attempt created without a TTL is never reclaimed.
 - [x] **AC-6**: A stale fencing token cannot renew.
+- [x] **AC-7**: A worker that stops being able to renew, while its Attempt stays durably
+  `RUNNING`, is reclaimed — driven through `AttemptExecutionService`, not the store alone, and
+  the settled record names the holder. This is #232's headline acceptance. Cancelling the
+  executor task is deliberately *not* how it is simulated: `execute` catches `CancelledError`
+  and terminalizes as `CANCELLED` (ADR-082426-f170), an orderly in-process stop that leaves
+  nothing to reclaim. The failure mode is the one where no handler runs at all.
+- [x] **AC-8**: A worker slower than its own TTL survives, because the heartbeat is renewing.
+  The half a naive TTL fails, and failing it would trade a stuck Attempt for a reaped healthy
+  one.
 
 ## Consequences
 
@@ -148,13 +178,17 @@ configured), for the reason recorded in `conftest.py`.
 
 ### Neutral
 
-- **`renew_lease` has no in-repo caller yet**, and the exact-debt ledger says so: it is banked
-  under `core-public-api-surface` with four entries. It is the half of the contract a *worker*
-  calls, and this repository's task runner does not heartbeat yet — wiring one is its own
-  piece. Unlike the surfaces #225 and #244 name, its behaviour is exercised: six conformance
-  tests across three stores, plus the fence refusal. `reclaim_expired_attempts` **is** wired,
-  through `Container.recover_abandoned_attempts`.
-- #232's sixth acceptance item — that the task runner and durable Graph executor no longer
-  carry contradictory orphan semantics — is **not** closed by this. The two rules answer
-  different questions and both are correct in their own scope, as recorded above. Making them
-  one mechanism needs the Graph on the canonical store, which is #44.
+- **`renew_lease` is called by the heartbeat**, so the four ledger entries an earlier draft of
+  this PR banked under `core-public-api-surface` are pruned in the same change. Banking them
+  was the wrong instinct: the surface had no caller because the executor had not been wired,
+  and wiring it was the work. `reclaim_expired_attempts` is likewise wired, through
+  `Container.recover_abandoned_attempts`.
+- **#232's sixth acceptance item is resolved by this ADR, not deferred.** An earlier draft said
+  it remained open, which contradicted the section above and the issue's own audit comment —
+  that comment explicitly permits reconciliation by *"an ADR stating why the two orphan
+  definitions legitimately differ"* rather than forcing identical mechanics. This ADR states
+  exactly that: the durable Graph's rule (active-at-resume) is safe because a graph Run has one
+  resumer; the task path's rule (lease lapsed without renewal) is safe because liveness is
+  proven. They answer different questions and both are correct in scope. Making them one
+  *mechanism* would need the Graph on the canonical store, which is #44 — but identical
+  mechanics were never what item 6 required.
