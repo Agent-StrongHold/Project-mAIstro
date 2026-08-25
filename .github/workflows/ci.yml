@@ -504,6 +504,12 @@ jobs:
       # only caught if the gate runs on that PR.
       - name: uv is installed through the one pinned wrapper
         run: python3 scripts/check-uv-setup.py
+      # A workflow that pushes with the default GITHUB_TOKEN produces heads
+      # ci.yml and quality.yml can never run on, so the PR reads as checked
+      # while the gate set has not seen the code (#262). Static, like the two
+      # checks above it -- no token, works on a fork.
+      - name: workflows make no writes the gate set cannot see
+        run: python3 scripts/check-workflow-write-safety.py
       # And the ruleset that pins branch protection against those names (#162).
       # Offline only: it checks that every required context is a real check
       # name, that no branch requires one that cannot report there, and that

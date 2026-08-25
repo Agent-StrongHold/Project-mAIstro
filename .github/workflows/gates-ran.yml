@@ -1,0 +1,99 @@
+name: Gates Ran
+
+# Did the gate set actually reach this commit? (#262 AC-2)
+#
+# Every other workflow here asks whether the code is good. None asked whether
+# the gates ran at all on the artefact about to merge, and those are different
+# questions: a check that never reports is not red, it is *absent*, and absence
+# renders as an empty space where a green tick would go.
+#
+# On PR #242 that gap was load-bearing. A workflow pushed with the default
+# GITHUB_TOKEN, which GitHub deliberately will not start further workflows for,
+# so 32 runs each of CI and quality sat at `action_required` while the PR showed
+# its own workflow's green job. The newest head either had actually run on was
+# two commits behind the tip.
+#
+# `workflow_run`, not `pull_request`, and that is the whole design. A job inside
+# ci.yml cannot see whether quality.yml ran; only something triggered *by* their
+# completion can. Each completion re-evaluates the same head, so an early firing
+# that finds a sibling still running goes red and the last one settles it.
+#
+# It will not run on the pull request that adds it, and that is not a defect.
+# GitHub starts a `workflow_run` workflow from the **default branch** copy of
+# the file, so `gates-ran` begins reporting only once this is on `develop` —
+# its first real firing is on the *next* PR. Reviewers of the adding PR should
+# expect the check to be absent here; that absence is the very state the check
+# exists to make loud everywhere else, which is an irony worth writing down
+# rather than discovering.
+#
+# A consequence worth stating: because this has no `pull_request:` trigger,
+# `scripts/check-required-checks.py` cannot see it, so `gates-ran` does not
+# appear in the generated table in docs/ci/REQUIRED-CHECKS.md. It still has to
+# be marked required in branch protection by hand (#162) — the doc says so in
+# prose beside the table.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+      - "quality"
+      - "security"
+      - "CodeQL Advanced"
+      - "Formal Conformance"
+      - "Registry CI"
+      - "Vulture Ratchet"
+      - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
+    types: [completed]
+
+# Keyed by the head being judged rather than by the PR: the question is about a
+# commit. `cancel-in-progress` stays false because each sibling's completion is
+# new evidence about the same head, and cancelling the earlier evaluation would
+# throw away the answer without replacing it.
+concurrency:
+  group: gates-ran-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+permissions:
+  checks: read
+  contents: read
+
+jobs:
+  gates-ran:
+    name: gates-ran
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only for pull requests. A push to a long-lived branch has no head under
+    # review, and failing this on every `develop` push would train people to
+    # ignore it.
+    if: github.event.workflow_run.event == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      # Paginated deliberately: this repository already emits ~25 checks per
+      # head and GitHub's default page is 30. A truncated page would report
+      # real checks as "never ran", which is the exact false positive that
+      # would get this gate switched off.
+      - name: Collect check runs for the head under review
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const runs = await github.paginate(
+              github.rest.checks.listForRef,
+              { owner: context.repo.owner, repo: context.repo.repo,
+                ref: process.env.HEAD_SHA, per_page: 100 },
+            );
+            fs.writeFileSync('check-runs.json', JSON.stringify({ check_runs: runs }));
+            core.info(`${runs.length} check run(s) on ${process.env.HEAD_SHA}`);
+
+      - name: Every required check ran on this head
+        run: python3 scripts/check-gates-ran.py --check-runs check-runs.json --require-complete
