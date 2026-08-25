@@ -17,7 +17,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from maistro.scheduling import OverlapPolicy, Schedule, evaluate
+from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,66 @@ def stop_scheduler() -> None:
     if _runner is not None:
         _runner.stop()
         _runner = None
+
+
+class ScheduleNotFireable(Exception):
+    """A fire was asked for and could not happen. The reason is the message."""
+
+
+async def fire_now(sid: str) -> str:
+    """Fire a schedule on demand, through the path a tick uses.
+
+    `POST /v1/schedules/{id}/run` used to stamp `last_run` and stop there: no
+    Run, no cursor, nothing counted. That is the same "receipt for work that
+    never started" the tick path carried before #231 — a schedule asserting it
+    fired with no `run_id` anywhere — and it outlived that fix because it sits
+    on the route rather than in the loop.
+
+    A manual fire is a fire: it creates a canonical Run, records the cursor,
+    and counts against `max_runs`. Raises `ScheduleNotFireable` rather than
+    half-firing, so the caller can say why.
+
+    **It advances the cursor**, which is the one real cost: occurrences owed
+    from before now are no longer backfilled, because `last_fired_at` moves to
+    now. The next *scheduled* occurrence is unaffected — `next_fire_after(now)`
+    is still it — so what is given up is bounded by the catch-up window. That
+    is the trade chosen for "run it now" meaning the schedule has run now.
+    """
+    import stores
+
+    schedule = stores.schedules.get(sid)
+    if schedule is None:
+        raise ScheduleNotFireable(f"schedule {sid} does not exist")
+
+    runner = _runner or _ScheduleRunner()
+    store = runner._canonical_store()
+    definition = await runner._definition_for(sid, schedule, store=store)
+    if definition is None:
+        raise ScheduleNotFireable(
+            f"schedule {sid} names no mission template, so there is nothing to run"
+        )
+    if definition.exhausted:
+        raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
+
+    now = datetime.now(UTC)
+    run_id = await runner._fire_schedule(sid, schedule, scheduled_for=now, catchup=False)
+    if run_id is None:
+        # `_fire_schedule` has already logged and audited why. The cursor is
+        # deliberately not advanced: the occurrence stays owed, exactly as it
+        # does on the tick path.
+        raise ScheduleNotFireable(
+            f"schedule {sid} could not create a Run; its target may not be registered"
+        )
+
+    await runner._record_fire(
+        sid,
+        schedule,
+        definition,
+        store=store,
+        fire=FireDecision(scheduled_for=now, catchup=False),
+        run_id=run_id,
+    )
+    return run_id
 
 
 class _ScheduleRunner:
@@ -131,9 +191,21 @@ class _ScheduleRunner:
             project_id=f"hive:schedule:{sid}",
             name=str(getattr(schedule, "name", "") or sid),
             cron=str(schedule.cron_expression),
-            timezone=_DEFAULT_TIMEZONE,
+            # From the row now, not hardcoded. `getattr` with the same default
+            # keeps a row (or a stub) predating the column evaluating in UTC,
+            # which is exactly what it did before.
+            timezone=str(getattr(schedule, "timezone", None) or _DEFAULT_TIMEZONE),
             graph_template_id=template_id,
-            enabled=True,
+            # Bounded recurrence is enforced on the canonical cursor, which can
+            # only apply a bound it is told about. `None` — every row before
+            # this column — stays unbounded.
+            max_runs=getattr(schedule, "max_runs", None),
+            # The row's own flag rather than a hardcoded True. `_tick` already
+            # skips a disabled row, so this only matters for the write below:
+            # `_definition_for` ends in `store.put(definition)`, and putting a
+            # hardcoded True would resurrect a schedule that `record_fire`
+            # disabled on exhaustion.
+            enabled=bool(getattr(schedule, "enabled", True)),
             overlap_policy=OverlapPolicy.SKIP,
             last_fired_at=getattr(schedule, "last_run", None),
             # Carry the row's real creation time. Without it the definition
@@ -203,7 +275,14 @@ class _ScheduleRunner:
                 skipped.reason.value,
             )
 
-        for fire in decision.fires:
+        # `decision.exhausted` is the engine's own answer to "does `max_runs`
+        # run out once these fires are recorded", so exhaustion is not
+        # re-derived here from a `runs_so_far` that was read once per tick and
+        # is stale for any fire after the first. It describes the batch, so it
+        # belongs on the batch's last fire — which under `OverlapPolicy.SKIP`,
+        # hardcoded in `_as_definition`, is also its only one.
+        last_index = len(decision.fires) - 1
+        for fire_index, fire in enumerate(decision.fires):
             self._in_flight.add(sid)
             try:
                 # `catchup` was evaluated and then dropped here. A backfill
@@ -225,13 +304,31 @@ class _ScheduleRunner:
                 # would either lose it or duplicate its successors.
                 return
             await self._record_fire(
-                sid, schedule, definition, store=store, fire=fire, run_id=run_id
+                sid,
+                schedule,
+                definition,
+                store=store,
+                fire=fire,
+                run_id=run_id,
+                exhausted=decision.exhausted and fire_index == last_index,
             )
 
     async def _record_fire(
-        self, sid: str, schedule: Any, definition: Schedule, *, store: Any, fire: Any, run_id: str
+        self,
+        sid: str,
+        schedule: Any,
+        definition: Schedule,
+        *,
+        store: Any,
+        fire: Any,
+        run_id: str,
+        exhausted: bool = False,
     ) -> None:
-        """Advance the cursor, canonically when there is a store to advance."""
+        """Advance the cursor, canonically when there is a store to advance.
+
+        ``exhausted`` says this fire spends the last of `max_runs`; the caller
+        gets it from `evaluate`, which is where the count is not stale.
+        """
         import stores
 
         fired_at = fire.scheduled_for
@@ -242,20 +339,36 @@ class _ScheduleRunner:
                 fired_at=fired_at,
                 run_id=run_id,
                 next_due_at=next_due_at,
-                disable=definition.max_runs is not None
-                and definition.runs_so_far + 1 >= definition.max_runs,
+                disable=exhausted,
             )
         # The `/v1/schedules` row keeps showing what it always showed. It is a
         # projection now rather than the record, so it is written after the
         # cursor it mirrors, never before.
         current = stores.schedules.get(sid)
         if current is not None:
-            stores.schedules[sid] = current.model_copy(
-                update={
-                    "last_run": fired_at,
-                    "next_run": next_due_at,
-                    "updated_at": datetime.now(UTC),
-                }
+            update: dict[str, Any] = {
+                "last_run": fired_at,
+                # The Run that claimed this occurrence, so a caller holding the
+                # schedule can reach it. `last_run` alone said only *that*
+                # something fired.
+                "last_run_id": run_id,
+                "next_run": next_due_at,
+                "updated_at": datetime.now(UTC),
+            }
+            if exhausted:
+                # The same disable `record_fire` just wrote canonically, on the
+                # surface a user reads. Without it the row keeps reporting
+                # `enabled: true` for a spent schedule, and — because `_tick`
+                # skips only disabled rows — the next tick would `put` that
+                # `enabled: true` straight back over the canonical disable.
+                update["enabled"] = False
+                update["next_run"] = None
+            stores.schedules[sid] = current.model_copy(update=update)
+        if exhausted:
+            logger.info(
+                "Schedule %s reached max_runs (%s) and is now disabled",
+                sid,
+                definition.max_runs,
             )
         logger.info("Schedule %s fired: %s (run %s)", sid, schedule.name, run_id)
 
