@@ -1,0 +1,38 @@
+name: M0 bank reviewed Vulture identity
+
+on:
+  push:
+    branches:
+      - chatgpt/m0-closeout
+    paths:
+      - .github/workflows/m0-bank-vulture.yml
+
+permissions:
+  contents: write
+
+jobs:
+  bank:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m0-closeout
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv pip install --system vulture==2.16
+      - name: Bank exactly the reviewed current Vulture identities
+        run: |
+          python scripts/check-vulture-baseline.py --update packages/*/src --min-confidence 60 --exclude '*/third_party/*'
+          python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'
+      - name: Commit ledger and remove this temporary helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/m0-bank-vulture.yml
+          git add quality/vulture-baseline.json
+          git commit -m "Bank lifecycle validator Vulture identity"
+          git push origin HEAD:chatgpt/m0-closeout
