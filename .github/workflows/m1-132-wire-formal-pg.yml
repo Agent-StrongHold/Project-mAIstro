@@ -1,0 +1,88 @@
+name: M1 132 wire formal PostgreSQL properties
+
+on:
+  push:
+    branches: [chatgpt/m1-132-pg-formal]
+
+permissions:
+  contents: write
+
+jobs:
+  wire-and-verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-132-pg-formal
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --extra dev
+      - name: Apply schema and prove the new formal properties against PostgreSQL
+        run: |
+          uv run alembic upgrade head
+          uv run pytest formal/models/test_pg_run_store.py -v --tb=short
+      - name: Make the PostgreSQL formal leg permanent
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          ci = Path('.github/workflows/ci.yml')
+          text = ci.read_text(encoding='utf-8')
+          anchor = '''      - name: Container wires the PostgreSQL backend\n        run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short\n'''
+          addition = anchor + '''      - name: Formal PostgreSQL RunStore properties (#132)\n        run: uv run pytest formal/models/test_pg_run_store.py -v --tb=short\n'''
+          if 'Formal PostgreSQL RunStore properties (#132)' not in text:
+              if anchor not in text:
+                  raise SystemExit('CI insertion anchor not found')
+              text = text.replace(anchor, addition, 1)
+              ci.write_text(text, encoding='utf-8')
+
+          readme = Path('formal/README.md')
+          text = readme.read_text(encoding='utf-8')
+          row = '| I31 | `test_pg_run_store.py` | PostgreSQL canonical RunStore: generated lifecycle equivalence + concurrent active-Attempt uniqueness |\n'
+          if row not in text:
+              anchor = '| I30 | `test_memory_scopes.py` | Memory scope isolation: global→team→user→agent→session hierarchy |\n'
+              if anchor not in text:
+                  raise SystemExit('formal README insertion anchor not found')
+              text = text.replace(anchor, anchor + row, 1)
+              readme.write_text(text, encoding='utf-8')
+          PY
+      - name: Verify formatting and wired PostgreSQL property leg
+        run: |
+          uv run ruff check formal/models/test_pg_run_store.py
+          uv run ruff format --check formal/models/test_pg_run_store.py
+          uv run pytest formal/models/test_pg_run_store.py -v --tb=short
+      - name: Commit verified wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'm1-132-bot'
+          git config user.email 'm1-132-bot@users.noreply.github.com'
+          git rm .github/workflows/m1-132-wire-formal-pg.yml
+          git add .github/workflows/ci.yml formal/README.md formal/models/test_pg_run_store.py
+          git commit -m 'Run formal PostgreSQL spine properties in CI (#132)'
+          git push origin HEAD:chatgpt/m1-132-pg-formal
