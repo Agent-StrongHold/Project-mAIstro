@@ -20,13 +20,15 @@ description: >-
 # the network. Two uv versions, seven minor releases apart, neither chosen.
 #
 # 0.12.5 is what seventeen of the twenty usages already installed and passed on.
-# MEASUREMENT 2: v10 + exact version. v7 fetches the manifest for EVERY
+# MEASUREMENT 3: v10.0.1 + exact version. (v10 alone does not resolve --
+# `git ls-remote` shows floating major tags stop at v7; v8/v9/v10 exist only
+# as point releases.) v7 fetches the manifest for EVERY
 # version value (measured on e26009a and d5257cf), so the pin was never the
 # lever. v10.0.1 is titled "Tolerate transient manifest timeouts" and v10.0.0
 # added `latest-known`; the repo is pinned to v7, which predates both.
 runs:
   using: composite
   steps:
-    - uses: astral-sh/setup-uv@v10
+    - uses: astral-sh/setup-uv@v10.0.1
       with:
         version: "0.12.5"
