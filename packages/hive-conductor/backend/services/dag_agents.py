@@ -25,11 +25,53 @@ from maistro.graph.template_adapter import descriptor_to_template
 # Module-level registry so a per-process boot registers the seeds once.
 _registry: DagRegistry | None = None
 
-# Module-level resolver: this app imports maistro-core pieces directly rather
-# than constructing a full Container, so build_node_resolver()'s no-arg
-# defaults (the shared usage log, an empty harness-adapter map) are what it
-# picks up. The resolver receives the canonical Graph from run_durable_graph.
-_node_resolver = build_node_resolver()
+# Resolved per execution, not once at import. The old module-level
+# `build_node_resolver()` was built before any Container existed, so
+# AgentDelegateRemoteNode was constructed with a2a_delegator=None,
+# guest_peers=None and run_store=None — every delegation on this path refused
+# for want of a delegator, and delegated work could not be filed as a child Run
+# (#147).
+#
+# The reason it was built at import is real and only half the picture: at import
+# time there is no Container to ask. By the time a DAG runs, Hive has one,
+# reached the way services/engine.py already reaches run_store and
+# task_admitter (ADR-082526-3ca6).
+_fallback_node_resolver = build_node_resolver()
+
+
+def _resolve_nodes_with() -> Callable[[str, Any], Any]:
+    """The node resolver for this execution, wired from the Container if there is one.
+
+    Without the bridge there is no Container, and the no-arg resolver is
+    returned unchanged — a Conductor running standalone behaves exactly as it
+    did rather than failing to start.
+
+    `run_store` is deliberately the container's **canonical** RunStore. This
+    module also holds an `InMemoryDurableRunStore`, whose name is one word away
+    and whose methods share nothing; build_node_resolver's own docstring records
+    that passing the wrong one type-checks and then raises AttributeError after
+    the delegation has already been dispatched.
+    """
+    try:
+        from services.engine import get_engine
+
+        engine = get_engine()
+        container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    except Exception:  # pragma: no cover - engine unavailable in isolation
+        container = None
+    if container is None:
+        return _fallback_node_resolver
+    # Read as attributes rather than through getattr(): the Container dataclass
+    # always defines all three, and check-wiring-reads.py (#236) walks attribute
+    # loads, so a getattr("name") read is invisible to it and the fields would
+    # report as wired-but-unread. Naming them here is what makes the gate able
+    # to hold this wiring in place.
+    return build_node_resolver(
+        a2a_delegator=container.a2a_delegator,
+        guest_peers=container.guest_peers,
+        run_store=container.run_store,
+    )
+
 
 # One store for the process, not one per invocation. A fresh store per call
 # discarded the whole Run/NodeRun history the moment the call returned, so the
@@ -90,7 +132,7 @@ async def run_registered_dag(
     record = await run_durable_graph(
         graph,
         store=_run_store,
-        node_resolver=_node_resolver,
+        node_resolver=_resolve_nodes_with(),
         actor_principal_id=user_id,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
