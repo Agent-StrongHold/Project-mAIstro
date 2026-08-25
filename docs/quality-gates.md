@@ -37,6 +37,8 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | Gherkin well-formedness | floor | AC-state checker | malformed executable acceptance syntax |
 | Hypothesis/formal conformance | floor | `formal/` | falsifying lifecycle/property examples |
 
+The blocking Vulture workflow pins Vulture 2.16 and scans `packages/*/src` at confidence 60 while excluding `*/third_party/*`; `quality/vulture-baseline.json` is banked from that exact command so a different analyzer version or scan scope cannot silently redefine the reviewed identity set.
+
 The convergence-matrix checker is intentionally **structural**. It does not prove that prose such as “this product route traverses Warden” is operationally true. The matrix now says that limitation explicitly. Product-path claims require acceptance evidence or human re-audit; a green matrix check alone is not evidence of runtime enforcement.
 
 ## #36 architecture-fitness invariants
