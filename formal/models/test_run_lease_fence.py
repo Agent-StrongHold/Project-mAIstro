@@ -194,9 +194,7 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
             )
             return
 
-        assert self.attempt_id is None, (
-            "the store admitted a second Attempt while one was already active"
-        )
+        assert self.attempt_id is None, "the store admitted a second Attempt while one was already active"
         assert attempt.execution_lease is not None
         self.attempt_id = attempt.attempt_id
         self.status = AttemptStatus.CREATED
@@ -280,9 +278,7 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
         """A gap means an ordinal was allocated and lost — the read-modify-write
         race `MAX(ordinal) + 1` invites, and the reason the row is locked."""
         ordinals = sorted(a.ordinal for a in self._attempts())
-        assert ordinals == list(range(1, len(ordinals) + 1)), (
-            f"ordinals not contiguous: {ordinals}"
-        )
+        assert ordinals == list(range(1, len(ordinals) + 1)), f"ordinals not contiguous: {ordinals}"
 
 
 # A live database is orders of magnitude slower than the in-process models here,
