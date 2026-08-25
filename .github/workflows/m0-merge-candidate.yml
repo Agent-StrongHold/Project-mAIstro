@@ -15,10 +15,6 @@ jobs:
         with:
           ref: chatgpt/m0-closeout
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: ./.github/actions/setup-uv
       - name: Reconcile latest develop
         shell: bash
         run: |
@@ -45,6 +41,10 @@ jobs:
           fi
           test -z "$(git diff --name-only --diff-filter=U)"
           git commit -m 'Reconcile M0 closeout with current develop'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-uv
       - name: Install
         run: uv sync --locked --all-extras
       - name: Apply the exact Ruff fix to the M0 coverage test
