@@ -3,7 +3,7 @@ id: SPEC-206
 title: Policy-conformance comparison engine — ADRs → Specs → prior policy
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-05-30
 accepted: null
 implemented: null
@@ -29,6 +29,10 @@ history:
   - status: Proposed
     date: 2026-05-30
   - status: Implemented
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # SPEC-206: Policy-conformance comparison engine

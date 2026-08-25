@@ -95,10 +95,14 @@ def test_matching_baseline_passes(lint):
 
 
 def test_baseline_file_matches_its_own_contract(lint):
-    """Every committed baseline entry is a real, currently-occurring violation
-    (test_repo_corpus_passes_the_gate proves 'no new' — this pins the shape)."""
+    """The committed baseline exactly equals currently accepted violations.
+
+    Zero is a valid and preferred steady state; a ratchet must not require debt
+    to remain merely so the test has something to count.
+    """
     baseline = lint.load_baseline()
-    assert baseline, "baseline exists and is non-empty as of SPEC-062826-8982"
+    errors = set(lint.collect_errors(["docs/adr", "docs/specs"]))
+    assert baseline == errors
     for key in baseline:
         assert ": " in key, f"baseline keys are `path: message` strings, got {key!r}"
 

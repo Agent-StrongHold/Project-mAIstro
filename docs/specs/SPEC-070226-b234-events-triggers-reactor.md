@@ -3,7 +3,7 @@ id: SPEC-070226-b234
 title: "Events, triggers, and the reactor: durable event log with idempotent replay"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-086

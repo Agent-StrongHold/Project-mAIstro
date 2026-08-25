@@ -11,11 +11,14 @@ async def test_create_container_selects_sqlite_backend_when_configured() -> None
         AgentConfig(router_api_key="test-key", database_url="sqlite://")
     )
     assert container.db_pool is not None
+    assert type(container.prompt_manager).__name__ == "SqlitePromptManager"
+    assert type(container.audit_log).__name__ == "SqliteAuditLog"
 
 
 async def test_create_container_defaults_to_in_memory_backend() -> None:
     container = await create_container(AgentConfig(router_api_key="test-key"))
     assert container.db_pool is None
+    assert type(container.prompt_manager).__name__ == "InMemoryPromptManager"
 
 
 async def test_sqlite_backend_quota_tracker_write_then_read_back() -> None:

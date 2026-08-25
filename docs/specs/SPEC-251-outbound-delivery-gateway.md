@@ -3,7 +3,7 @@ id: SPEC-251
 title: "Outbound delivery gateway — Channel protocol, registry, idempotent dispatch (ADR-047)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-014

@@ -3,7 +3,7 @@ id: SPEC-208
 title: Foreign harness adapter — HarnessRunner slot and agent/skill format adapters
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-15
 accepted: 2026-06-16
 implemented: 2026-07-04
@@ -45,6 +45,10 @@ history:
     date: 2026-06-16
   - status: Implemented
     date: 2026-07-04
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # SPEC-208: Foreign harness adapter

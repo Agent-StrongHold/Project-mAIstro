@@ -3,7 +3,7 @@ id: SPEC-234
 title: "Bundled and cataloged Open Design systems for maistro-design"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate: []
 implements:

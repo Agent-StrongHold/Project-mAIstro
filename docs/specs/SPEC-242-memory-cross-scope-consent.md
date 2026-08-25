@@ -3,7 +3,7 @@ id: SPEC-242
 title: "Memory cross-scope sharing under owner consent (ADR-080 part C)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-013

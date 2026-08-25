@@ -3,7 +3,7 @@ id: SPEC-062126-a05f
 title: "SuperPlanner + MasterOrchestrator pre-execution validation gate (ADR-071)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-21
 substrate:
   - maistro-engine#ADR-062

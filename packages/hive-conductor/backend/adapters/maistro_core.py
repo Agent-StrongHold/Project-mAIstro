@@ -124,7 +124,6 @@ class MaistroCoreBridge:
 
         from maistro.agents.factory import create_agents
         from maistro.container import create_container
-        from maistro.prompts.store import InMemoryPromptManager
         from maistro.types.config import AgentConfig
 
         llm_base = (settings.maistro_llm_base_url or "").strip()
@@ -150,7 +149,7 @@ class MaistroCoreBridge:
             api_key=llm_key or "sk-noop",
             model=model,
         )
-        prompt_manager = InMemoryPromptManager()
+        prompt_manager = self._container.prompt_manager
 
         agents_dir = settings.maistro_agents_dir
         if not os.path.isabs(agents_dir):

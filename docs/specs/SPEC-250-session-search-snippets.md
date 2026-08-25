@@ -3,7 +3,7 @@ id: SPEC-250
 title: "Session search — snippet highlighting + stable cursor pagination (ADR-048)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-016

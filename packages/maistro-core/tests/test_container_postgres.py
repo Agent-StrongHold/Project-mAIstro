@@ -164,6 +164,7 @@ async def test_an_unmigrated_database_names_the_command_that_fixes_it() -> None:
         message = str(excinfo.value)
         assert "alembic upgrade head" in message
         assert "learnings" in message
+        assert "prompts" in message
     finally:
         admin = await asyncpg.connect(dsn)
         try:
@@ -189,6 +190,7 @@ async def test_a_postgres_url_wires_postgres_stores() -> None:
     assert type(container.outcome_store).__name__ == "PgOutcomeStore"
     assert type(container.session_store).__name__ == "PgSessionStore"
     assert type(container.audit_log).__name__ == "PgAuditLog"
+    assert type(container.prompt_manager).__name__ == "PgPromptManager"
 
 
 @requires_postgres
