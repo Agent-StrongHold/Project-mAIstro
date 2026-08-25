@@ -13,6 +13,7 @@ import logging
 from typing import Any, Final
 
 from maistro.agents.intents import IntentRegistry
+from maistro.archive.protocols import ArchiveStore
 from maistro.graph.templates import GraphTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
@@ -106,6 +107,7 @@ async def wire_execution_spine(
     workspace_id: str,
     intents: IntentRegistry | None = None,
     pg_pool: Any = None,
+    archive_store: ArchiveStore | None = None,
 ) -> tuple[
     ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter, GraphTemplateStore, ScheduleStore
 ]:
@@ -126,6 +128,14 @@ async def wire_execution_spine(
     Run's Graph and the template it was instantiated from must live in the same
     database — a registry pointing at one and a spine at another is how a Run
     ends up citing a template version nothing can resolve.
+
+    `archive_store` reaches the two stores that can use it (#273). It is the
+    Container's own `archive_store`, so a deployment gets one archive tier
+    rather than one per subsystem, and passing None — the default, and what
+    every deployment has today — leaves the tier off exactly as f436 decision 9
+    requires. `SqliteRunStore` does not take it: the homelab twin has no
+    archive columns, and `ColdRunArchiver` is a capability protocol precisely so
+    a store may decline the tier instead of stubbing it.
     """
     project_scope_store: ProjectScopeStore
     run_store: RunStore
@@ -141,7 +151,9 @@ async def wire_execution_spine(
         from maistro.runs.pg_store import PgRunStore
 
         project_scope_store = PgProjectScopeStore(pg_pool)
-        run_store = PgRunStore(pg_pool, project_store=project_scope_store)
+        run_store = PgRunStore(
+            pg_pool, project_store=project_scope_store, archive_store=archive_store
+        )
         template_store = PgGraphTemplateStore(pg_pool)
         schedule_store = await _pg_schedule_store(pg_pool)
     elif conn is not None:
@@ -169,7 +181,7 @@ async def wire_execution_spine(
         from maistro.scheduling.store import InMemoryScheduleStore
 
         project_scope_store = InMemoryProjectScopeStore()
-        run_store = InMemoryRunStore(project_store=project_scope_store)
+        run_store = InMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()
 

@@ -38,6 +38,7 @@ from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.admission import admit_direct_work
+from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.sources import CHAT_SOURCE
@@ -142,6 +143,7 @@ class ChatRunAdmitter:
         intents: IntentRegistry | None = None,
         max_retained: int = MAX_RETAINED_CHAT_RUNS,
         retention: RetentionPolicy | None = None,
+        archive: ArchivePolicy | None = None,
     ) -> None:
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
@@ -175,6 +177,14 @@ class ChatRunAdmitter:
         # answer on the row, where a later process can act on it.
         self._retention = retention if retention is not None else RetentionPolicy()
         self._sweeper = RunRetentionSweeper(run_store, self._retention)
+        # The cold half of the same clock (#273). Deliberately a second
+        # sweeper rather than a branch inside the first: archiving and
+        # purging select disjoint populations (ADR-082226-f436 decision
+        # 10), and one object that did both would be one edit away from
+        # letting a storage decision stand in for a deletion decision.
+        # Inert unless a deployment names a horizon, and inert on a store
+        # that cannot archive.
+        self._archive_sweeper = RunArchiveSweeper(run_store, archive)
 
     @property
     def retention(self) -> RetentionPolicy:
@@ -256,6 +266,11 @@ class ChatRunAdmitter:
         # This is what closes the restart gap — the window this process holds
         # says nothing about the Runs a previous one left behind.
         await self._sweeper.maybe_sweep()
+        # And the cold sweep, on the same tick. This turn's own Run is the
+        # one thing it will never touch -- a chat Run carries a retention
+        # deadline, which makes it purge-eligible and therefore never
+        # archive-eligible. Admission is the clock here, not the subject.
+        await self._archive_sweeper.maybe_sweep()
         return run
 
     async def _sweep(self) -> int:

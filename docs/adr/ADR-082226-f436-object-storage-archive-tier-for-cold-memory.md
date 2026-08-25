@@ -209,6 +209,35 @@ No archive store configured means today's behaviour, unchanged, with no warning 
 deliberate absence, not a degraded mode, and warning on a deliberate choice is how operators learn
 to ignore warnings.
 
+### 10. Archive-eligible and purge-eligible are disjoint populations, and `retention_expires_at` already separates them (#273)
+
+Decision 2 says a record whose identity nothing needs is deleted rather than archived. That rules
+out the seam everyone reaches for first. `PgRunStore.purge_expired_runs` sweeps terminal Runs whose
+`retention_expires_at` has passed and **deletes** them, in FK order, under `FOR UPDATE SKIP LOCKED`.
+Archiving from inside that sweep would make archiving a way of not deciding deletion, which is
+precisely what decision 2 forbids.
+
+The separation does not need a new column, because the existing one already carries it. `Run.
+retention_expires_at` is documented as *"when this Run may be purged, or None to retain it
+indefinitely"* (ADR-082326-c126). So:
+
+- **`retention_expires_at IS NOT NULL`** — a deletion date was chosen. The Run is purge-eligible
+  and is never archived. Its bytes are going away on purpose.
+- **`retention_expires_at IS NULL`** — the Run is kept indefinitely. It is the archive candidate,
+  once it is terminal and has been terminal for longer than the configured archive horizon.
+
+The two sets cannot overlap: a Run either has an expiry or does not. That is why this rule is
+stated in terms of the field rather than a new `archive_after` column on the Run — a second
+nullable date would let a record be both, and the first bug would be a Run deleted from the hot
+store and left in the archive, or the reverse.
+
+The horizon itself is deployment configuration, not a constant here. Open question 1 asked for a
+number nobody had data for; this decision supplies the *predicate* and leaves the number to the
+operator, which is the part that was actually undecidable.
+
+Runs, NodeRuns and Attempts are the first — and for now the only — records this applies to. See the
+amendment to open question 2.
+
 ## Consequences
 
 ### Positive
@@ -238,11 +267,24 @@ to ignore warnings.
 
 ## Open questions
 
-1. **Archive-eligibility thresholds** — what decay weight, age, or access recency makes a record
-   cold. Deliberately unset here; it is a policy question with a measurable answer, and guessing it
-   in an ADR would freeze a number nobody has data for.
+1. ~~**Archive-eligibility thresholds**~~ — **resolved for Runs by decision 10** (#273): the
+   predicate is `retention_expires_at IS NULL` plus terminal-for-longer-than a configured horizon,
+   and the horizon is operator configuration rather than a number frozen here. Still open for the
+   memory tables, which is moot while question 2 is.
 2. **Vector rows** — a pgvector embedding is useless in object storage, since the point of it is to
    be searched in place. Either embeddings stay hot while their payload archives, or archived
    records leave the index. Needs a decision before memory archiving ships.
+
+   **Deferred deliberately, with arithmetic (#273).** `EMBEDDING_DIMENSIONS = 1536` stored as
+   `vector(1536)` is **6,144 bytes per embedding**, against a learning payload of a sentence or
+   two. Archiving the payload while the vector stays hot moves the small part and keeps the large
+   one, so on the vector-bearing tables this tier barely pays. `runs/pg_store.py` has no embedding
+   column at all, so Runs and Attempt evidence — the records this ADR's own context opens by
+   naming — are archivable without answering this question.
+
+   The question therefore stays open, and memory archiving waits for row statistics rather than for
+   an argument. An asynchronous cold vector search was considered and not adopted: of its three
+   forms only a second, cold vector index shrinks the hot one, and that complexity is unjustified
+   while the tables it would serve are the ones least worth archiving.
 3. **Compaction** — whether many small cold objects eventually warrant rewriting into larger ones,
    accepting the read cost decision 5 rejects, once the object count itself is the problem.
