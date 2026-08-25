@@ -207,36 +207,42 @@ async def test_identity_and_scope_outlive_the_payload(archive_spine: Any) -> Non
     )
 
 
-async def test_the_children_of_an_archived_run_are_still_readable(
+async def test_the_attempt_evidence_moves_and_still_reads_back(
     archive_spine: Any,
 ) -> None:
-    """Only the Run's own payload moves in this tier. Its NodeRuns and Attempts
-    stay resident, and the parent going cold must not make them unreachable —
-    an audit reads down from the Run."""
-    store, _archive, workspace, project_id = archive_spine
+    """The half the tier exists for, and the half that is easy to skip.
+
+    A Run's own payload is a graph snapshot and a result. The rows underneath
+    are one per physical try, each carrying whatever the executor returned, and
+    on a Run that retried they are most of the bytes — archiving the Run alone
+    would move the index and leave the book.
+
+    So the tree goes cold together, and reading down from the Run still works:
+    an audit reads `list_node_runs` then `list_attempts`, and a list that
+    silently dropped archived rows would report a Run as having had fewer
+    tries than it did.
+    """
+    store, archive, workspace, project_id = archive_spine
     run = await store.create_run(_graph(workspace, project_id))
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
-    await store.transition_attempt(
-        attempt.attempt_id,
-        AttemptStatus.RUNNING,
-        fencing_token=attempt.execution_lease.fencing_token,
-    )
-    await store.transition_attempt(
-        attempt.attempt_id,
-        AttemptStatus.COMPLETED,
-        fencing_token=attempt.execution_lease.fencing_token,
-    )
+    token = attempt.execution_lease.fencing_token
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.COMPLETED, fencing_token=token)
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     await store.transition_run(run.run_id, RunStatus.COMPLETED, at=COLD)
 
     assert await store.archive_cold_runs(now=NOW, archive_after=NINETY_DAYS) == 1
 
+    # Three records moved, not one: the Run, its NodeRun, its Attempt.
+    assert len(await _keys(archive, project_id)) == 3
+
     assert [n.node_run_id for n in await store.list_node_runs(run.run_id)] == [node_run.node_run_id]
-    assert [a.attempt_id for a in await store.list_attempts(node_run.node_run_id)] == [
-        attempt.attempt_id
-    ]
+    found = await store.list_attempts(node_run.node_run_id)
+    assert [a.attempt_id for a in found] == [attempt.attempt_id]
+    assert found[0].status is AttemptStatus.COMPLETED
+    assert await store.get_attempt(attempt.attempt_id) == found[0]
 
 
 async def test_non_finite_evidence_survives_the_move(archive_spine: Any) -> None:

@@ -611,6 +611,7 @@ class InMemoryRunStore:
             and is_archivable(run, cutoff, archive_after=archive_after)
         ]
         for run in cold[:limit]:
+            await self._archive_tree(run)
             # `json_of`, not `model_dump_json`: pydantic serialises NaN and
             # Infinity to `null`, and `evidence_json` exists precisely so the
             # three backends cannot disagree about what was recorded. Archiving
@@ -620,6 +621,29 @@ class InMemoryRunStore:
                 json_of(run).encode("utf-8"), scope=run.project_id
             )
         return min(len(cold), limit)
+
+    async def _archive_tree(self, run: Run) -> None:
+        """Put the NodeRun and Attempt payloads under one Run.
+
+        The whole tree goes cold together, because the Attempt evidence is what
+        the tier exists to move: a Run's own payload is a graph snapshot and a
+        result, while the rows underneath are one per physical try. Archiving
+        the Run alone would move the index and leave the book.
+
+        This store does not drop what it puts -- see the note above -- so what
+        this proves is that the bytes reach the archive under the Run's scope,
+        which is what the durable stores are held to.
+        """
+        assert self._archive_store is not None  # nosec B101 - caller checked
+        node_runs = [n for n in self._node_runs.values() if n.run_id == run.run_id]
+        for node_run in node_runs:
+            for attempt in self._attempts.values():
+                if attempt.node_run_id != node_run.node_run_id:
+                    continue
+                await self._archive_store.put(
+                    json_of(attempt).encode("utf-8"), scope=run.project_id
+                )
+            await self._archive_store.put(json_of(node_run).encode("utf-8"), scope=run.project_id)
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.

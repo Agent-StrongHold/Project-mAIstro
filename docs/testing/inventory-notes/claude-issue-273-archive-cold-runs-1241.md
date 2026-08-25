@@ -70,9 +70,17 @@ caught the obvious bug. Without read-through in `_payload`, `get_run` returns
 None for an archived Run — decision 6's forbidden case, and data loss at the API
 boundary rather than a cost optimisation.
 
+`test_the_attempt_evidence_moves_and_still_reads_back` covers the half that is
+easiest to skip. A Run's own payload is a graph snapshot and a result; the rows
+underneath are one per physical try, and on a Run that retried they are most of
+the bytes — archiving the Run alone would move the index and leave the book. It
+asserts three records moved rather than one, and that reading down from the Run
+(`list_node_runs`, then `list_attempts`) still returns them: a list that
+silently dropped archived rows would report a Run as having had fewer tries
+than it did.
+
 The rest: identity and scope outlive the payload, so foreign keys still resolve
-and the Project still knows it owns Runs; the NodeRuns and Attempts under an
-archived Run stay readable, because an audit reads down from the Run; non-finite
+and the Project still knows it owns Runs; non-finite
 evidence survives, since archiving is a fourth place the payload is serialised
 and `evidence_json` exists so the backends cannot disagree; a cold Run moves and
 one with a deletion date never does; recent and live work stay put; nothing is

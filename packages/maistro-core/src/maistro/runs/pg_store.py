@@ -313,22 +313,100 @@ class PgRunStore:
                 limit,
             )
             for row in rows:
+                await self._archive_tree(conn, row["run_id"], scope=row["project_id"])
                 # Re-serialised through `json_of` rather than shipping the raw
                 # column text: that is the encoder the payload was written with,
                 # so the archived bytes are byte-identical to what a read would
                 # have produced and non-finite evidence survives the move.
                 run = model_of(Run, row["payload"])
-                key = await self._archive_store.put(
-                    json_of(run).encode("utf-8"), scope=row["project_id"]
-                )
-                await conn.execute(
-                    """UPDATE canonical_runs
-                          SET payload = NULL, archive_key = $1
-                        WHERE run_id = $2""",
-                    str(key),
+                await self._move_payload(
+                    conn,
+                    "canonical_runs",
+                    "run_id",
                     row["run_id"],
+                    json_of(run).encode("utf-8"),
+                    scope=row["project_id"],
                 )
         return len(rows)
+
+    async def _archive_tree(self, conn: Any, run_id: str, *, scope: str) -> None:
+        """Move the NodeRun and Attempt payloads under one Run.
+
+        The Attempt evidence is the reason the tier exists. A Run's own payload
+        is a graph snapshot and a result; the rows underneath are one per
+        physical try, each carrying whatever the executor returned, and on a
+        Run that retried they are most of the bytes. Archiving the Run alone
+        would move the index and leave the book.
+
+        Children before the parent. Both orders are safe -- every individual
+        move puts before it nulls -- but this one keeps the entry point
+        readable throughout: a crash mid-tree leaves a Run whose payload is
+        still resident and whose children read through, rather than the
+        reverse.
+
+        Scoped by the *Run's* Project, which the child rows do not carry. That
+        is deliberate rather than incidental: scope is how the archive is
+        listed and how a Project's cold bytes are found, and a NodeRun belongs
+        to exactly the Project its Run does.
+        """
+        node_runs = await conn.fetch(
+            """SELECT node_run_id, payload FROM canonical_node_runs
+                WHERE run_id = $1 AND archive_key IS NULL
+                FOR UPDATE""",
+            run_id,
+        )
+        attempts = await conn.fetch(
+            """SELECT a.attempt_id, a.payload FROM canonical_attempts a
+                 JOIN canonical_node_runs n ON a.node_run_id = n.node_run_id
+                WHERE n.run_id = $1 AND a.archive_key IS NULL
+                FOR UPDATE OF a""",
+            run_id,
+        )
+        for attempt in attempts:
+            await self._move_payload(
+                conn,
+                "canonical_attempts",
+                "attempt_id",
+                attempt["attempt_id"],
+                json_of(model_of(Attempt, attempt["payload"])).encode("utf-8"),
+                scope=scope,
+            )
+        for node_run in node_runs:
+            await self._move_payload(
+                conn,
+                "canonical_node_runs",
+                "node_run_id",
+                node_run["node_run_id"],
+                json_of(model_of(NodeRun, node_run["payload"])).encode("utf-8"),
+                scope=scope,
+            )
+
+    async def _move_payload(
+        self,
+        conn: Any,
+        table: str,
+        column: str,
+        identity: str,
+        payload: bytes,
+        *,
+        scope: str,
+    ) -> None:
+        """Put the bytes, then drop the column. Never the other way round.
+
+        A crash between the two leaves an object nothing references --
+        content-addressed, so the next sweep writes the same key and adopts it.
+        The reverse order would leave a row whose payload is gone and whose
+        archive never received it. One is waste; the other is data loss.
+        """
+        if _PAYLOAD_TABLES.get(table) != column:
+            raise ValueError("unsupported canonical execution table")
+        assert self._archive_store is not None  # nosec B101 - caller checked
+        key = await self._archive_store.put(payload, scope=scope)
+        await conn.execute(
+            f"UPDATE {table} SET payload = NULL, archive_key = $1 WHERE {column} = $2",  # nosec B608
+            str(key),
+            identity,
+        )
 
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
         """Forget one terminal Run and everything hanging off it.
@@ -492,10 +570,14 @@ class PgRunStore:
         await self._require_run(run_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT payload FROM canonical_node_runs WHERE run_id = $1 ORDER BY ordinal",
+                """SELECT node_run_id, payload, archive_key FROM canonical_node_runs
+                    WHERE run_id = $1 ORDER BY ordinal""",
                 run_id,
             )
-        return [model_of(NodeRun, row["payload"]) for row in rows]
+        # Read-through, because this is how an audit reads down from a Run and
+        # the whole tree goes cold together. A list that silently dropped the
+        # archived rows would report a Run as having had fewer nodes than it did.
+        return [NodeRun.model_validate(await self._hydrate(row)) for row in rows]
 
     async def transition_node_run(
         self,
@@ -617,11 +699,13 @@ class PgRunStore:
         await self._require_node_run(node_run_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT payload FROM canonical_attempts
+                """SELECT attempt_id, payload, archive_key FROM canonical_attempts
                    WHERE node_run_id = $1 ORDER BY ordinal""",
                 node_run_id,
             )
-        return [model_of(Attempt, row["payload"]) for row in rows]
+        # The Attempt evidence is the bulk of what the tier moves, so this is
+        # the read that most often comes back from the archive.
+        return [Attempt.model_validate(await self._hydrate(row)) for row in rows]
 
     async def transition_attempt(
         self,
