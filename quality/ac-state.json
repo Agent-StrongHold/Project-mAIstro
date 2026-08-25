@@ -13,7 +13,7 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 495,
+    "criteria_declared": 499,
     "criteria_annotated": 214,
     "markers_found": 207,
     "markers_without_criterion": 2,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 5.9186
+    "design_coverage": 5.691
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,9 +1081,9 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 5.9186,
-    "decisions": 100,
-    "decisions_scoring_zero": 93,
+    "percent": 5.691,
+    "decisions": 104,
+    "decisions_scoring_zero": 97,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
@@ -1675,11 +1675,39 @@
         "percent": 0.0
       },
       {
+        "id": "ADR-082426-2192",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
         "id": "ADR-082426-6201",
         "declared_status": "Accepted",
         "criteria": 4,
         "reachable": 4,
         "percent": 100.0
+      },
+      {
+        "id": "ADR-082426-82c7",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-082426-a47f",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-082426-f170",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
       },
       {
         "id": "ADR-085",
@@ -12785,15 +12813,25 @@
     {
       "id": "ADR-082426-2192",
       "file": "docs/adr/ADR-082426-2192-maistro-server-builds-a-container.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-2192/AC-1",
+          "claimed": false,
+          "module": "maistro_server.api.chat_completions",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082426-6201",
@@ -12848,41 +12886,71 @@
     {
       "id": "ADR-082426-82c7",
       "file": "docs/adr/ADR-082426-82c7-the-occurrence-is-the-claim-not-the-cursor.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-82c7/AC-1",
+          "claimed": false,
+          "module": "maistro.scheduling.admission",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082426-a47f",
       "file": "docs/adr/ADR-082426-a47f-terminalizing-a-run-settles-its-node-runs.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-a47f/AC-1",
+          "claimed": false,
+          "module": "maistro.runs.store",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082426-f170",
       "file": "docs/adr/ADR-082426-f170-a-requested-cancellation-is-not-a-parked-failure.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-f170/AC-1",
+          "claimed": false,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-083",
