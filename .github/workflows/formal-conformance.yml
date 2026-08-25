@@ -12,10 +12,39 @@ concurrency:
 jobs:
   formal-conformance:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
+
+    # I29 (`test_run_lease_fence.py`) drives the real `PgRunStore`, because the
+    # invariant it checks is *about* concurrent writers and a store that has
+    # only ever been asked one thing at a time cannot answer it (#132).
+    #
+    # A service rather than a skip, deliberately. `scripts/ac_outcome_plugin.py`
+    # counts a skipped test as **no evidence**, so gating that model behind an
+    # unset DSN would pin #132's criterion at unproven however green this job
+    # looked — the precise failure the acceptance ladder exists to catch.
+    #
+    # Same image and credentials as ci.yml's `postgres` job, so the two agree
+    # about what "a database" means here.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
 
     steps:
       - name: Checkout
@@ -34,6 +63,37 @@ jobs:
 
       - name: Install maistro-evolve
         run: pip install -e packages/maistro-evolve
+
+      # Two drivers, not one, and the second is the non-obvious half.
+      #
+      # `PgRunStore` uses asyncpg. `psycopg[binary]` is what *alembic* needs:
+      # `maistro.config.database.to_sync_url` hands it a
+      # `postgresql+psycopg://` URL because alembic drives a synchronous engine
+      # and "the asyncio extension requires an async driver" otherwise. Without
+      # it the migration step dies on `ModuleNotFoundError: No module named
+      # 'psycopg'` — measured, on this job's first run.
+      #
+      # Both named explicitly so this job proves the same database boundary it
+      # deploys rather than inheriting a driver transitively. ci.yml gets them
+      # from `uv sync --extra dev`; a pip-based job has to say so. The version
+      # matches the root pyproject's own `psycopg[binary]>=3.2` rather than
+      # floating.
+      - name: Install PostgreSQL drivers and alembic
+        run: pip install asyncpg "psycopg[binary]>=3.2" alembic
+
+      # The canonical tables I29 writes to. Without this the model fails on a
+      # missing relation, which reads as a broken test rather than a missing
+      # schema — so it runs before the models, not lazily inside them.
+      #
+      # `DATABASE_URL` is scoped to this step rather than the job. Alembic reads
+      # it through `maistro.config.database.require_database_url`, which is also
+      # what the Container answers "which database" with (#187) — setting it for
+      # the whole job would silently give every other model a database none of
+      # them is written against.
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+        run: alembic upgrade head
 
       - name: Extract constants from source
         run: python -m formal.extractors.extract_security_constants
