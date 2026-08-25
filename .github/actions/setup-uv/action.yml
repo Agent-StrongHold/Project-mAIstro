@@ -1,0 +1,46 @@
+name: Set up uv
+description: >-
+  Install uv at the one version this repository pins, on the one action release
+  that tolerates a transient manifest outage (ADR-082526-3011, #213).
+
+# TWO pinned things, fixing two different problems. Both were measured on
+# PR #264; neither was arrived at by reading.
+#
+# 1. THE ACTION RELEASE — this is the #213 fix.
+#
+#    #213 assumed the manifest fetch could be avoided by pinning the uv
+#    version. It cannot. `astral-sh/setup-uv` fetches
+#    https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson
+#    unconditionally, for every value of `version`, measured here:
+#
+#      v7      + version: 0.12.5       -> "Fetching version data from ..."
+#      v7      + version: latest-known -> fetches, then "No version found"
+#      v10.0.1 + version: 0.12.5       -> "Fetching manifest data from ..."
+#
+#    So the fetch is not the lever. What changes is whether a transient
+#    failure of it is fatal: v10.0.1 is released as "Tolerate transient
+#    manifest timeouts". v7 — what this repository was on — has no such
+#    tolerance, and that is what killed `exact-debt-ledger` on #181 before a
+#    single test ran.
+#
+#    Pinned to the full v10.0.1 tag rather than a floating major on purpose:
+#    `git ls-remote --tags` shows this action's floating majors stop at v7.
+#    There is no v8, v9 or v10 ref to track.
+#
+# 2. THE uv VERSION — NOT the #213 fix, and must not be sold as one.
+#
+#    An exact version buys determinism, not network independence. Worth having
+#    anyway: `quality.yml` pinned `0.5.x`, which resolved to uv 0.5.31, while
+#    every other job resolved `latest` to uv 0.12.5 — two uv versions seven
+#    minor releases apart, split across jobs, neither chosen by anyone. 0.12.5
+#    is what seventeen of the twenty usages already installed and passed on.
+#
+# Change either value HERE and nowhere else. scripts/check-uv-setup.py fails
+# the build if a workflow calls astral-sh/setup-uv directly, if this file drops
+# below the pinned action release, or if the uv version stops being exact.
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v10.0.1
+      with:
+        version: "0.12.5"

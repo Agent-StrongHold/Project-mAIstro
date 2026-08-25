@@ -55,7 +55,7 @@ jobs:
           fi
 
       - name: Install uv + Python
-        uses: astral-sh/setup-uv@v7
+        uses: ./.github/actions/setup-uv
       - run: uv python install 3.12
       - run: uv sync --python 3.12 --locked
 

@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - run: bash scripts/verify-monorepo-layout.sh
       # Before anything expensive: a merge marker on the branch means the merge
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       # First, because it drives alembic itself and ends on an empty database:
       # applying the chain and then asking these tests to apply it again is a
@@ -147,7 +147,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev --extra s3
       # `docker run`, not a `services:` container. MinIO's own image needs an
       # explicit `server /data` command and service containers cannot set one,
@@ -182,7 +182,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: |
           set -e
           # Bounded: an unbounded apt-get or curl here hangs the whole job with
@@ -295,7 +295,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - name: Durable event stores conform across memory, SQLite and PostgreSQL
         run: uv run pytest packages/maistro-core/tests/events -v --tb=short
@@ -349,7 +349,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - name: Strike ladder conforms on both in-memory and PostgreSQL
         run: uv run pytest packages/maistro-core/tests/security/test_strike_tracker_conformance.py -v --tb=short
@@ -420,7 +420,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - name: Build every package wheel
         run: |
           set -euo pipefail
@@ -442,7 +442,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - run: uv pip install pip-audit
       - run: uv pip freeze --exclude-editable > /tmp/deps.txt
@@ -497,6 +497,13 @@ jobs:
       # PR that does the renaming, which after #161 is every PR.
       - name: PR check contract matches the workflows
         run: python3 scripts/check-required-checks.py
+      # Every workflow installs uv through .github/actions/setup-uv, pinned to
+      # one exact version (#213, ADR-082526-3011). This job is the right home
+      # for the same reason as the check above: it is a claim about workflow
+      # shape, and a direct `astral-sh/setup-uv` reintroduced by a later PR is
+      # only caught if the gate runs on that PR.
+      - name: uv is installed through the one pinned wrapper
+        run: python3 scripts/check-uv-setup.py
       # And the ruleset that pins branch protection against those names (#162).
       # Offline only: it checks that every required context is a real check
       # name, that no branch requires one that cannot report there, and that
