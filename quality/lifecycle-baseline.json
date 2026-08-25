@@ -1,4 +1,4 @@
 {
-  "_comment": "Lifecycle violations accepted as the current state of the world, keyed by tools/lint_lifecycle.py's exact error string. The linter ratchets against this file in both directions: a violation not listed here fails CI, and a listed violation that no longer occurs ALSO fails CI until it is pruned -- the list can only shrink, and a stale entry left behind would silently absorb a later regression with the same identity. Every entry carries its rationale as the value.",
+  "_comment": "Lifecycle violations accepted as the current state of the world, keyed by tools/lint_lifecycle.py's exact error string. The linter ratchets against this file in both directions: a violation not listed here fails CI, and a listed violation that no longer occurs ALSO fails CI until it is pruned. Zero violations is the preferred steady state and is valid; the list may only grow through an explicit reviewed acceptance of real debt. Every nonzero entry must carry its rationale as the value.",
   "violations": {}
 }
