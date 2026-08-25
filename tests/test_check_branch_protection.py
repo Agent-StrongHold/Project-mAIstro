@@ -322,3 +322,132 @@ class TestLiveVerification:
         live = self._live(required_linear_history={"enabled": False})
         lines = gate._diff_live("develop", _rule(["test"]), live)
         assert any("required_linear_history" in line for line in lines)
+
+
+# --- #268: the prose summary is generated, not remembered --------------------
+
+
+def _doc_ruleset(contexts_by_branch: dict) -> dict:
+    """A ruleset in the shape `render_doc_tables` reads."""
+    return {
+        "base_coupled_to": {"Container scan + SBOM + cosign": ["main"]},
+        "branches": {
+            branch: {
+                "required_status_checks": {"strict": True, "contexts": contexts},
+                "required_pull_request_reviews": {
+                    "required_approving_review_count": 1 if branch == "main" else 0
+                },
+                "required_linear_history": True,
+                "allow_force_pushes": False,
+                "allow_deletions": False,
+            }
+            for branch, contexts in contexts_by_branch.items()
+        },
+    }
+
+
+DOC_ROWS = [
+    ("CI", "test", "every PR"),
+    ("security", "Container scan + SBOM + cosign", "every PR, job `if:` on base_ref"),
+]
+
+
+class TestGeneratedTables:
+    def test_the_count_column_comes_from_the_ruleset(self, gate) -> None:
+        """The drift #268 found: the doc said 15 where the ruleset had 24."""
+        ruleset = _doc_ruleset(
+            {"develop": ["test"], "main": ["test", "Container scan + SBOM + cosign"]}
+        )
+        table = gate.render_doc_tables(ruleset, DOC_ROWS)
+        assert "| `develop` | yes | **0** | yes | no | no | **1** |" in table
+        assert "| `main` | yes | **1** | yes | no | no | **2** |" in table
+
+    def test_a_check_that_cannot_report_is_a_circle_not_a_blank(self, gate) -> None:
+        """`○` is a fact about GitHub — the trigger means it can never report
+        there. Rendering it the same as a deliberate exclusion would let a
+        judgement hide inside a constraint."""
+        ruleset = _doc_ruleset(
+            {"develop": ["test"], "main": ["test", "Container scan + SBOM + cosign"]}
+        )
+        table = gate.render_doc_tables(ruleset, DOC_ROWS)
+        row = next(ln for ln in table.splitlines() if ln.startswith("| `Container scan"))
+        assert row.endswith(f"| {gate.MARK_UNREPORTABLE} | {gate.MARK_REQUIRED} |")
+
+    def test_a_check_that_could_be_required_but_is_not_reads_advisory(self, gate) -> None:
+        """Distinct from `○`: this one *can* report here and someone chose it
+        should not gate. The table has to say which of the two it is."""
+        ruleset = _doc_ruleset({"develop": [], "main": ["test"]})
+        table = gate.render_doc_tables(ruleset, [("CI", "test", "every PR")])
+        row = next(ln for ln in table.splitlines() if ln.startswith("| `test`"))
+        assert row.endswith(f"| {gate.MARK_ADVISORY} | {gate.MARK_REQUIRED} |")
+
+    def test_the_live_document_matches_the_live_ruleset(self, gate) -> None:
+        """The end-to-end claim: what ships agrees with what will be applied."""
+        contract = gate._contract()
+        assert gate.doc_problems(gate.load_ruleset(), contract.collect(), update=False) == []
+
+    def test_a_changed_count_fails(self, gate, tmp_path, monkeypatch) -> None:
+        """Acceptance for #268, half one: mutate a count, see it caught."""
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        ruleset = gate.load_ruleset()
+        contract = gate._contract()
+        rows = contract.collect()
+        doc.write_text(
+            f"{gate.DOC_BEGIN}\n\n{gate.render_doc_tables(ruleset, rows)}\n\n{gate.DOC_END}\n",
+            encoding="utf-8",
+        )
+        doc.write_text(
+            doc.read_text(encoding="utf-8").replace("| **24** |", "| **15** |", 1), encoding="utf-8"
+        )
+        monkeypatch.setattr(gate, "DOC", doc)
+        problems = gate.doc_problems(ruleset, rows, update=False)
+        assert problems and "disagrees with" in problems[0]
+
+    def test_a_changed_membership_mark_fails(self, gate, tmp_path, monkeypatch) -> None:
+        """Half two, and the harder error: the totals still add up, but one
+        check has moved between required and not."""
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        ruleset = gate.load_ruleset()
+        contract = gate._contract()
+        rows = contract.collect()
+        rendered = gate.render_doc_tables(ruleset, rows)
+        flipped = rendered.replace(
+            f"| `test` | {gate.MARK_REQUIRED} |", f"| `test` | {gate.MARK_UNREPORTABLE} |", 1
+        )
+        assert flipped != rendered, "the mutation must actually change something"
+        doc.write_text(f"{gate.DOC_BEGIN}\n\n{flipped}\n\n{gate.DOC_END}\n", encoding="utf-8")
+        monkeypatch.setattr(gate, "DOC", doc)
+        assert gate.doc_problems(ruleset, rows, update=False)
+
+    def test_missing_markers_fail_rather_than_pass_quietly(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        """A document with the region deleted must not read as "nothing to
+        check" — that is how a gate stops gating without saying so."""
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        doc.write_text("# Branch protection\n\nno markers here\n", encoding="utf-8")
+        monkeypatch.setattr(gate, "DOC", doc)
+        problems = gate.doc_problems(gate.load_ruleset(), gate._contract().collect(), update=False)
+        assert problems and "markers" in problems[0]
+
+    def test_prose_outside_the_region_is_not_touched(self, gate, tmp_path, monkeypatch) -> None:
+        """The reasoning is the point of that document; the gate must not own
+        it. A change to the prose alone is not a failure."""
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        ruleset = gate.load_ruleset()
+        rows = gate._contract().collect()
+        body = gate.render_doc_tables(ruleset, rows)
+        doc.write_text(
+            f"# Branch protection\n\nWhy strict costs what it costs.\n\n"
+            f"{gate.DOC_BEGIN}\n\n{body}\n\n{gate.DOC_END}\n\nAnd the trailing argument.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "DOC", doc)
+        assert gate.doc_problems(ruleset, rows, update=False) == []
+        doc.write_text(
+            doc.read_text(encoding="utf-8").replace(
+                "the trailing argument", "a rewritten argument"
+            ),
+            encoding="utf-8",
+        )
+        assert gate.doc_problems(ruleset, rows, update=False) == []

@@ -36,29 +36,60 @@ change diverged from it in four places without saying so; review caught all
 four. A governance artifact that quietly contradicts the governing ADR is worse
 than none, because it looks authoritative.
 
-| Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | 15 |
-| `integration` | yes | **0** | yes | no | no | 15 |
-| `main` | yes | **1** | yes | no | no | **19** |
-
 `enforce_admins` is **false** on all three, per ADR-095: *"a solo
 maintainer/agent isn't deadlocked"*. That is also load-bearing for the cage
 guard, whose own failure message promises that an admin may merge a legitimate
 `cage/` or `eval/` change manually — true only while an admin can bypass a
 required check.
 
-| Check | `develop` | `integration` | `main` | Why |
-|---|:--:|:--:|:--:|---|
-| `lint-and-type-check`, `test`, `wheel-imports`, `workflow-lint`, `docker-build`, `security`, `hive-conductor-e2e`, `hive-conductor-e2e-ui` | ● | ● | ● | CI, every PR |
-| `Quality gate (Pillars 1–4, 7, 8)` | ● | ● | ● | the ratchets, coverage, the AC mandate |
-| `SAST (bandit + semgrep + gitleaks)`, `Supply chain (pip-audit)` | ● | ● | ● | security, every PR |
-| `exact-debt-ledger` | ● | ● | ● | the Vulture identity ledger |
-| `formal-conformance` | ● | ● | ● | property-based conformance |
-| `Validate ADR/spec front-matter` | ● | ● | ● | the ADR → spec → AC chain |
-| `block` | ● | ● | ● | cage/eval immutability |
-| `Container scan + SBOM + cosign` | ○ | ○ | ● | its job `if:` tests `base_ref == 'main'` |
-| `Analyze (actions \| javascript-typescript \| python)` | ○ | ○ | ● | CodeQL triggers on base `main` |
+Both tables below are **generated from `.github/branch-protection.json`** and
+checked on every PR by `scripts/check-branch-protection.py`. They were
+hand-maintained until #268, and had drifted: the counts read 15/15/19 while the
+ruleset required 24/24/28, and nine checks were missing from the grid. Refresh
+with `--update-doc`; do not hand-edit between the markers.
+
+● required here · ○ cannot report here · `adv` advisory by declaration.
+
+<!-- protection:tables -->
+
+| Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `develop` | yes | **0** | yes | no | no | **24** |
+| `integration` | yes | **0** | yes | no | no | **24** |
+| `main` | yes | **1** | yes | no | no | **28** |
+
+| Check | `develop` | `integration` | `main` |
+|---|:--:|:--:|:--:|
+| `Analyze (actions)` | ○ | ○ | ● |
+| `Analyze (javascript-typescript)` | ○ | ○ | ● |
+| `Analyze (python)` | ○ | ○ | ● |
+| `Container scan + SBOM + cosign` | ○ | ○ | ● |
+| `Coverage gate (publish-set floor + diff coverage)` | ● | ● | ● |
+| `Quality gate (Pillars 1–4, 7, 8)` | ● | ● | ● |
+| `SAST (bandit + semgrep + gitleaks)` | ● | ● | ● |
+| `Supply chain (pip-audit)` | ● | ● | ● |
+| `Validate ADR/spec front-matter` | ● | ● | ● |
+| `block` | ● | ● | ● |
+| `coverage (MinIO)` | ● | ● | ● |
+| `coverage (PostgreSQL)` | ● | ● | ● |
+| `coverage (no services)` | ● | ● | ● |
+| `docker-build` | ● | ● | ● |
+| `durable-events` | ● | ● | ● |
+| `exact-debt-ledger` | ● | ● | ● |
+| `formal-conformance` | ● | ● | ● |
+| `hive-conductor-e2e` | ● | ● | ● |
+| `hive-conductor-e2e-ui` | ● | ● | ● |
+| `lint-and-type-check` | ● | ● | ● |
+| `object storage (MinIO)` | ● | ● | ● |
+| `postgres (pg17)` | ● | ● | ● |
+| `postgres (pg18)` | ● | ● | ● |
+| `security` | ● | ● | ● |
+| `strike-ladder` | ● | ● | ● |
+| `test` | ● | ● | ● |
+| `wheel-imports` | ● | ● | ● |
+| `workflow-lint` | ● | ● | ● |
+
+<!-- /protection:tables -->
 
 ○ means **cannot be required there**, not "chosen not to". A required check
 whose workflow never triggers never reports, and classic branch protection
