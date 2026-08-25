@@ -75,14 +75,29 @@ class _Server:
         self.loop = asyncio.new_event_loop()
         self.pool: Any = None
 
-    def start(self, dsn: str) -> None:
+    async def _create_pool(self, dsn: str) -> Any:
+        """Create asyncpg resources while this server's loop is actually running.
+
+        On Python 3.12 ``asyncpg.create_pool(...)`` consults the current event
+        loop when the call expression is evaluated. Passing that expression
+        directly to ``run_until_complete`` evaluates it *before* the loop starts,
+        which fails on a thread with no implicit loop. Keeping creation inside
+        this coroutine makes the loop ownership explicit instead of relying on
+        the pre-3.12 ambient-loop behavior.
+        """
         import asyncpg
 
         from maistro.persistence import _register_json_codecs
 
-        self.pool = self.loop.run_until_complete(
-            asyncpg.create_pool(dsn, min_size=1, max_size=4, init=_register_json_codecs)
+        return await asyncpg.create_pool(
+            dsn,
+            min_size=1,
+            max_size=4,
+            init=_register_json_codecs,
         )
+
+    def start(self, dsn: str) -> None:
+        self.pool = self.loop.run_until_complete(self._create_pool(dsn))
 
     def run(self, coro: Any) -> Any:
         return self.loop.run_until_complete(coro)
@@ -128,7 +143,13 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
         workspace = f"formal-i29-{uuid.uuid4().hex}"
         projects = PgProjectScopeStore(server.pool)
         root = server.run(projects.create_root(workspace))
-        project = server.run(projects.create(workspace_id=workspace, parent_project_id=root.project_id, name="Formal"))
+        project = server.run(
+            projects.create(
+                workspace_id=workspace,
+                parent_project_id=root.project_id,
+                name="Formal",
+            )
+        )
         self.store = PgRunStore(server.pool, project_store=projects)
         run = server.run(self.store.create_run(_graph(workspace, project.project_id)))
         self.node_run = server.run(self.store.create_node_run(run.run_id, node_id="node-1"))
@@ -140,7 +161,13 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
         self.retired_tokens: list[str] = []
 
     def _transition(self, status: AttemptStatus, token: str | None) -> Any:
-        return self._server.run(self.store.transition_attempt(self.attempt_id, status, fencing_token=token))
+        return self._server.run(
+            self.store.transition_attempt(
+                self.attempt_id,
+                status,
+                fencing_token=token,
+            )
+        )
 
     def _retire(self) -> None:
         if self.live_token is not None:
@@ -155,14 +182,21 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
     def start_attempt(self, holder: str) -> None:
         """Start one. A second while one is live must be refused, not queued."""
         try:
-            attempt = self._server.run(self.store.create_attempt(self.node_run.node_run_id, lease_holder=holder))
+            attempt = self._server.run(
+                self.store.create_attempt(
+                    self.node_run.node_run_id,
+                    lease_holder=holder,
+                )
+            )
         except ActiveAttemptExists:
             assert self.attempt_id is not None, (
                 "the store refused a second Attempt while the model believed none was active"
             )
             return
 
-        assert self.attempt_id is None, "the store admitted a second Attempt while one was already active"
+        assert self.attempt_id is None, (
+            "the store admitted a second Attempt while one was already active"
+        )
         assert attempt.execution_lease is not None
         self.attempt_id = attempt.attempt_id
         self.status = AttemptStatus.CREATED
@@ -246,7 +280,9 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
         """A gap means an ordinal was allocated and lost — the read-modify-write
         race `MAX(ordinal) + 1` invites, and the reason the row is locked."""
         ordinals = sorted(a.ordinal for a in self._attempts())
-        assert ordinals == list(range(1, len(ordinals) + 1)), f"ordinals not contiguous: {ordinals}"
+        assert ordinals == list(range(1, len(ordinals) + 1)), (
+            f"ordinals not contiguous: {ordinals}"
+        )
 
 
 # A live database is orders of magnitude slower than the in-process models here,

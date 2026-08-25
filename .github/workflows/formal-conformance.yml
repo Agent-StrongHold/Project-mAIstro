@@ -66,17 +66,19 @@ jobs:
 
       # Two drivers, not one, and the second is the non-obvious half.
       #
-      # `asyncpg` is what I29 itself uses. `psycopg[binary]` is what *alembic*
-      # needs: `maistro.config.database.to_sync_url` hands it a
+      # `PgRunStore` uses asyncpg. `psycopg[binary]` is what *alembic* needs:
+      # `maistro.config.database.to_sync_url` hands it a
       # `postgresql+psycopg://` URL because alembic drives a synchronous engine
       # and "the asyncio extension requires an async driver" otherwise. Without
       # it the migration step dies on `ModuleNotFoundError: No module named
-      # 'psycopg'` — measured, on the first run of this job.
+      # 'psycopg'` — measured, on this job's first run.
       #
-      # ci.yml gets both from `uv sync --extra dev`; this job installs by pip,
-      # so the dependency has to be named. The version matches the root
-      # pyproject's own pin rather than floating.
-      - name: Install database drivers and alembic
+      # Both named explicitly so this job proves the same database boundary it
+      # deploys rather than inheriting a driver transitively. ci.yml gets them
+      # from `uv sync --extra dev`; a pip-based job has to say so. The version
+      # matches the root pyproject's own `psycopg[binary]>=3.2` rather than
+      # floating.
+      - name: Install PostgreSQL drivers and alembic
         run: pip install asyncpg "psycopg[binary]>=3.2" alembic
 
       # The canonical tables I29 writes to. Without this the model fails on a
