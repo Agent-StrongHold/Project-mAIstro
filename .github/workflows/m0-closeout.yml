@@ -1,0 +1,72 @@
+name: M0 closeout
+
+on:
+  push:
+    branches: [chatgpt/m0-closeout]
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m0-closeout
+          fetch-depth: 0
+
+      - name: Reconcile with current develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "m0-closeout-bot"
+          git config user.email "m0-closeout-bot@users.noreply.github.com"
+          git fetch origin develop
+          if ! git merge --no-edit origin/develop; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            allowed=(
+              "quality/ac-state.json"
+              "quality/ac-state-ceilings.json"
+              "quality/vulture-baseline.json"
+            )
+            for path in "${conflicts[@]}"; do
+              ok=false
+              for candidate in "${allowed[@]}"; do
+                [[ "$path" == "$candidate" ]] && ok=true
+              done
+              if [[ "$ok" != true ]]; then
+                echo "Unexpected merge conflict: $path" >&2
+                exit 1
+              fi
+            done
+            git checkout --theirs -- "${allowed[@]}"
+            git add "${allowed[@]}"
+            git commit --no-edit
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/chatgpt/m0-closeout)" ]]; then
+            git push origin HEAD:chatgpt/m0-closeout
+          fi
+
+      - name: Show remaining M0 persistence reachability
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          baseline = json.loads(Path('quality/reachability-baseline.json').read_text())
+          print('UNREACHABLE PERSISTENCE MODULES')
+          for name in baseline['unreachable']:
+              if name.startswith('maistro.persistence') or name.startswith('maistro.security.pg_'):
+                  print(name)
+          dispositions = json.loads(Path('quality/reachability-dispositions.json').read_text())
+          print('\nPERSISTENCE DISPOSITION GROUPS')
+          for group in dispositions['groups']:
+              mods = group.get('modules', [])
+              if group.get('id') == 'persistence-postgres' or any(m.startswith('maistro.persistence') for m in mods):
+                  print(json.dumps(group, indent=2))
+          print('\nRELATIONAL MATRIX ROW')
+          for line in Path('docs/architecture/CONVERGENCE-MATRIX.md').read_text().splitlines():
+              if line.startswith('| Relational persistence |'):
+                  print(line)
+          PY
