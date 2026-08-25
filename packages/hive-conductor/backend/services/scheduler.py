@@ -144,8 +144,52 @@ class _ScheduleRunner:
             actor_principal_id=str(getattr(schedule, "user_id", "") or "") or None,
         )
 
-    async def _evaluate_schedule(self, sid: str, schedule: Any, *, now: datetime) -> None:
+    @staticmethod
+    def _canonical_store() -> Any:
+        """The Container's ScheduleStore, or None when there is no bridge.
+
+        None is a real answer here, exactly as it is for `engine.run_store`: a
+        Conductor running without the core bridge has no canonical store, and
+        the cursor then stays on the in-memory row as it did before #231 —
+        degraded, but not broken.
+        """
+        try:
+            from services.engine import get_engine
+
+            return get_engine().schedule_store
+        except Exception:  # pragma: no cover - engine unavailable in tests
+            return None
+
+    async def _definition_for(self, sid: str, schedule: Any, *, store: Any) -> Schedule | None:
+        """The canonical definition to evaluate, with the durable cursor on it.
+
+        The `/v1/schedules` row stays the editable surface — a changed cron or a
+        disable must take effect — so the projection is rebuilt from it every
+        tick. What comes from the store instead is the *cursor*: `last_fired_at`,
+        `last_run_id`, `runs_so_far` and `next_due_at`. Those are the fields that
+        say what has already happened, and the in-memory row is the wrong place
+        to keep them: it is lost on restart and private to one replica.
+        """
         definition = self._as_definition(sid, schedule)
+        if definition is None or store is None:
+            return definition
+        recorded = await store.get(sid)
+        if recorded is not None:
+            definition = definition.model_copy(
+                update={
+                    "last_fired_at": recorded.last_fired_at,
+                    "last_run_id": recorded.last_run_id,
+                    "runs_so_far": recorded.runs_so_far,
+                    "next_due_at": recorded.next_due_at,
+                    "created_at": recorded.created_at,
+                }
+            )
+        await store.put(definition)
+        return definition
+
+    async def _evaluate_schedule(self, sid: str, schedule: Any, *, now: datetime) -> None:
+        store = self._canonical_store()
+        definition = await self._definition_for(sid, schedule, store=store)
         if definition is None:
             logger.debug("Schedule %s names no mission template; nothing to run", sid)
             return
@@ -166,11 +210,54 @@ class _ScheduleRunner:
                 # after downtime and an on-time fire mean different things, and
                 # once the Run exists there is nothing left to tell them apart
                 # (#145).
-                await self._fire_schedule(
+                run_id = await self._fire_schedule(
                     sid, schedule, scheduled_for=fire.scheduled_for, catchup=fire.catchup
                 )
             finally:
                 self._in_flight.discard(sid)
+            if run_id is None:
+                # Stop the batch, and leave the cursor where it is. The
+                # occurrence is still owed, and so is every one after it —
+                # advancing past a fire that produced no Run is the receipt for
+                # work that never started this issue exists to remove. Stopping
+                # rather than continuing is `ScheduleRunAdmitter`'s rule too:
+                # the cursor covers a contiguous range, so skipping one failure
+                # would either lose it or duplicate its successors.
+                return
+            await self._record_fire(
+                sid, schedule, definition, store=store, fire=fire, run_id=run_id
+            )
+
+    async def _record_fire(
+        self, sid: str, schedule: Any, definition: Schedule, *, store: Any, fire: Any, run_id: str
+    ) -> None:
+        """Advance the cursor, canonically when there is a store to advance."""
+        import stores
+
+        fired_at = fire.scheduled_for
+        next_due_at = definition.next_fire_after(fired_at)
+        if store is not None:
+            await store.record_fire(
+                sid,
+                fired_at=fired_at,
+                run_id=run_id,
+                next_due_at=next_due_at,
+                disable=definition.max_runs is not None
+                and definition.runs_so_far + 1 >= definition.max_runs,
+            )
+        # The `/v1/schedules` row keeps showing what it always showed. It is a
+        # projection now rather than the record, so it is written after the
+        # cursor it mirrors, never before.
+        current = stores.schedules.get(sid)
+        if current is not None:
+            stores.schedules[sid] = current.model_copy(
+                update={
+                    "last_run": fired_at,
+                    "next_run": next_due_at,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        logger.info("Schedule %s fired: %s (run %s)", sid, schedule.name, run_id)
 
     async def _fire_schedule(
         self,
@@ -179,16 +266,20 @@ class _ScheduleRunner:
         *,
         scheduled_for: datetime | None = None,
         catchup: bool = False,
-    ) -> None:
-        import stores
+    ) -> str | None:
+        """Create the occurrence's Run, and return its id, or None if it did not.
 
+        The cursor advance is the caller's, and only on a returned run_id. This
+        function used to stamp `last_run` on its first line and check whether the
+        work could happen afterwards, so an unresolvable template or a failed Run
+        creation left a schedule asserting it had fired with no `run_id` anywhere
+        — a receipt for work that never started (#231).
+        """
         t = datetime.now(UTC)
-        stores.schedules[sid] = schedule.model_copy(update={"last_run": t, "updated_at": t})
-        logger.info("Schedule %s fired: %s", sid, schedule.name)
 
         template_id = schedule.mission_template_id
         if not template_id:
-            return
+            return None
 
         from routes.audit import log_audit
 
@@ -213,17 +304,18 @@ class _ScheduleRunner:
         from services.dag_agents import get_registry, run_registered_dag
 
         if get_registry().get(str(template_id)) is None:
-            # Was a bare `return`. `last_run` is stamped above, so an
-            # unregistered template left a schedule that looked like it had
-            # fired: no warning, no audit line, no Run. `DagRegistry` is an
-            # in-process dict, so this is the normal state after a restart
-            # until something re-registers the DAG -- exactly when an operator
-            # most needs to be told (#145). The cursor is deliberately left
-            # advanced: rewinding it would re-fire every missed occurrence the
-            # moment the DAG came back, which is a different and worse
-            # surprise. Scope item 3 moves that ordering into the core
-            # admitter, where the retry semantics can be chosen rather than
-            # inherited.
+            # `DagRegistry` is an in-process dict, so this is the normal state
+            # after a restart until something re-registers the DAG -- exactly
+            # when an operator most needs to be told (#145).
+            #
+            # Returning None now leaves the occurrence *owed*: the caller does
+            # not advance the cursor, so once the DAG is registered the fire
+            # happens. Before #231 the cursor was already advanced by the time
+            # this branch ran, and the comment here argued that was deliberate
+            # because rewinding would stampede. That reasoning was sound about
+            # rewinding and wrong about the remedy -- never advancing in the
+            # first place costs nothing, and the catch-up window (which bounds
+            # backfill to an hour by default) is what stops the stampede.
             logger.warning(
                 "Schedule %s targets mission template %s, which is not registered; "
                 "no Run was created. The in-process DAG registry is empty until "
@@ -237,7 +329,7 @@ class _ScheduleRunner:
                 target=sid,
                 detail={"dag_id": str(template_id), "error": "template_not_registered"},
             )
-            return
+            return None
 
         scope_id = f"hive:schedule:{sid}"
         user_id = str(getattr(schedule, "user_id", "") or "") or None
@@ -271,7 +363,7 @@ class _ScheduleRunner:
                 target=sid,
                 detail={"dag_id": str(template_id), "error": type(exc).__name__},
             )
-            return
+            return None
 
         provenance = graph.source_template
         log_audit(
@@ -285,3 +377,4 @@ class _ScheduleRunner:
                 "template_version": provenance.template_version if provenance else None,
             },
         )
+        return str(record.run.run_id)

@@ -507,3 +507,177 @@ def test_fire_schedule_run_failure_is_audited_not_raised(
     finally:
         stores.schedules._data.pop("s-fail", None)  # type: ignore[attr-defined]
         registry.deregister("sched-boom")
+
+
+# --- #231: the cursor advances only after a Run exists -----------------------
+
+
+def _register(dag_id: str) -> None:
+    from services.dag_agents import get_registry
+
+    get_registry().register(
+        {
+            "id": dag_id,
+            "name": dag_id,
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+
+
+class _RecordingStore:
+    """A ScheduleStore that remembers what the runner asked it to do."""
+
+    def __init__(self) -> None:
+        self.saved: dict[str, Any] = {}
+        self.fires: list[dict[str, Any]] = []
+
+    async def get(self, schedule_id: str) -> Any:
+        return self.saved.get(schedule_id)
+
+    async def put(self, schedule: Any) -> Any:
+        self.saved[schedule.schedule_id] = schedule
+        return schedule
+
+    async def record_fire(self, schedule_id: str, **kwargs: Any) -> Any:
+        self.fires.append({"schedule_id": schedule_id, **kwargs})
+        return self.saved.get(schedule_id)
+
+
+def _run_evaluate(sid: str, stub: Any, *, now: datetime, store: Any = None) -> None:
+    import services.scheduler as sched
+
+    runner = sched._ScheduleRunner()
+    runner._canonical_store = staticmethod(lambda: store)  # type: ignore[method-assign]
+    asyncio.run(runner._evaluate_schedule(sid, stub, now=now))
+
+
+def test_an_unregistered_template_leaves_the_occurrence_owed() -> None:
+    """The defect this issue names: a firing that produced no Run must not
+    advance the cursor.
+
+    `_fire_schedule` used to stamp `last_run` on its first line and discover
+    the template was unregistered afterwards, so the schedule asserted it had
+    fired with no `run_id` anywhere — a receipt for work that never started.
+    """
+    import stores
+
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    stub = _schedule_stub(
+        "s-owed", "tpl-never-registered", cron="0 * * * *", last_run=now - timedelta(hours=1)
+    )
+    stores.schedules._data["s-owed"] = stub  # type: ignore[attr-defined]
+    store = _RecordingStore()
+    try:
+        _run_evaluate("s-owed", stub, now=now, store=store)
+        assert store.fires == [], "nothing ran, so the cursor must not move"
+        current = stores.schedules._data["s-owed"]  # type: ignore[attr-defined]
+        assert current.last_run == now - timedelta(hours=1), "the row's cursor is untouched too"
+    finally:
+        stores.schedules._data.pop("s-owed", None)  # type: ignore[attr-defined]
+
+
+def test_the_owed_occurrence_fires_once_the_template_resolves() -> None:
+    """The other half: leaving it owed is only right if it can still happen."""
+    import stores
+
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    stub = _schedule_stub(
+        "s-later", "sched-resolves-late", cron="0 * * * *", last_run=now - timedelta(hours=1)
+    )
+    stores.schedules._data["s-later"] = stub  # type: ignore[attr-defined]
+    store = _RecordingStore()
+    try:
+        _run_evaluate("s-later", stub, now=now, store=store)
+        assert store.fires == []
+
+        _register("sched-resolves-late")
+        _run_evaluate(
+            "s-later",
+            stores.schedules._data["s-later"],  # type: ignore[attr-defined]
+            now=now,
+            store=store,
+        )
+
+        assert len(store.fires) == 1
+        assert store.fires[0]["run_id"]
+        assert store.fires[0]["fired_at"] == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    finally:
+        stores.schedules._data.pop("s-later", None)  # type: ignore[attr-defined]
+
+
+def test_the_cursor_records_the_run_that_claimed_the_occurrence() -> None:
+    """`last_run_id` must resolve to the canonical Run, not to nothing."""
+    import stores
+
+    _register("sched-cursor")
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    stub = _schedule_stub(
+        "s-cursor", "sched-cursor", cron="0 * * * *", last_run=now - timedelta(hours=1)
+    )
+    stores.schedules._data["s-cursor"] = stub  # type: ignore[attr-defined]
+    store = _RecordingStore()
+    try:
+        _run_evaluate("s-cursor", stub, now=now, store=store)
+        assert len(store.fires) == 1
+        fire = store.fires[0]
+        assert fire["schedule_id"] == "s-cursor"
+        assert isinstance(fire["run_id"], str) and fire["run_id"]
+        # The next occurrence, computed from the nominal fire rather than now.
+        assert fire["next_due_at"] == datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
+        row = stores.schedules._data["s-cursor"]  # type: ignore[attr-defined]
+        assert row.last_run == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    finally:
+        stores.schedules._data.pop("s-cursor", None)  # type: ignore[attr-defined]
+
+
+def test_the_durable_cursor_outranks_the_in_memory_row() -> None:
+    """A restart loses the row's `last_run`; the store's is what counts.
+
+    Without this the schedule would re-fire every occurrence inside the
+    catch-up window on the first tick after every restart.
+    """
+    import stores
+
+    from maistro.scheduling import Schedule
+
+    _register("sched-restart")
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    # The row came back from a restart with no cursor at all.
+    stub = _schedule_stub("s-restart", "sched-restart", cron="0 * * * *", last_run=None)
+    stores.schedules._data["s-restart"] = stub  # type: ignore[attr-defined]
+    store = _RecordingStore()
+    store.saved["s-restart"] = Schedule(
+        schedule_id="s-restart",
+        workspace_id="hive:schedule:s-restart",
+        project_id="hive:schedule:s-restart",
+        cron="0 * * * *",
+        graph_template_id="sched-restart",
+        last_fired_at=datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
+        last_run_id="run-from-before-the-restart",
+        runs_so_far=3,
+    )
+    try:
+        _run_evaluate("s-restart", stub, now=now, store=store)
+        assert store.fires == [], "the 12:00 occurrence already fired before the restart"
+    finally:
+        stores.schedules._data.pop("s-restart", None)  # type: ignore[attr-defined]
+
+
+def test_without_a_bridge_the_scheduler_still_fires() -> None:
+    """No Container, no canonical store — the loop degrades, it does not stop."""
+    import stores
+
+    _register("sched-no-bridge")
+    now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+    stub = _schedule_stub(
+        "s-nb", "sched-no-bridge", cron="0 * * * *", last_run=now - timedelta(hours=1)
+    )
+    stores.schedules._data["s-nb"] = stub  # type: ignore[attr-defined]
+    try:
+        _run_evaluate("s-nb", stub, now=now, store=None)
+        row = stores.schedules._data["s-nb"]  # type: ignore[attr-defined]
+        assert row.last_run == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    finally:
+        stores.schedules._data.pop("s-nb", None)  # type: ignore[attr-defined]
