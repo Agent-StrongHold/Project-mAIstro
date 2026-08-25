@@ -1126,3 +1126,31 @@ def test_a_manual_run_that_cannot_fire_is_a_conflict_not_a_stamp(admin_client: A
 
 def test_a_manual_run_of_an_unknown_schedule_is_still_a_404(admin_client: Any) -> None:
     assert admin_client.post("/v1/schedules/does-not-exist/run").status_code == 404
+
+
+def test_an_explicit_null_leaves_the_field_alone(admin_client: Any) -> None:
+    """`{"timezone": null}` is a real request, distinct from omitting the key:
+    pydantic runs the validator for an explicit null and not for an absent
+    field. Both must mean "leave alone" — this endpoint's `exclude_none=True`
+    contract — rather than 422 on a zone that is not a zone.
+    """
+    created = admin_client.post(
+        "/v1/schedules",
+        json={
+            "name": "nullable",
+            "cron_expression": "0 9 * * *",
+            "mission_template_id": "tpl",
+            "timezone": "Europe/Berlin",
+            "max_runs": 5,
+        },
+    )
+    sid = created.json()["id"]
+    try:
+        updated = admin_client.put(
+            f"/v1/schedules/{sid}", json={"timezone": None, "max_runs": None}
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["timezone"] == "Europe/Berlin"
+        assert updated.json()["max_runs"] == 5
+    finally:
+        admin_client.delete(f"/v1/schedules/{sid}")

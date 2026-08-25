@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +22
+  packages/hive-conductor/backend/tests: +23
 ---
 # claude-issue-265-schedule-bounds-surface-e962
 
-All 22 are additions to `packages/hive-conductor/backend/tests/test_scheduler.py`
-(24 -> 46). Nothing was removed, renamed or reparametrised, so the net is also
+All 23 are additions to `packages/hive-conductor/backend/tests/test_scheduler.py`
+(24 -> 47). Nothing was removed, renamed or reparametrised, so the net is also
 the gross — there is no compensating change hiding inside it.
 
 They cover #265 in four groups:
@@ -20,7 +20,10 @@ They cover #265 in four groups:
 - **Manual fire (5).** `fire_now` creates a Run and counts it; a fire that
   cannot start leaves no stamp; the bound applies to manual fires; a targetless
   or unknown schedule is refused.
-- **HTTP surface (10, of which 4 are one parametrised case).** Create with and
+- **HTTP surface (11, of which 4 are one parametrised case).** Create with and
   without the new fields, update them, and reject an unusable zone or bound at
-  the boundary with a 422 rather than a tick that raises forever. The manual-run
-  endpoint returns 409 without stamping, and 404 for an unknown schedule.
+  the boundary with a 422 rather than a tick that raises forever. An explicit
+  `null` means "leave alone" like an omitted key, which is a distinct path:
+  pydantic runs the validator for an explicit null and not for an absent field.
+  The manual-run endpoint returns 409 without stamping, and 404 for an unknown
+  schedule.
