@@ -325,17 +325,16 @@ class TestDecisionTaken:
         incurring debt, which would teach people not to write ideas down."""
         assert "Proposed" not in check.DECISION_TAKEN
 
-    def test_every_state_in_which_the_decision_stands_is_owed(self, check):
-        """`Fully Specced` *means* every child spec has acceptance criteria, so
-        an ADR carrying it with no child spec at all is precisely the absent
-        link this counter exists to report. `In Progress` and `Tests Passing`
-        sit on the same ladder between Accepted and Implemented. None of the
-        three is on any ADR today, which is why leaving them out was invisible."""
+    def test_every_adr_state_in_which_the_decision_stands_is_owed(self, check):
+        """ADR-097's taken ADR states are distinct from the SPEC lifecycle.
+
+        `In Progress` and `Tests Passing` are SPEC states. Treating them as ADR
+        states would make this governance metric accept vocabulary the
+        kind-specific lifecycle linter rejects.
+        """
         assert set(check.DECISION_TAKEN) == {
             "Accepted",
             "Fully Specced",
-            "In Progress",
-            "Tests Passing",
             "Implemented",
         }
 
