@@ -76,6 +76,10 @@ EXPECTED_TABLES = frozenset(
         "outcomes",
         "prompts",
         "quota_usage",
+        # Schedule definitions and their fire cursors (016). Durable so that a
+        # cursor survives a restart and two scheduler replicas share one rather
+        # than each keeping a private copy (#231).
+        "schedules",
         "security_rate_limits",
         "security_strikes",
         "security_violations",
