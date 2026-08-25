@@ -82,6 +82,17 @@ class EngineService:
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "run_store", None)
 
+    @property
+    def schedule_store(self) -> Any:
+        """The core Container's canonical Schedule store, or None.
+
+        None for the same reason as `run_store`. Without it the scheduler keeps
+        its cursor on the in-memory `/v1/schedules` row, which is where it lived
+        before #231 — lost on restart, and private to one replica.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "schedule_store", None)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 

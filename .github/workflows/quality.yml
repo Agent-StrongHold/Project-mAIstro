@@ -300,6 +300,13 @@ jobs:
       # server, so running them only in `coverage (no services)` measured the
       # in-memory and SQLite legs and scored the PostgreSQL stores as untested
       # code. The diff gate was reading a number no job produced.
+      #
+      # `scheduling` joins for the same reason and on the same evidence: #231
+      # put `scheduling/pg_store.py` behind it, the store suite is parametrised
+      # over all three backends, and the diff gate scored the new file at 42.5%
+      # while its PostgreSQL leg was passing — in the other job, where it
+      # skipped. A list of suites is a list of what gets measured, so a new
+      # PostgreSQL store means an edit here, every time.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -310,7 +317,8 @@ jobs:
             packages/maistro-core/tests/events \
             packages/maistro-core/tests/runs \
             packages/maistro-core/tests/graph \
-            packages/maistro-core/tests/projects -v --tb=short
+            packages/maistro-core/tests/projects \
+            packages/maistro-core/tests/scheduling -v --tb=short
       - name: upload coverage data
         uses: actions/upload-artifact@v4
         with:

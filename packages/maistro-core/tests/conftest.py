@@ -124,6 +124,8 @@ _PG_SCRATCH_TABLES = (
     "handler_invocations",
     "trigger_definitions",
     "event_log",
+    "schedules",
+    "graph_templates",
 )
 
 
