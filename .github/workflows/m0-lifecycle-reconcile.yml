@@ -64,7 +64,7 @@ jobs:
               'support an Implemented completion claim; implementation history remains recorded.'
           )
           transition = (
-              '  - status: Accepted\n'
+              '\n  - status: Accepted\n'
               '    date: 2026-08-25\n'
               f'    reason: "{reason}"\n'
           )
