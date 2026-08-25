@@ -120,6 +120,32 @@ jobs:
           print(f'Pruned {len(pruned)} stale lifecycle baseline entries')
           if len(pruned) != 21:
               raise SystemExit(f'expected 21 stale baseline entries, pruned {len(pruned)}')
+
+          test_path = root / 'tests/tools/test_lint_lifecycle.py'
+          test_text = test_path.read_text(encoding='utf-8')
+          old_test = '''def test_baseline_file_matches_its_own_contract(lint):
+              """Every committed baseline entry is a real, currently-occurring violation
+              (test_repo_corpus_passes_the_gate proves 'no new' — this pins the shape)."""
+              baseline = lint.load_baseline()
+              assert baseline, "baseline exists and is non-empty as of SPEC-062826-8982"
+              for key in baseline:
+                  assert ": " in key, f"baseline keys are `path: message` strings, got {key!r}"
+          '''.replace('          ', '')
+          new_test = '''def test_baseline_file_matches_its_own_contract(lint):
+              """The committed baseline exactly equals currently accepted violations.
+
+              Zero is a valid and preferred steady state; a ratchet must not require debt
+              to remain merely so the test has something to count.
+              """
+              baseline = lint.load_baseline()
+              errors = set(lint.collect_errors(["docs/adr", "docs/specs"]))
+              assert baseline == errors
+              for key in baseline:
+                  assert ": " in key, f"baseline keys are `path: message` strings, got {key!r}"
+          '''.replace('          ', '')
+          if old_test not in test_text:
+              raise SystemExit('lifecycle baseline contract test shape changed')
+          test_path.write_text(test_text.replace(old_test, new_test, 1), encoding='utf-8')
           PY
 
       - name: Verify lifecycle corpus and focused tests
@@ -136,6 +162,6 @@ jobs:
           git config user.name "m0-closeout-bot"
           git config user.email "m0-closeout-bot@users.noreply.github.com"
           git rm .github/workflows/m0-lifecycle-reconcile.yml
-          git add docs/adr docs/specs quality/lifecycle-baseline.json
+          git add docs/adr docs/specs quality/lifecycle-baseline.json tests/tools/test_lint_lifecycle.py
           git commit -m "Record M0 evidence-driven lifecycle corrections"
           git push origin HEAD:chatgpt/m0-closeout
