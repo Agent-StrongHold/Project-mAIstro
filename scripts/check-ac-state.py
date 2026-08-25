@@ -182,6 +182,14 @@ def configured_test_roots() -> list[Path]:
     trees pytest will execute. A marker in a file pytest never collects could
     otherwise sit at `covered` permanently, looking like work in progress rather
     than a test that does not run.
+
+    That invariant is why #267 was fixed by adding
+    `packages/hive-conductor/backend/tests` to `testpaths` rather than by giving
+    this function a hand-written list of its own. The Conductor suite really is
+    executed -- ci.yml has a step for it -- so the honest repair was to make the
+    configuration say so. See the comment beside `testpaths` in `pyproject.toml`
+    for why the e2e tree stays out, and `passing_ac_ids` for why each root now
+    runs as its own session.
     """
     with PYPROJECT.open("rb") as handle:
         paths = tomllib.load(handle)["tool"]["pytest"]["ini_options"]["testpaths"]
@@ -379,16 +387,49 @@ def scan_markers(test_roots: list[Path]) -> dict[str, list[str]]:
 
 
 def passing_ac_ids(test_roots: list[Path]) -> set[str] | None:
-    """AC ids whose every claiming test passed, or None if the run never happened.
+    """AC ids whose every claiming test passed, or None if a run never happened.
 
     None and `set()` mean different things and the caller must not conflate
     them: an empty set is "the suite ran and nothing passed", None is "we do not
     know". Reporting `passing` for an unrun suite is the failure this whole
     script exists to stop, one level up.
+
+    **One session per root, not one session for all of them.** This used to be a
+    single pytest invocation over every root at once, which worked only because
+    the roots it happened to hold did not collide. They do now: `tests/` under
+    `maistro-core` has no `__init__.py` while `tests/config/` does, so importlib
+    mode puts `packages/maistro-core/tests` on `sys.path` and the top-level name
+    `config` binds to that test package -- after which hive-conductor's
+    `settings_defaults.py` does `from config import get_settings` and gets
+    somebody else's module. 29 collection errors, the session interrupted, and
+    every criterion in the repository reported unmeasured (#267).
+
+    The rest of this repository already learned this. `ci.yml` gives every
+    package its own pytest step, and `quality.yml` says why in as many words:
+    an earlier single combined invocation "broke an unrelated maistro-rsi test
+    (structlog's `capture_logs()` picks up stale global config when another
+    package's tests configure structlog first)". This gate was the last place
+    still assuming one session could hold them all.
+
+    Isolation also makes the failure mode local. A root that cannot run poisons
+    only its own outcome -- and, because a partial map read as "these criteria
+    are not passing" would be a fabrication, it still takes the whole
+    measurement down to None rather than reporting the rest as fact.
     """
-    roots = [str(r) for r in test_roots if r.exists()]
+    roots = [r for r in test_roots if r.exists()]
     if not roots:
         return None
+    passing: set[str] = set()
+    for root in roots:
+        outcome = _passing_in_root(root)
+        if outcome is None:
+            return None
+        passing |= outcome
+    return passing
+
+
+def _passing_in_root(root: Path) -> set[str] | None:
+    """One root's passing AC ids, or None if that session did not complete."""
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "ac-outcomes.json"
         env = {**os.environ, "AC_OUTCOME_JSON": str(out), "PYTHONPATH": str(ROOT / "scripts")}
@@ -406,7 +447,7 @@ def passing_ac_ids(test_roots: list[Path]) -> set[str] | None:
             # passing, so the run is worth finishing even once one is red.
             "-m",
             "ac",
-            *roots,
+            str(root),
         ]
         try:
             proc = subprocess.run(
@@ -414,13 +455,19 @@ def passing_ac_ids(test_roots: list[Path]) -> set[str] | None:
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
-        # 0 = all passed, 1 = some failed, 5 = nothing collected. Anything else
-        # (2 interrupted, 3 internal error, 4 usage error) means the session did
-        # not run to completion, and a partial outcome map read as "these
-        # criteria are not passing" would be a fabrication.
+        # 5 = nothing collected, which per-root is ordinary rather than
+        # suspicious: most roots carry no `ac` markers at all, and deselecting
+        # every test in one is not a failed measurement. It was unreachable
+        # while this ran as a single session over every root at once.
+        if proc.returncode == 5:
+            return set()
+        # 0 = all passed, 1 = some failed. Anything else (2 interrupted,
+        # 3 internal error, 4 usage error) means the session did not run to
+        # completion, and a partial outcome map read as "these criteria are not
+        # passing" would be a fabrication.
         if proc.returncode not in (0, 1) or not out.is_file():
             sys.stderr.write(
-                f"pytest exited {proc.returncode}; the passing rung is unmeasured.\n"
+                f"pytest exited {proc.returncode} for {root}; the passing rung is unmeasured.\n"
                 f"{proc.stdout[-2000:]}{proc.stderr[-2000:]}\n"
             )
             return None
