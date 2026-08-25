@@ -153,8 +153,7 @@ def _compatibility_alias_violations(root: Path) -> list[str]:
     aliases = _public_direct_aliases(root)
     found = set(aliases)
     violations = [
-        f"unreviewed public alias: {item}"
-        for item in sorted(found - _COMPATIBILITY_ALIAS_LEDGER)
+        f"unreviewed public alias: {item}" for item in sorted(found - _COMPATIBILITY_ALIAS_LEDGER)
     ]
     violations.extend(
         f"stale compatibility alias ledger entry: {item}"
@@ -176,7 +175,9 @@ def test_core_does_not_import_applications() -> None:
     assert not violations, "maistro-core reverse-dependency violation(s):\n" + "\n".join(violations)
 
     compatibility = _compatibility_alias_violations(_CORE_SRC)
-    assert not compatibility, "canonical/compatibility owner violation(s):\n" + "\n".join(compatibility)
+    assert not compatibility, "canonical/compatibility owner violation(s):\n" + "\n".join(
+        compatibility
+    )
 
 
 @pytest.mark.contract("boundary")

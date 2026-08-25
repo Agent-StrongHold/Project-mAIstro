@@ -170,8 +170,7 @@ def test_history_entries_parse_and_validate() -> None:
     implemented = corrected | {
         "status": "Implemented",
         "implemented": "2026-08-25",
-        "history": corrected["history"]
-        + [{"status": "Implemented", "date": "2026-08-25"}],
+        "history": corrected["history"] + [{"status": "Implemented", "date": "2026-08-25"}],
     }
     assert FrontMatter.model_validate(implemented).implemented.isoformat() == "2026-08-25"
     with pytest.raises(ValidationError, match="implemented date must match"):
