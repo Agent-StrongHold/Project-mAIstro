@@ -170,6 +170,80 @@ def transition_node_run(
     return NodeRun.model_validate(values)
 
 
+class UnearnedRunCompletion(InvalidLifecycleTransition):
+    """A Run claimed COMPLETED while the spine recorded otherwise (#241)."""
+
+    def __init__(self, node_id: str, node_run_id: str, status: RunStatus) -> None:
+        self.node_id = node_id
+        self.node_run_id = node_run_id
+        self.status = status
+        super().__init__(
+            f"Run cannot complete: its latest NodeRun for node {node_id!r} "
+            f"({node_run_id}) is {status.value!r}, not completed"
+        )
+
+
+def latest_node_runs(node_runs: list[NodeRun]) -> dict[str, NodeRun]:
+    """The newest NodeRun for each node_id, by ordinal.
+
+    A node can hold more than one NodeRun. A *retry* is a new Attempt under the
+    same NodeRun, but a re-execution — a cycle, a resumed frontier — calls
+    `execute_node` again and gets a new NodeRun with a higher ordinal for the
+    same node. So a node that failed and then succeeded has two, and only the
+    newest states its outcome.
+
+    Folding every NodeRun instead would make "this node failed once, long ago"
+    permanently fatal to its Run, which would break every retry-after-failure
+    path in the repository. This is the same rule the fence needs one level
+    down (ADR-082426-e3ff): the newest record for an identity is the one that
+    counts.
+    """
+    newest: dict[str, NodeRun] = {}
+    for node_run in node_runs:
+        current = newest.get(node_run.node_id)
+        if current is None or node_run.ordinal > current.ordinal:
+            newest[node_run.node_id] = node_run
+    return newest
+
+
+def check_completion_is_earned(target: RunStatus, node_runs: list[NodeRun]) -> None:
+    """Refuse a COMPLETED Run that contradicts a NodeRun's recorded outcome.
+
+    Two deliberate narrowings, and both are the decision rather than an
+    oversight.
+
+    **Only COMPLETED is checked.** The rule is asymmetric because success is
+    the only claim that has to be earned. A Run may terminalize as FAILED,
+    CANCELLED or TIMED_OUT over nodes that each completed: those outcomes come
+    from outside any node — a caller cancelled the work (#230/#233), a deadline
+    expired, the fold between nodes raised — and refusing them would leave a
+    domain unable to report what actually happened.
+
+    **Only *terminal* NodeRuns are consulted.** A latest NodeRun that is still
+    open is ADR-082426-a47f's case, not this one: that ADR decided such a node
+    is cascaded to CANCELLED by the very transition being validated here, and
+    it decided it for a reason this ADR does not reopen — a graph may abandon a
+    node whose result it no longer needs, and a first-wins race is a real
+    pattern rather than a bug. So the residual stands and is stated plainly: a
+    Run can still complete over a node it cancelled in the same breath.
+
+    What is refused is the contradiction: a Run reporting success while the
+    spine holds a *finished* node that failed, was cancelled, or timed out.
+    That is the combination #43's fourth criterion calls impossible, and it
+    needs no race to produce — the ordinary path produces it.
+
+    A node with no NodeRun at all is not consulted: a Graph node that never ran
+    is the ordinary outcome of a conditional branch, not a missing result.
+    """
+    if target is not RunStatus.COMPLETED:
+        return
+    for node_id, node_run in sorted(latest_node_runs(node_runs).items()):
+        if node_run.status is RunStatus.COMPLETED:
+            continue
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            raise UnearnedRunCompletion(node_id, node_run.node_run_id, node_run.status)
+
+
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
 #:
 #: Not the Run's own terminal status. The node did not succeed, fail or time
@@ -248,7 +322,10 @@ __all__ = [
     "CASCADED_NODE_RUN_STATUS",
     "RUN_TRANSITIONS",
     "InvalidLifecycleTransition",
+    "UnearnedRunCompletion",
     "cascaded_node_run_error",
+    "check_completion_is_earned",
+    "latest_node_runs",
     "settle_open_node_run",
     "transition_attempt",
     "transition_node_run",
