@@ -3,7 +3,7 @@ id: SPEC-062326-7dcb
 title: "ArtifactNode hierarchy and output-side Warden scanning for maistro-design"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-23
 substrate:
   - maistro-engine#ADR-061

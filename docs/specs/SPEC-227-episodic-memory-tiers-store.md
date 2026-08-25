@@ -3,7 +3,7 @@ id: SPEC-227
 title: "EpisodicMemory: 7-tier weight clamping, reinforce/decay, and InMemoryEpisodicStore"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate: []
 implements:

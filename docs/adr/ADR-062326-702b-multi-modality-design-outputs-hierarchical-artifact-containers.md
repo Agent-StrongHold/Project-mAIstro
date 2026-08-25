@@ -3,7 +3,7 @@ id: ADR-062326-702b
 title: Multi-modality design outputs and hierarchical artifact containers
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-06-23
 accepted: 2026-06-23
 implemented: 2026-06-23
@@ -46,6 +46,10 @@ history:
     date: 2026-06-23
   - status: Implemented
     date: 2026-06-23
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # ADR-062326-702b: Multi-modality design outputs and hierarchical artifact containers

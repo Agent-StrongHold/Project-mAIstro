@@ -21,8 +21,8 @@
     "gherkin_criteria": 238,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
-    "completion_claims_contradicted": 9,
-    "completion_claims_unverifiable": 68,
+    "completion_claims_contradicted": 0,
+    "completion_claims_unverifiable": 0,
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
@@ -33,549 +33,8 @@
     "ADR-070126-6386/stage3"
   ],
   "criteria_claimed_but_unproven": [],
-  "completion_claims_contradicted": [
-    {
-      "id": "SPEC-062326-e9c6",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/specs/SPEC-062326-e9c6-design-skills-react-tsx-output-format.md"
-    },
-    {
-      "id": "SPEC-070226-2b70",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/specs/SPEC-070226-2b70-observability-replay-pii-tiers.md"
-    },
-    {
-      "id": "SPEC-070226-b234",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/specs/SPEC-070226-b234-events-triggers-reactor.md"
-    },
-    {
-      "id": "SPEC-160",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "passing",
-      "file": "docs/specs/SPEC-160-maistro-design-acceptance-criteria.md"
-    },
-    {
-      "id": "SPEC-201",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "passing",
-      "file": "docs/specs/SPEC-201-builders-dag-runtime.md"
-    },
-    {
-      "id": "SPEC-228",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/specs/SPEC-228-observability-baseline-gaps.md"
-    },
-    {
-      "id": "ADR-061",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/adr/ADR-061-maistro-design-package.md"
-    },
-    {
-      "id": "ADR-062326-616c",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/adr/ADR-062326-616c-design-skills-code-export-capability.md"
-    },
-    {
-      "id": "ADR-062326-702b",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "declared",
-      "file": "docs/adr/ADR-062326-702b-multi-modality-design-outputs-hierarchical-artifact-containers.md"
-    }
-  ],
-  "completion_claims_unverifiable": [
-    {
-      "id": "SPEC-062126-5d56",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062126-5d56-memory-dynamics-decay-consolidation.md"
-    },
-    {
-      "id": "SPEC-062126-6a31",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062126-6a31-memory-exposure-mode-enforcement.md"
-    },
-    {
-      "id": "SPEC-062126-a05f",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062126-a05f-superplanner-master-orchestrator-validation-gate.md"
-    },
-    {
-      "id": "SPEC-062126-d421",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062126-d421-medley-import-sanitization-pipeline.md"
-    },
-    {
-      "id": "SPEC-062226-fb23",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062226-fb23-config-store-db-cli-api.md"
-    },
-    {
-      "id": "SPEC-062326-7dcb",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062326-7dcb-artifact-node-hierarchy-and-output-scanning.md"
-    },
-    {
-      "id": "SPEC-062826-1924",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062826-1924-test-hardening-adversarial-matrix-exploratory.md"
-    },
-    {
-      "id": "SPEC-062826-8982",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-062826-8982-exploratory-testing-program.md"
-    },
-    {
-      "id": "SPEC-070226-6489",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070226-6489-identity-lifecycle.md"
-    },
-    {
-      "id": "SPEC-070226-82ea",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070226-82ea-builders-dag.md"
-    },
-    {
-      "id": "SPEC-070226-af02",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070226-af02-p1-resilience-control.md"
-    },
-    {
-      "id": "SPEC-070226-c4f8",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070226-c4f8-hierarchical-orchestration.md"
-    },
-    {
-      "id": "SPEC-070226-cb8d",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070226-cb8d-llm-provider-registry.md"
-    },
-    {
-      "id": "SPEC-070426-457b",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070426-457b-canvas-structured-exporters.md"
-    },
-    {
-      "id": "SPEC-070426-6ea8",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070426-6ea8-open-design-renderer-provider.md"
-    },
-    {
-      "id": "SPEC-070426-a22b",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-070426-a22b-renderer-capability-substrate.md"
-    },
-    {
-      "id": "SPEC-080126-9e42",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-080126-9e42-memory-decay-driver.md"
-    },
-    {
-      "id": "SPEC-080226-4c1f",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-080226-4c1f-log-redaction-wiring.md"
-    },
-    {
-      "id": "SPEC-206",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-206-policy-conformance-engine.md"
-    },
-    {
-      "id": "SPEC-208",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-208-foreign-harness-adapter.md"
-    },
-    {
-      "id": "SPEC-209",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-209-core-schemas-and-registry.md"
-    },
-    {
-      "id": "SPEC-210",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-210-structured-output-parser.md"
-    },
-    {
-      "id": "SPEC-216",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-216-learning-store.md"
-    },
-    {
-      "id": "SPEC-218",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-218-ontology-semantic-layer.md"
-    },
-    {
-      "id": "SPEC-220",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-220-canvas-asset-store.md"
-    },
-    {
-      "id": "SPEC-221",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-221-canvas-asset-executor-and-tool.md"
-    },
-    {
-      "id": "SPEC-222",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-222-credential-pool-and-rotation.md"
-    },
-    {
-      "id": "SPEC-223",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-223-secret-redaction.md"
-    },
-    {
-      "id": "SPEC-224",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-224-test-harness.md"
-    },
-    {
-      "id": "SPEC-225",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-225-intent-classifier.md"
-    },
-    {
-      "id": "SPEC-226",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-226-maistro-server-task-backend-boundary.md"
-    },
-    {
-      "id": "SPEC-227",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-227-episodic-memory-tiers-store.md"
-    },
-    {
-      "id": "SPEC-229",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-229-canvas-asset-compositor.md"
-    },
-    {
-      "id": "SPEC-231",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-231-four-tier-branch-model.md"
-    },
-    {
-      "id": "SPEC-232",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-232-lifecycle-status-linter.md"
-    },
-    {
-      "id": "SPEC-233",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-233-layer-taxonomy-schema.md"
-    },
-    {
-      "id": "SPEC-234",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-234-bundled-open-design-systems.md"
-    },
-    {
-      "id": "SPEC-240",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-240-memory-decay-reinforcement.md"
-    },
-    {
-      "id": "SPEC-241",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-241-memory-consolidation.md"
-    },
-    {
-      "id": "SPEC-242",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-242-memory-cross-scope-consent.md"
-    },
-    {
-      "id": "SPEC-243",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-243-memory-retrieval-ranking.md"
-    },
-    {
-      "id": "SPEC-244",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-244-context-assembly-policy.md"
-    },
-    {
-      "id": "SPEC-245",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-245-authz-tier-ladder.md"
-    },
-    {
-      "id": "SPEC-246",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-246-authz-approver-graph.md"
-    },
-    {
-      "id": "SPEC-247",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-247-authz-elevation-flows.md"
-    },
-    {
-      "id": "SPEC-248",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-248-rlphd-predictive-approval.md"
-    },
-    {
-      "id": "SPEC-249",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-249-memory-exposure-mode.md"
-    },
-    {
-      "id": "SPEC-250",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-250-session-search-snippets.md"
-    },
-    {
-      "id": "SPEC-251",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-251-outbound-delivery-gateway.md"
-    },
-    {
-      "id": "SPEC-252",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-252-tool-reversibility-taxonomy.md"
-    },
-    {
-      "id": "SPEC-253",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-253-tool-approval-gates.md"
-    },
-    {
-      "id": "SPEC-254",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-254-shadow-git-workspace.md"
-    },
-    {
-      "id": "SPEC-255",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-255-parallel-wave-fan-in.md"
-    },
-    {
-      "id": "SPEC-256",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-256-task-checkpoint-replay.md"
-    },
-    {
-      "id": "SPEC-257",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-257-code-registry-resolve-core.md"
-    },
-    {
-      "id": "SPEC-258",
-      "kind": "spec",
-      "declared_status": "Implemented",
-      "measured_tier": "none",
-      "file": "docs/specs/SPEC-258-repertoire-pattern-core.md"
-    },
-    {
-      "id": "ADR-048",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-048-session-search.md"
-    },
-    {
-      "id": "ADR-050",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-050-tool-reversibility-taxonomy.md"
-    },
-    {
-      "id": "ADR-051",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-051-tool-approval-gates.md"
-    },
-    {
-      "id": "ADR-056",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-056-task-crash-recovery.md"
-    },
-    {
-      "id": "ADR-057",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-057-memory-exposure-mode.md"
-    },
-    {
-      "id": "ADR-067",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-067-canvas-asset-compositor.md"
-    },
-    {
-      "id": "ADR-068",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-068-unified-authorization-and-elevation.md"
-    },
-    {
-      "id": "ADR-069",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-069-code-registry.md"
-    },
-    {
-      "id": "ADR-070",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-070-repertoire-pattern.md"
-    },
-    {
-      "id": "ADR-074",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-074-policy-adr-deconfliction.md"
-    },
-    {
-      "id": "ADR-080",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-080-memory-dynamics.md"
-    },
-    {
-      "id": "ADR-091",
-      "kind": "adr",
-      "declared_status": "Implemented",
-      "measured_tier": "unmeasured",
-      "file": "docs/adr/ADR-091-memory-model-layers.md"
-    }
-  ],
+  "completion_claims_contradicted": [],
+  "completion_claims_unverifiable": [],
   "specs_implementing_nothing": [
     {
       "id": "SPEC-001",
@@ -1368,21 +827,21 @@
       },
       {
         "id": "ADR-048",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-050",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-051",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
@@ -1403,21 +862,21 @@
       },
       {
         "id": "ADR-056",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-057",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-061",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 46,
         "reachable": 37,
         "percent": 80.4348
@@ -1445,14 +904,14 @@
       },
       {
         "id": "ADR-062326-616c",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 12,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-062326-702b",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 7,
         "reachable": 5,
         "percent": 71.4286
@@ -1480,28 +939,28 @@
       },
       {
         "id": "ADR-067",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-068",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-069",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
       },
       {
         "id": "ADR-070",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
@@ -1536,7 +995,7 @@
       },
       {
         "id": "ADR-074",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
@@ -1571,7 +1030,7 @@
       },
       {
         "id": "ADR-080",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
@@ -1703,6 +1162,13 @@
         "percent": 100.0
       },
       {
+        "id": "ADR-082426-2192",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
         "id": "ADR-082426-6201",
         "declared_status": "Accepted",
         "criteria": 4,
@@ -1710,11 +1176,32 @@
         "percent": 100.0
       },
       {
+        "id": "ADR-082426-82c7",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
+        "id": "ADR-082426-a47f",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
+      },
+      {
         "id": "ADR-082426-e3ff",
         "declared_status": "Accepted",
         "criteria": 4,
         "reachable": 4,
         "percent": 100.0
+      },
+      {
+        "id": "ADR-082426-f170",
+        "declared_status": "Accepted",
+        "criteria": 1,
+        "reachable": 0,
+        "percent": 0.0
       },
       {
         "id": "ADR-082526-0d30",
@@ -1830,7 +1317,7 @@
       },
       {
         "id": "ADR-091",
-        "declared_status": "Implemented",
+        "declared_status": "Accepted",
         "criteria": 0,
         "reachable": 0,
         "percent": 0.0
@@ -2430,7 +1917,7 @@
       "id": "SPEC-062126-5d56",
       "file": "docs/specs/SPEC-062126-5d56-memory-dynamics-decay-consolidation.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-080"
       ],
@@ -2455,7 +1942,7 @@
       "id": "SPEC-062126-6a31",
       "file": "docs/specs/SPEC-062126-6a31-memory-exposure-mode-enforcement.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-057"
       ],
@@ -2549,7 +2036,7 @@
       "id": "SPEC-062126-a05f",
       "file": "docs/specs/SPEC-062126-a05f-superplanner-master-orchestrator-validation-gate.md",
       "layer": "Orchestration",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [],
       "declares_non_measurable": false,
       "declared_unproven": [],
@@ -2572,7 +2059,7 @@
       "id": "SPEC-062126-d421",
       "file": "docs/specs/SPEC-062126-d421-medley-import-sanitization-pipeline.md",
       "layer": "Tools",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-083"
       ],
@@ -2597,7 +2084,7 @@
       "id": "SPEC-062226-fb23",
       "file": "docs/specs/SPEC-062226-fb23-config-store-db-cli-api.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-078"
       ],
@@ -2622,7 +2109,7 @@
       "id": "SPEC-062326-7dcb",
       "file": "docs/specs/SPEC-062326-7dcb-artifact-node-hierarchy-and-output-scanning.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-062326-702b"
       ],
@@ -2647,7 +2134,7 @@
       "id": "SPEC-062326-e9c6",
       "file": "docs/specs/SPEC-062326-e9c6-design-skills-react-tsx-output-format.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-062326-616c"
       ],
@@ -2805,7 +2292,7 @@
       "id": "SPEC-062826-1924",
       "file": "docs/specs/SPEC-062826-1924-test-hardening-adversarial-matrix-exploratory.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [],
       "declares_non_measurable": false,
       "declared_unproven": [],
@@ -2828,7 +2315,7 @@
       "id": "SPEC-062826-8982",
       "file": "docs/specs/SPEC-062826-8982-exploratory-testing-program.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [],
       "declares_non_measurable": false,
       "declared_unproven": [],
@@ -3152,7 +2639,7 @@
       "id": "SPEC-070226-2b70",
       "file": "docs/specs/SPEC-070226-2b70-observability-replay-pii-tiers.md",
       "layer": "Observability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-055"
       ],
@@ -3344,7 +2831,7 @@
       "id": "SPEC-070226-6489",
       "file": "docs/specs/SPEC-070226-6489-identity-lifecycle.md",
       "layer": "Identity",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-084"
       ],
@@ -3394,7 +2881,7 @@
       "id": "SPEC-070226-82ea",
       "file": "docs/specs/SPEC-070226-82ea-builders-dag.md",
       "layer": "Agents",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-099"
       ],
@@ -3442,7 +2929,7 @@
       "id": "SPEC-070226-af02",
       "file": "docs/specs/SPEC-070226-af02-p1-resilience-control.md",
       "layer": "Reliability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-066"
       ],
@@ -3467,7 +2954,7 @@
       "id": "SPEC-070226-b234",
       "file": "docs/specs/SPEC-070226-b234-events-triggers-reactor.md",
       "layer": "Observability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-086"
       ],
@@ -3605,7 +3092,7 @@
       "id": "SPEC-070226-c4f8",
       "file": "docs/specs/SPEC-070226-c4f8-hierarchical-orchestration.md",
       "layer": "Orchestration",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-101"
       ],
@@ -3630,7 +3117,7 @@
       "id": "SPEC-070226-cb8d",
       "file": "docs/specs/SPEC-070226-cb8d-llm-provider-registry.md",
       "layer": "Tools",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-079"
       ],
@@ -3680,7 +3167,7 @@
       "id": "SPEC-070426-457b",
       "file": "docs/specs/SPEC-070426-457b-canvas-structured-exporters.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-070426-f2a0"
       ],
@@ -3705,7 +3192,7 @@
       "id": "SPEC-070426-6ea8",
       "file": "docs/specs/SPEC-070426-6ea8-open-design-renderer-provider.md",
       "layer": "Connectivity",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-070426-f2a0"
       ],
@@ -3730,7 +3217,7 @@
       "id": "SPEC-070426-a22b",
       "file": "docs/specs/SPEC-070426-a22b-renderer-capability-substrate.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-070426-f2a0"
       ],
@@ -3953,7 +3440,7 @@
       "id": "SPEC-080126-9e42",
       "file": "docs/specs/SPEC-080126-9e42-memory-decay-driver.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-080"
       ],
@@ -3978,7 +3465,7 @@
       "id": "SPEC-080226-4c1f",
       "file": "docs/specs/SPEC-080226-4c1f-log-redaction-wiring.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-064"
       ],
@@ -6189,7 +5676,7 @@
       "id": "SPEC-160",
       "file": "docs/specs/SPEC-160-maistro-design-acceptance-criteria.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-061"
       ],
@@ -7533,7 +7020,7 @@
       "id": "SPEC-201",
       "file": "docs/specs/SPEC-201-builders-dag-runtime.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-090"
       ],
@@ -7750,7 +7237,7 @@
       "id": "SPEC-206",
       "file": "docs/specs/SPEC-206-policy-conformance-engine.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-074"
       ],
@@ -7798,7 +7285,7 @@
       "id": "SPEC-208",
       "file": "docs/specs/SPEC-208-foreign-harness-adapter.md",
       "layer": "Orchestration",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-061526-f383"
       ],
@@ -7823,7 +7310,7 @@
       "id": "SPEC-209",
       "file": "docs/specs/SPEC-209-core-schemas-and-registry.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-005"
       ],
@@ -7848,7 +7335,7 @@
       "id": "SPEC-210",
       "file": "docs/specs/SPEC-210-structured-output-parser.md",
       "layer": "Tools",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-008"
       ],
@@ -7998,7 +7485,7 @@
       "id": "SPEC-216",
       "file": "docs/specs/SPEC-216-learning-store.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-015"
       ],
@@ -8048,7 +7535,7 @@
       "id": "SPEC-218",
       "file": "docs/specs/SPEC-218-ontology-semantic-layer.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-036"
       ],
@@ -8098,7 +7585,7 @@
       "id": "SPEC-220",
       "file": "docs/specs/SPEC-220-canvas-asset-store.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-040"
       ],
@@ -8123,7 +7610,7 @@
       "id": "SPEC-221",
       "file": "docs/specs/SPEC-221-canvas-asset-executor-and-tool.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-043"
       ],
@@ -8148,7 +7635,7 @@
       "id": "SPEC-222",
       "file": "docs/specs/SPEC-222-credential-pool-and-rotation.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-063"
       ],
@@ -8173,7 +7660,7 @@
       "id": "SPEC-223",
       "file": "docs/specs/SPEC-223-secret-redaction.md",
       "layer": "Reliability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-064"
       ],
@@ -8198,7 +7685,7 @@
       "id": "SPEC-224",
       "file": "docs/specs/SPEC-224-test-harness.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-065"
       ],
@@ -8223,7 +7710,7 @@
       "id": "SPEC-225",
       "file": "docs/specs/SPEC-225-intent-classifier.md",
       "layer": "Orchestration",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-089"
       ],
@@ -8248,7 +7735,7 @@
       "id": "SPEC-226",
       "file": "docs/specs/SPEC-226-maistro-server-task-backend-boundary.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-096"
       ],
@@ -8273,7 +7760,7 @@
       "id": "SPEC-227",
       "file": "docs/specs/SPEC-227-episodic-memory-tiers-store.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-016"
       ],
@@ -8298,7 +7785,7 @@
       "id": "SPEC-228",
       "file": "docs/specs/SPEC-228-observability-baseline-gaps.md",
       "layer": "Observability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-037"
       ],
@@ -8442,7 +7929,7 @@
       "id": "SPEC-229",
       "file": "docs/specs/SPEC-229-canvas-asset-compositor.md",
       "layer": "Ability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-067"
       ],
@@ -8492,7 +7979,7 @@
       "id": "SPEC-231",
       "file": "docs/specs/SPEC-231-four-tier-branch-model.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-095"
       ],
@@ -8517,7 +8004,7 @@
       "id": "SPEC-232",
       "file": "docs/specs/SPEC-232-lifecycle-status-linter.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-097"
       ],
@@ -8542,7 +8029,7 @@
       "id": "SPEC-233",
       "file": "docs/specs/SPEC-233-layer-taxonomy-schema.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-098"
       ],
@@ -8567,7 +8054,7 @@
       "id": "SPEC-234",
       "file": "docs/specs/SPEC-234-bundled-open-design-systems.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-100"
       ],
@@ -8592,7 +8079,7 @@
       "id": "SPEC-240",
       "file": "docs/specs/SPEC-240-memory-decay-reinforcement.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-080"
       ],
@@ -8617,7 +8104,7 @@
       "id": "SPEC-241",
       "file": "docs/specs/SPEC-241-memory-consolidation.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-080"
       ],
@@ -8642,7 +8129,7 @@
       "id": "SPEC-242",
       "file": "docs/specs/SPEC-242-memory-cross-scope-consent.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-080"
       ],
@@ -8667,7 +8154,7 @@
       "id": "SPEC-243",
       "file": "docs/specs/SPEC-243-memory-retrieval-ranking.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-080"
       ],
@@ -8692,7 +8179,7 @@
       "id": "SPEC-244",
       "file": "docs/specs/SPEC-244-context-assembly-policy.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-091"
       ],
@@ -8717,7 +8204,7 @@
       "id": "SPEC-245",
       "file": "docs/specs/SPEC-245-authz-tier-ladder.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-068"
       ],
@@ -8742,7 +8229,7 @@
       "id": "SPEC-246",
       "file": "docs/specs/SPEC-246-authz-approver-graph.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-068"
       ],
@@ -8767,7 +8254,7 @@
       "id": "SPEC-247",
       "file": "docs/specs/SPEC-247-authz-elevation-flows.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-068"
       ],
@@ -8792,7 +8279,7 @@
       "id": "SPEC-248",
       "file": "docs/specs/SPEC-248-rlphd-predictive-approval.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-068"
       ],
@@ -8817,7 +8304,7 @@
       "id": "SPEC-249",
       "file": "docs/specs/SPEC-249-memory-exposure-mode.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-057"
       ],
@@ -8842,7 +8329,7 @@
       "id": "SPEC-250",
       "file": "docs/specs/SPEC-250-session-search-snippets.md",
       "layer": "Memory",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-048"
       ],
@@ -8867,7 +8354,7 @@
       "id": "SPEC-251",
       "file": "docs/specs/SPEC-251-outbound-delivery-gateway.md",
       "layer": "Connectivity",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-047"
       ],
@@ -8892,7 +8379,7 @@
       "id": "SPEC-252",
       "file": "docs/specs/SPEC-252-tool-reversibility-taxonomy.md",
       "layer": "Tools",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-050"
       ],
@@ -8917,7 +8404,7 @@
       "id": "SPEC-253",
       "file": "docs/specs/SPEC-253-tool-approval-gates.md",
       "layer": "Governance",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-051"
       ],
@@ -8942,7 +8429,7 @@
       "id": "SPEC-254",
       "file": "docs/specs/SPEC-254-shadow-git-workspace.md",
       "layer": "Tools",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-049"
       ],
@@ -8967,7 +8454,7 @@
       "id": "SPEC-255",
       "file": "docs/specs/SPEC-255-parallel-wave-fan-in.md",
       "layer": "Orchestration",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-052"
       ],
@@ -8992,7 +8479,7 @@
       "id": "SPEC-256",
       "file": "docs/specs/SPEC-256-task-checkpoint-replay.md",
       "layer": "Reliability",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-056"
       ],
@@ -9017,7 +8504,7 @@
       "id": "SPEC-257",
       "file": "docs/specs/SPEC-257-code-registry-resolve-core.md",
       "layer": "Tools",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-069"
       ],
@@ -9042,7 +8529,7 @@
       "id": "SPEC-258",
       "file": "docs/specs/SPEC-258-repertoire-pattern-core.md",
       "layer": "Foundation",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "implements": [
         "- maistro-engine#ADR-070"
       ],
@@ -10469,7 +9956,7 @@
     {
       "id": "ADR-048",
       "file": "docs/adr/ADR-048-session-search.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-250"
       ],
@@ -10499,7 +9986,7 @@
     {
       "id": "ADR-050",
       "file": "docs/adr/ADR-050-tool-reversibility-taxonomy.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-252"
       ],
@@ -10514,7 +10001,7 @@
     {
       "id": "ADR-051",
       "file": "docs/adr/ADR-051-tool-approval-gates.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-253"
       ],
@@ -10585,7 +10072,7 @@
     {
       "id": "ADR-056",
       "file": "docs/adr/ADR-056-task-crash-recovery.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-256"
       ],
@@ -10600,7 +10087,7 @@
     {
       "id": "ADR-057",
       "file": "docs/adr/ADR-057-memory-exposure-mode.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-062126-6a31",
         "SPEC-249"
@@ -10661,7 +10148,7 @@
     {
       "id": "ADR-061",
       "file": "docs/adr/ADR-061-maistro-design-package.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-160"
       ],
@@ -10802,7 +10289,7 @@
     {
       "id": "ADR-062326-616c",
       "file": "docs/adr/ADR-062326-616c-design-skills-code-export-capability.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-062326-e9c6"
       ],
@@ -10817,7 +10304,7 @@
     {
       "id": "ADR-062326-702b",
       "file": "docs/adr/ADR-062326-702b-multi-modality-design-outputs-hierarchical-artifact-containers.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-062326-7dcb"
       ],
@@ -12178,7 +11665,7 @@
     {
       "id": "ADR-067",
       "file": "docs/adr/ADR-067-canvas-asset-compositor.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-229"
       ],
@@ -12193,7 +11680,7 @@
     {
       "id": "ADR-068",
       "file": "docs/adr/ADR-068-unified-authorization-and-elevation.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-245",
         "SPEC-246",
@@ -12211,7 +11698,7 @@
     {
       "id": "ADR-069",
       "file": "docs/adr/ADR-069-code-registry.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-257"
       ],
@@ -12226,7 +11713,7 @@
     {
       "id": "ADR-070",
       "file": "docs/adr/ADR-070-repertoire-pattern.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-258"
       ],
@@ -12450,7 +11937,7 @@
     {
       "id": "ADR-074",
       "file": "docs/adr/ADR-074-policy-adr-deconfliction.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-206"
       ],
@@ -12534,7 +12021,7 @@
     {
       "id": "ADR-080",
       "file": "docs/adr/ADR-080-memory-dynamics.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-062126-5d56",
         "SPEC-080126-9e42",
@@ -13063,15 +12550,25 @@
     {
       "id": "ADR-082426-2192",
       "file": "docs/adr/ADR-082426-2192-maistro-server-builds-a-container.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-2192/AC-1",
+          "claimed": false,
+          "module": "maistro_server.api.chat_completions",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082426-6201",
@@ -13126,28 +12623,48 @@
     {
       "id": "ADR-082426-82c7",
       "file": "docs/adr/ADR-082426-82c7-the-occurrence-is-the-claim-not-the-cursor.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-82c7/AC-1",
+          "claimed": false,
+          "module": "maistro.scheduling.admission",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082426-a47f",
       "file": "docs/adr/ADR-082426-a47f-terminalizing-a-run-settles-its-node-runs.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-a47f/AC-1",
+          "claimed": false,
+          "module": "maistro.runs.store",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082426-e3ff",
@@ -13202,15 +12719,25 @@
     {
       "id": "ADR-082426-f170",
       "file": "docs/adr/ADR-082426-f170-a-requested-cancellation-is-not-a-parked-failure.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 1,
+      "own_detail": [
+        {
+          "id": "ADR-082426-f170/AC-1",
+          "claimed": false,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [],
+          "rung": "declared"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
-      "tier": "unmeasured"
+      "declared_unproven": [
+        "AC-1"
+      ],
+      "tier": "declared"
     },
     {
       "id": "ADR-082526-0d30",
@@ -13953,7 +13480,7 @@
     {
       "id": "ADR-091",
       "file": "docs/adr/ADR-091-memory-model-layers.md",
-      "declared_status": "Implemented",
+      "declared_status": "Accepted",
       "specs": [
         "SPEC-244"
       ],

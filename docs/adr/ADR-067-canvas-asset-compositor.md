@@ -3,7 +3,7 @@ id: ADR-067
 title: Canvas Asset Compositor — Scene Graph, Occlusion, Prompt Composition
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-09
 substrate:
   - maistro-engine#ADR-039
@@ -28,6 +28,10 @@ history:
   - status: Proposed
     date: 2026-05-09
   - status: Implemented
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # ADR-067: Canvas Asset Compositor

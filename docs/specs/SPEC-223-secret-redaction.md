@@ -3,7 +3,7 @@ id: SPEC-223
 title: "Secret redaction: pattern catalogue and entropy fallback"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-064

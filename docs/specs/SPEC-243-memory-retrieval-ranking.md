@@ -3,7 +3,7 @@ id: SPEC-243
 title: "Hybrid BM25 + vector memory retrieval ranking (ADR-080 part D)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-016

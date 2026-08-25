@@ -93,7 +93,7 @@ def _state_failures(item_id: str, state: str, statuses: set[str], gaps: set[str]
 
 
 def audit(text: str) -> list[str]:
-    statuses = _section_terms(text, "## Status legend")
+    statuses = _section_terms(text, "## Work status legend")
     gaps = _section_terms(text, "## Gap legend")
     prefixes = _prefixes(text)
     failures: list[str] = []

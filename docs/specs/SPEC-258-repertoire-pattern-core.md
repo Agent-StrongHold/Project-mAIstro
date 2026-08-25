@@ -3,7 +3,7 @@ id: SPEC-258
 title: "The Repertoire Pattern — reuse-first cascade protocol and orchestration core (ADR-070)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#SPEC-257
