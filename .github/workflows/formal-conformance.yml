@@ -64,10 +64,12 @@ jobs:
       - name: Install maistro-evolve
         run: pip install -e packages/maistro-evolve
 
-      # The driver I29 needs. Installed explicitly rather than through an extra
-      # so this job's dependency on a database is visible in the workflow.
-      - name: Install asyncpg and alembic
-        run: pip install asyncpg alembic
+      # PgRunStore uses asyncpg, while Alembic/SQLAlchemy's migration URL uses
+      # the synchronous psycopg driver. Keep both explicit so this job proves
+      # the same database boundary it deploys rather than depending on an
+      # unrelated transitive driver.
+      - name: Install PostgreSQL drivers and alembic
+        run: pip install asyncpg "psycopg[binary]" alembic
 
       # The canonical tables I29 writes to. Without this the model fails on a
       # missing relation, which reads as a broken test rather than a missing
