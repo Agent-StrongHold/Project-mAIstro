@@ -35,6 +35,10 @@ history:
   - status: Proposed
     date: 2026-05-29
   - status: Implemented
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # ADR-061 — maistro-design: composable design skills + design systems

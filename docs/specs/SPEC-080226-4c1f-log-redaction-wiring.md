@@ -28,6 +28,10 @@ history:
     date: 2026-08-02
   - status: Implemented
     date: 2026-08-02
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # SPEC-080226-4c1f: Installing secret redaction on the log pipelines

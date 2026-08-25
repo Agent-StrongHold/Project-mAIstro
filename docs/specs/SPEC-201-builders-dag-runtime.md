@@ -40,6 +40,10 @@ history:
     date: 2026-06-03
   - status: Implemented
     date: 2026-06-03
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # SPEC-201: Builders Interactive Session
