@@ -77,9 +77,12 @@ Sixteen is a reviewable ledger, and the composition is the argument for doing
 this at all rather than a cost to be tolerated:
 
 - **9** are the mutation family (`mutation_*`, `check_mutation_baseline`). They
-  are unreached because `.github/workflows/mutation.yml` is a stub whose only
-  step prints "Mutation temporarily disabled". A whole quality pillar is off
-  and nine scripts are dead behind it, which nothing currently reports.
+  are unreached because `.github/workflows/mutation.yml` is currently a stub —
+  a deliberate, documented parking, not a gap: its header says mutation is
+  disabled until self-hosted runner capacity is restored, must not spend
+  GitHub-hosted minutes meanwhile, and that the tooling is kept precisely so it
+  can be restored. Nine entries that all clear together when that workflow runs
+  again.
 - **7** are simulations and one-off tooling (`rlphd_*`, `openrouter_rpm_pacer`,
   `generate_repo_tasks*`, `check_assertion_quality`).
 
@@ -103,9 +106,9 @@ verdict in the direction that matters.
 
 ### What this deliberately does not do
 
-- **It does not re-enable mutation testing.** It reports that nine scripts are
-  unreached because the workflow is disabled, with that as their disposition.
-  Turning the pillar back on is its own issue with its own evidence.
+- **It does not re-enable mutation testing.** The workflow already states the
+  condition for that — self-hosted runner capacity — and this decision does not
+  second-guess it. The nine entries record the consequence, not a complaint.
 - **It does not retire the simulations.** Finding them is this decision;
   removing any of them is separate, on the standard #133/#225 parity terms.
 

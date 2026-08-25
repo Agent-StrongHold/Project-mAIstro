@@ -624,8 +624,8 @@
       "id": "mutation-testing-tooling",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
-      "rationale": "The mutation-testing pillar's scripts. They are unreachable for one reason and it is not neglect of the scripts: .github/workflows/mutation.yml is a stub whose only step prints 'Mutation temporarily disabled', with the job named 'Mutation testing deferred to self-hosted runners'. Nine scripts are therefore dead behind a switched-off gate, which nothing reported until tooling entered the reachability graph (ADR-082526-aef8). Restoring the workflow reaches all nine at once; that is its own issue with its own evidence, not a side effect of measuring them.",
-      "root": ".github/workflows/mutation.yml, once its real job replaces the disabled stub",
+      "rationale": "The mutation-testing pillar's scripts, unreachable because .github/workflows/mutation.yml is currently a stub. That is a deliberate, documented parking rather than a gap: the workflow's own header states that mutation is disabled until self-hosted runner capacity is restored, that it must not consume GitHub-hosted Actions minutes while parked, and that the implementation, scheduler, checkpointing, history and baselines are kept in the repository precisely so they can be restored. These nine are therefore retained on purpose, and they all become reachable together the moment that workflow runs again. Recorded here because tooling only entered the reachability graph in ADR-082526-aef8 \u2014 the decision was always written down, in the workflow file.",
+      "root": ".github/workflows/mutation.yml, once self-hosted runner capacity is restored and its real job replaces the parked stub",
       "modules": [
         "scripts/check_mutation_baseline.py",
         "scripts/mutation_aggregate.py",
