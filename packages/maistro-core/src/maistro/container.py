@@ -167,6 +167,14 @@ class Container:
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
+    #: Versioned prompt library. Durable on the configured backend (#122).
+    #:
+    #: Wired here rather than built by each caller because the callers that
+    #: needed one were building `InMemoryPromptManager()` by hand next to
+    #: container-supplied durable stores — so an operator on `postgresql://`
+    #: got durable learnings, outcomes and sessions and lost every prompt on
+    #: restart. That is #122's defect, in the one store #122 did not finish.
+    prompt_manager: Any = None
     conduit: Any = None
     #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
@@ -757,6 +765,7 @@ async def create_container(
     from maistro.security.sentinel.policy import Sentinel
 
     audit_log = _wire_audit_log(pg_pool)
+    prompt_manager = await _wire_prompt_manager(pg_pool, db_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -929,6 +938,7 @@ async def create_container(
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
+        prompt_manager=prompt_manager,
         archive_store=archive_store,
         db_pool=db_pool,
         pg_pool=pg_pool,
@@ -996,6 +1006,32 @@ def _wire_audit_log(pg_pool: Any) -> Any:
     from maistro.persistence.pg_audit import PgAuditLog
 
     return PgAuditLog(pg_pool)
+
+
+async def _wire_prompt_manager(pg_pool: Any, db_pool: Any) -> Any:
+    """The prompt library on the configured backend, in-memory otherwise.
+
+    Async where `_wire_audit_log` is sync, because the SQLite twin owns its own
+    schema and has to be given the chance to create it — the same
+    `ensure_schema()` every other SQLite store here gets.
+
+    PostgreSQL first, then SQLite, then memory: the same precedence
+    `create_container` applies everywhere else, so a deployment that configured
+    both does not get a different answer for prompts than for learnings.
+    """
+    if pg_pool is not None:
+        from maistro.persistence.pg_prompts import PgPromptManager
+
+        return PgPromptManager(pg_pool)
+    if db_pool is not None:
+        from maistro.persistence.sqlite_prompts import SqlitePromptManager
+
+        manager = SqlitePromptManager(db_pool)
+        await manager.ensure_schema()
+        return manager
+    from maistro.prompts.store import InMemoryPromptManager
+
+    return InMemoryPromptManager()
 
 
 def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:

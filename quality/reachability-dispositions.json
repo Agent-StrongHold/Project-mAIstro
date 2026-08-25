@@ -334,16 +334,6 @@
       ]
     },
     {
-      "id": "persistence-postgres",
-      "subsystem": "Relational persistence",
-      "disposition": "CONNECT",
-      "rationale": "The PostgreSQL half of the persistence layer. #122 wired the four the container selects for a postgresql:// database_url \u2014 learnings, outcomes, sessions and audit \u2014 so only the prompt manager is left. It stays CONNECT rather than RETIRE because ADR-082226-5104 makes PostgreSQL the durable system of record and prompts belong there for the same reasons the rest do; nothing has replaced it, the container simply has no prompt-manager wiring on either backend (sqlite_prompts is unwired too, in the persistence-sqlite-homelab group).",
-      "root": "maistro.container prompt-manager wiring, for a postgresql:// database_url",
-      "modules": [
-        "maistro.persistence.pg_prompts"
-      ]
-    },
-    {
       "id": "resilience-unwired",
       "subsystem": "Resilience",
       "disposition": "CONNECT",
@@ -583,11 +573,10 @@
       "id": "persistence-sqlite-homelab",
       "subsystem": "Relational persistence",
       "disposition": "CONNECT",
-      "rationale": "Both describe themselves as homelab/single-instance stores. ADR-082226-5104 says SQLite should not be another *canonical* datastore without a concrete requirement \u2014 it does not say single-instance homelab deployments are not one, and it explicitly leaves small local uses alone. An earlier disposition read that as a retirement order and marked these RETIRE; that over-read the decision. Their fate follows #122, where the container's backend selection is settled.",
+      "rationale": "The SQLite homelab twins that no container path selects. #122 wired the prompt manager on every backend, so sqlite_prompts left this group with pg_prompts; sqlite_audit is what remains \u2014 the container wires PgAuditLog for PostgreSQL and InMemoryAuditLog otherwise, so the SQLite twin has no selector. It stays CONNECT rather than RETIRE because a homelab on sqlite: has the same reason to keep an audit trail across restarts that a PostgreSQL deployment does.",
       "root": "maistro.container backend selection for a homelab deployment (#122)",
       "modules": [
-        "maistro.persistence.sqlite_audit",
-        "maistro.persistence.sqlite_prompts"
+        "maistro.persistence.sqlite_audit"
       ]
     },
     {

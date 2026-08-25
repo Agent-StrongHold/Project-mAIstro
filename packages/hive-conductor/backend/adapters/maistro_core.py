@@ -124,7 +124,6 @@ class MaistroCoreBridge:
 
         from maistro.agents.factory import create_agents
         from maistro.container import create_container
-        from maistro.prompts.store import InMemoryPromptManager
         from maistro.types.config import AgentConfig
 
         llm_base = (settings.maistro_llm_base_url or "").strip()
@@ -150,7 +149,12 @@ class MaistroCoreBridge:
             api_key=llm_key or "sk-noop",
             model=model,
         )
-        prompt_manager = InMemoryPromptManager()
+        # The container's, not a fresh in-memory one. Built by hand here, an
+        # operator on `postgresql://` got durable learnings, outcomes and
+        # sessions from `create_container` and lost every prompt on restart —
+        # the stores sitting side by side in the `create_agents` call below
+        # disagreed about whether this deployment has a database (#122).
+        prompt_manager = self._container.prompt_manager
 
         agents_dir = settings.maistro_agents_dir
         if not os.path.isabs(agents_dir):
