@@ -3,8 +3,14 @@ id: ADR-082426-a47f
 title: "Terminalizing a Run settles its open NodeRuns, and closes them to further movement"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-24
+accepted: 2026-08-24
+history:
+  - status: Proposed
+    date: 2026-08-24
+  - status: Accepted
+    date: 2026-08-24
 substrate:
   - maistro-engine#ADR-081226-a66b
 implements: []
@@ -17,6 +23,8 @@ blocked-by: []
 contracts:
   - behavioral
 tests: []
+ac-modules:
+  AC-1: maistro.runs.store
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -96,6 +104,12 @@ the very reconciliation it was racing.
 
 `_cancel_unfinished_node_runs` is deleted rather than left beside the shared invariant.
 Two implementations of one rule is how they drift.
+
+## Acceptance Criteria
+
+<!-- ac-state: unproven AC-1 - this decision landed before ADR-level AC marker wiring; #226/#227 store-conformance tests exist and the marker retrofit remains measured governance debt -->
+- [ ] **AC-1**: On every canonical RunStore backend, terminalizing a Run atomically settles
+  each open NodeRun to `cancelled`, and no NodeRun can transition after its parent Run is terminal.
 
 ## Consequences
 

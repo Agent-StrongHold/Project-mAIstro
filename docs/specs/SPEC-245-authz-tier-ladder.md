@@ -3,7 +3,7 @@ id: SPEC-245
 title: "Authorization tier ladder + authorize() evaluation order (ADR-068 §B,F)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-028

@@ -3,7 +3,7 @@ id: SPEC-070426-6ea8
 title: "Open Design renderer provider — discovery, render, artifact ingest, trust tiering"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-04
 substrate:
   - maistro-engine#ADR-100

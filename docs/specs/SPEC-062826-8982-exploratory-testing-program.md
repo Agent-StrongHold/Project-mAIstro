@@ -3,7 +3,7 @@ id: SPEC-062826-8982
 title: "Exploratory testing program: session-log template and BACKLOG escalation path"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-28
 substrate:
   - maistro-engine#ADR-031

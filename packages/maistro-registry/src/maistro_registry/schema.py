@@ -27,7 +27,7 @@ import re
 from datetime import date
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _Date = date
 
@@ -98,6 +98,14 @@ _ID_PATTERN = re.compile(r"^(ADR|SPEC)-(\d{3}|\d{6}-[0-9a-f]{4})$")
 # This repo is self-contained; references resolve within it.
 _REF_PATTERN = re.compile(r"^maistro-engine#((ADR|SPEC)-(\d{3}|\d{6}-[0-9a-f]{4}))$")
 
+# ADR-097 has required lifecycle evidence that the original schema never
+# enforced. Applying it retroactively would turn a validator improvement into a
+# bulk rewrite of records authored under the older contract, so #239 establishes
+# a prospective boundary: records authored from this date forward must carry the
+# status evidence ADR-097 says they carry. Legacy/backfilled history remains
+# readable and is still audited by the acceptance-state ledger.
+_LIFECYCLE_EVIDENCE_ENFORCED_FROM = date(2026, 8, 24)
+
 
 def _is_valid_id(value: str) -> bool:
     return bool(_ID_PATTERN.match(value))
@@ -111,7 +119,8 @@ class HistoryEntry(BaseModel):
     """One ADR-097 lifecycle transition: the status entered, when, and why.
 
     `date` is optional because backfilled entries (tools/backfill_history.py)
-    omit it when the original transition date is unknown.
+    omit it when the original transition date is unknown. Newly-authored
+    documents cannot rely on that exception; FrontMatter validates them below.
 
     `reason` is optional prose for transitions whose motivation is not obvious
     from the status alone — a rollback out of `Implemented`, a deprecation, a
@@ -212,3 +221,67 @@ class FrontMatter(BaseModel):
             if not owner.startswith("@"):
                 raise ValueError(f"owner must start with @, got {owner!r}")
         return v
+
+    @model_validator(mode="after")
+    def _validate_lifecycle_evidence(self) -> "FrontMatter":  # noqa
+        """Make ADR-097's lifecycle claims true for newly-authored records.
+
+        Older documents were valid under a schema where history defaulted empty
+        and status metadata was not related. They stay parseable so this change
+        does not convert governance hardening into an unrelated bulk rewrite.
+        """
+        if self.created < _LIFECYCLE_EVIDENCE_ENFORCED_FROM:
+            return self
+
+        if not self.history:
+            raise ValueError(
+                "ADR-097: documents created on or after 2026-08-24 must record lifecycle history"
+            )
+        if any(entry.date is None for entry in self.history):
+            raise ValueError("ADR-097: newly-authored lifecycle history entries require a date")
+        if self.history[-1].status is not self.status:
+            raise ValueError(
+                "ADR-097: front-matter status must match the latest lifecycle history entry"
+            )
+
+        # Compare status values rather than enum attributes here. Vulture's
+        # reviewed Pydantic/enum ledger intentionally records declarative enum
+        # members as unused; a validator implementation detail must not churn
+        # that identity ledger while changing no public schema vocabulary.
+        adr_taken = {"Accepted", "Fully Specced", "Implemented"}
+        spec_taken = {"Accepted", "AC Defined", "In Progress", "Tests Passing", "Implemented"}
+        if (self.kind is Kind.ADR and self.status.value in adr_taken) or (
+            self.kind is Kind.SPEC and self.status.value in spec_taken
+        ):
+            if self.accepted is None:
+                raise ValueError(f"ADR-097: {self.status.value} requires an accepted date")
+            if not self.owners:
+                raise ValueError(f"ADR-097: {self.status.value} requires at least one owner")
+
+        if self.status.value == "Implemented" and self.implemented is None:
+            raise ValueError("ADR-097: Implemented requires an implemented date")
+
+        # A dated history only works as an audit trail when the duplicated
+        # lifecycle metadata agrees with it. Intermediate states may be skipped
+        # under ADR-097, so only compare a metadata date when that transition is
+        # actually present in history (the current Accepted/Implemented states
+        # necessarily have such an entry because current status == latest).
+        accepted_entries = [entry for entry in self.history if entry.status.value == "Accepted"]
+        if self.accepted is not None and accepted_entries:
+            accepted_history_date = accepted_entries[-1].date
+            if self.accepted != accepted_history_date:
+                raise ValueError(
+                    "ADR-097: accepted date must match the Accepted lifecycle history entry"
+                )
+
+        implemented_entries = [
+            entry for entry in self.history if entry.status.value == "Implemented"
+        ]
+        if self.implemented is not None and implemented_entries:
+            implemented_history_date = implemented_entries[-1].date
+            if self.implemented != implemented_history_date:
+                raise ValueError(
+                    "ADR-097: implemented date must match the Implemented lifecycle history entry"
+                )
+
+        return self
