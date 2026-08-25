@@ -21,6 +21,8 @@ jobs:
           python-version: '3.12'
 
       - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.5.x"
 
       - name: Reconcile current develop with M0 changes
         shell: bash
@@ -54,8 +56,8 @@ jobs:
           git rm -f --ignore-unmatch .github/workflows/m0-reconcile-develop.yml
           git commit -m "Reconcile M0 closeout with current develop"
 
-      - name: Install workspace
-        run: uv sync --all-packages --dev
+      - name: Install repository CI environment
+        run: uv sync --locked --all-extras
 
       - name: Verify M0 truth gates
         shell: bash
