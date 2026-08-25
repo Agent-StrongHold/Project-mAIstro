@@ -18,6 +18,14 @@ name: Gates Ran
 # completion can. Each completion re-evaluates the same head, so an early firing
 # that finds a sibling still running goes red and the last one settles it.
 #
+# It will not run on the pull request that adds it, and that is not a defect.
+# GitHub starts a `workflow_run` workflow from the **default branch** copy of
+# the file, so `gates-ran` begins reporting only once this is on `develop` —
+# its first real firing is on the *next* PR. Reviewers of the adding PR should
+# expect the check to be absent here; that absence is the very state the check
+# exists to make loud everywhere else, which is an irony worth writing down
+# rather than discovering.
+#
 # A consequence worth stating: because this has no `pull_request:` trigger,
 # `scripts/check-required-checks.py` cannot see it, so `gates-ran` does not
 # appear in the generated table in docs/ci/REQUIRED-CHECKS.md. It still has to

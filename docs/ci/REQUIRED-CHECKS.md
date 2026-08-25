@@ -50,6 +50,12 @@ start further workflows for — and 32 runs each of CI and quality sat at
 `action_required` while the PR displayed its own workflow's green job. See
 [#262](https://github.com/Agent-StrongHold/Project-mAIstro/issues/262).
 
+It also does not report on the pull request that introduces it. GitHub starts a
+`workflow_run` workflow from the **default branch** copy of the file, so
+`gates-ran` begins reporting only once it is on `develop` — its first real
+firing is on the next PR. Do not read its absence there as the check failing to
+work; read it as the reason the check had to exist.
+
 It does **not** cover the base-coupled checks (CodeQL's three `Analyze` rows and
 `Container scan + SBOM + cosign`). Those legitimately produce no run on a
 `develop`-based PR, so requiring them would paint every PR red for correct
