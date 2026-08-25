@@ -32,6 +32,31 @@ python3 scripts/check-required-checks.py --update   # rewrite the table below
 Runner cost for the check set is measured in
 [`RUNNER-COST.md`](RUNNER-COST.md).
 
+## One required check the table cannot list: `gates-ran`
+
+`.github/workflows/gates-ran.yml` produces a check named **`gates-ran`** that
+must be marked required alongside the table below, and it is **absent from the
+table by construction**. The generator walks workflows reachable from a
+`pull_request:` trigger; this one triggers on `workflow_run:`, because the
+question it asks — did every required check actually run on this head? — cannot
+be answered from inside any of the workflows being asked about. A job in
+`ci.yml` cannot see whether `quality.yml` ran.
+
+It exists because a check that never reports is not red, it is *absent*, and
+absence renders as an empty space where a tick would go. On
+[#242](https://github.com/Agent-StrongHold/Project-mAIstro/pull/242) a workflow
+pushed with the default `GITHUB_TOKEN` — which GitHub deliberately will not
+start further workflows for — and 32 runs each of CI and quality sat at
+`action_required` while the PR displayed its own workflow's green job. See
+[#262](https://github.com/Agent-StrongHold/Project-mAIstro/issues/262).
+
+It does **not** cover the base-coupled checks (CodeQL's three `Analyze` rows and
+`Container scan + SBOM + cosign`). Those legitimately produce no run on a
+`develop`-based PR, so requiring them would paint every PR red for correct
+behaviour and the gate would be switched off within a day. The cost is that on a
+`main`-based PR nothing verifies CodeQL ran; that is the narrower gap, and it is
+recorded here rather than left to be discovered.
+
 ## Scope: what decides whether a check runs
 
 Three values appear in the `Runs on` column, and the distinction is the whole
