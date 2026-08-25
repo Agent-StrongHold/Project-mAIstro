@@ -71,8 +71,9 @@ jobs:
               text = text.replace(anchor, anchor + row, 1)
               readme.write_text(text, encoding='utf-8')
           PY
-      - name: Verify formatting and wired PostgreSQL property leg
+      - name: Format and verify the wired PostgreSQL property leg
         run: |
+          uv run ruff format formal/models/test_pg_run_store.py
           uv run ruff check formal/models/test_pg_run_store.py
           uv run ruff format --check formal/models/test_pg_run_store.py
           uv run pytest formal/models/test_pg_run_store.py -v --tb=short
