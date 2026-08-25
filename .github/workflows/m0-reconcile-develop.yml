@@ -1,0 +1,83 @@
+name: M0 reconcile latest develop
+
+on:
+  push:
+    branches:
+      - chatgpt/m0-closeout
+    paths:
+      - .github/workflows/m0-reconcile-develop.yml
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m0-closeout
+          fetch-depth: 0
+      - name: Merge current develop and resolve generated/planning surfaces deliberately
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin develop
+          git merge --no-commit origin/develop || true
+
+          # Generated acceptance-state artefacts must start from the newer develop
+          # measurement and be regenerated after the M0 ADR corrections below.
+          if git ls-files -u -- quality/ac-state.json | grep -q .; then
+            git checkout --theirs -- quality/ac-state.json
+          fi
+          if git ls-files -u -- quality/ac-state-ceilings.json | grep -q .; then
+            git checkout --theirs -- quality/ac-state-ceilings.json
+          fi
+
+          # M0 rewrote the living matrix deliberately. Keep that rewrite, while
+          # carrying forward develop's ADR filename correction from #240.
+          if git ls-files -u -- docs/architecture/CONVERGENCE-MATRIX.md | grep -q .; then
+            git checkout --ours -- docs/architecture/CONVERGENCE-MATRIX.md
+          fi
+          sed -i 's/ADR-2026-08-16/ADR-081626-f383/g' docs/architecture/CONVERGENCE-MATRIX.md
+
+          unresolved=$(git diff --name-only --diff-filter=U)
+          if [ -n "$unresolved" ]; then
+            echo "Unresolved merge conflicts:"
+            echo "$unresolved"
+            exit 1
+          fi
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.5.x"
+      - run: uv python install 3.12
+      - run: uv sync --locked --all-extras
+      - run: uv pip install -e packages/maistro-evolve
+      - name: Measure M0 on the current develop baseline
+        run: |
+          set +e
+          output=$(uv run python scripts/check-ac-state.py --run-tests --ratchet 2>&1)
+          rc=$?
+          set -e
+          echo "$output"
+
+          # #239 intentionally adds four zero-scoring taken decisions. That may
+          # lower only design coverage; no debt counter is allowed to widen.
+          if echo "$output" | grep -Eq 'completion_claims_|specs_awaiting_retrofit|markers_without_criterion|criteria_claimed_but_unproven|scenarios_without_ac_tag|gherkin_parse_errors|specs_implementing_nothing|adrs_without_implementing_spec|specs_declaring_no_criteria'; then
+            echo "M0 changed a debt counter; refusing to bank it"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ] && ! echo "$output" | grep -q 'design_coverage'; then
+            echo "Ratchet failed for a reason other than the reviewed M0 denominator change"
+            exit 1
+          fi
+
+          uv run python scripts/check-ac-state.py --run-tests --ratchet --bank
+          uv run python scripts/check-ac-state.py --run-tests --ratchet
+      - name: Commit reconciled merge
+        run: |
+          git add -A
+          git commit -m "Merge latest develop into M0 closeout and refresh measured state"
+          git push origin HEAD:chatgpt/m0-closeout
