@@ -36,7 +36,7 @@ def backlog(*items: str, statuses: tuple[str, ...] = ("Proposed", "Implemented")
 
 - `engine-NNN` — shared substrate
 
-## Status legend
+## Work status legend
 
 | Marker | Meaning |
 |---|---|

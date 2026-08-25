@@ -3,7 +3,7 @@ id: SPEC-240
 title: "Memory decay + reinforcement dynamics (ADR-080 part A)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-013

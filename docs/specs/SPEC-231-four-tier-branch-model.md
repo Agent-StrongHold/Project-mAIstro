@@ -3,7 +3,7 @@ id: SPEC-231
 title: "Four-tier branch model: develop / integration / main with CI wiring"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate: []
 implements:

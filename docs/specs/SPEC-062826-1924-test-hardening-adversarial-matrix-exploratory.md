@@ -3,7 +3,7 @@ id: SPEC-062826-1924
 title: "Test hardening: adversarial probing, state/IO matrices, and exploratory testing — turning up coverage of trust boundaries and state machines"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-28
 substrate:
   - maistro-engine#ADR-032
@@ -38,6 +38,10 @@ owners:
 history:
   - status: Implemented
     date: 2026-06-28
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # SPEC-062826-1924: Test hardening — adversarial, state/IO matrix, and exploratory testing

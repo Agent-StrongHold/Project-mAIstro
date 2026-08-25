@@ -3,7 +3,7 @@ id: SPEC-220
 title: "Canvas asset store: definitions, sheets, instances, profiles, books"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-005

@@ -1,17 +1,7 @@
-"""Architecture fitness functions: import-direction boundaries.
+"""Architecture fitness functions: canonical ownership and import boundaries.
 
-quality.yml Pillar 7 has always declared these; until now the step guarded on
-this directory's existence and emitted a warning when it was absent, so the
-pillar passed green without asserting anything.
-
-These are the boundaries ADR-019 relies on for the Stronghold split: maistro-core
-is the product-agnostic runtime that downstream products import, so it must never
-import *back* into an application or a sibling ability package. A violation here
-is not a style problem — it makes core un-importable for any consumer that does
-not also ship the app it reached into.
-
-Assertions are deliberately narrow and currently true; they are a ratchet against
-regression, not an aspiration.
+quality.yml Pillar 7 runs this suite as a blocking gate. These assertions are
+ratchets against architectural regression, not aspirations.
 """
 
 from __future__ import annotations
@@ -44,6 +34,27 @@ _FORBIDDEN_FOR_CORE = frozenset(
 # depend on maistro-core, but never on an application.
 _FORBIDDEN_FOR_CANVAS = frozenset({"hive", "backend", "maistro_server"})
 
+# #36 invariant 6: compatibility owners must never silently read as canonical.
+# A direct public type alias is the concrete shape this repository has today.
+# Every allowed identity is reviewed here and must also be explicitly described
+# as compatibility-only in its source file. A new alias is therefore a red build
+# until somebody decides whether it is canonical, compatibility-only, or should
+# not exist.
+_COMPATIBILITY_ALIAS_LEDGER = frozenset(
+    {
+        "builders/dag.py::GraphSpec=GraphConfig",
+        "types/config.py::MaistroConfig=AgentConfig",
+        "types/errors.py::MaistroError=AgentError",
+        "types/errors.py::StrongholdError=AgentError",
+        "workspaces/model.py::WorkspaceMember=WorkspaceMembership",
+    }
+)
+_COMPATIBILITY_BANNERS = (
+    "Backwards compat aliases",
+    "Backward-compatible alias",
+    "alias, don't fork",
+)
+
 
 def _iter_python_files(root: Path) -> list[Path]:
     return [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
@@ -53,17 +64,7 @@ def _imported_roots(path: Path, *, module_level_only: bool) -> set[str]:
     """Top-level module names imported by ``path``.
 
     Uses the AST rather than a regex so that strings, comments and docstrings
-    mentioning a package name cannot produce a false violation — Warden's own
-    pattern fixtures contain such strings.
-
-    ``module_level_only`` restricts the scan to imports that execute at import
-    time. That distinction is the whole point: a *module-level* import of an
-    optional package makes maistro-core un-importable for anyone who did not
-    install it, whereas a guarded, function-local import behind an optional
-    extra is the documented plugin pattern. `maistro/cli/_install.py:20` and
-    `_builders_tui.py:160-163` are exactly that — `maistro-bootstrap[builders]`
-    is declared in the `builders` extra (maistro-core/pyproject.toml:49-53) and
-    both call sites import inside a function under try/except.
+    mentioning a package name cannot produce a false violation.
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -76,7 +77,6 @@ def _imported_roots(path: Path, *, module_level_only: bool) -> set[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 roots.add(alias.name.split(".")[0])
-        # level > 0 is a relative import — always within the package.
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             roots.add(node.module.split(".")[0])
     return roots
@@ -88,24 +88,7 @@ _MODULE_SCOPE_WRAPPERS = (ast.If, ast.Try, ast.With, ast.For, ast.While)
 
 
 def _module_scope_nodes(tree: ast.Module) -> list[ast.stmt]:
-    """Statements that execute at import time.
-
-    Descends into module-scope ``if`` / ``try`` / ``with`` / loop bodies, but
-    never into a function or class body. Scanning ``tree.body`` alone was not
-    enough: for
-
-        try:
-            import maistro_canvas
-        except ImportError:
-            maistro_canvas = None
-
-    ``tree.body`` holds only the ``Try`` node, so the ``Import`` was invisible
-    and a feature-gated top-level import of a sibling package would sail past
-    this suite while still breaking `import maistro` for any consumer that had
-    not installed that package. A ``try/except ImportError`` at module scope is
-    exactly the shape that bug takes in the wild, which is why it must be
-    caught here and a *function-local* one must not.
-    """
+    """Statements that execute at import time, excluding functions/classes."""
     out: list[ast.stmt] = []
     stack: list[ast.stmt] = list(tree.body)
     while stack:
@@ -131,29 +114,80 @@ def _violations(
     return found
 
 
+def _looks_like_public_type_name(name: str) -> bool:
+    """Return whether ``name`` looks like a public class/type identity.
+
+    ALL_CAPS assignments are constants, not type-owner aliases. Keeping this
+    predicate deliberately narrow prevents the architecture gate from silently
+    expanding into a generic assignment linter.
+    """
+    return bool(name) and name[0].isupper() and not name.isupper()
+
+
+def _public_direct_aliases(root: Path) -> dict[str, Path]:
+    """Return direct public type aliases as stable path/name identities.
+
+    `OldName = CanonicalName` is the compatibility-owner shape #36 found. We
+    intentionally do not treat constants, imports, `TypeAlias` expressions or
+    generic assignments as aliases: the gate is narrow enough to be trusted.
+    """
+    aliases: dict[str, Path] = {}
+    for py in _iter_python_files(root):
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Name):
+                continue
+            if not _looks_like_public_type_name(target.id) or not _looks_like_public_type_name(
+                node.value.id
+            ):
+                continue
+            rel = py.relative_to(root).as_posix()
+            aliases[f"{rel}::{target.id}={node.value.id}"] = py
+    return aliases
+
+
+def _compatibility_alias_violations(root: Path) -> list[str]:
+    """Refuse unreviewed, stale, or unbannered compatibility-owner aliases."""
+    aliases = _public_direct_aliases(root)
+    found = set(aliases)
+    violations = [
+        f"unreviewed public alias: {item}" for item in sorted(found - _COMPATIBILITY_ALIAS_LEDGER)
+    ]
+    violations.extend(
+        f"stale compatibility alias ledger entry: {item}"
+        for item in sorted(_COMPATIBILITY_ALIAS_LEDGER - found)
+    )
+    for identity in sorted(found & _COMPATIBILITY_ALIAS_LEDGER):
+        source = aliases[identity].read_text(encoding="utf-8")
+        if not any(banner in source for banner in _COMPATIBILITY_BANNERS):
+            violations.append(f"compatibility alias is not bannered: {identity}")
+    return violations
+
+
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("unit")
 def test_core_does_not_import_applications() -> None:
-    """maistro-core must not import any app or sibling ability package.
-
-    ADR-019: core is product-agnostic. A reverse dependency here would force
-    every downstream consumer to install the application core reached into.
-    """
+    """Core stays product-agnostic and compatibility aliases stay explicit."""
     assert _CORE_SRC.is_dir(), f"expected core source tree at {_CORE_SRC}"
     violations = _violations(_CORE_SRC, _FORBIDDEN_FOR_CORE)
     assert not violations, "maistro-core reverse-dependency violation(s):\n" + "\n".join(violations)
+
+    compatibility = _compatibility_alias_violations(_CORE_SRC)
+    assert not compatibility, "canonical/compatibility owner violation(s):\n" + "\n".join(
+        compatibility
+    )
 
 
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("unit")
 def test_core_never_imports_an_application_at_any_scope() -> None:
-    """Applications are off-limits to core even behind a guard.
-
-    An optional *ability* package (maistro-bootstrap, declared in the `builders`
-    extra) may legitimately be imported function-local behind try/except. An
-    application never can: there is no configuration in which the shared runtime
-    should reach into hive-conductor or maistro-server, guarded or not.
-    """
+    """Applications are off-limits to core even behind a guard."""
     applications = frozenset({"hive", "backend", "maistro_server"})
     violations = _violations(_CORE_SRC, applications, module_level_only=False)
     assert not violations, "maistro-core imports an application:\n" + "\n".join(violations)
@@ -174,12 +208,7 @@ def test_canvas_does_not_import_applications() -> None:
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("unit")
 def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
-    """The detector must actually fail on a violation.
-
-    Without this, the two assertions above would pass just as happily if
-    ``_imported_roots`` silently returned nothing — the exact failure mode that
-    let Pillar 7 report green while asserting nothing.
-    """
+    """The detectors themselves fail on planted regressions."""
     planted = tmp_path / "pkg"
     planted.mkdir()
     (planted / "offender.py").write_text("from hive import something\n", encoding="utf-8")
@@ -187,15 +216,11 @@ def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
         '"""A docstring mentioning hive and maistro_server."""\nimport os\n',
         encoding="utf-8",
     )
-    # Guarded, function-local: allowed at module scope, caught at any scope.
     (planted / "guarded.py").write_text(
         "def go():\n    try:\n        from hive import thing\n    except ImportError:\n"
         "        thing = None\n    return thing\n",
         encoding="utf-8",
     )
-
-    # A module-scope try/except still executes at import time, so it counts as
-    # a module-level import even though tree.body holds only the Try node.
     (planted / "gated.py").write_text(
         "try:\n    import hive\nexcept ImportError:\n    hive = None\n",
         encoding="utf-8",
@@ -204,12 +229,22 @@ def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
     module_level = _violations(planted, frozenset({"hive"}))
     assert len(module_level) == 2, f"expected offender.py and gated.py, got {module_level}"
     assert any("offender.py" in v for v in module_level)
-    assert any("gated.py" in v for v in module_level), (
-        "a module-scope try/except import must be caught: it runs at import time"
-    )
+    assert any("gated.py" in v for v in module_level)
 
     any_scope = _violations(planted, frozenset({"hive"}), module_level_only=False)
     assert len(any_scope) == 3, (
         f"expected offender.py, gated.py and the function-local guarded.py, got {any_scope}"
     )
     assert any("guarded.py" in v for v in any_scope)
+
+    # A public direct alias that was never reviewed is exactly the #36 invariant
+    # 6 regression. Planting one proves the gate cannot silently return nothing.
+    (planted / "alias.py").write_text("OldCanonical = NewCanonical\n", encoding="utf-8")
+    aliases = _public_direct_aliases(planted)
+    assert "alias.py::OldCanonical=NewCanonical" in aliases
+
+    # Constants are not compatibility type owners and must stay outside this
+    # focused architecture gate.
+    (planted / "constants.py").write_text("OLD_CONSTANT = NEW_CONSTANT\n", encoding="utf-8")
+    aliases = _public_direct_aliases(planted)
+    assert "constants.py::OLD_CONSTANT=NEW_CONSTANT" not in aliases

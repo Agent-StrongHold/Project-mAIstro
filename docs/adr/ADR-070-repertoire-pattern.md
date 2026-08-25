@@ -3,7 +3,7 @@ id: ADR-070
 title: "The Repertoire Pattern — reuse-first cascade (perform, improvise, rehearse, compose)"
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-30
 substrate: []
 implements: []
@@ -26,6 +26,10 @@ history:
   - status: Proposed
     date: 2026-05-30
   - status: Implemented
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # ADR-070: The Repertoire Pattern
