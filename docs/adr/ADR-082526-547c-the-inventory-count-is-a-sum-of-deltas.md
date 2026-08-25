@@ -3,16 +3,30 @@ id: ADR-082526-547c
 title: "The suite-inventory count is a sum of per-change deltas, not a shared row"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-25
+accepted: 2026-08-25
 substrate: []
 implements: []
 related: []
 supersedes: []
 blocks: []
 blocked-by: []
-contracts: []
-tests: []
+contracts:
+  - behavioral
+tests:
+  - tests/test_check_suite_inventory.py
+ac-modules:
+  AC-1: scripts/check-suite-inventory.py
+  AC-2: scripts/check-suite-inventory.py
+  AC-3: scripts/check-suite-inventory.py
+  AC-4: scripts/check-suite-inventory.py
+  AC-5: scripts/check-suite-inventory.py
+history:
+  - status: Proposed
+    date: 2026-08-25
+  - status: Accepted
+    date: 2026-08-25
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -42,7 +56,7 @@ conflict because two PRs never write the same path. What #209 left behind, and
 what reopened #208, is the generated table:
 
 ```
-| `packages/maistro-core/tests` | 7698 | `ci.yml` |
+| `packages/maistro-core/tests` | 7690 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 ```
 
@@ -108,9 +122,12 @@ record of what was written, not a document kept current.
   merge; here it means more delta files, which do not interact.
 
 ### Negative / Trade-offs
-- `SUITE-INVENTORY.md` loses its at-a-glance table. `--show` renders it, but a
-  reader browsing the docs no longer sees the numbers inline. Judged worth it:
-  the table's whole cost was that it was a single shared place to write.
+- `SUITE-INVENTORY.md` loses the numbers from its table. The table stays, and
+  still records which suites exist and which workflow runs each — that changes
+  only when a suite is added, removed, or rewired, which is rare and genuinely
+  a shared decision. But a reader browsing the docs no longer sees the counts
+  inline; `--show` renders them. Judged worth it: the count column's whole cost
+  was that it was a single shared place to write.
 - Expected counts are now derived rather than read, so a corrupt or malformed
   delta file is a new way for the gate to be wrong. Mitigated by failing
   loudly on unparseable front matter rather than skipping it.
@@ -124,3 +141,20 @@ record of what was written, not a document kept current.
   record changes where the number is stored, not what it counts.
 - A note is still not mandatory per change. Requiring one belongs to the AC
   gate, not here; a change that moves no count needs no delta.
+
+## Acceptance criteria
+
+- [x] **AC-1** Two changes that both move a suite's count record their deltas in
+  different files, and the recorded deltas sum to the collected truth — whatever
+  suites they touch, and whether they add or remove.
+- [x] **AC-2** A delta already recorded stays correct when the base moves: no
+  file is rewritten and no re-collection is needed for the sum to remain true.
+- [x] **AC-3** The tripwire holds. A suite whose collected count does not match
+  the ledger is drift, an expected count for a suite with no collection recipe
+  is an error, and a suite that fails to collect is reported as a broken suite
+  rather than as a delta to record.
+- [x] **AC-4** A delta block that is present but unreadable raises rather than
+  contributing zero; a note with no front matter — every note written before
+  this record — contributes nothing and is not an error.
+- [x] **AC-5** Folding deltas into the baseline changes no expected count and
+  edits no note.

@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 560,
+    "criteria_declared": 565,
     "criteria_annotated": 214,
-    "markers_found": 270,
+    "markers_found": 275,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 16.3882
+    "design_coverage": 17.1216
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,8 +1081,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 16.3882,
-    "decisions": 113,
+    "percent": 17.1216,
+    "decisions": 114,
     "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1736,6 +1736,13 @@
         "criteria": 5,
         "reachable": 3,
         "percent": 60.0
+      },
+      {
+        "id": "ADR-082526-547c",
+        "declared_status": "Accepted",
+        "criteria": 5,
+        "reachable": 5,
+        "percent": 100.0
       },
       {
         "id": "ADR-082526-7f02",
@@ -13364,6 +13371,65 @@
         "AC-5"
       ],
       "tier": "declared"
+    },
+    {
+      "id": "ADR-082526-547c",
+      "file": "docs/adr/ADR-082526-547c-the-inventory-count-is-a-sum-of-deltas.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 5,
+      "own_detail": [
+        {
+          "id": "ADR-082526-547c/AC-1",
+          "claimed": true,
+          "module": "scripts/check-suite-inventory.py",
+          "covered_by": [
+            "tests/test_check_suite_inventory.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-547c/AC-2",
+          "claimed": true,
+          "module": "scripts/check-suite-inventory.py",
+          "covered_by": [
+            "tests/test_check_suite_inventory.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-547c/AC-3",
+          "claimed": true,
+          "module": "scripts/check-suite-inventory.py",
+          "covered_by": [
+            "tests/test_check_suite_inventory.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-547c/AC-4",
+          "claimed": true,
+          "module": "scripts/check-suite-inventory.py",
+          "covered_by": [
+            "tests/test_check_suite_inventory.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-547c/AC-5",
+          "claimed": true,
+          "module": "scripts/check-suite-inventory.py",
+          "covered_by": [
+            "tests/test_check_suite_inventory.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
     },
     {
       "id": "ADR-082526-7f02",
