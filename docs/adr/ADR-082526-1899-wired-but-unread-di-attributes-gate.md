@@ -17,6 +17,13 @@ contracts:
   - boundary
 tests:
   - tests/test_check_wiring_reads.py
+ac-modules:
+  AC-1: scripts/check-wiring-reads.py
+  AC-2: scripts/check-wiring-reads.py
+  AC-3: scripts/check-wiring-reads.py
+  AC-4: scripts/check-wiring-reads.py
+  AC-5: scripts/check-wiring-reads.py
+  AC-6: scripts/check-wiring-reads.py
 history:
   - status: Proposed
     date: 2026-08-25
@@ -153,26 +160,16 @@ as the reason, so the next person does not re-derive it.
 
 ## Acceptance criteria
 
-Each criterion below is proven by `tests/test_check_wiring_reads.py`, and none
-of them can reach the ladder's `reachable` rung. That rung asks whether the
-module carrying the evidence is in the import graph `check-reachability.py`
-walks, and that graph covers `packages/*/src` and `packages/*/backend` only. A
-CI gate lives in `scripts/`, so its criteria cap at `passing` by construction —
-not because the evidence is weak, but because the ladder has no rung for repo
-tooling.
+Each criterion below is proven by `tests/test_check_wiring_reads.py`.
 
-That is a gap in the measurement system rather than in this change, and it
-pushes every gate's ADR towards one of two bad answers: leave it `Proposed`
-after shipping, which is the defect #239 exists for, or declare its criteria
-unproven. This ADR takes the second and says so in the open; the first is
-tracked separately.
+These were originally declared `ac-state: unproven`, not because the evidence
+was weak but because the ladder had no rung for repo tooling: `reachable` asks
+whether the reachability graph reaches the module carrying the evidence, and
+that graph covered `packages/` only. ADR-082526-aef8 roots tooling at the
+workflow steps that run it, so `scripts/check-wiring-reads.py` is now a module
+the graph reaches and the annotation above is the honest one. The escape hatch
+is retired.
 
-<!-- ac-state: unproven AC-1 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
-<!-- ac-state: unproven AC-2 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
-<!-- ac-state: unproven AC-3 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
-<!-- ac-state: unproven AC-4 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
-<!-- ac-state: unproven AC-5 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
-<!-- ac-state: unproven AC-6 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
 
 
 - [x] **AC-1** The gate reports a public field on a declared DI root that no
