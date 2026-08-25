@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import math
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
-from maistro.runs.lifecycle import UnearnedRunCompletion
+from maistro.runs.lifecycle import StaleLeaseRenewal, UnearnedRunCompletion
 from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
@@ -1514,3 +1515,187 @@ async def test_cancellation_over_completed_nodes_allowed_in_memory(memory_spine:
 @pytest.mark.ac("ADR-082426-19ed/AC-3")
 async def test_a_retried_node_does_not_condemn_its_run_in_memory(memory_spine: Any) -> None:
     await _assert_a_retried_node_does_not_condemn_its_run(memory_spine)
+
+
+# ── a lease that stops being renewed is reclaimed (#232) ───────────────
+#
+# The crash boundary #143 named and PR #199 deferred. Same two-test split as
+# the sections above: the parameterized test carries the all-three-stores
+# claim, the `memory_spine` one carries the acceptance criterion where no
+# database is configured.
+
+
+async def _leased_attempt(spine: Any, *, holder: str, ttl: timedelta) -> Any:
+    """A RUNNING Attempt holding a lease that expires."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder=holder, lease_ttl=ttl)
+    await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    return node_run, await store.get_attempt(attempt.attempt_id)
+
+
+async def _assert_a_live_lease_is_not_reclaimed(spine: Any) -> None:
+    """The rule that makes this safe. A worker that is still renewing must not
+    have its Attempt taken away — that is the failure mode #232's acceptance
+    names, and it is worse than the stuck state being fixed."""
+    store, _workspace, _project_id = spine
+    _node_run, attempt = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(minutes=5))
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    reclaimed = await store.reclaim_expired_attempts(now=lease.expires_at - timedelta(seconds=1))
+
+    assert reclaimed == []
+    still = await store.get_attempt(attempt.attempt_id)
+    assert still is not None and still.status is AttemptStatus.RUNNING
+
+
+async def _assert_renewal_pushes_the_expiry_out(spine: Any) -> None:
+    """Renewal is how liveness is *proven* rather than assumed. Without it a
+    TTL cannot tell a dead worker from a slow one."""
+    store, _workspace, _project_id = spine
+    _node_run, attempt = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    was = lease.expires_at
+
+    renewed = await store.renew_lease(
+        attempt.attempt_id,
+        fencing_token=lease.fencing_token,
+        ttl=timedelta(seconds=30),
+        at=was - timedelta(seconds=5),
+    )
+
+    assert renewed.execution_lease is not None
+    assert renewed.execution_lease.expires_at > was
+    assert renewed.execution_lease.fencing_token == lease.fencing_token, (
+        "renewal proves the current holder is alive; it does not re-claim the lease"
+    )
+    assert await store.reclaim_expired_attempts(now=was + timedelta(seconds=1)) == []
+
+
+async def _assert_a_lapsed_lease_is_reclaimed(spine: Any) -> None:
+    """The crash: the worker stops renewing and never returns."""
+    store, _workspace, _project_id = spine
+    node_run, attempt = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    reclaimed = await store.reclaim_expired_attempts(now=lease.expires_at + timedelta(seconds=1))
+
+    assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
+    assert reclaimed[0].status is AttemptStatus.CANCELLED
+    assert "worker-A" in (reclaimed[0].error or ""), (
+        "a reclaimed Attempt must name the holder that went quiet, or it is "
+        "indistinguishable from one a user cancelled"
+    )
+    settled = await store.get_attempt(attempt.attempt_id)
+    assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    assert node_run.node_run_id  # the NodeRun is reconciled by the reconciler, not the sweep
+
+
+async def _assert_reclaim_is_idempotent(spine: Any) -> None:
+    """Repeated recovery is a normal event — two sweepers, or one restarted."""
+    store, _workspace, _project_id = spine
+    _node_run, attempt = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after = lease.expires_at + timedelta(seconds=1)
+
+    first = await store.reclaim_expired_attempts(now=after)
+    second = await store.reclaim_expired_attempts(now=after + timedelta(hours=1))
+
+    assert len(first) == 1
+    assert second == []
+
+
+async def _assert_an_unleased_attempt_is_never_reclaimed(spine: Any) -> None:
+    """What keeps this additive. A caller that asks for no TTL keeps exactly
+    today's behaviour, and no Attempt already in flight becomes reclaimable
+    because this shipped."""
+    store, _workspace, _project_id = spine
+    _run, node_run = await _running_run_with_node(spine)
+    attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-A")
+
+    assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is None
+    assert await store.reclaim_expired_attempts(now=_far_future()) == []
+
+
+async def _assert_a_stale_token_cannot_renew(spine: Any) -> None:
+    """Renewal is a worker-authored write, so it is fenced like every other
+    one (ADR-082426-e3ff). A stale worker that could renew would keep alive
+    the very Attempt recovery is trying to reclaim."""
+    store, _workspace, _project_id = spine
+    _node_run, attempt = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+
+    with pytest.raises(StaleLeaseRenewal) as caught:
+        await store.renew_lease(
+            attempt.attempt_id, fencing_token="not-the-token", ttl=timedelta(seconds=30)
+        )
+
+    assert caught.value.attempt_id == attempt.attempt_id
+
+
+def _far_future() -> Any:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC) + timedelta(days=365)
+
+
+async def test_a_live_lease_is_not_reclaimed(spine: Any) -> None:
+    await _assert_a_live_lease_is_not_reclaimed(spine)
+
+
+async def test_renewal_pushes_the_expiry_out(spine: Any) -> None:
+    await _assert_renewal_pushes_the_expiry_out(spine)
+
+
+async def test_a_lapsed_lease_is_reclaimed(spine: Any) -> None:
+    await _assert_a_lapsed_lease_is_reclaimed(spine)
+
+
+async def test_reclaim_is_idempotent(spine: Any) -> None:
+    await _assert_reclaim_is_idempotent(spine)
+
+
+async def test_an_unleased_attempt_is_never_reclaimed(spine: Any) -> None:
+    await _assert_an_unleased_attempt_is_never_reclaimed(spine)
+
+
+async def test_a_stale_token_cannot_renew(spine: Any) -> None:
+    await _assert_a_stale_token_cannot_renew(spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-1")
+async def test_a_live_lease_is_not_reclaimed_in_memory(memory_spine: Any) -> None:
+    await _assert_a_live_lease_is_not_reclaimed(memory_spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-2")
+async def test_renewal_pushes_the_expiry_out_in_memory(memory_spine: Any) -> None:
+    await _assert_renewal_pushes_the_expiry_out(memory_spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-3")
+async def test_a_lapsed_lease_is_reclaimed_in_memory(memory_spine: Any) -> None:
+    await _assert_a_lapsed_lease_is_reclaimed(memory_spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-4")
+async def test_reclaim_is_idempotent_in_memory(memory_spine: Any) -> None:
+    await _assert_reclaim_is_idempotent(memory_spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-5")
+async def test_an_unleased_attempt_is_never_reclaimed_in_memory(memory_spine: Any) -> None:
+    await _assert_an_unleased_attempt_is_never_reclaimed(memory_spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-6")
+async def test_a_stale_token_cannot_renew_in_memory(memory_spine: Any) -> None:
+    await _assert_a_stale_token_cannot_renew(memory_spine)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
@@ -10,6 +10,10 @@ from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    lease_is_expired,
+    reclaim_attempt,
+    renew_attempt_lease,
+    renewed_lease,
     settle_open_node_run,
     transition_attempt,
     transition_node_run,
@@ -33,6 +37,11 @@ from maistro.runs.sources import (
     EPHEMERAL_ADMISSION_SOURCES,
     occurrence_key,
 )
+
+#: How many lapsed Attempts one reclaim sweep settles. Bounded for the same
+#: reason the retention sweep is: a recovery pass must not become a long
+#: transaction that blocks the workers it is trying to unblock.
+DEFAULT_RECLAIM_BATCH = 100
 
 
 class RunNotFound(KeyError):
@@ -243,7 +252,24 @@ class RunStore(Protocol):
         deadline_at: datetime | None = None,
         resume_checkpoint_id: str | None = None,
         lease_holder: str | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> Attempt: ...
+
+    async def renew_lease(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> Attempt: ...
+
+    async def reclaim_expired_attempts(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_RECLAIM_BATCH,
+    ) -> list[Attempt]: ...
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None: ...
 
@@ -650,6 +676,7 @@ class InMemoryRunStore:
         deadline_at: datetime | None = None,
         resume_checkpoint_id: str | None = None,
         lease_holder: str | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> Attempt:
         node_run = self._require_node_run(node_run_id)
         if node_run.status in TERMINAL_RUN_STATUSES:
@@ -677,11 +704,46 @@ class InMemoryRunStore:
                 lease_epoch=ordinal,
                 holder=lease_holder,
             )
+            if lease_ttl is not None:
+                lease = renewed_lease(lease, at=lease.issued_at, ttl=lease_ttl)
             attempt = Attempt.model_validate(
                 {**attempt.model_dump(mode="python"), "execution_lease": lease}
             )
         self._attempts[attempt.attempt_id] = attempt
         return attempt.model_copy(deep=True)
+
+    async def renew_lease(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> Attempt:
+        """Prove the holder is still alive, and push its expiry out by ``ttl``."""
+        attempt = self._require_attempt(attempt_id)
+        renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
+        self._attempts[attempt_id] = renewed
+        return renewed.model_copy(deep=True)
+
+    async def reclaim_expired_attempts(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_RECLAIM_BATCH,
+    ) -> list[Attempt]:
+        """Terminalize Attempts whose holder stopped renewing. Returns them."""
+        moment = now if now is not None else datetime.now(UTC)
+        doomed = sorted(
+            (a for a in self._attempts.values() if lease_is_expired(a, moment)),
+            key=lambda a: (a.execution_lease.expires_at, a.attempt_id),  # type: ignore[union-attr]
+        )
+        reclaimed: list[Attempt] = []
+        for attempt in doomed[:limit]:
+            settled = reclaim_attempt(attempt, at=moment)
+            self._attempts[attempt.attempt_id] = settled
+            reclaimed.append(settled.model_copy(deep=True))
+        return reclaimed
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         attempt = self._attempts.get(attempt_id)

@@ -31,7 +31,7 @@ codec (`maistro.persistence._register_json_codecs`).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
@@ -39,6 +39,10 @@ from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    lease_is_expired,
+    reclaim_attempt,
+    renew_attempt_lease,
+    renewed_lease,
     settle_open_node_run,
     transition_attempt,
     transition_node_run,
@@ -58,6 +62,7 @@ from maistro.runs.model import (
 from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
+    DEFAULT_RECLAIM_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
     DuplicateOccurrence,
@@ -456,6 +461,7 @@ class PgRunStore:
         deadline_at: datetime | None = None,
         resume_checkpoint_id: str | None = None,
         lease_holder: str | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> Attempt:
         """Start an Attempt, or refuse because one is already running.
 
@@ -496,6 +502,8 @@ class PgRunStore:
                     lease_epoch=ordinal,
                     holder=lease_holder,
                 )
+                if lease_ttl is not None:
+                    lease = renewed_lease(lease, at=lease.issued_at, ttl=lease_ttl)
                 attempt = Attempt.model_validate(
                     {**attempt.model_dump(mode="python"), "execution_lease": lease}
                 )
@@ -651,6 +659,81 @@ class PgRunStore:
         if node_run is None:
             raise NodeRunNotFound(node_run_id)
         return node_run
+
+    async def renew_lease(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> Attempt:
+        """Prove the holder is still alive, and push its expiry out by ``ttl``.
+
+        Row-locked for the same reason `transition_attempt` is: a renewal that
+        read a snapshot could extend a lease a concurrent sweep has already
+        reclaimed, resurrecting an Attempt recovery had settled.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, renewed)
+        return renewed
+
+    async def reclaim_expired_attempts(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_RECLAIM_BATCH,
+    ) -> list[Attempt]:
+        """Terminalize Attempts whose holder stopped renewing.
+
+        The expiry predicate runs in SQL, cast to `timestamptz` rather than
+        compared as text: `expires_at` is stored as an ISO-8601 string inside
+        the payload, and a lexical comparison is only correct while every
+        stored value carries the same offset — true today, and not something to
+        make load-bearing.
+
+        **No dedicated index, deliberately.** The obvious one — an expression
+        index on the cast expiry — is impossible: `text::timestamptz` depends on
+        the session `TimeZone` and PostgreSQL refuses to index a non-IMMUTABLE
+        expression. It is also unnecessary. `ix_canonical_attempts_one_active`
+        (migration 012) is unique and partial on the same `status IN
+        ('created','running')` predicate, so at most one Attempt per NodeRun is
+        ever a candidate, and the candidate set is bounded by **worker
+        concurrency rather than by history**. A sweep scans the Attempts that
+        are running now, not every Attempt ever run.
+
+        `FOR UPDATE SKIP LOCKED` so two concurrent sweepers divide the work
+        instead of blocking on each other — the same rule the schedule
+        occurrence admission uses.
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        reclaimed: list[Attempt] = []
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_attempts
+                   WHERE status IN ('created', 'running')
+                     AND payload->'execution_lease'->>'expires_at' IS NOT NULL
+                     AND (payload->'execution_lease'->>'expires_at')::timestamptz <= $1
+                   ORDER BY (payload->'execution_lease'->>'expires_at')::timestamptz
+                   LIMIT $2
+                   FOR UPDATE SKIP LOCKED""",
+                moment,
+                limit,
+            )
+            for row in rows:
+                attempt = model_of(Attempt, row["payload"])
+                if not lease_is_expired(attempt, moment):  # pragma: no cover - SQL already filtered
+                    continue
+                settled = reclaim_attempt(attempt, at=moment)
+                await self._write(
+                    conn, "canonical_attempts", "attempt_id", attempt.attempt_id, settled
+                )
+                reclaimed.append(settled)
+        return reclaimed
 
     async def _require_attempt(self, attempt_id: str, *, conn: Any = None) -> Attempt:
         """Load an Attempt, reusing an open connection when inside a transaction.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
@@ -12,6 +12,10 @@ from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    lease_is_expired,
+    reclaim_attempt,
+    renew_attempt_lease,
+    renewed_lease,
     settle_open_node_run,
     transition_attempt,
     transition_node_run,
@@ -31,6 +35,7 @@ from maistro.runs.model import (
 from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
+    DEFAULT_RECLAIM_BATCH,
     ActiveAttemptExists,
     AttemptNotFound,
     DuplicateOccurrence,
@@ -560,6 +565,7 @@ class SqliteRunStore:
         deadline_at: datetime | None = None,
         resume_checkpoint_id: str | None = None,
         lease_holder: str | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> Attempt:
         async with self._write_lock:
             node_run = await self._require_node_run(node_run_id)
@@ -598,6 +604,8 @@ class SqliteRunStore:
                         lease_epoch=ordinal,
                         holder=lease_holder,
                     )
+                    if lease_ttl is not None:
+                        lease = renewed_lease(lease, at=lease.issued_at, ttl=lease_ttl)
                     attempt = Attempt.model_validate(
                         {**attempt.model_dump(mode="python"), "execution_lease": lease}
                     )
@@ -634,6 +642,66 @@ class SqliteRunStore:
             except Exception:
                 await self._conn.rollback()
                 raise
+
+    async def renew_lease(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> Attempt:
+        """Prove the holder is still alive, and push its expiry out by ``ttl``."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                renewed.status.value,
+                json_of(renewed),
+            )
+            return renewed
+
+    async def reclaim_expired_attempts(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_RECLAIM_BATCH,
+    ) -> list[Attempt]:
+        """Terminalize Attempts whose holder stopped renewing.
+
+        Filters in Python rather than SQL: SQLite has no native timestamp type,
+        so comparing the lease expiry lexically inside `json_extract` is only
+        correct while every stored value carries the same UTC offset — true
+        today, and not something to make load-bearing. The candidate set is
+        already narrowed to non-terminal Attempts by the status predicate,
+        which is the part that matters for cost.
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        cursor = await self._conn.execute(
+            """SELECT payload FROM canonical_attempts
+               WHERE status IN ('created', 'running')"""
+        )
+        candidates = [model_of_json(Attempt, row[0]) for row in await cursor.fetchall()]
+        doomed = sorted(
+            (a for a in candidates if lease_is_expired(a, moment)),
+            key=lambda a: (a.execution_lease.expires_at, a.attempt_id),  # type: ignore[union-attr]
+        )
+        reclaimed: list[Attempt] = []
+        async with self._write_lock:
+            for attempt in doomed[:limit]:
+                settled = reclaim_attempt(attempt, at=moment)
+                await self._update_payload(
+                    "canonical_attempts",
+                    "attempt_id",
+                    attempt.attempt_id,
+                    settled.status.value,
+                    json_of(settled),
+                )
+                reclaimed.append(settled)
+        return reclaimed
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         row = await self._fetchone(
