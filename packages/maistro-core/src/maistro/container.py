@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
+from maistro.a2a.delegate import A2ADelegator
+from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
@@ -156,6 +158,12 @@ class Container:
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
     schedule_store: ScheduleStore = None  # type: ignore[assignment]
+    #: Delegation dependencies (#147). Read by `build_node_resolver`, which is
+    #: what makes them admissible under ADR-082426-6201 — that ADR retired
+    #: `a2a_broker` for having no reader, and check-wiring-reads.py enforces the
+    #: difference rather than trusting this comment.
+    a2a_delegator: Any = None
+    guest_peers: Any = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -887,6 +895,11 @@ async def create_container(
 
     oauth_state_store = InMemoryStateStore()
     identity_linker = IdentityLinker(store=InMemoryIdentityLinkStore())
+    # Both are dependency-free: A2ADelegator() takes no arguments and
+    # GuestPeerManager defaults its own audit logger. There is no configuration
+    # decision behind either, so neither is made optional (ADR-082526-3ca6).
+    a2a_delegator = A2ADelegator()
+    guest_peers = GuestPeerManager()
 
     container = Container(
         config=config,
@@ -941,6 +954,8 @@ async def create_container(
         policy_attachment_store=policy_attachment_store,
         oauth_state_store=oauth_state_store,
         identity_linker=identity_linker,
+        a2a_delegator=a2a_delegator,
+        guest_peers=guest_peers,
     )
 
     # One word again, and only because this change is what makes it true.
