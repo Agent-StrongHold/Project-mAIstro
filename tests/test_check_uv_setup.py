@@ -150,7 +150,7 @@ class TestVersionMustBeExact:
     def test_a_wrapper_that_stopped_wrapping_setup_uv_is_refused(self, repo):
         repo.WRAPPER.write_text("runs:\n  using: composite\n  steps: []\n", encoding="utf-8")
         problems = repo.wrapper_problems()
-        assert problems and "no longer wraps" in problems[0]
+        assert problems and "no `runs.steps` entry" in problems[0]
 
     def test_a_missing_wrapper_is_refused(self, repo):
         repo.WRAPPER.unlink()
@@ -241,3 +241,104 @@ class TestAgainstTheRealTree:
     def test_every_workflow_that_uses_uv_goes_through_the_wrapper(self, gate):
         """Guards the rewrite itself: 20 usages were routed, none dropped."""
         assert gate.routed_usages() >= 20
+
+
+class TestReviewFindings:
+    """Regressions for the three findings Codex raised on PR #264.
+
+    All three were the same shape as the ones on #263, and the same shape as
+    the bug this whole gate exists to prevent: a check that reports success
+    while checking nothing. Two of them defeated the gate by *quoting* or by
+    *renaming a file extension*, which is not a high bar to clear.
+    """
+
+    @pytest.mark.ac("ADR-082526-3011/AC-2")
+    def test_a_yaml_extension_workflow_is_scanned(self, repo):
+        """GitHub runs `.yaml` too; the glob only had `.yml`."""
+        (repo.WORKFLOWS / "build.yaml").write_text(
+            f"jobs:\n  a:\n    steps:\n      - uses: {PINNED}\n", encoding="utf-8"
+        )
+        found = repo.direct_usages()
+        assert found and "build.yaml" in found[0]
+
+    @pytest.mark.ac("ADR-082526-3011/AC-2")
+    def test_a_trailing_comment_does_not_hide_a_direct_usage(self, repo):
+        (repo.WORKFLOWS / "rogue.yml").write_text(
+            "jobs:\n  a:\n    steps:\n      - uses: astral-sh/setup-uv@v7 # install uv\n",
+            encoding="utf-8",
+        )
+        assert repo.direct_usages()
+
+    @pytest.mark.ac("ADR-082526-3011/AC-2")
+    def test_a_quoted_scalar_does_not_hide_a_direct_usage(self, repo):
+        (repo.WORKFLOWS / "rogue.yml").write_text(
+            'jobs:\n  a:\n    steps:\n      - uses: "astral-sh/setup-uv@v7"\n',
+            encoding="utf-8",
+        )
+        assert repo.direct_usages()
+
+    @pytest.mark.ac("ADR-082526-3011/AC-2")
+    def test_a_job_level_uses_is_found(self, repo):
+        """Reusable-workflow `uses:` sits at job level, not under steps."""
+        (repo.WORKFLOWS / "rogue.yml").write_text(
+            "jobs:\n  a:\n    uses: astral-sh/setup-uv@v7\n", encoding="utf-8"
+        )
+        assert repo.direct_usages()
+
+    @pytest.mark.ac("ADR-082526-3011/AC-1")
+    def test_comments_naming_the_action_do_not_satisfy_the_check(self, repo):
+        """The real wrapper's comment block names the action many times.
+
+        A substring check over the file text was therefore satisfied by the
+        prose explaining the pin rather than by the pin itself — so a swap to
+        a different action, with the comments left in place, passed.
+        """
+        repo.WRAPPER.write_text(
+            f"# this wrapper exists to pin {PINNED}\n"
+            "runs:\n  using: composite\n  steps:\n"
+            "    - uses: some-other/action@v1\n"
+            '      with:\n        version: "0.12.5"\n',
+            encoding="utf-8",
+        )
+        problems = repo.wrapper_problems()
+        assert problems and "no `runs.steps` entry" in problems[0]
+
+    @pytest.mark.ac("ADR-082526-3011/AC-1")
+    def test_a_version_in_a_comment_is_not_the_pinned_version(self, repo):
+        """Only the parsed step's `with.version` counts."""
+        repo.WRAPPER.write_text(
+            '# version: "0.12.5" used to live here\n'
+            "runs:\n  using: composite\n  steps:\n"
+            f"    - uses: {PINNED}\n",
+            encoding="utf-8",
+        )
+        problems = repo.wrapper_problems()
+        assert problems and "pins no uv version" in problems[0]
+
+    def test_a_malformed_wrapper_is_reported_not_ignored(self, repo):
+        repo.WRAPPER.write_text("runs: [unclosed\n", encoding="utf-8")
+        problems = repo.wrapper_problems()
+        assert problems and "not valid YAML" in problems[0]
+
+    def test_a_malformed_workflow_is_skipped_deliberately(self, repo):
+        """Documented, not accidental: actionlint owns malformed workflows.
+
+        The cost is real and worth stating — a direct usage inside a workflow
+        that does not parse is not reported here. `workflow-lint` runs actionlint
+        in the same job, and it fails on such a file first, so the hole cannot
+        be reached in CI without that job already being red.
+        """
+        (repo.WORKFLOWS / "broken.yml").write_text(
+            "jobs: [unclosed\n      - uses: astral-sh/setup-uv@v7\n", encoding="utf-8"
+        )
+        assert repo.direct_usages() == []
+
+    def test_a_wrapper_step_without_a_with_block_pins_no_version(self, repo):
+        repo.WRAPPER.write_text(
+            f"runs:\n  using: composite\n  steps:\n    - uses: {PINNED}\n", encoding="utf-8"
+        )
+        assert repo.wrapper_version(repo.WRAPPER.read_text(encoding="utf-8")) is None
+
+    def test_a_wrapper_with_no_steps_at_all_pins_no_version(self, repo):
+        repo.WRAPPER.write_text("runs:\n  using: composite\n", encoding="utf-8")
+        assert repo.wrapper_version(repo.WRAPPER.read_text(encoding="utf-8")) is None

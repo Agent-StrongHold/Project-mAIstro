@@ -39,58 +39,126 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 WRAPPER = REPO_ROOT / ".github" / "actions" / "setup-uv" / "action.yml"
 WRAPPER_REF = "./.github/actions/setup-uv"
 
-#: `uses: astral-sh/setup-uv@v7` — the call this gate exists to centralise.
-DIRECT_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*astral-sh/setup-uv(?:@\S+)?\s*$")
+#: The action this repository must not call outside the wrapper.
+ACTION = "astral-sh/setup-uv"
 
 #: The action release the wrapper must use. Below this there is no tolerance
 #: for a transient manifest outage, which is the whole #213 fix.
-PINNED_ACTION = "astral-sh/setup-uv@v10.0.1"
-
-#: `version: "0.12.5"` inside the wrapper.
-VERSION_RE = re.compile(r"^\s*version:\s*[\"']?([^\"'\s]+)[\"']?\s*$")
+PINNED_ACTION = f"{ACTION}@v10.0.1"
 
 #: An exact version: three dot-separated numbers and nothing else. A range
 #: (`0.5.x`, `>=0.8`, `^1.2`) or `latest` must not match.
 EXACT_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
+#: GitHub accepts both spellings for workflow files, so both are scanned.
+WORKFLOW_GLOBS = ("*.yml", "*.yaml")
+
+
+def workflow_files() -> list[Path]:
+    return sorted(p for g in WORKFLOW_GLOBS for p in WORKFLOWS.glob(g))
+
+
+def iter_uses(node: Any):
+    """Every ``uses:`` value anywhere in a parsed workflow.
+
+    Walks the whole document rather than assuming jobs->steps: ``uses`` also
+    appears at job level for reusable workflows, and a gate that only looked
+    where it expected would miss exactly the call it exists to forbid.
+    """
+    if isinstance(node, dict):
+        value = node.get("uses")
+        if isinstance(value, str):
+            yield value.strip()
+        for child in node.values():
+            yield from iter_uses(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from iter_uses(child)
+
+
+def _line_of(path: Path, needle: str) -> int:
+    """Best-effort line number for an error message."""
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if needle in line:
+            return number
+    return 0
+
 
 def direct_usages() -> list[str]:
-    """Workflow lines calling ``astral-sh/setup-uv`` instead of the wrapper."""
+    """Workflow steps calling the action directly instead of the wrapper.
+
+    Parsed, not pattern-matched. A regex over raw lines misses valid spellings
+    the runner honours all the same — a trailing comment, a quoted scalar — and
+    a gate that can be evaded by quoting is not a gate.
+    """
     found = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if DIRECT_RE.match(line):
-                found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
+    for path in workflow_files():
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue  # actionlint owns malformed workflows; this gate does not
+        for value in iter_uses(document):
+            if value == ACTION or value.startswith(f"{ACTION}@"):
+                found.append(f"{path.relative_to(REPO_ROOT)}:{_line_of(path, value)} -> {value}")
     return found
 
 
+def wrapper_step() -> dict[str, Any] | None:
+    """The wrapper's own ``setup-uv`` step, from its parsed ``runs.steps``.
+
+    Parsed for the reason above and one more: this file's comment block names
+    the action and its version repeatedly, so any substring check over the raw
+    text is satisfied by the prose explaining the pin rather than by the pin.
+    """
+    document = yaml.safe_load(WRAPPER.read_text(encoding="utf-8"))
+    steps = (document or {}).get("runs", {}).get("steps") or []
+    for step in steps:
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith(ACTION):
+            return step
+    return None
+
+
 def wrapper_version(text: str) -> str | None:
-    """The version the wrapper pins, or ``None`` if it pins none."""
-    for line in text.splitlines():
-        if (m := VERSION_RE.match(line)) and not line.lstrip().startswith("#"):
-            return m.group(1)
+    """The uv version the wrapper pins, or ``None`` if its step pins none."""
+    document = yaml.safe_load(text)
+    steps = (document or {}).get("runs", {}).get("steps") or []
+    for step in steps:
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith(ACTION):
+            version = (step.get("with") or {}).get("version")
+            return None if version is None else str(version)
     return None
 
 
 def wrapper_problems() -> list[str]:
-    """Whether the wrapper exists, is used, and pins an exact version."""
+    """Whether the wrapper exists, pins the right release, and an exact uv."""
     if not WRAPPER.is_file():
         return [f"{WRAPPER.relative_to(REPO_ROOT)} is missing"]
     text = WRAPPER.read_text(encoding="utf-8")
-    if "astral-sh/setup-uv" not in text:
-        return [f"{WRAPPER.relative_to(REPO_ROOT)} no longer wraps astral-sh/setup-uv"]
-    if f"uses: {PINNED_ACTION}" not in text:
+    try:
+        step = wrapper_step()
+    except yaml.YAMLError as exc:
+        return [f"{WRAPPER.relative_to(REPO_ROOT)} is not valid YAML: {exc}"]
+
+    if step is None:
         return [
-            f"{WRAPPER.relative_to(REPO_ROOT)} does not use `{PINNED_ACTION}`. That "
-            f"release is the actual #213 fix — it tolerates a transient manifest "
-            f"outage, and the version it replaced does not. The manifest is fetched "
-            f"either way; only the tolerance differs"
+            f"{WRAPPER.relative_to(REPO_ROOT)} has no `runs.steps` entry using {ACTION}. "
+            f"Its comments mention the action, which is not the same as invoking it"
+        ]
+    if step["uses"] != PINNED_ACTION:
+        return [
+            f"{WRAPPER.relative_to(REPO_ROOT)} uses `{step['uses']}`, not "
+            f"`{PINNED_ACTION}`. That release is the actual #213 fix — it tolerates a "
+            f"transient manifest outage, and the version it replaced does not. The "
+            f"manifest is fetched either way; only the tolerance differs"
         ]
 
     version = wrapper_version(text)
@@ -115,9 +183,9 @@ def routed_usages() -> int:
     """How many workflow steps go through the wrapper."""
     return sum(
         1
-        for path in WORKFLOWS.glob("*.yml")
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if WRAPPER_REF in line and "uses:" in line
+        for path in workflow_files()
+        for value in iter_uses(yaml.safe_load(path.read_text(encoding="utf-8")))
+        if value == WRAPPER_REF
     )
 
 
