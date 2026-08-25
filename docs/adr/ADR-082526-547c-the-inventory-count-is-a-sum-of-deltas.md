@@ -97,10 +97,16 @@ expected(suite) = baseline(suite) + Σ delta(suite) over every recorded change
   `--show`.
 
 Two PRs never write the same path, so they never conflict — including when
-both change the same suite. And because deltas are additive, a branch whose
-base moves needs no regeneration at all: its own delta is still true, and the
-sum absorbs the other branch's. The re-collection cost disappears with the
-conflict.
+both change the same suite. That part is unconditional.
+
+The second benefit is not, and the difference matters. Where two changes move
+the count *independently*, a branch whose base moves needs no regeneration at
+all: its own delta is still true, and the sum absorbs the other branch's, so
+the re-collection cost disappears along with the conflict. Where they interact
+— two branches each appending to a different parametrize list feeding one
+Cartesian product — the deltas do not sum to the collected truth, and the
+second branch must re-collect. That case is rare, and it is loud rather than
+silent; see the trade-off below.
 
 The tripwire is unchanged. A suite that stops collecting still produces an
 actual that does not match an expected, and still fails.
