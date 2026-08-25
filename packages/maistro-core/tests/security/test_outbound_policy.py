@@ -81,6 +81,7 @@ async def _get(url: str, transport: httpx.AsyncBaseTransport, **kwargs) -> httpx
 # --- the seam covers what call sites forgot -------------------------------
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-2")
 async def test_a_private_target_is_refused_at_the_transport() -> None:
     inner = _Recording()
 
@@ -104,6 +105,7 @@ async def test_a_private_target_is_refused_at_the_transport() -> None:
         "file:///etc/passwd",  # not an http(s) scheme at all
     ],
 )
+@pytest.mark.ac("ADR-082326-5386/AC-2")
 async def test_the_usual_spellings_all_fail_closed(url: str) -> None:
     inner = _Recording()
 
@@ -126,6 +128,7 @@ async def test_a_public_target_is_reached() -> None:
 # --- redirects ------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-3")
 async def test_a_redirect_into_a_private_target_is_refused_at_that_hop() -> None:
     """The reason the policy is at the transport rather than at the wrapper."""
 
@@ -155,6 +158,7 @@ async def test_a_redirect_into_a_private_target_is_refused_at_that_hop() -> None
 # --- allowances -----------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-4")
 async def test_a_configured_gateway_is_reachable_without_disabling_the_guard() -> None:
     inner = _Recording()
     configure_outbound_policy("http://127.0.0.1:4000")
@@ -176,6 +180,7 @@ async def test_a_configured_gateway_is_reachable_without_disabling_the_guard() -
         "http://10.0.0.5:4000/",  # another private address entirely
     ],
 )
+@pytest.mark.ac("ADR-082326-5386/AC-5")
 async def test_an_allowance_does_not_widen_beyond_what_it_names(url: str) -> None:
     inner = _Recording()
     configure_outbound_policy("http://127.0.0.1:4000")
@@ -223,6 +228,7 @@ def test_empty_endpoints_are_ignored_when_seeding() -> None:
 # --- seeding --------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-4")
 def test_endpoints_are_read_off_the_settings_not_listed_here() -> None:
     class _LiteLLM:
         base_url = "http://litellm.internal:4000"
@@ -247,6 +253,7 @@ def test_seeding_tolerates_a_settings_object_missing_every_field() -> None:
 # --- what is and is not wrapped -------------------------------------------
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-1")
 def test_a_pooled_client_gets_a_guarded_transport() -> None:
     client = get_shared_client(timeout=1.0)
 
@@ -260,6 +267,7 @@ def test_a_response_faking_transport_is_left_alone() -> None:
     assert guarded(mock) is mock
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-1")
 def test_wrapping_twice_does_not_stack() -> None:
     once = guarded(_Recording())
 
@@ -274,6 +282,7 @@ def test_wrapping_twice_does_not_stack() -> None:
 # outside the pool entirely until this change.
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-6")
 async def test_the_progress_webhook_cannot_post_to_a_private_target() -> None:
     from maistro.tasks.progress_webhook import ConductorProgressPayload, ProgressWebhookNotifier
 
@@ -300,6 +309,7 @@ async def test_the_progress_webhook_uses_the_pool_so_it_is_guarded() -> None:
     assert isinstance(transport, GuardedTransport)
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-6")
 async def test_the_http_tool_executor_cannot_reach_a_private_target() -> None:
     from maistro.agents.strategies.tool_http import HTTPToolExecutor
 
@@ -344,6 +354,7 @@ def test_env_proxy_mounts_survive_the_guard(monkeypatch: pytest.MonkeyPatch) -> 
     assert "https://" in patterns, f"environment proxy mounts were dropped: {patterns}"
 
 
+@pytest.mark.ac("ADR-082326-5386/AC-1")
 def test_every_proxy_mount_is_guarded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.internal:3128")

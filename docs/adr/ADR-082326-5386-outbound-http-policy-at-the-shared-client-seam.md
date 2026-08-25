@@ -3,8 +3,9 @@ id: ADR-082326-5386
 title: "Outbound HTTP policy at the shared-client seam"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-23
+accepted: 2026-08-25
 substrate: []
 implements: []
 related:
@@ -14,7 +15,20 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/security/test_outbound_policy.py
+ac-modules:
+  AC-1: maistro.http
+  AC-2: maistro.security.outbound
+  AC-3: maistro.security.outbound
+  AC-4: maistro.security.outbound
+  AC-5: maistro.security.outbound
+  AC-6: maistro.security.outbound
+history:
+  - status: Proposed
+    date: 2026-08-23
+  - status: Accepted
+    date: 2026-08-25
 layer: Connectivity
 owners:
   - '@BlakeMatthews-dev'
@@ -93,6 +107,27 @@ guarding it would make thousands of fake hosts unreachable while protecting
 nothing. Nothing in production can install one. This is deliberately *not* an
 "off" switch — there is none.
 
+## Acceptance criteria
+
+Retrofitted at acceptance, from the behaviour PR #202 already shipped and
+`packages/maistro-core/tests/security/test_outbound_policy.py` already proves.
+Each is bound to a test that existed before this record was accepted — the
+criteria describe the decision, they do not extend it.
+
+- [x] **AC-1** Every transport a pooled client is built with is guarded,
+  including the proxy mounts httpx chose from the environment, and wrapping is
+  idempotent.
+- [x] **AC-2** A private, link-local, loopback or metadata destination is
+  refused at the transport, in each of its usual spellings.
+- [x] **AC-3** A redirect chain that starts public and lands private is refused
+  at the hop that matters, with no call-site change.
+- [x] **AC-4** A configured internal endpoint is reachable without disabling the
+  guard, and the allowance is seeded from settings rather than listed in code.
+- [x] **AC-5** An allowance is an exact origin: it does not widen to another
+  port, another host, or another scheme.
+- [x] **AC-6** The two caller-influenced call sites — the progress webhook and
+  the HTTP tool executor — are refused a private target.
+
 ## Consequences
 
 ### Positive
@@ -137,6 +172,13 @@ nothing. Nothing in production can install one. This is deliberately *not* an
 ### Neutral
 - `security/ssrf.py` is unchanged. This ADR decides *where* and *when* it runs,
   not what it considers private.
+- `agents/strategies/tool_http` — one of the two caller-influenced call sites —
+  has no production entry point today; `quality/reachability-baseline.json`
+  lists it as unreachable. Its guard is therefore proven by test rather than
+  exercised in production, and AC-6 is annotated to the module that does the
+  refusing rather than to the call site that would trigger it. That is a real
+  gap in the *call site*, not in the policy, and it is stated here rather than
+  implied by an annotation nobody would question.
 - Call sites that already validate keep doing so. The duplicate check costs a
   cached lookup and means a call site that stops using the shared pool is still
   guarded.
