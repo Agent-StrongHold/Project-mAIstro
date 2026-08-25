@@ -20,9 +20,12 @@ description: >-
 # the network. Two uv versions, seven minor releases apart, neither chosen.
 #
 # 0.12.5 is what seventeen of the twenty usages already installed and passed on.
+# EXPERIMENT (not for merge): measuring whether `latest-known` skips the
+# manifest fetch. An exact version does NOT — proven by this branch's own
+# exact-debt-ledger log on e26009a.
 runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@v7
       with:
-        version: "0.12.5"
+        version: "latest-known"
