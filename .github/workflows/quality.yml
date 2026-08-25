@@ -723,8 +723,15 @@ jobs:
       # unbanked improvement fails too so the ceiling cannot hold slack a later
       # regression would spend.
       #
-      # THE MANDATE says this change proved what it claimed. Zero tolerance on
-      # criteria the PR creates or newly claims; legacy stays on the ceilings.
+      # THE MANDATE says this change proved what it claimed, in two halves.
+      # The criterion half: zero tolerance on criteria the PR creates or newly
+      # claims. The chain half (ADR-082526-ef55): zero tolerance on absent links
+      # it introduces — an orphan spec, a taken decision nothing implements, a
+      # spec stating nothing checkable. Both compare against the base by
+      # identity rather than by count, because a ceiling on totals lets a new
+      # violation be paid for by an unrelated legacy fix. Legacy stays on the
+      # ceilings either way.
+      #
       # `--mandate` needs a base to diff against, and `github.base_ref` is empty
       # on a push, so a push gets the ratchet alone.
       - name: acceptance-state ratchet + mandate
