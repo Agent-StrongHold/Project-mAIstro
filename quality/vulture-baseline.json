@@ -1435,6 +1435,7 @@
         "packages/maistro-registry/src/maistro_registry/linker.py::unused class 'FakeResolver'",
         "packages/maistro-registry/src/maistro_registry/linker.py::unused class 'GitHubResolver'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused method '_validate_id'",
+        "packages/maistro-registry/src/maistro_registry/schema.py::unused method '_validate_lifecycle_evidence'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused method '_validate_owners'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused method '_validate_refs'",
         "packages/maistro-rsi/src/maistro_rsi/harness_adapter.py::unused class 'RsiCycleHarnessAdapter'",
