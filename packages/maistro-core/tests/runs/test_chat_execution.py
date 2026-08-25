@@ -99,10 +99,13 @@ class TestATurnLeavesAPhysicalRecord:
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].executor_id == CHAT_EXECUTOR_ID
 
+    @pytest.mark.ac("ADR-082526-7f02/AC-1")
     async def test_the_attempt_names_the_agent_that_ran(self) -> None:
         """The one thing about a chat turn the logical record cannot say:
         admission happens before the agent is chosen, so the Run's own
-        `agent_selection` says `deferred` and always will."""
+        `agent_selection` says `deferred` and stays that way by decision
+        (ADR-082526-7f02), not by omission — #223 originally asked for the
+        opposite, and the ADR records why the opposite is wrong."""
         container = await _container()
         container.conduit = _Conduit(agent="researcher")
 
@@ -110,6 +113,36 @@ class TestATurnLeavesAPhysicalRecord:
 
         _, attempts = await _spine(container, result["run_id"])
         assert attempts[0].result[ATTEMPT_AGENT_KEY] == "researcher"
+
+    @pytest.mark.ac("ADR-082526-7f02/AC-2")
+    async def test_admission_provenance_is_not_rewritten_by_execution(self) -> None:
+        """The decision, stated as the thing that must NOT happen.
+
+        `agent_selection` means "no agent was resolvable at *admission*", which
+        is a claim about a moment that has passed and that no later event can
+        falsify. #223's written acceptance asked for it to be overwritten once
+        an agent ran; ADR-082526-7f02 records why that would replace a true
+        statement about admission with a true statement about execution, in a
+        field whose name says admission.
+
+        Without this assertion the regression looks like a fix.
+        """
+        from maistro.runs.chat_admission import AGENT_SELECTION_KEY, DEFERRED_AGENT_SELECTION
+
+        container = await _container()
+        container.conduit = _Conduit(agent="researcher")
+
+        result = await container.route_request(MESSAGES)
+
+        run = await container.run_store.get_run(result["run_id"])
+        assert run is not None
+        assert run.status in TERMINAL_RUN_STATUSES, "the turn must have finished"
+        assert run.provenance[AGENT_SELECTION_KEY] == DEFERRED_AGENT_SELECTION
+        _, attempts = await _spine(container, result["run_id"])
+        assert attempts[0].result[ATTEMPT_AGENT_KEY] == "researcher", (
+            "the agent that ran is recorded — on the Attempt, which is the record of the "
+            "thing that ran"
+        )
 
     async def test_the_turns_answer_is_unchanged_by_the_recording(self) -> None:
         """The seam is a recorder, not a filter. A caller sees what the Conduit
@@ -332,6 +365,7 @@ class TestTheAttemptResult:
 
         assert ATTEMPT_AGENT_KEY not in attempt_result(response)
 
+    @pytest.mark.ac("ADR-082526-7f02/AC-3")
     def test_a_non_string_agent_is_omitted(self) -> None:
         """The key comes from a dict an agent may have produced itself, so its
         type is not guaranteed. A record is not the place to find that out."""
