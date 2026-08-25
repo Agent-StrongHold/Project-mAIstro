@@ -89,6 +89,13 @@ MEASURED_ROOTS = (
     "packages/maistro-turing/backend",
     "packages/maistro-design/src/maistro_design",
     "packages/hive-conductor/backend",
+    # The gates themselves (#257). Every one of #160's five mandates is
+    # enforced by a file in here, and until this entry they were the only
+    # Python in the repository that no gate governed — 5632 statements at 55%,
+    # with `ac_outcome_plugin.py` at 0% while every criterion's `passing` rung
+    # depended on it. A bug in a gate does not fail CI; it makes CI wrong,
+    # quietly, in whichever direction the bug points.
+    "scripts",
 )
 
 #: Paths inside a measured root that the gate deliberately does not score, each
@@ -109,6 +116,23 @@ EXEMPT: tuple[tuple[str, str], ...] = (
     (
         "/conftest.py",
         "fixtures are exercised by the tests that request them",
+    ),
+    # The four files under `scripts/` that are not tooling about this
+    # repository's own truth. The boundary is that question, not "is it
+    # covered": gates, generators and ratchets are all measured, including the
+    # mutation family that is parked behind a disabled workflow, because a
+    # parked gate is still a gate the repository will one day trust.
+    (
+        "/rlphd_",
+        "a simulation supporting docs/reviews/2026-07-29-rsi-containment-review.md, "
+        "not tooling — it models a policy rather than checking the repository, and "
+        "testing it would pin the illustration rather than any claim CI makes",
+    ),
+    (
+        "/openrouter_rpm_pacer.py",
+        "an operational utility that paces LiteLLM against OpenRouter's daily budget; "
+        "it asserts nothing about this repository and is exercised against a live "
+        "account, which CI has none of",
     ),
 )
 

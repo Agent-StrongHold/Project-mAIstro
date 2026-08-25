@@ -202,8 +202,13 @@ class TestMeasuredScope:
         """Out-of-scope is not the same as broken. It is reported as unmeasured
         rather than failed, because no one decided that file should be covered
         and failing every PR that touches one would get the gate turned off."""
-        assert self._audit(gate, tmp_path, monkeypatch, {"scripts/some-tool.py": {1}}) == []
-        assert gate.classify("scripts/some-tool.py")[0] == "unmeasured"
+        # maistro-registry, which has its own workflow but no coverage
+        # producer. `scripts/` used to be the example here and is measured as
+        # of #257 — the test caught that change rather than being updated to
+        # suit it.
+        outside = "packages/maistro-registry/src/maistro_registry/cli.py"
+        assert self._audit(gate, tmp_path, monkeypatch, {outside: {1}}) == []
+        assert gate.classify(outside)[0] == "unmeasured"
 
     def test_a_non_python_file_is_ignored(self, gate):
         assert gate.classify("docs/adr/ADR-1.md")[0] == "ignored"

@@ -459,6 +459,16 @@ jobs:
           uv pip install -r packages/hive-conductor/backend/requirements.txt
           uv run coverage run --append --branch --source=packages/hive-conductor/backend \
             -m pytest packages/hive-conductor/backend/tests --timeout=30 -q
+          # The gates themselves (#257). Every one of #160's five mandates is
+          # enforced by a file in scripts/, and they were the only Python here
+          # that no gate governed. The root suite is what exercises them —
+          # tests/test_check_*.py import each script and drive its pure logic —
+          # so this is the producer that puts them in coverage.xml.
+          #
+          # Its PostgreSQL-dependent legs skip in this job, which has no server.
+          # That is fine for this --source: no gate script needs a database.
+          uv run coverage run --append --branch --source=scripts \
+            -m pytest tests/ --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this PR added) -----
