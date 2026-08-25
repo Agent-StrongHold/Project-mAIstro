@@ -96,7 +96,7 @@ The `/adr` and `/spec` scaffolds emit lifecycle history immediately. When a reco
 
 ## Design coverage
 
-Design coverage is decision-weighted: for each taken ADR (`Accepted`, `Fully Specced`, or `Implemented`), measure the fraction of its own and implementing specs' criteria that reach `reachable`, then average one vote per decision. A taken decision with no evidence contributes zero rather than disappearing from the denominator.
+Design coverage is decision-weighted: for each taken ADR (`Accepted`, `Fully Specced`, or `Implemented`), measure the fraction of its own and implementing specs' criteria that reach `reachable`, then average one vote per decision. A taken decision with no evidence contributes zero rather than disappearing from the denominator. The generator uses this same ADR-only taken-state set; SPEC-only states such as `In Progress` and `Tests Passing` are not decision states.
 
 The **current reviewed floor is always the value in `quality/ac-state-ceilings.json`**, not a number copied into prose. Accepting a real new decision can legitimately lower the percentage because new work becomes owed; such a denominator change must be banked and explained. Proving criteria raises it and the higher value must likewise be banked so the gain cannot pay for a later regression.
 
