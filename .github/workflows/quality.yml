@@ -437,6 +437,17 @@ jobs:
             -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
             -m pytest packages/maistro-design/tests --timeout=30 -q
+          # hive-conductor declares its test dependencies in its OWN pyproject
+          # `dev` extra, and `uv sync --all-extras` resolves the extras of the
+          # root project only — not of every workspace member. So pytest-bdd is
+          # absent here even though it is in uv.lock, and the two BDD step-def
+          # modules fail to import. ci.yml's `test` job already installs this
+          # requirements file for the same suite; this mirrors it.
+          #
+          # Installed here rather than beside `uv sync`, so a version it pulls
+          # cannot perturb the three coverage runs above that are already
+          # recorded.
+          uv pip install -r packages/hive-conductor/backend/requirements.txt
           uv run coverage run --append --branch --source=packages/hive-conductor/backend \
             -m pytest packages/hive-conductor/backend/tests --timeout=30 -q
           uv run coverage xml -o coverage.xml
