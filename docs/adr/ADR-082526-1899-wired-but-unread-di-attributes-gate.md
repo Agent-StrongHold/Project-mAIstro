@@ -153,6 +153,28 @@ as the reason, so the next person does not re-derive it.
 
 ## Acceptance criteria
 
+Each criterion below is proven by `tests/test_check_wiring_reads.py`, and none
+of them can reach the ladder's `reachable` rung. That rung asks whether the
+module carrying the evidence is in the import graph `check-reachability.py`
+walks, and that graph covers `packages/*/src` and `packages/*/backend` only. A
+CI gate lives in `scripts/`, so its criteria cap at `passing` by construction —
+not because the evidence is weak, but because the ladder has no rung for repo
+tooling.
+
+That is a gap in the measurement system rather than in this change, and it
+pushes every gate's ADR towards one of two bad answers: leave it `Proposed`
+after shipping, which is the defect #239 exists for, or declare its criteria
+unproven. This ADR takes the second and says so in the open; the first is
+tracked separately.
+
+<!-- ac-state: unproven AC-1 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
+<!-- ac-state: unproven AC-2 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
+<!-- ac-state: unproven AC-3 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
+<!-- ac-state: unproven AC-4 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
+<!-- ac-state: unproven AC-5 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
+<!-- ac-state: unproven AC-6 - proven by tests/test_check_wiring_reads.py; `reachable` is unattainable because the reachability graph does not cover scripts/ -->
+
+
 - [x] **AC-1** The gate reports a public field on a declared DI root that no
   production module reads.
 - [x] **AC-2** A field read anywhere in production is not reported, including
