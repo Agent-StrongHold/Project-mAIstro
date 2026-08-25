@@ -1,31 +1,43 @@
 name: Set up uv
 description: >-
-  Install uv at the one version this repository pins, without a network lookup
-  to resolve which version that is (ADR-082526-3011, #213).
+  Install uv at the one version this repository pins, on the one action release
+  that tolerates a transient manifest outage (ADR-082526-3011, #213).
 
-# THE uv VERSION FOR THIS REPOSITORY. Change it here and nowhere else.
+# TWO pinned things, fixing two different problems. Both were measured on
+# PR #264; neither was arrived at by reading.
 #
-# It must stay an EXACT version. That is not style — it is the whole reason
-# this file exists. `astral-sh/setup-uv` resolves its `version` input through
-# `CONCRETE_VERSION_RESOLVERS` in `src/version/resolve.ts`: an exact version is
-# served by the exact resolver and returns with no network call, while `latest`
-# and any semantic range (`0.5.x`, `>=0.8`, …) fall through to resolvers that
-# fetch https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson.
-# That fetch is what failed `exact-debt-ledger` on #181 before a single test
-# ran, on a commit that only edited a markdown table.
+# 1. THE ACTION RELEASE — this is the #213 fix.
 #
-# So a range here would look like a pin and protect nothing, which is exactly
-# the state `quality.yml`'s `version: "0.5.x"` was in: it resolved to uv 0.5.31
-# over the network, while every unpinned job resolved `latest` to uv 0.12.5 over
-# the network. Two uv versions, seven minor releases apart, neither chosen.
+#    #213 assumed the manifest fetch could be avoided by pinning the uv
+#    version. It cannot. `astral-sh/setup-uv` fetches
+#    https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson
+#    unconditionally, for every value of `version`, measured here:
 #
-# 0.12.5 is what seventeen of the twenty usages already installed and passed on.
-# MEASUREMENT 3: v10.0.1 + exact version. (v10 alone does not resolve --
-# `git ls-remote` shows floating major tags stop at v7; v8/v9/v10 exist only
-# as point releases.) v7 fetches the manifest for EVERY
-# version value (measured on e26009a and d5257cf), so the pin was never the
-# lever. v10.0.1 is titled "Tolerate transient manifest timeouts" and v10.0.0
-# added `latest-known`; the repo is pinned to v7, which predates both.
+#      v7      + version: 0.12.5       -> "Fetching version data from ..."
+#      v7      + version: latest-known -> fetches, then "No version found"
+#      v10.0.1 + version: 0.12.5       -> "Fetching manifest data from ..."
+#
+#    So the fetch is not the lever. What changes is whether a transient
+#    failure of it is fatal: v10.0.1 is released as "Tolerate transient
+#    manifest timeouts". v7 — what this repository was on — has no such
+#    tolerance, and that is what killed `exact-debt-ledger` on #181 before a
+#    single test ran.
+#
+#    Pinned to the full v10.0.1 tag rather than a floating major on purpose:
+#    `git ls-remote --tags` shows this action's floating majors stop at v7.
+#    There is no v8, v9 or v10 ref to track.
+#
+# 2. THE uv VERSION — NOT the #213 fix, and must not be sold as one.
+#
+#    An exact version buys determinism, not network independence. Worth having
+#    anyway: `quality.yml` pinned `0.5.x`, which resolved to uv 0.5.31, while
+#    every other job resolved `latest` to uv 0.12.5 — two uv versions seven
+#    minor releases apart, split across jobs, neither chosen by anyone. 0.12.5
+#    is what seventeen of the twenty usages already installed and passed on.
+#
+# Change either value HERE and nowhere else. scripts/check-uv-setup.py fails
+# the build if a workflow calls astral-sh/setup-uv directly, if this file drops
+# below the pinned action release, or if the uv version stops being exact.
 runs:
   using: composite
   steps:

@@ -3,35 +3,35 @@
 
 What it catches
 ---------------
-A workflow that calls ``astral-sh/setup-uv`` directly, and a wrapper whose
-version stops being an exact one.
+A workflow that calls ``astral-sh/setup-uv`` directly, a wrapper that drops
+below the pinned action release, and a wrapper whose uv version stops being an
+exact one.
 
-Both matter for the same reason, and it is not tidiness. ``setup-uv`` resolves
-its ``version`` input through ``CONCRETE_VERSION_RESOLVERS`` in
-``src/version/resolve.ts``: an **exact** version is served by the exact
-resolver and returns with no network call, while ``latest`` and any semantic
-range fall through to resolvers that fetch
+The first two are the #213 fix. The third is not, and the distinction is the
+whole lesson of that issue.
+
+**The manifest fetch is unconditional.** #213 assumed pinning the uv version
+would avoid the request to
 
     https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson
 
-That fetch failed ``exact-debt-ledger`` on #181 before a single test ran, on a
-commit that only edited a markdown table. It is an external request on the
-critical path of jobs that have nothing to do with the network.
+It does not. Measured on this repository, on PR #264: ``v7`` with an exact
+version fetches; ``v7`` with ``latest-known`` fetches and then fails outright
+because that selector postdates v7; ``v10.0.1`` with an exact version fetches
+too. No value of ``version`` skips it.
 
-So the two failures this gate prevents are:
+What differs is whether a transient failure of that fetch is **fatal**.
+``v10.0.1`` ships as "Tolerate transient manifest timeouts". ``v7``, which this
+repository used, has no tolerance — that is what killed ``exact-debt-ledger``
+on #181 before a single test body ran. So ``PINNED_ACTION`` is the guarded
+thing, and dropping back below it silently reinstates the flake.
 
-1. **A direct usage.** #213 asks for the mechanism to be applied uniformly,
-   because "a mix of pinned and floating usages means the flake merely gets
-   rarer and harder to attribute". One unrouted job restores the dependency for
-   that job and makes the next failure harder to read, not easier.
-2. **A range in the wrapper.** ``version: "0.5.x"`` *looks* like a pin and
-   protects nothing — it resolved over the network to uv 0.5.31 while every
-   unpinned job resolved ``latest`` over the network to uv 0.12.5. A gate that
-   only counted direct usages would have called that state compliant.
-
-``latest-known`` also skips the fetch, and is deliberately not accepted here: it
-installs whatever version the action's own release happens to know about, which
-is a version nobody in this repository chose. ADR-082526-3011 records that.
+The uv version is guarded for a different reason: ``quality.yml`` pinned
+``0.5.x``, which resolved to uv 0.5.31 while every other job resolved ``latest``
+to uv 0.12.5. That is a real defect — two uv versions seven minor releases
+apart, split across jobs — but it is a *determinism* defect, not the flake. A
+range here is refused because it is not a choice anyone made, not because
+exactness removes a network request. It does not.
 """
 
 from __future__ import annotations
@@ -47,6 +47,10 @@ WRAPPER_REF = "./.github/actions/setup-uv"
 
 #: `uses: astral-sh/setup-uv@v7` — the call this gate exists to centralise.
 DIRECT_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*astral-sh/setup-uv(?:@\S+)?\s*$")
+
+#: The action release the wrapper must use. Below this there is no tolerance
+#: for a transient manifest outage, which is the whole #213 fix.
+PINNED_ACTION = "astral-sh/setup-uv@v10.0.1"
 
 #: `version: "0.12.5"` inside the wrapper.
 VERSION_RE = re.compile(r"^\s*version:\s*[\"']?([^\"'\s]+)[\"']?\s*$")
@@ -81,19 +85,28 @@ def wrapper_problems() -> list[str]:
     text = WRAPPER.read_text(encoding="utf-8")
     if "astral-sh/setup-uv" not in text:
         return [f"{WRAPPER.relative_to(REPO_ROOT)} no longer wraps astral-sh/setup-uv"]
+    if f"uses: {PINNED_ACTION}" not in text:
+        return [
+            f"{WRAPPER.relative_to(REPO_ROOT)} does not use `{PINNED_ACTION}`. That "
+            f"release is the actual #213 fix — it tolerates a transient manifest "
+            f"outage, and the version it replaced does not. The manifest is fetched "
+            f"either way; only the tolerance differs"
+        ]
 
     version = wrapper_version(text)
     if version is None:
         return [
-            f"{WRAPPER.relative_to(REPO_ROOT)} pins no version, so the action falls back "
-            f"to `latest` and resolves it over the network — the failure #213 is about"
+            f"{WRAPPER.relative_to(REPO_ROOT)} pins no uv version, so the action falls "
+            f"back to whatever `latest` resolves to that day. Every job would then run "
+            f"an unchosen uv, and two jobs a week apart could run different ones"
         ]
     if not EXACT_RE.match(version):
         return [
             f"{WRAPPER.relative_to(REPO_ROOT)} pins `{version}`, which is not an exact "
-            f"version. Only an exact version skips the manifest fetch; a range looks "
-            f"like a pin and protects nothing (that was `0.5.x`, resolving over the "
-            f"network to 0.5.31)"
+            f"uv version, so what installs is whatever the manifest happens to offer. "
+            f"That was `0.5.x` here, quietly resolving to uv 0.5.31 while every other "
+            f"job ran 0.12.5. Exactness is about determinism — it does NOT avoid the "
+            f"manifest fetch, which happens either way"
         ]
     return []
 
@@ -121,11 +134,15 @@ def main() -> int:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         print(
-            "\nEvery workflow installs uv through .github/actions/setup-uv, which pins one\n"
-            "exact version. Exact is the whole point: setup-uv resolves a range or `latest`\n"
-            "by fetching raw.githubusercontent.com, and that fetch has already failed a job\n"
-            "before any test ran (#181). Change the version in the wrapper, not in a\n"
-            "workflow. See ADR-082526-3011.",
+            "\nEvery workflow installs uv through .github/actions/setup-uv, which pins both\n"
+            f"the action release ({PINNED_ACTION}) and an exact uv version.\n"
+            "\n"
+            "The action release is the one that matters for CI reliability: the version\n"
+            "manifest is fetched from raw.githubusercontent.com no matter what `version`\n"
+            "says, and only this release tolerates that fetch failing. The exact uv version\n"
+            "buys determinism, not network independence.\n"
+            "\n"
+            "Change either in the wrapper, never in a workflow. See ADR-082526-3011.",
             file=sys.stderr,
         )
         return 1

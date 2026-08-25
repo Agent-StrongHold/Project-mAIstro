@@ -1,6 +1,6 @@
 ---
 id: ADR-082526-3011
-title: "One exactly-pinned uv, declared in one place, and workflows may not call setup-uv directly"
+title: "The setup-uv release is the flake fix; the uv pin is determinism. Both live in one wrapper"
 repo: maistro-engine
 kind: adr
 status: Accepted
@@ -29,7 +29,7 @@ owners:
   - '@BlakeMatthews-dev'
 ---
 
-# ADR-082526-3011: One exactly-pinned uv, declared in one place, and workflows may not call setup-uv directly
+# ADR-082526-3011: The setup-uv release is the flake fix; the uv pin is determinism. Both live in one wrapper
 
 ## Context
 
@@ -43,107 +43,112 @@ Fetching version data from https://raw.githubusercontent.com/astral-sh/versions/
 
 The commit under test removed a duplicated row from a markdown table. Nothing
 about it can affect `astral-sh/setup-uv`'s ability to reach GitHub's raw CDN.
-This is the same class as #204: an external fetch on the critical path of a job
-that has nothing to do with the network, failing before any test body runs.
 
-#213 raised two questions it could not answer from a workstation. Both are
-answerable, and the answers change the fix.
+#213 asked whether pinning the uv version avoids that fetch, and could not
+test it from a workstation. **It does not, and this record exists partly to
+stop that assumption being made a third time.** The first version of this
+change asserted it — from a summarised reading of the action's resolver rather
+than from behaviour — and the PR's own CI disproved it within minutes.
 
-**Does a glob pin avoid the fetch?** No. From `setup-uv`'s own
-`src/version/resolve.ts`, `resolveVersion` walks `CONCRETE_VERSION_RESOLVERS`
-in order. An exact version is served by the exact resolver, which returns the
-parsed specifier without a network call. `latest` and semantic ranges fall
-through to the latest and range resolvers, which call `getLatestVersion` and
-`getAllVersions` — both of which fetch the manifest. `latest-known` is the one
-other early return; it is baked into the action's own release.
+Three measurements, all on PR #264 against this repository:
 
-So `quality.yml`'s `version: "0.5.x"` is **not protection**. It fetches exactly
-like the unpinned jobs, and it is not even a documented input value: the action
-documents exact versions, `latest`, `latest-known`, and empty.
+| action | `version` | result |
+|---|---|---|
+| `@v7` | `0.12.5` (exact) | `Fetching version data from raw.githubusercontent.com …`, installs |
+| `@v7` | `latest-known` | fetches, then `##[error]No version found for latest-known` |
+| `@v10.0.1` | `0.12.5` (exact) | `Fetching manifest data from raw.githubusercontent.com …`, installs |
 
-**Which version is correct?** Measured against the live manifest: `0.5.x`
-resolves to **uv 0.5.31**, and the unpinned jobs' `latest` resolves to **uv
-0.12.5**. The repository has therefore been running two uv versions seven
-minor releases apart, split across jobs, with nothing saying so.
+The manifest request is **unconditional**. No value of `version` avoids it, in
+any release tested. What differs between releases is whether a transient
+failure of it is fatal: `v10.0.1` ships as *"Tolerate transient manifest
+timeouts"*. `v7` — where this repository sat — has no such tolerance, and that
+is precisely what killed #181.
 
-The suspicion in #213 — that a 0.5-era uv reading a `revision = 3` lock is
-wrong — does not hold up, and it is worth recording that it was checked rather
-than assumed. uv 0.5.31 was downloaded and run against this repository's
-`uv.lock`; `uv lock --check` resolves 239 packages and exits 0. The pin is not
-broken. It is *ineffective*, which is worse in one specific way: it looks like
-the fix for the flake it does not fix.
+Two further measured facts, both of which #213 got wrong or could not check:
 
-The inventory in #213 has also drifted. It records 11 unpinned of 13 usages;
-the tree now has **17 unpinned of 20**.
+- **`0.5.x` resolved to uv 0.5.31** while every unpinned job resolved `latest`
+  to **uv 0.12.5**. Three gate jobs ran a uv seven minor releases behind the
+  other seventeen, and nothing said so.
+- **#213's suspicion that a 0.5-era uv cannot read a `revision = 3` lock does
+  not hold.** uv 0.5.31 was downloaded and run against this repository's
+  `uv.lock`: `uv lock --check` resolves 239 packages and exits 0. The `0.5.x`
+  pin was not broken. It was *ineffective*, which is worse in one way — it
+  looked like the fix for the flake it did not fix.
+- **The action has no floating major above `v7`.** `git ls-remote --tags`
+  shows point releases through v10.0.1 but floating majors stopping at v7, so
+  `@v10` does not resolve; the newest must be pinned by full tag.
+
+#213's inventory had also drifted: it records 11 unpinned of 13 usages; the
+tree had **17 unpinned of 20**.
 
 ## Decision
 
 Every workflow gets uv through one local composite action,
-`.github/actions/setup-uv`, which wraps `astral-sh/setup-uv@v7` at a single
-**exact** version. No workflow references `astral-sh/setup-uv` directly, and a
-gate enforces that.
+`.github/actions/setup-uv`, which pins **two** things for **two different
+reasons**. No workflow references `astral-sh/setup-uv` directly, and a gate
+enforces all of it.
 
-- **Exact, not a range.** Proven above to be the only form that skips the
-  fetch. `latest-known` also skips it, but ties the version to whichever
-  `setup-uv` release is current, which is a version nobody in this repository
-  chose.
-- **uv 0.12.5**, because seventeen of twenty jobs already run it and are green.
-  This moves only the three `quality.yml` jobs, and moves them onto what the
-  rest of CI already uses rather than onto a number picked fresh.
-- **One place**, because the acceptance criterion "the version every workflow
-  installs is stated somewhere reviewable" is not met by the same literal
-  copied twenty times. A composite action is the smallest construct that makes
-  it exactly one line.
-- **Enforced**, because a mix of routed and direct usages means the flake
-  merely gets rarer and harder to attribute — which #213 names explicitly.
-  Uniformity that is not checked is uniformity until the next PR.
+**1. The action release — `astral-sh/setup-uv@v10.0.1`. This is the #213 fix.**
+It is the release that tolerates a transient manifest outage. Since the fetch
+cannot be avoided, tolerating its failure is the only lever available. Pinned
+by full tag because no floating major above v7 exists to track.
 
-`required-version` in `pyproject.toml` was considered and rejected. The action
-does read it, and it would remove the fetch, but `required-version` is a uv
-setting: pinning it exactly makes uv refuse to run for every contributor not on
-that exact build. That is a real cost imposed on local development to fix a CI
-problem.
+**2. The uv version — exactly `0.12.5`. This is not the #213 fix and must not
+be presented as one.** It buys determinism: one uv for the whole repository
+instead of the 0.5.31/0.12.5 split. 0.12.5 is what seventeen of twenty jobs
+already ran green, so only the three `quality.yml` jobs move.
 
-Retrying the action is out of scope, per #213: a retry hides the dependency
-instead of removing it.
+**One place**, because "the version every workflow installs is stated somewhere
+reviewable" is not met by the same literal copied twenty times. **Enforced**,
+because #213 says a mix of pinned and floating usages means the flake merely
+gets rarer and harder to attribute.
+
+`required-version` in `pyproject.toml` was considered and rejected: it is a uv
+*setting*, so pinning it exactly makes uv refuse to run for every contributor
+not on that exact build — a real cost on local development to fix a CI problem.
+Retrying the action is out of scope per #213, and would in any case be the
+thing v10.0.1 already does internally.
 
 ## Consequences
 
 ### Positive
-- No job can fail because `raw.githubusercontent.com` was briefly unreachable
-  while installing uv. The request is not made.
-- One line states the uv version for the whole repository, and a gate keeps it
-  that way.
-- The 0.5.31/0.12.5 split closes. Every job runs the same uv, so a result from
-  one job means the same thing as a result from another.
-- Twenty jobs stop making a network request they never needed, which is a small
-  but real saving on every CI run.
+- A transient `raw.githubusercontent.com` outage is tolerated by the action
+  rather than failing the job, on all twenty usages at once.
+- One line states the uv version for the whole repository, and one states the
+  action release; a gate keeps both true.
+- The 0.5.31/0.12.5 split closes, so a result from one job means the same thing
+  as a result from another.
 
 ### Negative / Trade-offs
-- An exact pin goes stale by construction. Nothing here updates it, and
-  updating uv becomes a deliberate one-line change with its own CI run. That is
-  the intended trade: determinism over currency.
-- A composite action is indirection. A reader of `ci.yml` no longer sees which
-  uv is installed without opening one more file — mitigated by the gate's error
-  message naming that file.
-- The three `quality.yml` jobs change uv version (0.5.31 → 0.12.5). Their locks
-  are consumed with `--locked`, so no resolution changes, but it is a real
-  change to what those gates run.
+- **The central claim is weaker than it looks, and is recorded as such.** That
+  v10.0.1 tolerates the outage is its release's stated purpose, not something
+  measured here — simulating a CDN outage in CI is not available. What *is*
+  measured is that the fetch still happens. Anyone revisiting this should treat
+  the tolerance as documented-but-unverified.
+- Three major releases of the action are skipped at once (v7 → v10.0.1),
+  including v10.0.0's "Disable automatic caching for sensitive events". CI
+  exercises all twenty usages, but this is a real jump.
+- Both pins go stale by construction, and nothing here updates them.
+- A composite action is indirection: a reader of `ci.yml` no longer sees which
+  uv is installed without opening one more file.
 
 ### Neutral
-- `setup-uv` is still pinned by major tag (`@v7`) rather than by commit sha.
-  That is the repository's existing convention for actions and is a separate
-  question from the version it installs.
-- The manifest fetch remains for anyone running the action outside this
-  repository; this record governs this repository's workflows only.
+- The three `quality.yml` jobs change uv version (0.5.31 → 0.12.5). Their locks
+  are consumed with `--locked`, so no resolution changes.
+- The manifest fetch itself remains, for every job. Removing it would mean not
+  using `setup-uv` at all, which trades the flake for hand-rolled installation
+  and the loss of its caching. Not judged worth it, but it is the lever left if
+  the tolerance proves insufficient.
 
 ## Acceptance criteria
 
-- [x] **AC-1** The wrapper pins an **exact** version, and any other form —
-  `latest`, `latest-known`, a range such as `0.5.x`, or no version at all —
-  fails the build. Exactness is the property that removes the network request;
-  a range looks like a pin and protects nothing.
+- [x] **AC-1** The wrapper pins the action release that tolerates a transient
+  manifest outage, and pins an **exact** uv version. Dropping to an older
+  release, to a floating major that does not resolve, or to a non-exact uv
+  version all fail the build. These are two guards, not one: the release is the
+  flake fix, the exact version is determinism, and the manifest is fetched
+  either way.
 - [x] **AC-2** No workflow calls `astral-sh/setup-uv` directly. Every step that
-  installs uv goes through `.github/actions/setup-uv`, so one line states the
-  version for the whole repository and a later PR cannot quietly reintroduce
-  the dependency for one job.
+  installs uv goes through `.github/actions/setup-uv`, so both pins are stated
+  once for the whole repository and a later PR cannot quietly reintroduce a
+  direct, unpinned call for one job.

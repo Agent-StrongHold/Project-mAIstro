@@ -1,17 +1,22 @@
 """Tests for the uv-setup gate (#213, ADR-082526-3011).
 
-The property worth pinning is narrow and easy to get wrong: **a range looks
-like a pin and protects nothing**.
+Two different things are pinned here and they fix two different problems. The
+tests are organised so that distinction cannot quietly collapse, because it
+already collapsed once — in #213's own framing, and then in the first version
+of this PR.
 
-That is not hypothetical. `quality.yml` carried `version: "0.5.x"` for months.
-It reads as the fix for #213's flake, and it is not: `setup-uv` resolves a
-range by fetching the same manifest an unpinned job fetches, so those three
-jobs took the identical network dependency while appearing not to — and they
-silently ran uv 0.5.31 while every other job ran 0.12.5.
+**The manifest fetch is unconditional.** Measured on PR #264: `v7` with an
+exact version fetches, `v7` with `latest-known` fetches and then fails, and
+`v10.0.1` with an exact version fetches. No `version` value avoids the request.
+What `v10.0.1` changes is that a transient failure of it is no longer fatal —
+that release ships as "Tolerate transient manifest timeouts".
 
-So a gate that only counted direct `astral-sh/setup-uv` usages would have
-called that state compliant. `TestVersionMustBeExact` is the half that would
-not have.
+So `TestActionReleaseIsPinned` guards the actual #213 fix, and
+`TestVersionMustBeExact` guards something real but different: `quality.yml`
+carried `version: "0.5.x"`, which resolved to uv 0.5.31 while every other job
+resolved `latest` to 0.12.5. Two uv versions, seven minor releases apart,
+neither chosen. That is a determinism defect, and a gate that only counted
+direct `astral-sh/setup-uv` usages would have called it compliant.
 """
 
 from __future__ import annotations
@@ -25,15 +30,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-uv-setup.py"
 
+PINNED = "astral-sh/setup-uv@v10.0.1"
+
 WRAPPER = """\
 name: Set up uv
 runs:
   using: composite
   steps:
-    - uses: astral-sh/setup-uv@v7
+    - uses: {action}
       with:
         version: "{version}"
 """
+
+
+def wrapper_text(version: str = "0.12.5", action: str = PINNED) -> str:
+    return WRAPPER.format(version=version, action=action)
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +64,7 @@ def repo(gate, tmp_path, monkeypatch):
     workflows.mkdir(parents=True)
     wrapper = tmp_path / ".github" / "actions" / "setup-uv" / "action.yml"
     wrapper.parent.mkdir(parents=True)
-    wrapper.write_text(WRAPPER.format(version="0.12.5"), encoding="utf-8")
+    wrapper.write_text(wrapper_text(), encoding="utf-8")
     (workflows / "ci.yml").write_text(
         "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/setup-uv\n", encoding="utf-8"
     )
@@ -63,50 +74,78 @@ def repo(gate, tmp_path, monkeypatch):
     return gate
 
 
+class TestActionReleaseIsPinned:
+    """The actual #213 fix: only this release tolerates a manifest outage."""
+
+    @pytest.mark.ac("ADR-082526-3011/AC-1")
+    def test_an_older_action_release_is_refused(self, repo):
+        """v7 is what the repo was on, and what has no tolerance."""
+        repo.WRAPPER.write_text(wrapper_text(action="astral-sh/setup-uv@v7"), encoding="utf-8")
+        problems = repo.wrapper_problems()
+        assert problems and "v10.0.1" in problems[0]
+
+    @pytest.mark.ac("ADR-082526-3011/AC-1")
+    def test_a_floating_major_is_refused(self, repo):
+        """There is no floating major above v7 to track — measured with
+        `git ls-remote --tags`, and `@v10` fails to resolve at job start."""
+        repo.WRAPPER.write_text(wrapper_text(action="astral-sh/setup-uv@v10"), encoding="utf-8")
+        assert repo.wrapper_problems()
+
+    @pytest.mark.ac("ADR-082526-3011/AC-1")
+    def test_the_pinned_release_is_accepted(self, repo):
+        assert repo.wrapper_problems() == []
+
+    @pytest.mark.ac("ADR-082526-3011/AC-1")
+    def test_the_committed_wrapper_uses_the_pinned_release(self, gate):
+        assert f"uses: {gate.PINNED_ACTION}" in gate.WRAPPER.read_text(encoding="utf-8")
+
+
 class TestVersionMustBeExact:
-    """The half a "no direct usages" gate would have missed."""
+    """Real, but a determinism defect — not the flake fix."""
 
     @pytest.mark.ac("ADR-082526-3011/AC-1")
     @pytest.mark.parametrize(
         "version", ["0.5.x", "latest", ">=0.8", "^1.2.3", "0.5", "latest-known"]
     )
     def test_a_non_exact_version_is_refused(self, repo, version):
-        """Each of these resolves over the network, so each is the bug (#213).
+        """Each leaves the installed uv to whatever the manifest offers that day.
 
-        `latest-known` is in the list deliberately. It does skip the fetch, but
-        it installs whatever the action's own release knows about — a version
-        nobody here chose — so this gate does not accept it either.
+        `latest-known` is in the list deliberately, and for a reason that has
+        nothing to do with the fetch — it installs whatever the action release
+        happens to know about, which is still not a version anyone here chose.
+        (Measured: it does not skip the fetch either, and on v7 it is not even
+        a valid selector.)
         """
-        repo.WRAPPER.write_text(WRAPPER.format(version=version), encoding="utf-8")
+        repo.WRAPPER.write_text(wrapper_text(version), encoding="utf-8")
         problems = repo.wrapper_problems()
         assert problems and "exact" in problems[0]
 
     @pytest.mark.ac("ADR-082526-3011/AC-1")
     @pytest.mark.parametrize("version", ["0.12.5", "0.5.31", "1.0.0"])
     def test_an_exact_version_is_accepted(self, repo, version):
-        repo.WRAPPER.write_text(WRAPPER.format(version=version), encoding="utf-8")
+        repo.WRAPPER.write_text(wrapper_text(version), encoding="utf-8")
         assert repo.wrapper_problems() == []
 
     @pytest.mark.ac("ADR-082526-3011/AC-1")
     def test_a_wrapper_pinning_nothing_is_refused(self, repo):
         """No version at all means the action falls back to `latest`."""
         repo.WRAPPER.write_text(
-            "runs:\n  using: composite\n  steps:\n    - uses: astral-sh/setup-uv@v7\n",
+            f"runs:\n  using: composite\n  steps:\n    - uses: {PINNED}\n",
             encoding="utf-8",
         )
         problems = repo.wrapper_problems()
-        assert problems and "pins no version" in problems[0]
+        assert problems and "pins no uv version" in problems[0]
 
     def test_a_commented_version_does_not_count_as_a_pin(self, repo):
         """The real wrapper's comment block mentions versions; only a key counts."""
         repo.WRAPPER.write_text(
             "runs:\n  using: composite\n  steps:\n"
             '    # version: "0.5.x" was the old value\n'
-            "    - uses: astral-sh/setup-uv@v7\n",
+            f"    - uses: {PINNED}\n",
             encoding="utf-8",
         )
         problems = repo.wrapper_problems()
-        assert problems and "pins no version" in problems[0]
+        assert problems and "pins no uv version" in problems[0]
 
     def test_a_wrapper_that_stopped_wrapping_setup_uv_is_refused(self, repo):
         repo.WRAPPER.write_text("runs:\n  using: composite\n  steps: []\n", encoding="utf-8")
@@ -171,12 +210,12 @@ class TestDriver:
     @pytest.mark.ac("ADR-082526-3011/AC-1")
     def test_a_range_in_the_wrapper_exits_one(self, repo):
         """The state the repository was actually in, now a build failure."""
-        repo.WRAPPER.write_text(WRAPPER.format(version="0.5.x"), encoding="utf-8")
+        repo.WRAPPER.write_text(wrapper_text("0.5.x"), encoding="utf-8")
         assert repo.main() == 1
 
     def test_both_problems_are_reported_together(self, repo, capsys):
         """One run should name everything wrong, not the first thing wrong."""
-        repo.WRAPPER.write_text(WRAPPER.format(version="latest"), encoding="utf-8")
+        repo.WRAPPER.write_text(wrapper_text("latest"), encoding="utf-8")
         (repo.WORKFLOWS / "rogue.yml").write_text(
             "jobs:\n  a:\n    steps:\n      - uses: astral-sh/setup-uv@v7\n", encoding="utf-8"
         )
