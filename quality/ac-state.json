@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 508,
+    "criteria_declared": 511,
     "criteria_annotated": 214,
-    "markers_found": 220,
+    "markers_found": 223,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 8.6589
+    "design_coverage": 9.5371
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,8 +1081,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 8.6589,
-    "decisions": 103,
+    "percent": 9.5371,
+    "decisions": 104,
     "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1700,6 +1700,13 @@
         "declared_status": "Accepted",
         "criteria": 4,
         "reachable": 4,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082526-7f02",
+        "declared_status": "Accepted",
+        "criteria": 3,
+        "reachable": 3,
         "percent": 100.0
       },
       {
@@ -13008,6 +13015,47 @@
       "gherkin_parse_errors": [],
       "declared_unproven": [],
       "tier": "unmeasured"
+    },
+    {
+      "id": "ADR-082526-7f02",
+      "file": "docs/adr/ADR-082526-7f02-dispatch-identity-belongs-to-the-attempt.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 3,
+      "own_detail": [
+        {
+          "id": "ADR-082526-7f02/AC-1",
+          "claimed": true,
+          "module": "maistro.runs.chat_execution",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_chat_execution.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-7f02/AC-2",
+          "claimed": true,
+          "module": "maistro.runs.chat_admission",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_chat_execution.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-7f02/AC-3",
+          "claimed": true,
+          "module": "maistro.runs.chat_execution",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_chat_execution.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
     },
     {
       "id": "ADR-082526-b36a",
