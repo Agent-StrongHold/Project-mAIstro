@@ -416,11 +416,49 @@ jobs:
           # for them would be the wrong move).
           uv run coverage report --fail-under=87 || \
             (echo "::error::publish-set coverage below the 87% floor" && exit 1)
-          # Now widen for the DIFF gate only. maistro-server is outside the
-          # publish set, but "the file you touched" is well defined even where
-          # "the package's aggregate" is not yet governed.
+          # Now widen for the DIFF gate only. These four packages are outside
+          # the publish set, so none of them is under the floor above, but "the
+          # file you touched" is well defined even where "the package's
+          # aggregate" is not yet governed (#163 item 6).
+          #
+          # Every --source here must also appear in MEASURED_ROOTS in
+          # scripts/check-diff-coverage.py; tests/test_check_diff_coverage.py
+          # asserts the two agree. Adding a producer here without declaring it
+          # there leaves the package unscored and the log says so; declaring it
+          # there without a producer here fails every PR that touches it.
           uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
             -m pytest packages/maistro-server/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-turing/src/maistro_turing \
+            -m pytest packages/maistro-turing/tests --timeout=30 -q
+          # maistro-turing carries a second FastAPI service under backend/ with
+          # its own suite. Measuring only src/ would leave that half of the
+          # package silently unscored, which is the hole this item closes.
+          uv run coverage run --append --branch --source=packages/maistro-turing/backend \
+            -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
+            -m pytest packages/maistro-design/tests --timeout=30 -q
+          # hive-conductor's pytest-bdd is declared in that workspace member's
+          # OWN `dev` extra, and `--all-extras` includes every optional
+          # dependency of the ROOT project only — not of each member. So the
+          # sync above actively REMOVES pytest-bdd (`- pytest-bdd==8.1.0` in a
+          # dry run) and the two BDD step-def modules abort collection.
+          #
+          # `uv sync --all-packages` is the obvious fix and does not work here:
+          # hive-conductor's wheel config rewrites a path prefix
+          # (`sources = { "backend" = "hive_conductor" }`), and hatchling
+          # refuses an editable install for a prefix rewrite rather than a
+          # removal (editables#20), so the sync fails to build the member. The
+          # dry run passes because it never builds. Do not re-try that flag
+          # without changing that `sources` mapping first.
+          #
+          # ci.yml's `test` job already installs this requirements file before
+          # the same suite. Installed HERE rather than beside `uv sync`, so a
+          # version it resolves outside the lock (it pulls protobuf 5.29.6 ->
+          # 7.36.0) cannot perturb the three coverage runs above that are
+          # already recorded.
+          uv pip install -r packages/hive-conductor/backend/requirements.txt
+          uv run coverage run --append --branch --source=packages/hive-conductor/backend \
+            -m pytest packages/hive-conductor/backend/tests --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this PR added) -----

@@ -30,14 +30,28 @@ report, over the changed lines only:
 Each is compared per file. A file below either threshold fails and is named with
 its uncovered lines.
 
-What it cannot check
---------------------
-A file outside every `--source` path of the coverage run. Coverage never records
-it, so there is nothing to compare — the measured scope is the `--source` list
-in `quality.yml`, and that list is the exemption list. Note that
-`include_namespace_packages` must stay on in `[tool.coverage.report]`, or a new
-module in a directory without `__init__.py` is silently absent from the report
-and this gate sees nothing to check.
+What is in scope, and what is exempt
+-----------------------------------
+`MEASURED_ROOTS` below is the one reviewable place (#163 item 5). A changed
+Python file under one of those trees **must** appear in `coverage.xml`; absent
+means the measurement did not happen, and this fails rather than skipping. That
+distinction is the point: a silent skip and a pass look identical in a green
+tick, so a mistyped `--source`, a producer whose artefact uploaded empty, or a
+namespace-package directory coverage declined to walk would all read as "this
+change is exercised" while nothing had been measured.
+
+`EXEMPT` holds the paths deliberately outside the gate, each with its reason,
+and changed files matching one are listed in the output rather than passed over
+in silence. Everything else — a package with no coverage producer at all — is
+named as unmeasured scope so the hole is visible in the log.
+
+`MEASURED_ROOTS` is checked against `quality.yml`'s own `--source=` flags by
+`tests/test_check_diff_coverage.py`. A declaration nobody verifies drifts the
+first time a producer is added, and drift here is silent by construction.
+
+Note that `include_namespace_packages` must stay on in `[tool.coverage.report]`,
+or a new module in a directory without `__init__.py` is absent from the report;
+that used to defeat the gate silently and is now a failure.
 
 Usage
 -----
@@ -54,6 +68,49 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+#: Every tree whose Python files this gate measures, as `--source` paths.
+#:
+#: Kept in the same shape `quality.yml` passes to `coverage run --source=`, so
+#: the two can be compared literally rather than through a normalisation nobody
+#: reads. `tests/test_check_diff_coverage.py` asserts they are the same set.
+#:
+#: The publish set is the first five. The rest are outside it — they have no
+#: aggregate floor — and are here because "the file you touched" is well defined
+#: even where "the package's aggregate" is not yet governed (#163 item 6).
+MEASURED_ROOTS = (
+    "packages/maistro-core/src/maistro",
+    "packages/maistro-canvas/src/maistro_canvas",
+    "packages/maistro-evolve/src/maistro_evolve",
+    "packages/maistro-rsi/src/maistro_rsi",
+    "packages/maistro-bootstrap/src/maistro_bootstrap",
+    "packages/maistro-server/src/maistro_server",
+    "packages/maistro-turing/src/maistro_turing",
+    "packages/maistro-turing/backend",
+    "packages/maistro-design/src/maistro_design",
+    "packages/hive-conductor/backend",
+)
+
+#: Paths inside a measured root that the gate deliberately does not score, each
+#: with the reason. An exemption list nobody can find becomes a place to hide,
+#: so these are named in the output when a change touches one rather than being
+#: dropped on the floor.
+EXEMPT: tuple[tuple[str, str], ...] = (
+    (
+        "alembic/versions/",
+        "a migration is exercised by running it against a real database, which "
+        "the migration-chain suite does; line coverage of the module says "
+        "nothing about whether the schema change is right",
+    ),
+    (
+        "/tests/",
+        "test code is the evidence, not the thing evidenced",
+    ),
+    (
+        "/conftest.py",
+        "fixtures are exercised by the tests that request them",
+    ),
+)
 
 #: `@@ -old,count +new,count @@` — only the new-side range matters, because a
 #: line that no longer exists cannot be covered.
@@ -115,14 +172,49 @@ def coverage_by_file(report: Path) -> dict[str, dict[int, tuple[int, int, int]]]
     return measured
 
 
+def classify(filename: str) -> tuple[str, str]:
+    """Where a changed path sits relative to the gate: `(verdict, detail)`.
+
+    Three verdicts, and the middle one is the reason this function exists.
+    `measured` must be scored. `exempt` is deliberately not scored, and says
+    why. `unmeasured` is a file no coverage producer covers — not a decision
+    anyone made about that file, just a package the gate does not reach yet, and
+    naming it keeps the hole visible instead of indistinguishable from a pass.
+    """
+    if not filename.endswith(".py"):
+        return "ignored", "not Python"
+    for marker, reason in EXEMPT:
+        if marker in f"/{filename}":
+            return "exempt", reason
+    for root in MEASURED_ROOTS:
+        if filename == root or filename.startswith(f"{root}/"):
+            return "measured", root
+    return "unmeasured", "no coverage producer measures this tree"
+
+
 def audit(base: str, report: Path, line_floor: float, branch_floor: float) -> list[str]:
     """One message per file that falls short. Empty means the change is clean."""
     coverage = coverage_by_file(report)
     failures = []
     for filename, touched in sorted(changed_lines(base).items()):
-        lines = coverage.get(filename)
-        if not lines:
-            continue  # outside the measured scope; see the module docstring
+        verdict, detail = classify(filename)
+        if verdict != "measured":
+            continue
+        if filename not in coverage:
+            # In scope and absent from the report: the measurement did not
+            # happen. Skipping here is what let a mistyped `--source` or an
+            # empty producer artefact read as a pass.
+            failures.append(
+                f"  {filename}: under a measured root ({detail}) but absent from "
+                f"the coverage report — the measurement did not happen"
+            )
+            continue
+        # Membership, not truthiness. Coverage emits a `<class>` with zero
+        # `<line>` children for a file with no executable statements — an empty
+        # `__init__.py`, a docstring-only module — and those are measured, with
+        # nothing to score. Reading the empty dict as "absent" failed exactly
+        # the files that are trivially correct.
+        lines = coverage[filename]
         relevant = {n: lines[n] for n in sorted(touched) if n in lines}
         if not relevant:
             continue
@@ -153,6 +245,33 @@ def _ranges(numbers: list[int]) -> str:
     return ", ".join(str(n) for n in numbers) or "-"
 
 
+def _report_scope(base: str) -> None:
+    """Say what the gate did and did not score, before it says what failed.
+
+    A gate that prints only failures cannot be read for what it covered, and
+    "coverage passed" then means whatever the reader assumes. Both lists are
+    short by construction — they are per change, not per repository.
+    """
+    by_verdict: dict[str, list[tuple[str, str]]] = {}
+    for filename in sorted(changed_lines(base)):
+        verdict, detail = classify(filename)
+        by_verdict.setdefault(verdict, []).append((filename, detail))
+
+    scored = len(by_verdict.get("measured", []))
+    print(f"diff-coverage scope: {scored} changed file(s) measured")
+    for verdict, heading in (
+        ("exempt", "exempt, by declaration in scripts/check-diff-coverage.py"),
+        ("unmeasured", "NOT measured — no coverage producer reaches these"),
+    ):
+        entries = by_verdict.get(verdict, [])
+        if not entries:
+            continue
+        print(f"  {len(entries)} {heading}:")
+        for filename, detail in entries:
+            print(f"    {filename} — {detail}")
+    print()
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("report", type=Path, help="coverage.xml")
@@ -173,10 +292,11 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: {args.report} does not exist; run `coverage xml` first")
         return 1
 
+    _report_scope(args.base)
     failures = audit(args.base, args.report, args.fail_under, args.branch_fail_under)
     if not failures:
         print(
-            f"ok: every file this change touches is at or above "
+            f"ok: every measured file this change touches is at or above "
             f"{args.fail_under:g}% lines / {args.branch_fail_under:g}% branch arcs"
         )
         return 0
