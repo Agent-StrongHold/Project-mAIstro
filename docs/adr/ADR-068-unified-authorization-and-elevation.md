@@ -3,7 +3,7 @@ id: ADR-068
 title: "Unified Authorization & Elevation — tiers, an approver graph, sudo-style self-elevation, and RLPHD predictive approval"
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-29
 substrate:
   - maistro-engine#ADR-028

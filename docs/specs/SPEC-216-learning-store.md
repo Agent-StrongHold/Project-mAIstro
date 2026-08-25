@@ -3,7 +3,7 @@ id: SPEC-216
 title: "InMemoryLearningStore: dedup, org-scope isolation, FIFO eviction, auto-promotion"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-013

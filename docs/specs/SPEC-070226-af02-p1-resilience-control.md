@@ -3,7 +3,7 @@ id: SPEC-070226-af02
 title: "P1 Resilience: depth/compaction/retry enforcement with control-scope steering"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-038

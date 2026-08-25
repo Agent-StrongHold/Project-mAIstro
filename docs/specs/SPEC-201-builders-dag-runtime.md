@@ -3,7 +3,7 @@ id: SPEC-201
 title: "Builders Interactive Session — ReAct Agent Loop with Human-in-the-Loop TUI"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-03
 substrate:
   - maistro-engine#SPEC-200

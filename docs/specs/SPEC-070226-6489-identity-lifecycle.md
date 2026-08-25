@@ -3,7 +3,7 @@ id: SPEC-070226-6489
 title: "Identity lifecycle: DID method, agent authority tokens, recovery, offboarding"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-021

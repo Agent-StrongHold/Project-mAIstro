@@ -3,7 +3,7 @@ id: SPEC-070226-c4f8
 title: "Hierarchical orchestration: agent/skill portability across harnesses"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-058

@@ -3,7 +3,7 @@ id: SPEC-257
 title: "Code registry — signed entry resolution, semver compatibility, fail-closed refs (ADR-069)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-028

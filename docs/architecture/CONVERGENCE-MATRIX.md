@@ -115,7 +115,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Memory | `routes.memory`, `maistro.container` | `9/24` | KEEP — domain state; provenance and archive policy still converge | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104, ADR-082226-d3dd | scoped pgvector recall is live; archive conformance passes; producing Run provenance/policy remain | #64, #133 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on Run without owning lifecycle | #64 |
 | Archive tier | `maistro.container` when `archive_url` is set | `0/6` | KEEP — storage tier, not lifecycle | ADR-082226-f436, ADR-082226-5104 | filesystem + S3 conformance; archive-eligibility policy still open | #133 |
-| Relational persistence | `maistro.container` (both backends), Alembic | `3/14` | CONNECT — PostgreSQL core wiring is real; prompt/two SQLite adapter paths remain | ADR-082226-5104, ADR-087, ADR-012 | PostgreSQL container wiring and migrations are live; remaining rows are explicit reachability debt | #33, #34 |
+| Relational persistence | `maistro.container` (both backends), Alembic | `0/14` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
 | Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
 | Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | subsystem resolves semantic object through registry | #34 |
 | Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | backup/restore preserves canonical correlated records | #62, #34 |
@@ -146,7 +146,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 - maistro-server chat is now a real Container/Conduit product path (#222), while Hive/Conductor remains the product migration target (#53/#66).
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
 - Core scheduling owns occurrence identity and exact-one Run claims (#229), while the **live Hive scheduler** has not adopted that seam; #231 is the explicit remaining product migration.
-- PostgreSQL is no longer an unwired advertised backend: the core `pg_*` path and migrations are live. Remaining relational reachability is itemized rather than described as a silent all-in-memory fallback.
+- Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
 - The matrix checker proves structure, reachability counts and reference integrity. It cannot prove prose. That limitation is explicit rather than hidden; #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
 ## Related

@@ -3,7 +3,7 @@ id: SPEC-229
 title: "Canvas asset compositor: scene graph, occlusion, prompt composition (pure logic)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate: []
 implements:

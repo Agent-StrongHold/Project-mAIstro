@@ -3,7 +3,7 @@ id: SPEC-233
 title: "Registry Layer enum: 14-member taxonomy (ADR-031 base + ADR-098 extension)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate: []
 implements:

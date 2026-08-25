@@ -3,7 +3,7 @@ id: SPEC-080226-4c1f
 title: "Installing secret redaction on the log pipelines — closing ADR-064's integration half"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-08-02
 substrate:
   - maistro-engine#ADR-064

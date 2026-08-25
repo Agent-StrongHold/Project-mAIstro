@@ -3,7 +3,7 @@ id: SPEC-208
 title: Foreign harness adapter — HarnessRunner slot and agent/skill format adapters
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-15
 accepted: 2026-06-16
 implemented: 2026-07-04

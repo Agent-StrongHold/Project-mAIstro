@@ -3,7 +3,7 @@ id: SPEC-070426-457b
 title: "Canvas structured exporters — layer tree to editable PPTX and absolute-positioned HTML"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-04
 substrate:
   - maistro-engine#ADR-062326-702b

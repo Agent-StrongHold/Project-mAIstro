@@ -91,6 +91,7 @@ if TYPE_CHECKING:
         OutcomeStore,
         SessionStore,
     )
+    from maistro.protocols.prompts import PromptManager
     from maistro.protocols.quota import QuotaTracker
     from maistro.protocols.scorer import Scorer
     from maistro.protocols.strikes import StrikeTracker
@@ -129,6 +130,8 @@ class Container:
     sentinel: Sentinel
     context_builder: ContextBuilder
     intent_registry: IntentRegistry
+    # Versioned prompt persistence follows the selected relational backend (#122).
+    prompt_manager: PromptManager = None  # type: ignore[assignment]
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
     project_store: ProjectStore = None  # type: ignore[assignment]  # wired in create_container
@@ -695,6 +698,12 @@ async def create_container(
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+    # Prompt persistence is selected by the same backend decision as the
+    # rest of the Container, but kept out of this composition function so adding a
+    # backend does not grow the orchestration branch count (#122).
+    prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
+
     episodic_store = InMemoryEpisodicStore()
     project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
@@ -742,7 +751,7 @@ async def create_container(
     from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
-    audit_log = _wire_audit_log(pg_pool)
+    audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -891,6 +900,7 @@ async def create_container(
         learning_extractor=learning_extractor,
         outcome_store=outcome_store,
         session_store=session_store,
+        prompt_manager=prompt_manager,
         warden=warden,
         gate=gate,
         strike_tracker=strike_tracker,
@@ -959,21 +969,45 @@ async def create_container(
     return container
 
 
-def _wire_audit_log(pg_pool: Any) -> Any:
-    """Durable audit log on PostgreSQL, in-memory otherwise.
+async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
+    """Select the versioned prompt store from the configured relational backend."""
+    if pg_pool is not None:
+        from maistro.persistence.pg_prompts import PgPromptManager
 
-    The audit log is the one store where losing history on restart is not an
-    inconvenience but a hole in the record the log exists to keep. `PgAuditLog`
-    is a true drop-in: same `log`/`get_entries` signatures, same `AuditEntry`
-    return type — checked, not assumed.
+        return PgPromptManager(pg_pool)
+    if db_pool is not None:
+        from maistro.persistence.sqlite_prompts import SqlitePromptManager
+
+        manager = SqlitePromptManager(db_pool)
+        await manager.ensure_schema()
+        return manager
+
+    from maistro.prompts.store import InMemoryPromptManager
+
+    return InMemoryPromptManager()
+
+
+async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
+    """Audit persistence follows the selected relational backend (#122).
+
+    PostgreSQL remains the canonical durable system of record. SQLite is the
+    supported single-instance/homelab backend, so choosing it must not leave the
+    audit log as the one relational store that silently resets on restart.
     """
+    if pg_pool is not None:
+        from maistro.persistence.pg_audit import PgAuditLog
+
+        return PgAuditLog(pg_pool)
+    if db_pool is not None:
+        from maistro.persistence.sqlite_audit import SqliteAuditLog
+
+        audit = SqliteAuditLog(db_pool)
+        await audit.ensure_schema()
+        return audit
+
     from maistro.security.sentinel.audit import InMemoryAuditLog
 
-    if pg_pool is None:
-        return InMemoryAuditLog()
-    from maistro.persistence.pg_audit import PgAuditLog
-
-    return PgAuditLog(pg_pool)
+    return InMemoryAuditLog()
 
 
 def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
@@ -1045,6 +1079,7 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    "prompts",
     # The canonical execution spine (#132). Listed here for the same reason as
     # the four above: a `postgresql://` deployment that skipped `alembic upgrade
     # head` should be told once, at startup, naming every table it is missing —

@@ -3,7 +3,7 @@ id: ADR-067
 title: Canvas Asset Compositor — Scene Graph, Occlusion, Prompt Composition
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-09
 substrate:
   - maistro-engine#ADR-039

@@ -3,7 +3,7 @@ id: SPEC-209
 title: "Pydantic agent schemas and the SCHEMA_REGISTRY dotted-path resolver"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-004

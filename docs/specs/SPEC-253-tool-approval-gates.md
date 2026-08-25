@@ -3,7 +3,7 @@ id: SPEC-253
 title: "Tool approval gates — plan-level/escalation decision core (ADR-051)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#SPEC-252

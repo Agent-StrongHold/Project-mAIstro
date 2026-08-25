@@ -3,7 +3,7 @@ id: ADR-061
 title: "maistro-design — composable design skills + design systems package"
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-29
 substrate:
   - maistro-engine#ADR-019

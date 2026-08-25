@@ -3,7 +3,7 @@ id: ADR-048
 title: Session Search — Episodic memory inspector endpoint
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-13
 substrate:
   - maistro-engine#ADR-016

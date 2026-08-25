@@ -3,7 +3,7 @@ id: ADR-051
 title: Tool approval gates — plan preview, impact-weighted escalation, learned trust
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-13
 substrate:
   - maistro-engine#ADR-050

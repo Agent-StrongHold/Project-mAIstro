@@ -3,7 +3,7 @@ id: ADR-062326-702b
 title: Multi-modality design outputs and hierarchical artifact containers
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-06-23
 accepted: 2026-06-23
 implemented: 2026-06-23

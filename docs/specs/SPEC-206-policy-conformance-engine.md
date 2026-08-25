@@ -3,7 +3,7 @@ id: SPEC-206
 title: Policy-conformance comparison engine — ADRs → Specs → prior policy
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-05-30
 accepted: null
 implemented: null

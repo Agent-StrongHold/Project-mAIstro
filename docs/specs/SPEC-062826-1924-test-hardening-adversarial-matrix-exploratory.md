@@ -3,7 +3,7 @@ id: SPEC-062826-1924
 title: "Test hardening: adversarial probing, state/IO matrices, and exploratory testing — turning up coverage of trust boundaries and state machines"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-28
 substrate:
   - maistro-engine#ADR-032

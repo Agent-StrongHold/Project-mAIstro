@@ -3,7 +3,7 @@ id: SPEC-160
 title: "maistro-design acceptance criteria — skills, systems, trust, engine"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-05-29
 substrate:
   - maistro-engine#ADR-061

@@ -3,7 +3,7 @@ id: ADR-062326-616c
 title: "Design skills code export capability — React/TSX output format"
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-06-23
 substrate:
   - maistro-engine#ADR-061

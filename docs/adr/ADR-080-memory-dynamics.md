@@ -3,7 +3,7 @@ id: ADR-080
 title: "Memory Dynamics — decay, reinforcement, tiers, consolidation, and cross-scope sharing"
 repo: maistro-engine
 kind: adr
-status: Implemented
+status: Accepted
 created: 2026-05-30
 substrate:
   - maistro-engine#ADR-013
