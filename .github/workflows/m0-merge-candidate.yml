@@ -18,9 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: '0.5.x'
+      - uses: ./.github/actions/setup-uv
       - name: Reconcile latest develop
         shell: bash
         run: |
@@ -46,10 +44,20 @@ jobs:
             done < <(git diff --name-only --diff-filter=U)
           fi
           test -z "$(git diff --name-only --diff-filter=U)"
-          git rm -f --ignore-unmatch .github/workflows/m0-merge-candidate.yml
           git commit -m 'Reconcile M0 closeout with current develop'
       - name: Install
         run: uv sync --locked --all-extras
+      - name: Apply the exact Ruff fix to the M0 coverage test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_path=packages/hive-conductor/backend/tests/test_maistro_core_adapter.py
+          uv run ruff check --fix "$test_path"
+          uv run ruff format "$test_path"
+          git add "$test_path"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Format Hive M0 composition coverage test'
+          fi
       - name: Bank the combined truthful acceptance state
         shell: bash
         run: |
@@ -60,12 +68,13 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m 'Bank final M0 acceptance-state floor'
           fi
-      - name: Prove M0 truth and the previously uncovered Hive composition line
+      - name: Prove M0 truth and the Hive composition line
         shell: bash
         run: |
           set -euo pipefail
           uv run ruff check .
           uv run ruff format --check .
+          uv run python scripts/check-uv-setup.py
           uv run python tools/lint_lifecycle.py
           uv run python scripts/check-backlog-consistency.py
           uv run python scripts/check-reachability.py
