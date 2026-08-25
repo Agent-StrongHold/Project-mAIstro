@@ -22,6 +22,8 @@ ac-modules:
   AC-1: maistro.container
   AC-2: maistro.container
   AC-3: maistro.container
+  AC-4: services.dag_agents
+  AC-5: services.dag_agents
 history:
   - status: Proposed
     date: 2026-08-25
@@ -143,18 +145,20 @@ container's `run_store` is the one that goes here.
 
 ## Acceptance criteria
 
-Split by what the acceptance collector can see. `check-ac-state.py` scans
-markers only in the trees `[tool.pytest.ini_options].testpaths` names, and
-`packages/hive-conductor/backend/tests` is not one of them — the Conductor
-suite needs its own `sys.path` root and does not collect from the repo root.
-So a criterion about Hive's own behaviour cannot reach `reachable` however well
-tested it is, which is #249's rung gap one layer out: there it was `scripts/`,
-here it is a product package.
+Split by which module carries the behaviour. AC-1 through AC-3 are about the
+Container; AC-4 and AC-5 are about Hive's registered-DAG path, so they annotate
+`services.dag_agents` and are proven by
+`packages/hive-conductor/backend/tests/test_dag_agents.py`.
 
-AC-4 and AC-5 are therefore declared rather than claimed. They are covered —
-`packages/hive-conductor/backend/tests/test_dag_agents.py` runs in CI's
-Conductor job — but this ladder cannot count that, and saying so is better than
-pointing the annotation at a module that does not carry the evidence.
+That split used to cost them their rung. `check-ac-state.py` scans markers only
+in the trees `[tool.pytest.ini_options].testpaths` names, and
+`packages/hive-conductor/backend/tests` was not one of them — so a criterion
+about the product this monorepo ships could not climb past `declared` however
+well tested it was, and this document carried two `<!-- ac-state: unproven -->`
+comments admitting it. #267 put the tree in `testpaths` and taught the gate to
+run each root as its own pytest session, which is what the collision between
+`maistro-core`'s `tests/config/` package and Hive's flat-layout `config` module
+requires. The evidence was always there; nothing was measuring it.
 
 - [x] **AC-1** The Container declares `a2a_delegator` and `guest_peers`, and
   both construct without configuration.
@@ -164,8 +168,6 @@ pointing the annotation at a module that does not carry the evidence.
 - [x] **AC-3** The `run_store` parameter is the canonical `RunStore` and stays
   distinguishable from the durable executor's store.
 
-<!-- ac-state: unproven AC-4 - covered by packages/hive-conductor/backend/tests/test_dag_agents.py, which check-ac-state.py cannot scan: that tree is outside testpaths (#249's rung gap, one layer out) -->
-<!-- ac-state: unproven AC-5 - covered by packages/hive-conductor/backend/tests/test_dag_agents.py, which check-ac-state.py cannot scan: that tree is outside testpaths (#249's rung gap, one layer out) -->
 
 - [x] **AC-4** Hive's registered-DAG path resolves its node resolver from the
   Container, so the delegate node receives a delegator, a guest-peer manager
