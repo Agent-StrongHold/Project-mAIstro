@@ -754,3 +754,231 @@ class TestToolingReachesTheTopRung:
         )
         assert live.rung(unreachable) == "reachable"
         assert dead.rung(unreachable) == "passing"
+
+
+class TestChainFacts:
+    """The absence questions, answered from a document's text alone.
+
+    Text-only is not a shortcut: the base side of the mandate is
+    `git show <base>:<path>`, where there is no checkout to import from and no
+    test that can be run. The head side calls the same function for the same
+    reason — a fact derived two ways can differ two ways, and every difference
+    would read as a violation the change introduced.
+    """
+
+    SPEC = (
+        "---\nid: SPEC-900\nkind: spec\nstatus: Draft\n"
+        "implements:\n  - maistro-engine#ADR-070\n---\n\n"
+        "## Acceptance criteria\n\n- [ ] **AC-1** it holds\n"
+    )
+
+    def test_a_spec_names_its_kind_its_adrs_and_its_criteria(self, check):
+        facts = check.chain_facts("docs/specs/SPEC-900.md", self.SPEC)
+        assert facts.id == "SPEC-900"
+        assert facts.kind == "spec"
+        assert facts.implements == ("ADR-070",)
+        assert facts.has_criteria and facts.has_ac_heading
+
+    def test_an_inline_implements_list_still_names_its_adr(self, check):
+        """`implements: [maistro-engine#ADR-073]` is valid front matter, and
+        splitting the raw field on `#` yielded `ADR-073]` — the spec counted as
+        mapped while its ADR still counted as uncovered, wrong in both
+        directions at once."""
+        text = self.SPEC.replace(
+            "implements:\n  - maistro-engine#ADR-070", "implements: [maistro-engine#ADR-073]"
+        )
+        assert check.chain_facts("docs/specs/SPEC-900.md", text).implements == ("ADR-073",)
+
+    def test_a_spec_implementing_only_another_spec_names_no_decision(self, check):
+        """The schema accepts `SPEC-*` references too, and one of those maps to
+        no decision at all — exactly the missing chain the counter reports."""
+        text = self.SPEC.replace("maistro-engine#ADR-070", "maistro-engine#SPEC-101")
+        assert check.chain_facts("docs/specs/SPEC-900.md", text).implements == ()
+
+    def test_a_document_under_specs_without_kind_spec_is_not_in_the_corpus(self, check):
+        """The same filter `_spec_files` applies. A document counted on one side
+        of the comparison and not the other is a spurious violation waiting."""
+        assert check.chain_facts("docs/specs/README.md", "---\nid: X\n---\n") is None
+
+    def test_a_nested_adr_path_is_not_an_adr(self, check):
+        """`collect_adrs` globs `docs/adr/ADR-*.md` and does not recurse."""
+        text = "---\nid: ADR-1\nstatus: Accepted\n---\n"
+        assert check.chain_facts("docs/adr/archive/ADR-1.md", text) is None
+        assert check.chain_facts("docs/adr/ADR-1.md", text).kind == "adr"
+
+
+class TestAbsentLinks:
+    def _spec(self, check, doc_id, *, implements=(), criteria=True, heading=True, nm=False):
+        return check.ChainFacts(
+            id=doc_id,
+            kind="spec",
+            file=f"docs/specs/{doc_id}.md",
+            status="Draft",
+            implements=tuple(implements),
+            has_criteria=criteria,
+            has_ac_heading=heading,
+            non_measurable=nm,
+        )
+
+    def _adr(self, check, doc_id, *, status="Accepted", criteria=False):
+        return check.ChainFacts(
+            id=doc_id,
+            kind="adr",
+            file=f"docs/adr/{doc_id}.md",
+            status=status,
+            implements=(),
+            has_criteria=criteria,
+            has_ac_heading=criteria,
+            non_measurable=False,
+        )
+
+    def _links(self, check, *facts):
+        return check.absent_links({f.id: f for f in facts})
+
+    def test_a_spec_naming_no_adr_is_an_orphan(self, check):
+        found = self._links(check, self._spec(check, "SPEC-1"))
+        assert found["specs_implementing_nothing"] == {"SPEC-1"}
+
+    def test_a_taken_adr_nothing_implements_is_uncovered(self, check):
+        found = self._links(check, self._adr(check, "ADR-1"))
+        assert found["adrs_without_implementing_spec"] == {"ADR-1"}
+
+    def test_a_proposed_adr_is_owed_nothing(self, check):
+        """A decision not yet made cannot be owed an implementation; counting it
+        would make writing down an idea look like incurring debt."""
+        found = self._links(check, self._adr(check, "ADR-1", status="Proposed"))
+        assert found["adrs_without_implementing_spec"] == set()
+
+    def test_an_adr_carrying_its_own_criteria_is_covered(self, check):
+        """ADR-063..066 hold 147 scenarios written before the spec split, and
+        calling those uncovered would report measured work as missing."""
+        found = self._links(check, self._adr(check, "ADR-1", criteria=True))
+        assert found["adrs_without_implementing_spec"] == set()
+
+    def test_an_implementing_spec_covers_the_decision(self, check):
+        found = self._links(
+            check, self._adr(check, "ADR-1"), self._spec(check, "SPEC-1", implements=["ADR-1"])
+        )
+        assert found["adrs_without_implementing_spec"] == set()
+
+    def test_coverage_is_a_property_of_the_corpus_not_of_the_adr(self, check):
+        """Whether a decision is implemented depends on every spec's
+        `implements:`, so deleting a reference in one file puts a *different*
+        file's decision into the population."""
+        with_spec = self._links(
+            check, self._adr(check, "ADR-1"), self._spec(check, "SPEC-1", implements=["ADR-1"])
+        )
+        without = self._links(check, self._adr(check, "ADR-1"), self._spec(check, "SPEC-1"))
+        assert with_spec["adrs_without_implementing_spec"] == set()
+        assert without["adrs_without_implementing_spec"] == {"ADR-1"}
+
+    def test_a_spec_with_no_criteria_and_no_heading_is_silent(self, check):
+        found = self._links(
+            check, self._spec(check, "SPEC-1", implements=["ADR-1"], criteria=False, heading=False)
+        )
+        assert found["specs_declaring_no_criteria"] == {"SPEC-1"}
+
+    def test_a_heading_awaiting_ids_is_not_silence(self, check):
+        """`specs_awaiting_retrofit` holds "criteria not written yet". Merging
+        the two let "there are none" hide inside "there are none *yet*"."""
+        found = self._links(
+            check, self._spec(check, "SPEC-1", implements=["ADR-1"], criteria=False, heading=True)
+        )
+        assert found["specs_declaring_no_criteria"] == set()
+
+    def test_a_declared_non_measurable_spec_is_exempt(self, check):
+        found = self._links(
+            check,
+            self._spec(
+                check, "SPEC-1", implements=["ADR-1"], criteria=False, heading=False, nm=True
+            ),
+        )
+        assert found["specs_declaring_no_criteria"] == set()
+
+
+class TestNewAbsentLinks:
+    """#164 reopened on exactly this: the three counters were ratchets, and a
+    ratchet compares totals."""
+
+    def test_a_link_absent_at_the_base_is_not_this_change_s(self, check):
+        base = {"specs_implementing_nothing": {"SPEC-1"}}
+        head = {"specs_implementing_nothing": {"SPEC-1"}}
+        found = check.new_absent_links(base | _others(), head | _others())
+        assert found["specs_implementing_nothing"] == []
+
+    def test_a_link_this_change_introduced_is_reported(self, check):
+        found = check.new_absent_links(
+            {"specs_implementing_nothing": set()} | _others(),
+            {"specs_implementing_nothing": {"SPEC-2"}} | _others(),
+        )
+        assert found["specs_implementing_nothing"] == ["SPEC-2"]
+
+    def test_a_new_violation_cannot_be_paid_for_by_fixing_a_legacy_one(self, check):
+        """The audit's finding, stated as a test. The aggregate is unchanged —
+        one in, one out — so the ceiling is satisfied while a new absent link
+        entered the repository. Ids cannot net off against each other."""
+        base = {"specs_implementing_nothing": {"SPEC-OLD"}} | _others()
+        head = {"specs_implementing_nothing": {"SPEC-NEW"}} | _others()
+        assert len(base["specs_implementing_nothing"]) == len(head["specs_implementing_nothing"])
+        assert check.new_absent_links(base, head)["specs_implementing_nothing"] == ["SPEC-NEW"]
+
+    def test_closing_a_link_is_never_a_violation(self, check):
+        found = check.new_absent_links(
+            {"specs_implementing_nothing": {"SPEC-1"}} | _others(),
+            {"specs_implementing_nothing": set()} | _others(),
+        )
+        assert found["specs_implementing_nothing"] == []
+
+    def test_every_absence_counter_is_carried(self, check):
+        """Three counters, and a mandate covering two of them would be worse
+        than none: the uncovered one reads as gated when it is not."""
+        empty = {name: set() for name in check.ABSENCE_COUNTERS}
+        assert set(check.new_absent_links(empty, empty)) == set(check.ABSENCE_COUNTERS)
+        assert set(check.ABSENCE_COUNTERS) <= set(check.RATCHETED)
+
+
+def _others():
+    """The two counters a focused case is not exercising, empty on both sides."""
+    return {"adrs_without_implementing_spec": set(), "specs_declaring_no_criteria": set()}
+
+
+class TestChainMandateGate:
+    def _facts(self, check, **kwargs):
+        return check.ChainFacts(
+            kind="spec",
+            status="Draft",
+            implements=(),
+            has_criteria=True,
+            has_ac_heading=True,
+            non_measurable=False,
+            **kwargs,
+        )
+
+    def test_an_unchanged_corpus_passes(self, check):
+        facts = {"SPEC-1": self._facts(check, id="SPEC-1", file="docs/specs/SPEC-1.md")}
+        assert check.chain_mandate("base", facts, facts) == 0
+
+    def test_a_newly_added_orphan_spec_fails(self, check, capsys):
+        base: dict = {}
+        head = {"SPEC-1": self._facts(check, id="SPEC-1", file="docs/specs/SPEC-1.md")}
+        assert check.chain_mandate("base", base, head) == 1
+        out = capsys.readouterr().out
+        assert "SPEC-1" in out and "docs/specs/SPEC-1.md" in out
+
+    def test_the_failure_says_how_to_close_the_link(self, check, capsys):
+        """A gate that reports a violation and not its remedy gets worked around
+        rather than satisfied."""
+        head = {"SPEC-1": self._facts(check, id="SPEC-1", file="docs/specs/SPEC-1.md")}
+        check.chain_mandate("base", {}, head)
+        assert "implements:" in capsys.readouterr().out
+
+    def test_a_pre_existing_orphan_alone_passes(self, check):
+        """Legacy stays on the ceilings and falls over time. A gate that fires
+        on all 76 of them at once gets turned off."""
+        facts = {"SPEC-1": self._facts(check, id="SPEC-1", file="docs/specs/SPEC-1.md")}
+        assert check.chain_mandate("base", facts, facts) == 0
+
+    def test_an_unreadable_base_refuses_rather_than_failing_everything(self, check):
+        """Same refusal the criterion mandate makes, for the same reason: an
+        unreadable base makes every absent link look introduced."""
+        assert check.corpus_at("definitely-not-a-rev") is None
