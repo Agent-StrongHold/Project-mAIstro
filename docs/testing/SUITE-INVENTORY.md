@@ -52,6 +52,13 @@ under the old shared-absolute table, a branch that had not touched a single
 test still had to re-collect thirteen suites every time its base moved,
 because someone else's merge invalidated the number it had recorded.
 
+The exception, so it is not a surprise: counts are not additive when two
+changes *interact*. Append a value to each of two parametrize lists in two
+files and the merged Cartesian product grows multiplicatively, so the two
+recorded deltas under-count. Nothing predicts that, but nothing hides it
+either — the sum stops matching collection, you get ordinary drift, and
+`--update` fixes it. Rare case, old cost, instead of every base move.
+
 Write the prose in the note too. The count alone hides compensating changes —
 when #130 added nineteen maistro-core node IDs while PM-demo retirement removed
 eighteen backend node IDs and one e2e case, the total barely moved and a reader

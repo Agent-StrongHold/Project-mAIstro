@@ -115,7 +115,8 @@ record of what was written, not a document kept current.
 - #208's first acceptance criterion becomes literally true: two PRs that both
   add or remove test node IDs do not conflict, whatever suites they touch.
 - A base move no longer forces a thirteen-suite re-collection on a branch that
-  changed no tests. This is the larger practical saving.
+  changed no tests, wherever the two changes move the count independently. This
+  is the larger practical saving.
 - The number and the prose explaining it live in one file, written by one
   change, so they cannot drift apart.
 - Merge-queue scaling inverts: today more open PRs means more conflicts per
@@ -134,6 +135,16 @@ record of what was written, not a document kept current.
 - Delta files accumulate. Compaction is a deliberate maintenance action; until
   it is run, the sum walks over every note. Thirteen integers per note makes
   that cheap for a long time, but it is not free forever.
+- **Counts are not additive in every case, so base-move invariance is not
+  universal.** If one case is parametrized over two lists in two files, two
+  branches can each append a value with no source conflict, and the merged
+  Cartesian product grows multiplicatively — four cases where two `+1` deltas
+  predict three. The ledger cannot see that coming. What it does is fail
+  loudly: the sum stops matching collection, the check reports drift, and the
+  contributor re-runs `--update`. That is the old cost, paid in the rare
+  interacting case instead of on every base move, so the trade is still worth
+  making — but the guarantee is "independent changes compose", not "all changes
+  compose".
 
 ### Neutral
 - Counts, not node-ID sets, remains the measurement. That trade-off is argued

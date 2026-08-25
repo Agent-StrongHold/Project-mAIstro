@@ -35,11 +35,21 @@ git had no unchanged context between them: a branch touching
 two entirely unrelated changes. #209 moved the prose out; the number stayed.
 
 Deltas fix both halves. Two changes never write the same path, so there is
-nothing to reconcile even when they touch the same suite. And because deltas
-are additive, a branch whose base moves needs no regeneration at all — its own
-delta is still true, and the sum absorbs whatever else merged. That second
-saving is the larger one in practice: re-recording an absolute meant collecting
-thirteen suites on a branch that had not changed a test.
+nothing to reconcile even when they touch the same suite. And where two changes
+move the count independently — which is very nearly always — a branch whose
+base moves needs no regeneration at all: its own delta is still true, and the
+sum absorbs whatever else merged. That second saving is the larger one in
+practice: re-recording an absolute meant collecting thirteen suites on a branch
+that had not changed a test.
+
+"Independently" is a real qualifier, not a hedge. Node-ID counts are not
+additive in general: if a case is parametrized over two lists in two files, one
+branch can add a value to each without a source conflict, and the merged
+Cartesian product grows multiplicatively rather than by the sum of the two
+deltas. The ledger does not detect that in advance and does not claim to. It
+fails LOUDLY when it happens — the sum no longer matches collection, so the
+check reports drift and the contributor re-runs ``--update``, which is exactly
+the old cost, paid only in the rare case instead of on every base move.
 
 Counts, not node-ID sets
 ------------------------
@@ -74,6 +84,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -136,6 +147,11 @@ RECIPES: dict[str, Recipe] = {
     "packages/hive-conductor/tests/e2e": Recipe(args=[], bare_python=True),
 }
 
+#: A suite row in SUITE-INVENTORY.md's table: `| `path` (note) | where it runs |`.
+#: The counts left this table (ADR-082526-547c) but the identities did not, and
+#: the document still claims every row is collected — so the claim is checked.
+INVENTORY_ROW_RE = re.compile(r"^\|\s*`([^`]+)`[^|]*\|")
+
 COLLECTED_RE = re.compile(r"(\d+)\s+tests?\s+collected")
 ERROR_RE = re.compile(r"(\d+)\s+errors?\b")
 
@@ -189,6 +205,30 @@ def split_front_matter(text: str) -> tuple[list[str], list[str]]:
     raise LedgerError("front matter opens with `---` but is never closed")
 
 
+def _opens_delta_block(line: str, where: str) -> bool:
+    """Whether a top-level front-matter ``line`` opens the delta block.
+
+    Raises on the two shapes that would otherwise read as "no delta": a suite
+    path written at the top level (a dedented entry, which silently ends the
+    block) and a value on the key's own line.
+    """
+    key, _, value = line.partition(":")
+    key = key.strip()
+    if key in RECIPES:
+        raise LedgerError(
+            f"{where}: `{line.strip()}` is at the top level of the front matter; "
+            f"a delta entry must be indented under `{DELTA_KEY}:`"
+        )
+    if key != DELTA_KEY:
+        return False
+    if value.strip():
+        raise LedgerError(
+            f"{where}: `{DELTA_KEY}:` must be followed by an indented "
+            f"`<suite>: <±count>` block, not a value on the same line"
+        )
+    return True
+
+
 def parse_delta(text: str, where: str) -> dict[str, int]:
     """Read a note's ``inventory-delta`` block.
 
@@ -208,17 +248,13 @@ def parse_delta(text: str, where: str) -> dict[str, int]:
 
     delta: dict[str, int] = {}
     inside = False
+    seen_key = False
     for line in front:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line[0].isspace():
-            # A top-level key ends any block we were reading.
-            inside = line.split(":", 1)[0].strip() == DELTA_KEY
-            if inside and line.split(":", 1)[1].strip():
-                raise LedgerError(
-                    f"{where}: `{DELTA_KEY}:` must be followed by an indented "
-                    f"`<suite>: <±count>` block, not a value on the same line"
-                )
+            inside = _opens_delta_block(line, where)
+            seen_key = seen_key or inside
             continue
         if not inside:
             continue
@@ -231,7 +267,44 @@ def parse_delta(text: str, where: str) -> dict[str, int]:
         if suite in delta:
             raise LedgerError(f"{where}: `{suite}` appears twice under `{DELTA_KEY}:`")
         delta[suite] = int(raw)
+    if seen_key and not delta:
+        raise LedgerError(
+            f"{where}: `{DELTA_KEY}:` is present but records nothing. Remove the "
+            f"key, or give it at least one indented `<suite>: <±count>` entry."
+        )
     return delta
+
+
+def inventory_suites(text: str) -> set[str]:
+    """The suite paths the inventory table lists."""
+    return {m.group(1) for line in text.splitlines() if (m := INVENTORY_ROW_RE.match(line))}
+
+
+def table_problems() -> list[str]:
+    """The documented table and the collection recipes must name the same suites.
+
+    ``SUITE-INVENTORY.md`` states that every row below it is collected on every
+    CI run. Once the counts moved to the ledger there was nothing left parsing
+    that table, so a contributor could add a row — documenting a suite as
+    gated — without adding a recipe, and CI would agree with them. A claim in a
+    document that no gate checks is the failure this repository exists to
+    prevent; it does not get an exemption for being in this document.
+    """
+    if not INVENTORY.is_file():
+        return [f"{INVENTORY.relative_to(REPO_ROOT)} is missing"]
+    listed = inventory_suites(INVENTORY.read_text(encoding="utf-8"))
+    problems = []
+    if undocumented := sorted(set(RECIPES) - listed):
+        problems.append(
+            f"collected but absent from {INVENTORY.relative_to(REPO_ROOT)}'s table: "
+            f"{', '.join(undocumented)}"
+        )
+    if ungated := sorted(listed - set(RECIPES)):
+        problems.append(
+            f"listed in {INVENTORY.relative_to(REPO_ROOT)}'s table but with no collection "
+            f"recipe, so nothing collects them: {', '.join(ungated)}"
+        )
+    return problems
 
 
 def note_files() -> list[Path]:
@@ -271,6 +344,16 @@ def expected_counts() -> tuple[dict[str, int], dict[str, dict[str, int]]]:
             "recorded suites with no collection recipe in "
             f"{Path(__file__).name}: {', '.join(unknown)}\n"
             "       Add each to RECIPES so it is actually gated."
+        )
+    # The other direction, and the one that fails open: a recipe with no
+    # baseline entry would simply be absent from `expected`, so the check loop
+    # would skip it and report success — and `--suite <that-one>` would report
+    # success having collected nothing at all.
+    if missing := sorted(set(RECIPES) - set(counts)):
+        raise LedgerError(
+            "collection recipes with no baseline count: "
+            f"{', '.join(missing)}\n"
+            f"       Add each to {BASELINE.relative_to(REPO_ROOT)} so it is actually checked."
         )
 
     expected = dict(counts)
@@ -326,6 +409,15 @@ def default_note_slug() -> str | None:
 
     The branch is the one identifier that is unique per change and available
     without asking, which is what keeps two PRs off the same path.
+
+    Sanitising alone does not keep that promise. ``feature/foo``, ``feature-foo``
+    and ``Feature_Foo`` are three distinct branches that all fold to the same
+    readable slug, so two of them would write the same note and reproduce the
+    exact conflict this ledger exists to remove. The name therefore carries a
+    short digest of the *exact* branch string: readable for the common case,
+    distinct whenever the branches are. Same scheme as this repository's ADR
+    ids (``ADR-MMDDYY-XXXX``), and deterministic, so re-running ``--update`` on
+    a branch always lands on the same note.
     """
     try:
         proc = subprocess.run(
@@ -339,8 +431,26 @@ def default_note_slug() -> str | None:
     branch = proc.stdout.strip()
     if proc.returncode != 0 or not branch or branch == "HEAD":
         return None
-    slug = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
-    return slug or None
+    readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
+    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    return f"{readable}-{digest}" if readable else digest
+
+
+#: A note slug must be one plain filename component. `--note feature/foo` would
+#: otherwise write `inventory-notes/feature/foo.md`, which `note_files()` never
+#: scans, so the delta would be recorded and then ignored; `..` and absolute
+#: paths would write outside the directory altogether.
+SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_slug(slug: str) -> None:
+    """Raise unless ``slug`` is a single safe filename component."""
+    if not SAFE_SLUG_RE.match(slug) or slug == ".." or slug.endswith(".md"):
+        raise LedgerError(
+            f"`{slug}` is not a usable note name. Give one plain filename "
+            f"component — letters, digits, dot, dash, underscore — with no "
+            f"path separator and no `.md` suffix."
+        )
 
 
 def render_delta_block(delta: dict[str, int]) -> list[str]:
@@ -467,12 +577,30 @@ def record_delta(
     note: str | None,
     drift: list[tuple[str, int, int]],
     deltas: dict[str, dict[str, int]],
+    folded: list[str],
 ) -> int:
     """Write this change's delta into its own note. Returns an exit code."""
     slug = note or default_note_slug()
     if not slug:
         print(
             "error: could not derive a note name from the current branch; pass --note <slug>",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        validate_slug(slug)
+    except LedgerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if slug in folded:
+        # Its delta is already inside the baseline, so `load_deltas` skips the
+        # note for good. Writing here would report success and change nothing —
+        # the check would go on failing with no way to satisfy it.
+        print(
+            f"error: `{slug}` has already been folded into "
+            f"{BASELINE.relative_to(REPO_ROOT)}, so a delta recorded there would "
+            f"never be counted again. Record this movement under a new note name: "
+            f"--note <something-else>.",
             file=sys.stderr,
         )
         return 2
@@ -533,12 +661,13 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if problems := notes_problems():
+    if problems := notes_problems() + table_problems():
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 2
 
     try:
+        _counts, folded = load_baseline()
         expected, deltas = expected_counts()
     except LedgerError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -569,7 +698,7 @@ def main() -> int:
         return 0
 
     if args.update:
-        return record_delta(args.note, drift, deltas)
+        return record_delta(args.note, drift, deltas, folded)
 
     total = sum(a - r for _, r, a in drift)
     print(

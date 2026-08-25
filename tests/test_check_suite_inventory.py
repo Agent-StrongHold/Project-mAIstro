@@ -43,7 +43,13 @@ def gate():
 
 @pytest.fixture
 def ledger(gate, tmp_path, monkeypatch):
-    """A ledger rooted in ``tmp_path``: a baseline, an empty notes dir."""
+    """A whole miniature repository: two suites, a baseline, notes, an inventory.
+
+    All four have to agree, because the gate now requires it — the recipes, the
+    baseline keys and the documented table are checked against each other, so a
+    fixture that supplies only some of them is not a smaller version of the real
+    thing, it is a broken one.
+    """
     notes = tmp_path / "inventory-notes"
     notes.mkdir()
     (notes / "README.md").write_text("# notes\n", encoding="utf-8")
@@ -53,9 +59,18 @@ def ledger(gate, tmp_path, monkeypatch):
         json.dumps({"counts": {"tests/": 100, "formal/": 50}, "folded": []}),
         encoding="utf-8",
     )
+    inventory = tmp_path / "SUITE-INVENTORY.md"
+    inventory.write_text(
+        "see [notes](inventory-notes/)\n\n| `tests/` | `ci.yml` |\n| `formal/` | `ci.yml` |\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(gate, "NOTES", notes)
     monkeypatch.setattr(gate, "BASELINE", baseline)
+    monkeypatch.setattr(gate, "INVENTORY", inventory)
     monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        gate, "RECIPES", {"tests/": gate.Recipe(args=[]), "formal/": gate.Recipe(args=[])}
+    )
     return gate
 
 
@@ -286,17 +301,8 @@ class TestCompaction:
 
 
 @pytest.fixture
-def two_suites(ledger, monkeypatch):
-    """A ledger whose RECIPES are only the two suites the baseline records.
-
-    Without this the driver tests would iterate all thirteen real suites and
-    try to collect them.
-    """
-    monkeypatch.setattr(
-        ledger,
-        "RECIPES",
-        {"tests/": ledger.Recipe(args=[]), "formal/": ledger.Recipe(args=[])},
-    )
+def two_suites(ledger):
+    """Kept as a name: `ledger` now already restricts RECIPES to its two suites."""
     return ledger
 
 
@@ -414,7 +420,7 @@ class TestRunChecks:
 
 class TestRecordDelta:
     def test_it_writes_only_the_named_note(self, ledger):
-        assert ledger.record_delta("mine", [("tests/", 100, 106)], {}) == 0
+        assert ledger.record_delta("mine", [("tests/", 100, 106)], {}, []) == 0
         assert (ledger.NOTES / "mine.md").is_file()
         assert ledger.parse_delta((ledger.NOTES / "mine.md").read_text(), "x") == {"tests/": 6}
 
@@ -429,10 +435,10 @@ class TestRecordDelta:
         — and `--update` returns at "ok" without touching the file, which is
         what makes re-running it safe.
         """
-        ledger.record_delta("mine", [("tests/", 100, 106)], {})
+        ledger.record_delta("mine", [("tests/", 100, 106)], {}, [])
         deltas = {"mine": {"tests/": 6}}
         # Six more tests land: expected is 106, the suite now collects 112.
-        ledger.record_delta("mine", [("tests/", 106, 112)], deltas)
+        ledger.record_delta("mine", [("tests/", 106, 112)], deltas, [])
         assert ledger.parse_delta((ledger.NOTES / "mine.md").read_text(), "x") == {"tests/": 12}
 
     @pytest.mark.ac("ADR-082526-547c/AC-2")
@@ -447,11 +453,11 @@ class TestRecordDelta:
 
     def test_no_derivable_name_is_an_error_not_a_guess(self, ledger, monkeypatch):
         monkeypatch.setattr(ledger, "default_note_slug", lambda: None)
-        assert ledger.record_delta(None, [("tests/", 100, 106)], {}) == 2
+        assert ledger.record_delta(None, [("tests/", 100, 106)], {}, []) == 2
 
     def test_a_branch_name_becomes_the_note_name(self, ledger, monkeypatch):
         monkeypatch.setattr(ledger, "default_note_slug", lambda: "claude-issue-208")
-        ledger.record_delta(None, [("tests/", 100, 101)], {})
+        ledger.record_delta(None, [("tests/", 100, 101)], {}, [])
         assert (ledger.NOTES / "claude-issue-208.md").is_file()
 
 
@@ -462,7 +468,36 @@ class TestDefaultNoteSlug:
             "run",
             lambda *a, **k: type("P", (), {"stdout": "claude/Issue_208-Fix\n", "returncode": 0})(),
         )
-        assert gate.default_note_slug() == "claude-issue-208-fix"
+        assert gate.default_note_slug().startswith("claude-issue-208-fix-")
+
+    @pytest.mark.ac("ADR-082526-547c/AC-1")
+    def test_branches_that_sanitize_alike_still_get_distinct_names(self, gate, monkeypatch):
+        """Sanitising alone would put three distinct branches on one path.
+
+        `feature/foo`, `feature-foo` and `Feature_Foo` all fold to the same
+        readable slug. If the note name stopped there, two of them would write
+        the same file and recreate the exact conflict this ledger removes.
+        """
+
+        def slug_for(branch):
+            monkeypatch.setattr(
+                gate.subprocess,
+                "run",
+                lambda *a, **k: type("P", (), {"stdout": f"{branch}\n", "returncode": 0})(),
+            )
+            return gate.default_note_slug()
+
+        names = {slug_for(b) for b in ("feature/foo", "feature-foo", "Feature_Foo")}
+        assert len(names) == 3, f"branches collided onto {names}"
+
+    def test_the_same_branch_always_gets_the_same_name(self, gate, monkeypatch):
+        """Otherwise re-running --update would strand the earlier delta."""
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda *a, **k: type("P", (), {"stdout": "claude/x\n", "returncode": 0})(),
+        )
+        assert gate.default_note_slug() == gate.default_note_slug()
 
     def test_detached_head_yields_nothing(self, gate, monkeypatch):
         monkeypatch.setattr(
@@ -648,3 +683,114 @@ class TestShowReportsOutstandingDeltas:
         monkeypatch.setattr(two_suites.sys, "argv", ["x", "--show"])
         assert two_suites.main() == 0
         assert "branch-a" in capsys.readouterr().out
+
+
+class TestReviewFindings:
+    """Regressions for the seven findings Codex raised on PR #263.
+
+    Each one is a way the ledger could report success while gating nothing, so
+    each gets a test rather than only a fix.
+    """
+
+    @pytest.mark.ac("ADR-082526-547c/AC-3")
+    def test_a_recipe_with_no_baseline_count_is_an_error(self, ledger):
+        """The direction that fails OPEN.
+
+        A recorded suite with no recipe was already caught. The reverse — a
+        recipe with no recorded count — left the suite out of `expected`, so the
+        check loop skipped it and reported success, and `--suite <that-one>`
+        reported success having collected nothing.
+        """
+        ledger.BASELINE.write_text(
+            json.dumps({"counts": {"tests/": 100}, "folded": []}), encoding="utf-8"
+        )
+        with pytest.raises(ledger.LedgerError, match="no baseline count"):
+            ledger.expected_counts()
+
+    @pytest.mark.ac("ADR-082526-547c/AC-3")
+    def test_a_suite_missing_a_count_cannot_pass_as_a_narrowed_check(self, ledger, monkeypatch):
+        ledger.BASELINE.write_text(
+            json.dumps({"counts": {"tests/": 100}, "folded": []}), encoding="utf-8"
+        )
+        monkeypatch.setattr(ledger.sys, "argv", ["x", "--suite", "formal/"])
+        monkeypatch.setattr(
+            ledger, "collect", lambda *a: pytest.fail("must not report success silently")
+        )
+        assert ledger.main() == 2
+
+    @pytest.mark.ac("ADR-082526-547c/AC-3")
+    def test_a_documented_suite_with_no_recipe_is_an_error(self, ledger):
+        """The document says every row is collected; that claim is now checked."""
+        ledger.INVENTORY.write_text(
+            "see [notes](inventory-notes/)\n\n| `tests/` | `ci.yml` |\n"
+            "| `formal/` | `ci.yml` |\n| `packages/ghost/tests` | `ci.yml` |\n",
+            encoding="utf-8",
+        )
+        assert any("no collection recipe" in p for p in ledger.table_problems())
+
+    @pytest.mark.ac("ADR-082526-547c/AC-3")
+    def test_a_collected_suite_absent_from_the_table_is_an_error(self, ledger):
+        ledger.INVENTORY.write_text(
+            "see [notes](inventory-notes/)\n\n| `tests/` | `ci.yml` |\n", encoding="utf-8"
+        )
+        assert any("absent from" in p for p in ledger.table_problems())
+
+    @pytest.mark.ac("ADR-082526-547c/AC-4")
+    def test_an_empty_delta_block_raises(self, ledger):
+        """`inventory-delta:` with nothing under it used to read as no delta."""
+        (ledger.NOTES / "empty.md").write_text(
+            "---\ninventory-delta:\n---\n\nprose\n", encoding="utf-8"
+        )
+        with pytest.raises(ledger.LedgerError, match="records nothing"):
+            ledger.expected_counts()
+
+    @pytest.mark.ac("ADR-082526-547c/AC-4")
+    def test_a_dedented_delta_entry_raises(self, ledger):
+        """A suite path at top level silently ended the block and lost the delta."""
+        (ledger.NOTES / "dedent.md").write_text(
+            "---\ninventory-delta:\ntests/: +2\n---\n\nprose\n", encoding="utf-8"
+        )
+        with pytest.raises(ledger.LedgerError, match="top level"):
+            ledger.expected_counts()
+
+    def test_a_note_slug_with_a_path_separator_is_refused(self, ledger):
+        """`--note feature/foo` wrote a nested file the checker never reads."""
+        assert ledger.record_delta("feature/foo", [("tests/", 100, 101)], {}, []) == 2
+        assert not (ledger.NOTES / "feature").exists()
+
+    def test_a_note_slug_escaping_the_directory_is_refused(self, ledger):
+        for bad in ("..", "../escape", "/etc/passwd"):
+            assert ledger.record_delta(bad, [("tests/", 100, 101)], {}, []) == 2
+
+    def test_updating_a_folded_slug_is_refused(self, ledger):
+        """Its delta is already in the baseline, so a new one would never count.
+
+        Left alone this is a trap with no exit: `--update` reports success, the
+        ledger does not move, and the next check fails again identically.
+        """
+        assert ledger.record_delta("done", [("tests/", 100, 105)], {}, ["done"]) == 2
+        assert not (ledger.NOTES / "done.md").exists()
+
+    @pytest.mark.ac("ADR-082526-547c/AC-2")
+    def test_a_non_additive_interaction_is_detected_not_silently_wrong(self, ledger, monkeypatch):
+        """Where base-move invariance genuinely does not hold.
+
+        Node-ID counts are not additive in every case: two branches can each add
+        one value to a different parametrize list and the merged product grows
+        multiplicatively, so the recorded deltas under-count. The design does not
+        claim otherwise — it claims the failure is LOUD. Two `+1` deltas over a
+        baseline of 1 expect 3; the merged tree collects 4, and that must be
+        drift, not a silently accepted sum.
+        """
+        ledger.BASELINE.write_text(
+            json.dumps({"counts": {"tests/": 1, "formal/": 50}, "folded": []}), encoding="utf-8"
+        )
+        write_note(ledger, "branch-a", tests_=+1)
+        write_note(ledger, "branch-b", tests_=+1)
+        expected, _ = ledger.expected_counts()
+        assert expected["tests/"] == 3
+
+        monkeypatch.setattr(ledger, "collect", fake_collect({"tests/": 4}))
+        drift, failures = ledger.run_checks(["tests/"], expected)
+        assert failures == []
+        assert drift == [("tests/", 3, 4)], "the interaction must surface as drift"
