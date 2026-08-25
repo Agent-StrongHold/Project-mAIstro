@@ -3,8 +3,9 @@ id: ADR-082526-3011
 title: "One exactly-pinned uv, declared in one place, and workflows may not call setup-uv directly"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-25
+accepted: 2026-08-25
 substrate: []
 implements: []
 related: []
@@ -13,7 +14,16 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - tests/test_check_uv_setup.py
+ac-modules:
+  AC-1: scripts/check-uv-setup.py
+  AC-2: scripts/check-uv-setup.py
+history:
+  - status: Proposed
+    date: 2026-08-25
+  - status: Accepted
+    date: 2026-08-25
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -126,3 +136,14 @@ instead of removing it.
   question from the version it installs.
 - The manifest fetch remains for anyone running the action outside this
   repository; this record governs this repository's workflows only.
+
+## Acceptance criteria
+
+- [x] **AC-1** The wrapper pins an **exact** version, and any other form —
+  `latest`, `latest-known`, a range such as `0.5.x`, or no version at all —
+  fails the build. Exactness is the property that removes the network request;
+  a range looks like a pin and protects nothing.
+- [x] **AC-2** No workflow calls `astral-sh/setup-uv` directly. Every step that
+  installs uv goes through `.github/actions/setup-uv`, so one line states the
+  version for the whole repository and a later PR cannot quietly reintroduce
+  the dependency for one job.

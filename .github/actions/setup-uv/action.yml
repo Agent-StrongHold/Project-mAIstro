@@ -1,0 +1,28 @@
+name: Set up uv
+description: >-
+  Install uv at the one version this repository pins, without a network lookup
+  to resolve which version that is (ADR-082526-3011, #213).
+
+# THE uv VERSION FOR THIS REPOSITORY. Change it here and nowhere else.
+#
+# It must stay an EXACT version. That is not style — it is the whole reason
+# this file exists. `astral-sh/setup-uv` resolves its `version` input through
+# `CONCRETE_VERSION_RESOLVERS` in `src/version/resolve.ts`: an exact version is
+# served by the exact resolver and returns with no network call, while `latest`
+# and any semantic range (`0.5.x`, `>=0.8`, …) fall through to resolvers that
+# fetch https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson.
+# That fetch is what failed `exact-debt-ledger` on #181 before a single test
+# ran, on a commit that only edited a markdown table.
+#
+# So a range here would look like a pin and protect nothing, which is exactly
+# the state `quality.yml`'s `version: "0.5.x"` was in: it resolved to uv 0.5.31
+# over the network, while every unpinned job resolved `latest` to uv 0.12.5 over
+# the network. Two uv versions, seven minor releases apart, neither chosen.
+#
+# 0.12.5 is what seventeen of the twenty usages already installed and passed on.
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v7
+      with:
+        version: "0.12.5"
