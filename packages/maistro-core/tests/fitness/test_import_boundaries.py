@@ -49,7 +49,11 @@ _COMPATIBILITY_ALIAS_LEDGER = frozenset(
         "workspaces/model.py::WorkspaceMember=WorkspaceMembership",
     }
 )
-_COMPATIBILITY_BANNERS = ("Backwards compat aliases", "Backward-compatible alias")
+_COMPATIBILITY_BANNERS = (
+    "Backwards compat aliases",
+    "Backward-compatible alias",
+    "alias, don't fork",
+)
 
 
 def _iter_python_files(root: Path) -> list[Path]:
