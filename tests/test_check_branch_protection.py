@@ -451,3 +451,42 @@ class TestGeneratedTables:
             encoding="utf-8",
         )
         assert gate.doc_problems(ruleset, rows, update=False) == []
+
+    def test_update_doc_writes_a_region_that_then_passes(self, gate, tmp_path, monkeypatch) -> None:
+        """The generator and the checker must agree, or `--update-doc` produces
+        a document that still fails — or worse, one that passes while saying
+        something the ruleset does not."""
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        doc.write_text(
+            f"# Branch protection\n\n{gate.DOC_BEGIN}\n{gate.DOC_END}\n\ntrailing prose\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "DOC", doc)
+        assert gate.main(["--update-doc"]) == 0
+
+        written = doc.read_text(encoding="utf-8")
+        assert "| Branch | PR | Approvals" in written
+        assert "trailing prose" in written, "the generator must not eat the narrative"
+        assert (
+            gate.doc_problems(gate.load_ruleset(), gate._contract().collect(), update=False) == []
+        )
+
+    def test_a_missing_document_is_reported_not_crashed_on(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(gate, "DOC", tmp_path / "gone.md")
+        problems = gate.doc_problems(gate.load_ruleset(), gate._contract().collect(), update=False)
+        assert problems and "does not exist" in problems[0]
+
+    def test_main_fails_and_says_so_when_the_document_drifts(
+        self, gate, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """End to end: the drift has to reach a non-zero exit and a diagnosis,
+        not just a helper returning a list nobody prints."""
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        doc.write_text(f"{gate.DOC_BEGIN}\n\nstale\n\n{gate.DOC_END}\n", encoding="utf-8")
+        monkeypatch.setattr(gate, "DOC", doc)
+        assert gate.main([]) == 1
+        out = capsys.readouterr().out
+        assert "does not hang together" in out
+        assert "--update-doc" in out

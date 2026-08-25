@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +8
+  tests/: +11
 ---
 # claude-issue-268-branch-protection-doc-gate-d4ac
 
-All 8 are additions to `tests/test_check_branch_protection.py` (29 -> 37), in
+All 11 are additions to `tests/test_check_branch_protection.py` (29 -> 40), in
 one new `TestGeneratedTables` class. Nothing was removed or reparametrised.
 
 They cover the gate #268 adds — that `docs/ci/BRANCH-PROTECTION.md`'s two
@@ -26,3 +26,14 @@ remembered:
   and a change to the surrounding prose alone does not fail, because the
   reasoning in that document is the half worth keeping and the gate must not
   own it.
+- **The write path and the exit (3).** `--update-doc` produces a region that
+  then passes its own check and leaves the narrative intact — a generator that
+  disagreed with its checker would emit a document that still fails, or one
+  that passes while saying something the ruleset does not. A missing document
+  is reported rather than crashed on. And the drift reaches a non-zero exit
+  with a diagnosis, not just a helper returning a list nobody prints.
+
+The last three were added because the diff-coverage gate put the file at 88.3%
+of 60 changed lines against a 90% floor, and the seven uncovered lines were the
+update path, the missing-file path and the failure exit — the three worth
+having tests for rather than the three worth waiving.
