@@ -624,6 +624,18 @@ jobs:
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
 
+      # Both gates above stop one level short of the DI root. `Container` is not
+      # a value object -- its fields exist so the runtime can consume them -- and
+      # a field that is constructed, stored and read by nobody is wiring that
+      # does nothing. Reachability counts the module as reached because the
+      # container imports it; vulture counts the symbol as used because the
+      # assignment uses it. That is how `archive_store` (#133) and `a2a_broker`
+      # (#225) each survived audits and were found by grep. Scope is narrow on
+      # purpose: the same check over every uncalled public export would seed at
+      # 662 entries and teach banking (ADR-082526-1899).
+      - name: wiring reads ratchet (DI attributes nothing reads back)
+        run: uv run python scripts/check-wiring-reads.py
+
       # The reachability ratchet says *how much* is unwired; the convergence
       # matrix says *who owns what* and which subsystem each unreachable module
       # belongs to. It is the M0 planning surface (#28), so it is checked rather
