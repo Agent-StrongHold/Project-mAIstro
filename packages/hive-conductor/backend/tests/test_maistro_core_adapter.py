@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from adapters.maistro_core import MaistroCoreBridge
 from config import Settings
 
