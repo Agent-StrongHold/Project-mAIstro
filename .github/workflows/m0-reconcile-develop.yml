@@ -1,0 +1,80 @@
+name: M0 reconcile develop
+
+on:
+  push:
+    branches: [chatgpt/m0-closeout]
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m0-closeout
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Reconcile current develop with M0 changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_head=$(git rev-parse HEAD)
+          git fetch origin develop chatgpt/m0-closeout
+          git checkout -B m0-reconciled origin/develop
+          git config user.name "m0-closeout-bot"
+          git config user.email "m0-closeout-bot@users.noreply.github.com"
+          set +e
+          git merge --no-commit --no-ff -X ours "$old_head"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            while IFS= read -r path; do
+              [ -z "$path" ] && continue
+              if git cat-file -e "HEAD:$path" 2>/dev/null; then
+                git checkout --ours -- "$path" || true
+                git add "$path" || true
+              else
+                git rm -f --ignore-unmatch "$path" || true
+              fi
+            done < <(git diff --name-only --diff-filter=U)
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "Unresolved conflicts remain:"
+              git status --short
+              exit 1
+            fi
+          fi
+          git rm -f --ignore-unmatch .github/workflows/m0-reconcile-develop.yml
+          git commit -m "Reconcile M0 closeout with current develop"
+
+      - name: Install workspace
+        run: uv sync --all-packages --dev
+
+      - name: Verify M0 truth gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run python tools/lint_lifecycle.py
+          uv run python scripts/check-backlog-consistency.py
+          uv run python scripts/check-reachability.py
+          uv run python scripts/check-reachability-dispositions.py
+          uv run python scripts/check-convergence-matrix.py
+          uv run python scripts/check-doc-links.py
+          uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'
+          uv run python scripts/check-ac-state.py --run-tests --ratchet
+          uv run pytest packages/maistro-core/tests/fitness tests/tools/registry tests/tools/test_lint_lifecycle.py --confcutdir=tests/tools -q
+
+      - name: Push reconciled M0 branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:chatgpt/m0-closeout
