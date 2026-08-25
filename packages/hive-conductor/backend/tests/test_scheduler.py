@@ -681,3 +681,448 @@ def test_without_a_bridge_the_scheduler_still_fires() -> None:
         assert row.last_run == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
     finally:
         stores.schedules._data.pop("s-nb", None)  # type: ignore[attr-defined]
+
+
+# --- #265: the bound and the zone reach the product surface ------------------
+
+
+def _bounded_stub(
+    sid: str,
+    template_id: str,
+    *,
+    cron: str = "* * * * *",
+    last_run: datetime | None = None,
+    timezone: str = "UTC",
+    max_runs: int | None = None,
+) -> Any:
+    """A row carrying the columns #265 adds."""
+    stub = _schedule_stub(sid, template_id, cron=cron, last_run=last_run)
+    stub.timezone = timezone
+    stub.max_runs = max_runs
+    stub.last_run_id = None
+    return stub
+
+
+def _schedule_runs(sid: str, *, since: int) -> list[dict[str, Any]]:
+    """The `schedule_run` audit entries for `sid` that carry a run_id."""
+    import stores
+
+    return [
+        e
+        for e in list(stores.audit_log.values())[since:]
+        if e.get("target") == sid and e["action"] == "schedule_run" and "run_id" in e["detail"]
+    ]
+
+
+def test_the_definition_takes_its_zone_and_bound_from_the_row() -> None:
+    """Both used to be unreachable: the zone was hardcoded UTC and the bound
+    was never set, so `max_runs` could not be applied by any caller."""
+    from services.scheduler import _ScheduleRunner
+
+    definition = _ScheduleRunner()._as_definition(
+        "s1", _bounded_stub("s1", "tpl", timezone="America/Chicago", max_runs=4)
+    )
+    assert definition is not None
+    assert definition.timezone == "America/Chicago"
+    assert definition.max_runs == 4
+
+
+def test_a_row_without_the_new_columns_still_projects() -> None:
+    """The columns are additive: a row persisted before them keeps firing, in
+    UTC and unbounded, which is exactly what it did."""
+    from services.scheduler import _ScheduleRunner
+
+    stub = _schedule_stub("legacy", "tpl")
+    assert not hasattr(stub, "timezone")
+    assert not hasattr(stub, "max_runs")
+    definition = _ScheduleRunner()._as_definition("legacy", stub)
+    assert definition is not None
+    assert definition.timezone == "UTC"
+    assert definition.max_runs is None
+
+
+def test_the_definition_carries_the_rows_disabled_flag() -> None:
+    """`enabled` used to be hardcoded True. `_definition_for` ends in
+    `store.put(...)`, so a hardcoded True there puts an `enabled: true`
+    straight back over a disable `record_fire` had just written."""
+    from services.scheduler import _ScheduleRunner
+
+    stub = _schedule_stub("off", "tpl", enabled=False)
+    definition = _ScheduleRunner()._as_definition("off", stub)
+    assert definition is not None
+    assert definition.enabled is False
+
+
+def test_a_non_utc_zone_is_evaluated_in_that_zone() -> None:
+    """AC: a schedule with a non-UTC zone fires at the intended local time.
+
+    Both definitions read `0 9 * * *` and both fire at 09:00 *local* — the
+    point is that those are different instants. In August, Chicago is CDT, so
+    its 09:00 is 14:00 UTC. Before the column existed every schedule was
+    evaluated in UTC, so this one fired five hours early.
+    """
+    from services.scheduler import _ScheduleRunner
+
+    runner = _ScheduleRunner()
+    local = runner._as_definition(
+        "s-tz", _bounded_stub("s-tz", "tpl", cron="0 9 * * *", timezone="America/Chicago")
+    )
+    utc = runner._as_definition("s-utc", _bounded_stub("s-utc", "tpl", cron="0 9 * * *"))
+    assert local is not None and utc is not None
+
+    from_moment = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+    local_fire = local.next_fire_after(from_moment)
+    utc_fire = utc.next_fire_after(from_moment)
+
+    assert local_fire.hour == 9, "09:00 in its own zone"
+    assert local_fire.astimezone(UTC).hour == 14, "which is 14:00 UTC in August"
+    assert utc_fire.astimezone(UTC).hour == 9
+    assert local_fire != utc_fire, "the zone changes the instant, not just the label"
+
+
+def test_a_bounded_schedule_fires_its_bound_and_then_disables() -> None:
+    """AC: `max_runs: 3` fires exactly three times through the real runner,
+    and the `/v1/schedules` row then reports `enabled: false`."""
+    import stores
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-bounded")
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    stub = _bounded_stub(
+        "s-bound", "sched-bounded", last_run=now - timedelta(minutes=1), max_runs=3
+    )
+    stores.schedules._data["s-bound"] = stub  # type: ignore[attr-defined]
+    store = InMemoryScheduleStore()
+    before = len(stores.audit_log)
+    try:
+        for minute in range(5):
+            _run_evaluate(
+                "s-bound",
+                stores.schedules._data["s-bound"],  # type: ignore[attr-defined]
+                now=now + timedelta(minutes=minute),
+                store=store,
+            )
+        assert len(_schedule_runs("s-bound", since=before)) == 3, "the bound is the bound"
+
+        row = stores.schedules._data["s-bound"]  # type: ignore[attr-defined]
+        assert row.enabled is False, "a spent schedule must say so on the surface"
+        assert row.next_run is None
+
+        recorded = asyncio.run(store.get("s-bound"))
+        assert recorded is not None
+        assert recorded.runs_so_far == 3
+        assert recorded.enabled is False
+    finally:
+        stores.schedules._data.pop("s-bound", None)  # type: ignore[attr-defined]
+
+
+def test_the_disable_is_not_resurrected_by_the_next_tick() -> None:
+    """AC: the disable survives further ticks, and the canonical store stops
+    returning the schedule from `due()`.
+
+    `_definition_for` ends in `store.put(definition)`. While `_as_definition`
+    hardcoded `enabled=True`, that put overwrote the disable `record_fire` had
+    just written — leaving a spent schedule enabled, reported as due forever
+    (`_is_due` reads a null `next_due_at` as due), and never firing.
+    """
+    import stores
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-resurrect")
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    stub = _bounded_stub(
+        "s-res", "sched-resurrect", last_run=now - timedelta(minutes=1), max_runs=1
+    )
+    stores.schedules._data["s-res"] = stub  # type: ignore[attr-defined]
+    store = InMemoryScheduleStore()
+    before = len(stores.audit_log)
+    try:
+        _run_evaluate("s-res", stub, now=now, store=store)
+        assert len(_schedule_runs("s-res", since=before)) == 1
+
+        for minute in (1, 2, 3):
+            _run_evaluate(
+                "s-res",
+                stores.schedules._data["s-res"],  # type: ignore[attr-defined]
+                now=now + timedelta(minutes=minute),
+                store=store,
+            )
+
+        assert len(_schedule_runs("s-res", since=before)) == 1, "no fire after exhaustion"
+        recorded = asyncio.run(store.get("s-res"))
+        assert recorded is not None and recorded.enabled is False
+        due = asyncio.run(store.due(now=now + timedelta(minutes=10)))
+        assert [d.schedule_id for d in due] == [], "a spent schedule is not due"
+    finally:
+        stores.schedules._data.pop("s-res", None)  # type: ignore[attr-defined]
+
+
+def test_the_row_carries_the_run_that_claimed_the_occurrence() -> None:
+    """AC: `last_run_id` on the row resolves to the canonical Run. `last_run`
+    alone said only *that* something fired."""
+    import stores
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-runid")
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    stub = _bounded_stub("s-runid", "sched-runid", last_run=now - timedelta(minutes=1))
+    stores.schedules._data["s-runid"] = stub  # type: ignore[attr-defined]
+    store = InMemoryScheduleStore()
+    before = len(stores.audit_log)
+    try:
+        _run_evaluate("s-runid", stub, now=now, store=store)
+        runs = _schedule_runs("s-runid", since=before)
+        assert len(runs) == 1
+        run_id = runs[0]["detail"]["run_id"]
+
+        row = stores.schedules._data["s-runid"]  # type: ignore[attr-defined]
+        assert row.last_run_id == run_id
+        recorded = asyncio.run(store.get("s-runid"))
+        assert recorded is not None and recorded.last_run_id == run_id
+    finally:
+        stores.schedules._data.pop("s-runid", None)  # type: ignore[attr-defined]
+
+
+# --- #265: `POST /{id}/run` fires for real, or refuses -----------------------
+
+
+def _with_store(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
+    from services.scheduler import _ScheduleRunner
+
+    monkeypatch.setattr(_ScheduleRunner, "_canonical_store", staticmethod(lambda: store))
+
+
+def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The endpoint used to stamp `last_run` and stop: no Run, no cursor,
+    nothing counted. That is the receipt-for-work-that-never-started defect
+    #231 removed from the tick path, still live on the route."""
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual")
+    stub = _bounded_stub("s-man", "sched-manual")
+    stores.schedules._data["s-man"] = stub  # type: ignore[attr-defined]
+    store = InMemoryScheduleStore()
+    _with_store(monkeypatch, store)
+    before = len(stores.audit_log)
+    try:
+        run_id = asyncio.run(fire_now("s-man"))
+        assert run_id
+
+        runs = _schedule_runs("s-man", since=before)
+        assert [r["detail"]["run_id"] for r in runs] == [run_id]
+
+        row = stores.schedules._data["s-man"]  # type: ignore[attr-defined]
+        assert row.last_run_id == run_id, "the stamp now names the Run behind it"
+        assert row.last_run is not None
+
+        recorded = asyncio.run(store.get("s-man"))
+        assert recorded is not None
+        assert recorded.runs_so_far == 1, "a manual fire is a fire, and counts"
+        assert recorded.last_run_id == run_id
+    finally:
+        stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_that_cannot_start_leaves_no_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refusing is the whole point: the caller asked for work to start and it
+    did not, so the schedule must not claim otherwise."""
+    import stores
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    stub = _bounded_stub("s-man-fail", "tpl-not-registered")
+    stores.schedules._data["s-man-fail"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        with pytest.raises(ScheduleNotFireable):
+            asyncio.run(fire_now("s-man-fail"))
+        row = stores.schedules._data["s-man-fail"]  # type: ignore[attr-defined]
+        assert row.last_run is None
+        assert row.last_run_id is None
+    finally:
+        stores.schedules._data.pop("s-man-fail", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_respects_the_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`max_runs` bounds every firing, not only the scheduled ones."""
+    import stores
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-bound")
+    stub = _bounded_stub("s-man-bound", "sched-manual-bound", max_runs=1)
+    stores.schedules._data["s-man-bound"] = stub  # type: ignore[attr-defined]
+    store = InMemoryScheduleStore()
+    _with_store(monkeypatch, store)
+    before = len(stores.audit_log)
+    try:
+        asyncio.run(fire_now("s-man-bound"))
+        with pytest.raises(ScheduleNotFireable, match="all 1 of its runs"):
+            asyncio.run(fire_now("s-man-bound"))
+        assert len(_schedule_runs("s-man-bound", since=before)) == 1
+    finally:
+        stores.schedules._data.pop("s-man-bound", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_of_a_targetless_schedule_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    stores.schedules._data["s-man-none"] = _schedule_stub("s-man-none", None)  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        with pytest.raises(ScheduleNotFireable, match="no mission template"):
+            asyncio.run(fire_now("s-man-none"))
+    finally:
+        stores.schedules._data.pop("s-man-none", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_of_an_unknown_schedule_is_refused() -> None:
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    with pytest.raises(ScheduleNotFireable, match="does not exist"):
+        asyncio.run(fire_now("s-nope"))
+
+
+# --- #265: the HTTP surface --------------------------------------------------
+
+
+def test_a_schedule_can_be_created_with_a_zone_and_a_bound(admin_client: Any) -> None:
+    """AC: both are expressible through the product surface. Neither was."""
+    created = admin_client.post(
+        "/v1/schedules",
+        json={
+            "name": "nightly",
+            "cron_expression": "0 9 * * *",
+            "mission_template_id": "tpl",
+            "timezone": "America/Chicago",
+            "max_runs": 3,
+        },
+    )
+    assert created.status_code == 201, created.text
+    sid = created.json()["id"]
+    try:
+        fetched = admin_client.get(f"/v1/schedules/{sid}").json()
+        assert fetched["timezone"] == "America/Chicago"
+        assert fetched["max_runs"] == 3
+        assert fetched["last_run_id"] is None
+    finally:
+        admin_client.delete(f"/v1/schedules/{sid}")
+
+
+def test_a_create_that_omits_them_behaves_as_it_always_did(admin_client: Any) -> None:
+    """The columns are additive: an existing client sends neither and gets an
+    unbounded schedule evaluated in UTC, exactly as before."""
+    created = admin_client.post(
+        "/v1/schedules",
+        json={"name": "legacy", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    try:
+        assert body["timezone"] == "UTC"
+        assert body["max_runs"] is None
+        assert body["last_run_id"] is None
+    finally:
+        admin_client.delete(f"/v1/schedules/{body['id']}")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timezone", "Mars/Olympus_Mons"),
+        ("timezone", "definitely not a zone"),
+        ("max_runs", 0),
+        ("max_runs", -1),
+    ],
+)
+def test_an_unusable_zone_or_bound_is_refused_at_the_boundary(
+    admin_client: Any, field: str, value: Any
+) -> None:
+    """422 here, not a 500 and not a silent accept.
+
+    The `/v1/schedules` row is a separate model that stores what it is given.
+    An unreadable value would be accepted and then raise inside
+    `_as_definition` on *every* tick, where `_tick` catches it and logs a
+    warning — a schedule that never fires and reports `enabled: true` forever.
+    """
+    body = {"name": "bad", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"}
+    body[field] = value
+    response = admin_client.post("/v1/schedules", json=body)
+    assert response.status_code == 422, response.text
+
+
+def test_the_zone_and_bound_can_be_updated(admin_client: Any) -> None:
+    created = admin_client.post(
+        "/v1/schedules",
+        json={"name": "movable", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+    )
+    sid = created.json()["id"]
+    try:
+        updated = admin_client.put(
+            f"/v1/schedules/{sid}", json={"timezone": "Europe/Berlin", "max_runs": 2}
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["timezone"] == "Europe/Berlin"
+        assert updated.json()["max_runs"] == 2
+
+        # A partial update that names neither leaves both alone -- this
+        # endpoint's `exclude_none=True` contract, stated on the body model.
+        renamed = admin_client.put(f"/v1/schedules/{sid}", json={"name": "renamed"})
+        assert renamed.json()["timezone"] == "Europe/Berlin"
+        assert renamed.json()["max_runs"] == 2
+    finally:
+        admin_client.delete(f"/v1/schedules/{sid}")
+
+
+def test_an_update_to_an_unusable_zone_is_refused(admin_client: Any) -> None:
+    created = admin_client.post(
+        "/v1/schedules",
+        json={"name": "keeper", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+    )
+    sid = created.json()["id"]
+    try:
+        assert (
+            admin_client.put(f"/v1/schedules/{sid}", json={"timezone": "Nope/Nope"}).status_code
+            == 422
+        )
+        assert admin_client.get(f"/v1/schedules/{sid}").json()["timezone"] == "UTC"
+    finally:
+        admin_client.delete(f"/v1/schedules/{sid}")
+
+
+def test_a_manual_run_that_cannot_fire_is_a_conflict_not_a_stamp(admin_client: Any) -> None:
+    """AC: the endpoint no longer leaves the schedule claiming a fire with no
+    Run behind it. `tpl` is not a registered DAG, so nothing can start."""
+    created = admin_client.post(
+        "/v1/schedules",
+        json={"name": "manual", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+    )
+    sid = created.json()["id"]
+    try:
+        response = admin_client.post(f"/v1/schedules/{sid}/run")
+        assert response.status_code == 409, response.text
+
+        after = admin_client.get(f"/v1/schedules/{sid}").json()
+        assert after["last_run"] is None, "no receipt for work that never started"
+        assert after["last_run_id"] is None
+    finally:
+        admin_client.delete(f"/v1/schedules/{sid}")
+
+
+def test_a_manual_run_of_an_unknown_schedule_is_still_a_404(admin_client: Any) -> None:
+    assert admin_client.post("/v1/schedules/does-not-exist/run").status_code == 404

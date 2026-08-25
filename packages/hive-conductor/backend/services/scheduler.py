@@ -275,10 +275,13 @@ class _ScheduleRunner:
                 skipped.reason.value,
             )
 
-        # Enumerated because exhaustion is counted per fire: `definition` is
-        # read once per tick, so its `runs_so_far` is stale for every fire in a
-        # batch after the first. A catch-up batch that spends the last of
-        # `max_runs` would otherwise never write the disable.
+        # `decision.exhausted` is the engine's own answer to "does `max_runs`
+        # run out once these fires are recorded", so exhaustion is not
+        # re-derived here from a `runs_so_far` that was read once per tick and
+        # is stale for any fire after the first. It describes the batch, so it
+        # belongs on the batch's last fire — which under `OverlapPolicy.SKIP`,
+        # hardcoded in `_as_definition`, is also its only one.
+        last_index = len(decision.fires) - 1
         for fire_index, fire in enumerate(decision.fires):
             self._in_flight.add(sid)
             try:
@@ -307,24 +310,8 @@ class _ScheduleRunner:
                 store=store,
                 fire=fire,
                 run_id=run_id,
-                fire_index=fire_index,
+                exhausted=decision.exhausted and fire_index == last_index,
             )
-
-    @staticmethod
-    def _exhausts(definition: Schedule, *, fire_index: int) -> bool:
-        """Whether the fire at ``fire_index`` in this batch spends `max_runs`.
-
-        `definition` is read once per tick and `record_fire` increments
-        `runs_so_far` by one per call, so the count after this fire is the
-        definition's plus the fires already recorded in this batch. Computing
-        it from `definition.runs_so_far + 1` — as this did before `max_runs`
-        was reachable — is right only for a batch of one, and a catch-up batch
-        that spends the last of the bound would slip through unrecorded,
-        leaving a schedule that is enabled, due forever, and never fires.
-        """
-        if definition.max_runs is None:
-            return False
-        return definition.runs_so_far + fire_index + 1 >= definition.max_runs
 
     async def _record_fire(
         self,
@@ -335,14 +322,17 @@ class _ScheduleRunner:
         store: Any,
         fire: Any,
         run_id: str,
-        fire_index: int = 0,
+        exhausted: bool = False,
     ) -> None:
-        """Advance the cursor, canonically when there is a store to advance."""
+        """Advance the cursor, canonically when there is a store to advance.
+
+        ``exhausted`` says this fire spends the last of `max_runs`; the caller
+        gets it from `evaluate`, which is where the count is not stale.
+        """
         import stores
 
         fired_at = fire.scheduled_for
         next_due_at = definition.next_fire_after(fired_at)
-        exhausted = self._exhausts(definition, fire_index=fire_index)
         if store is not None:
             await store.record_fire(
                 sid,
