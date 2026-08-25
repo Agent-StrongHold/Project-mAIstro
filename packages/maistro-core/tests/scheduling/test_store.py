@@ -1,14 +1,21 @@
-"""Schedule persistence, asserted identically against both implementations.
+"""Schedule persistence, asserted identically against every implementation.
 
-Every test runs against the in-memory store and the SQLite store, because the
-failure this layer exists to prevent — a schedule that quietly stops existing
-— is exactly what a store that drifts from its protocol reintroduces.
+Every test runs against all three stores, because the failure this layer
+exists to prevent — a schedule that quietly stops existing — is exactly what a
+store that drifts from its protocol reintroduces.
+
+PostgreSQL joined the list in #231. It is the only one two processes can
+share, so it is also the only one where `record_fire` racing itself is
+reachable; `test_concurrent_record_fire_does_not_lose_an_increment` covers
+that separately, because the in-memory and SQLite stores cannot exhibit it.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -33,10 +40,19 @@ def _schedule(**overrides: object) -> Schedule:
     return Schedule(**{**defaults, **overrides})  # type: ignore[arg-type]
 
 
-@pytest.fixture(params=["memory", "sqlite"])
-async def store(request: pytest.FixtureRequest, tmp_path) -> AsyncIterator[ScheduleStore]:
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def store(
+    request: pytest.FixtureRequest, tmp_path, pg_pool: Any
+) -> AsyncIterator[ScheduleStore]:
     if request.param == "memory":
         yield InMemoryScheduleStore()
+        return
+    if request.param == "postgres":
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        from maistro.scheduling.pg_store import PgScheduleStore
+
+        yield PgScheduleStore(pg_pool)
         return
     async with aiosqlite.connect(tmp_path / "schedules.db") as conn:
         sqlite_store = SqliteScheduleStore(conn)
@@ -185,5 +201,68 @@ async def test_sqlite_schedules_survive_a_reconnect(tmp_path) -> None:
     assert survivor.next_due_at == NOON + timedelta(hours=19)
 
 
-def test_both_implementations_satisfy_the_protocol() -> None:
+async def test_postgres_schedules_are_visible_to_a_second_store(pg_pool: Any) -> None:
+    """The property SQLite cannot have: two store handles, one schedule.
+
+    `SqliteScheduleStore` is scoped to "one conductor" by its own docstring.
+    A second scheduler replica reading the same row is the whole reason this
+    backend exists, so it is asserted rather than assumed.
+    """
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.scheduling.pg_store import PgScheduleStore
+
+    writer = PgScheduleStore(pg_pool)
+    reader = PgScheduleStore(pg_pool)
+    schedule = await writer.put(_schedule(name="briefing", cron="0 7 * * 1-5"))
+    await writer.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-abc",
+        next_due_at=NOON + timedelta(hours=19),
+    )
+
+    seen = await reader.get(schedule.schedule_id)
+    assert seen is not None
+    assert seen.last_run_id == "run-abc"
+    assert seen.next_due_at == NOON + timedelta(hours=19)
+
+
+async def test_concurrent_record_fire_does_not_lose_an_increment(pg_pool: Any) -> None:
+    """Two replicas advancing the same cursor must not both write the same count.
+
+    `runs_so_far` is what `max_runs` exhaustion is computed from, so a lost
+    update is not a cosmetic counter error — it is a schedule that fires more
+    times than it was configured for. The row lock in `record_fire` is what
+    makes this hold; without it both tasks read the same value and write it+1.
+    """
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.scheduling.pg_store import PgScheduleStore
+
+    store = PgScheduleStore(pg_pool)
+    schedule = await store.put(_schedule(name="hourly"))
+
+    replicas = 8
+    await asyncio.gather(
+        *(
+            store.record_fire(
+                schedule.schedule_id,
+                fired_at=NOON + timedelta(minutes=n),
+                run_id=f"run-{n}",
+                next_due_at=NOON + timedelta(hours=n + 1),
+            )
+            for n in range(replicas)
+        )
+    )
+
+    final = await store.get(schedule.schedule_id)
+    assert final is not None
+    assert final.runs_so_far == replicas
+
+
+def test_every_implementation_satisfies_the_protocol() -> None:
+    from maistro.scheduling.pg_store import PgScheduleStore
+
     assert isinstance(InMemoryScheduleStore(), ScheduleStore)
+    assert isinstance(PgScheduleStore(None), ScheduleStore)  # type: ignore[arg-type]
