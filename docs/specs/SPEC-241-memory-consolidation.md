@@ -3,7 +3,7 @@ id: SPEC-241
 title: "Memory consolidation — merge, contradiction review, incremental writes (ADR-080 part B)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-013

@@ -3,7 +3,7 @@ id: SPEC-062126-5d56
 title: "Memory dynamics follow-up: pluggable decay strategy and LLM-mediated contradiction resolution (ADR-080)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-21
 substrate:
   - maistro-engine#ADR-013

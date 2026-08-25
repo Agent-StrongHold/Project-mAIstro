@@ -3,7 +3,7 @@ id: SPEC-232
 title: "Lifecycle status linter: tools/lint_lifecycle.py"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate: []
 implements:

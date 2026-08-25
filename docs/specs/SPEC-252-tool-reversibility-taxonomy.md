@@ -3,7 +3,7 @@ id: SPEC-252
 title: "Tool reversibility taxonomy — registration validation and compensator contract (ADR-050)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-038

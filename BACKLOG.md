@@ -14,18 +14,19 @@ Companion to [`ROADMAP.md`](ROADMAP.md). Items are tagged by the part of the pro
   prerequisite; that is a statement about what is written down, not a claim that none exists.
   Enforced by `scripts/check-backlog-consistency.py` (#30).
 
-Maintained per [`ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Status follows the
-[`ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md) lifecycle, and where an item names an
-ADR or spec, **that document's front matter is authoritative** — this file records the work, not
-the decision's status. External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md).
+Maintained per [`ADR-019`](docs/adr/ADR-019-canonical-source-split.md). Each backlog header carries
+a **work status**, which describes the state of the backlog item only. It is deliberately separate
+from ADR/spec decision lifecycle. When an item names an ADR or spec, **that document's front matter
+is the sole authoritative decision status**; this file does not duplicate or reinterpret it.
+External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md).
 
-## Status legend
+## Work status legend
 
 | Marker | Meaning |
 |---|---|
-| Proposed | Open for discussion; not yet binding |
-| Accepted | Decision binding; implementation may follow |
-| Implemented | Decision shipped; production code matches |
+| Proposed | Work proposed; not yet committed for implementation |
+| Accepted | Work accepted into the backlog; implementation may follow |
+| Implemented | Backlog work completed; any referenced ADR/spec keeps its own lifecycle status |
 | Accepted (spec) | A spec records the decision, but no ADR does; binding on the spec's terms |
 | Superseded | Replaced by a successor (named in `supersedes:` of successor) |
 | Blocked | A `blocked-by:` dependency is unmet |

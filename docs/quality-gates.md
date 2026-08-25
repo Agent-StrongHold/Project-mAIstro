@@ -1,411 +1,116 @@
 # Code quality gates
 
-What actually runs, and what each gate will and will not stop. Every entry here
-is a step in [`.github/workflows/quality.yml`](../.github/workflows/quality.yml)
-or [`ci.yml`](../.github/workflows/ci.yml) — if a rule is not in this file, it is
-not enforced, and a rule that is enforced is enforced on every pull request
-against `main`, `integration`, and `develop`.
+This document states what the repository actually enforces. A rule described here as blocking must have a workflow, type invariant, or test behind it; known gaps are named rather than implied away.
 
-This replaces the June-2026 audit documents (`quality-standards.md`,
-`claude-quality-enforcement.md`, and the three dated `code-quality-*` scans).
-Those were point-in-time findings, not standards: every specific defect they
-named has since been fixed, and they described the pre-monorepo `src/maistro/`
-layout. Their durable content is the gates below, which run rather than
-describe. Provenance remains in git history.
+The blocking workflows are primarily [`.github/workflows/quality.yml`](../.github/workflows/quality.yml), [`ci.yml`](../.github/workflows/ci.yml), the registry workflow, and the dedicated security/mutation workflows.
 
-## Ratchets vs. floors
+## Ratchets and floors
 
-Two different shapes, and the difference matters when you are deciding whether
-a change is allowed to make a number worse.
+A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed current debt and forbids silent regression. Identity ratchets are preferred where a count could hide a same-count substitution. Count ratchets remain where the measured object is inherently aggregate, but they do not hold spare slack: an unbanked improvement fails until the reviewed baseline is lowered too.
 
-A **ratchet** records the currently-tolerated set in a checked-in baseline and
-fails on anything worse than it. It never auto-grows: widening a baseline is an
-edit a reviewer sees. The backlog is worked down over time rather than in one
-pull request.
+## Current blocking gates
 
-A **floor** is a fixed threshold with no baseline. It does not move with the
-code.
-
-A ratchet keyed on a *count* has a known weakness: one fix pays for one new
-defect, so the total can stand still while the code churns. Where that matters,
-the gate is keyed on *identity* instead — the exact finding, not how many there
-are — and then a defect that gets fixed but left in the baseline fails the build
-too. That asymmetry is deliberate: retained slack could otherwise pay for a
-later regression.
-
-## The gates
-
-| Gate | Shape | Current setting | Stops |
+| Gate | Shape | Authority | What it stops |
 |---|---|---|---|
-| `ruff check` (full ruleset) | floor | zero findings | lint violations |
-| `ruff format --check` | floor | zero diffs | unformatted code |
-| `mypy --strict` | floor | zero errors, all nine `packages/*/src` | type errors |
-| pyright | ratchet | 24 | type errors mypy does not catch |
-| radon CC | identity ratchet | `quality/radon-baseline.json` | a new or regressed complexity hotspot |
-| xenon | count ratchet | 77 | per-function > B, per-module > B, project average > A |
-| vulture | identity ratchet | `quality/vulture-baseline.json`, in `quality.yml` + `vulture-ratchet.yml` | any change to the reviewed finding set, by name — a new finding, a fixed one left unbanked, or a same-count substitution |
-| reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
-| convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
-| reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
-| backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
-| coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
-| coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
-| interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
-| suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
-| enumeration coverage | identity ratchet | `scripts/check_enumerations.py` | a derived control list drifting from its source enum |
-| doc links | floor | zero broken | a relative markdown link whose target does not exist |
-| version consistency | floor | exact match | any version site disagreeing with `VERSION` |
-| benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
-| architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
-| execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state enum nobody classified, or an entry left behind after its enum was deleted |
-| model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
+| Ruff lint + format | floor | workflow | lint/format regressions |
+| mypy strict | floor | workflow | type errors across package source trees |
+| pyright | ratchet | workflow/baseline | additional type debt |
+| radon / xenon | ratchets | quality baselines | new/regressed complexity debt |
+| Vulture | identity ratchet | `quality/vulture-baseline.json` | new, substituted, or stale reviewed dead-code identities |
+| Reachability | identity ratchet | `quality/reachability-baseline.json` | production modules becoming newly unreachable |
+| Convergence matrix | structural identity check | `docs/architecture/CONVERGENCE-MATRIX.md` + `scripts/check-convergence-matrix.py` | unclassified modules, table mismatch, stale unreachable counts, invalid dispositions, dangling ADR/SPEC refs |
+| Reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | unreachable rows without CONNECT/LIBRARY/RETIRE ownership, or stale disposition entries |
+| Backlog consistency | floor | `BACKLOG.md` + checker | invalid status/gap vocabulary, duplicate IDs, dangling decision refs |
+| Aggregate coverage | floor | workflow | publish-set line/branch coverage below **87%** |
+| Diff coverage | per-file floor | `scripts/check-diff-coverage.py` | changed lines below 90% or changed branch arcs below 80% **for files present in the combined coverage report** |
+| Interrogate | ratchet | workflow/baselines | docstring debt above reviewed subtree floors |
+| Suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
+| Enumeration coverage | identity check | `scripts/check_enumerations.py` | derived control lists drifting from source enums |
+| Doc links | floor | checker | broken relative Markdown links |
+| Version consistency | floor | `VERSION` + checker | version-site drift |
+| Benchmark provenance | floor | pinned digests | unreviewed grader/corpus changes |
+| Architecture fitness | floor | `packages/maistro-core/tests/fitness` | dependency-direction and compatibility-owner violations |
+| Execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state enum nobody classified, or a stale ledger identity |
+| Model egress | identity ratchet | `quality/model-egress.json` | a new direct model-egress module or stale caller identity |
+| Acceptance-criterion state | count ratchet + per-PR mandate | `quality/ac-state-ceilings.json` | completion claims outrunning measurable evidence and newly claimed criteria without evidence/explicit unproven rationale |
+| Design coverage | floor/ratchet | `quality/ac-state-ceilings.json` | the proven fraction of taken design decisions falling without a reviewed bank |
+| Gherkin well-formedness | floor | AC-state checker | malformed executable acceptance syntax |
+| Hypothesis/formal conformance | floor | `formal/` | falsifying lifecycle/property examples |
 
-The six architecture-fitness invariants of
-[#36](https://github.com/Agent-StrongHold/Project-mAIstro/issues/36) are not all gates, and two
-of them deliberately are not:
+The blocking Vulture workflow pins Vulture 2.16 and scans `packages/*/src` at confidence 60 while excluding `*/third_party/*`; `quality/vulture-baseline.json` is banked from that exact command so a different analyzer version or scan scope cannot silently redefine the reviewed identity set.
+
+The convergence-matrix checker is intentionally **structural**. It does not prove that prose such as “this product route traverses Warden” is operationally true. The matrix now says that limitation explicitly. Product-path claims require acceptance evidence or human re-audit; a green matrix check alone is not evidence of runtime enforcement.
+
+## #36 architecture-fitness invariants
+
+All six minimum invariants now have an enforceable owner. Two are construction-time type invariants rather than duplicate CI scanners.
 
 | Invariant | Enforced by |
 |---|---|
-| 1. No new universal execution lifecycle | `check-execution-lifecycles.py` |
-| 2. No direct model/tool/effect provider bypass | `check-model-egress.py` (frozen set; the boundary itself is #56) |
-| 3. No second durable Workspace/Event-sequence authority | **the type, not a gate** — `EventEnvelope.__post_init__` refuses a Workspace event that also defines a `stream_scope`, and the store refuses a caller-supplied sequence; both are covered in `tests/events/test_envelope.py` |
-| 4. No unscoped durable project-owned objects | **the type, not a gate** — `Run` and `NodeRun` require a non-empty `project_id`, and `Run` rejects a graph snapshot whose `project_id` disagrees |
-| 5. No outward core dependency-direction violations | `tests/fitness/test_import_boundaries.py` |
-| 6. Compatibility owners not presented as canonical | convention: a compat alias carries the "Backwards compat aliases" banner |
+| 1. No new universal execution lifecycle outside Run/NodeRun/Attempt | `scripts/check-execution-lifecycles.py` + identity ledger |
+| 2. No new direct model/tool/effect-provider bypass | `scripts/check-model-egress.py` freezes the current direct caller set while #56 converges the boundary |
+| 3. No second durable Workspace/Event-sequence authority | `EventEnvelope`/event-store construction rules refuse conflicting scope/sequence authority; event tests pin it |
+| 4. No unscoped durable project-owned execution objects | `Run`/`NodeRun` require Project scope and Run rejects a mismatched Graph snapshot |
+| 5. No outward core dependency-direction violations | `packages/maistro-core/tests/fitness/test_import_boundaries.py` |
+| 6. Compatibility owners cannot silently present as canonical | the same blocking fitness suite AST-scans direct public type aliases against a reviewed identity ledger and requires each reviewed alias to be explicitly described as compatibility-only in its source; new/stale/unbannered aliases fail |
 
-Invariants 3 and 4 fail closed at construction, which is stronger than a CI sweep — the object
-cannot exist in the wrong shape, so there is nothing for a gate to catch later. Adding one would
-be a check with no signal, and a gate that never fires teaches people to ignore the ones that do.
-| Hypothesis conformance | floor | zero falsifying examples | a property violation in `formal/` |
-| acceptance-criterion state | count ratchet | `quality/ac-state-ceilings.json` (10 debt counters) | a completion claim outrunning its evidence — and an unbanked improvement, so the ceiling holds no slack |
-| design coverage | **floor** | `quality/ac-state-ceilings.json` (`design_coverage`) | the proven fraction of the decided design *falling* — the one counter here where higher is better |
-| Gherkin well-formedness | floor | zero parse failures | an acceptance-criteria block the Gherkin grammar rejects |
+Invariants 3 and 4 are stronger at construction than a later grep: the invalid object cannot be created. Invariant 6 is different — an alias can always be written — so it is now mechanically checked rather than left as convention.
 
-Vulture runs in two workflows but has one authority: the per-identity ledger
-in `quality/vulture-baseline.json`, which records every reviewed finding as an
-explicit `path::message` identity (line-number-independent, so unrelated code
-motion doesn't trip the gate). A new finding fails CI by name; an identity
-that no longer occurs also fails by name until pruned — the ledger can only
-shrink, so it cannot retain slack that a later regression could consume, and
-a same-count substitution is two named failures rather than an invisible swap.
-`vulture-ratchet.yml` covers PRs and trunk pushes; the `quality.yml` step
-extends the identical invocation to `feat/*` pushes. Bank a reviewed change
-with `scripts/check-vulture-baseline.py --update <scan args>` and review the
-JSON diff — never edit entries by hand to match a delta. (Until 2026-08 this
-was a total-count ceiling plus a per-rule count+SHA-256 digest; the digest
-caught substitutions but failures weren't legible per identity, and the count
-ceiling held slack.)
+## Coverage: aggregate and diff answer different questions
 
-## The two coverage gates
+Aggregate coverage protects the repository as a whole. The current publish-set floor is **87%**, raised after the Canvas namespace blind spot was corrected under #171.
 
-They answer different questions, and neither subsumes the other. Both run.
+Diff coverage scores changed lines/branch arcs **per file**, not pooled across the PR. Its current floors are 90% lines / 80% branch arcs.
 
-**Aggregate (86%)** — the whole publish set. Catches the repository rotting under
-a stream of small, individually-fine PRs. Cannot see a change: a new 400-line
-module landing at 0% moves a 42,000-statement total by a fraction of a point.
+Coverage scope matters: a file absent from every coverage producer is invisible to the diff checker. The combined report now includes the publish set, `maistro-server`, and the PostgreSQL producer added after #211. The remaining named non-publish scope gap (`maistro-turing`, `maistro-design`, `hive-conductor`) is tracked by #163; a green diff gate must not be read as proof those trees were scored until that issue lands.
 
-It moved from 88 to 86 when `include_namespace_packages` was turned on, and that
-is a widened measurement rather than a regression: 41,469 statements at 89%
-became 42,290 at 87.43%, the +821 being `maistro_canvas/canvas/` modules that
-are wholly uncovered and always were, and were invisible to this gate because
-the directory has no `__init__.py`. 86 keeps the headroom the previous choice
-had. The debt itself is [#171](https://github.com/Agent-StrongHold/Project-mAIstro/issues/171),
-not an omit pattern; raise the floor back as that lands.
+`include_namespace_packages = true` remains load-bearing for namespace-package trees such as Canvas.
 
-**Diff, per file (90% lines / 80% branch arcs)** — `scripts/check-diff-coverage.py`
-over the lines the PR touched, measured against the merge base.
+## Acceptance-state ratchet and per-PR mandate
 
-### Per file, not pooled
+`scripts/check-ac-state.py` measures acceptance evidence at the criterion level:
 
-The first version wrapped `diff-cover`, and review showed it could not express
-two of the rules:
+1. `declared` — criterion exists with an ID;
+2. `covered` — a test claims the criterion;
+3. `passing` — that test passes;
+4. `reachable` — the module the criterion asserts about is reachable from a real entry point.
 
-- **It pools every changed line before applying the threshold.** Five uncovered
-  lines in a new file plus ninety-five covered elsewhere is 95%, and passes —
-  the aggregate defect again, one scope smaller.
-- **It scores line hits, not branch arcs.** A changed conditional executed along
-  one outcome records a line hit and a missing branch, so `--branch` collected
-  arc data that nothing read.
+A document tier is the highest rung **all** of its criteria have reached. A passing unit test therefore cannot by itself prove a product-path claim.
 
-Both are per-file questions about `coverage.xml`, so the gate reads it directly.
+Two enforcement modes operate over the same corpus:
 
-### Where 90 and 80 came from
+- `--ratchet` holds reviewed legacy evidence debt in `quality/ac-state-ceilings.json`. The M0 closeout reconciled every current contradicted/unverifiable completion claim, so both completion-claim counters are now zero; remaining AC-ID/spec evidence retrofit debt stays explicit and non-growing.
+- `--mandate <base>` is zero-tolerance for criteria a PR creates or newly claims. A new criterion must be evidenced or carry a visible per-criterion unproven marker with a reason.
 
-Measured over every PR merged into `develop` since `15abb9d`, **per file**:
-
-| | worst observed | floor |
-|---|---:|---:|
-| line coverage of changed lines | 94.9% | 90 |
-| branch coverage of changed arcs | 85.7% | 80 |
-
-Two numbers because the distributions differ. A single shared floor would have
-to be the lower of the two, which would stop enforcing anything on lines.
-
-Each sits under its own measured worst, for the same reason the aggregate sits
-at 88 under a measured 89.63: a gate pinned to its measurement fails the first
-PR with one awkward case. **Raise as the sample grows** — five PRs in a two-day
-repository is a thin draw, and this table is the baseline to raise from.
-
-### Scope, and the one thing it cannot catch
-
-Scope is the `--source` arguments of the coverage run. `check-diff-coverage.py`
-only scores files present in the report, so migrations, workflows and docs are
-excluded by construction rather than by a list somebody maintains.
-
-`include_namespace_packages = true` under `[tool.coverage.report]` is
-load-bearing: `maistro_canvas/canvas/` has no `__init__.py`, and without that
-setting coverage skips namespace directories when discovering never-imported
-files — a new untested module there would be absent from the report entirely and
-the gate would have nothing to check. It is a `[report]` option, not `[run]`;
-under `[run]` coverage warns "Unrecognized option" to stderr and carries on with
-the default, so the setting looks applied and is not.
-
-A file outside every `--source` path remains invisible, because coverage never
-records it.
-
-### Why the aggregate is evaluated before the diff scope widens
-
-`maistro-server` is measured for the diff gate but is not in the publish set.
-`coverage report` scopes only by `--include`/`--omit`, so appending server data
-before the 88% check would silently place it under that floor — the workflow's
-own comment and its arithmetic would disagree. The floor therefore runs on the
-publish set first, and the scope widens afterwards.
-
-## The ratchet and the mandate
-
-Two rules over one corpus, and the split is the point.
-
-**The ratchet** (`--ratchet`) compares ten debt counters against
-`quality/ac-state-ceilings.json`. It says *the repository did not get worse*.
-It has never said *this change proved what it claimed* — a PR could add a spec,
-tick a criterion `Implemented`, add no marker and pass, because the counter it
-lands in already permits 68 of them. The ceiling absorbs the new debt silently.
-
-**The mandate** (`--mandate <base>`) is zero tolerance on the criteria a change
-**creates or newly claims**. Legacy criteria stay grandfathered on the ceilings
-and fall over time; these are not legacy.
-
-Ticking a box counts as touching a criterion even when its text did not move.
-The tick *is* the claim, so it is exactly the moment to demand the evidence.
-
-### Declaring one unproven
+Example explicit deferral:
 
 ```markdown
 <!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->
 ```
 
-Per-criterion, reason mandatory, in the document body so it appears in the diff.
-An escape hatch a reviewer cannot see is an unstated one.
+The mandate cannot be banked away. Legacy retrofit debt stays grandfathered to the ratchet; new claims do not become legacy merely because a PR wants to merge.
 
-### Two refusals worth knowing about
+## ADR lifecycle evidence
 
-- **`--mandate` without `--run-tests` refuses.** Without a measured run nothing
-  reaches `reachable`, so every touched criterion would look unproven. Failing a
-  PR for a question that was never asked is worse than stopping.
-- **An unreadable base refuses.** On a shallow clone every criterion looks new,
-  which would demand the whole corpus be retrofitted in one PR — and a gate that
-  fires on everything gets turned off. CI checks out with `fetch-depth: 0`.
+ADR-097 defines `Proposed` as under discussion and `Accepted` as a decision made. From the M0 closeout boundary (2026-08-24), `maistro-registry` prospectively requires newly-authored records to carry dated lifecycle history whose latest entry matches front matter; taken decisions require their acceptance metadata/owner evidence. Legacy/backfilled records remain readable and continue through the acceptance-state debt process rather than being bulk-rewritten by a schema change. See #239.
 
-### Why a new criterion cannot bank itself
+The `/adr` and `/spec` scaffolds emit lifecycle history immediately. When a record advances, contributors append the dated transition and update the corresponding lifecycle metadata rather than editing `status` alone.
 
-`--bank` writes the `RATCHETED` counters. The mandate is not one of them: it is
-a pass/fail over a computed set, not a number. So there is no path by which
-today's unproven criterion becomes tomorrow's grandfathered debt — which, if it
-existed, would make the escape hatch silent and the ratchet meaningless.
+## Design coverage
 
-## Acceptance-criterion state
+Design coverage is decision-weighted: for each taken ADR (`Accepted`, `Fully Specced`, or `Implemented`), measure the fraction of its own and implementing specs' criteria that reach `reachable`, then average one vote per decision. A taken decision with no evidence contributes zero rather than disappearing from the denominator. The generator uses this same ADR-only taken-state set; SPEC-only states such as `In Progress` and `Tests Passing` are not decision states.
 
-`scripts/check-ac-state.py` measures what the other gates cannot: whether a
-document's *status* is true. Everything above checks code. A front-matter
-`status: Implemented` is checked by nobody, and was wrong on six consecutive
-ADRs for months (#357, #363), because one person can assert it about a whole
-document at once.
+The **current reviewed floor is always the value in `quality/ac-state-ceilings.json`**, not a number copied into prose. Accepting a real new decision can legitimately lower the percentage because new work becomes owed; such a denominator change must be banked and explained. Proving criteria raises it and the higher value must likewise be banked so the gain cannot pay for a later regression.
 
-The unit of truth is pushed down to the individual acceptance criterion, where
-it can be measured. Each criterion carries an `**AC-N**` id, tests claim it with
-`@pytest.mark.ac("SPEC-xxx/AC-n")`, and the spec's `ac-modules` front-matter maps
-it to the module it asserts about. From that the script climbs a ladder:
+## Other dedicated gates
 
-| Rung | Means |
-|---|---|
-| `declared` | the spec states it, with an id |
-| `covered` | some test claims it |
-| `passing` | that test passes |
-| `reachable` | the module it asserts about is reachable from a real entry point |
+Security scanning (Bandit, Semgrep, gitleaks), dependency audit, container/SBOM/signing checks, and mutation testing live in their dedicated workflows. `SECURITY.md` has its own inventory consistency gate under #157; a green security-document check is limited to the claims that checker can mechanically verify.
 
-The last rung is the one that matters and the one most easily left off. A green
-test proves the code works; it does not prove anything runs it — `tick_decay`
-(#344), `elevation_store` (#346) and the whole security pipeline (#350) were all
-green, all tested, and all unreachable. A ladder stopping at `passing` would
-reproduce that lie one level up, having spent the effort to get back here.
-
-A document's **tier** is the highest rung *every* one of its criteria has
-reached, so one lagging criterion holds the whole spec down. That is strict on
-purpose, and it is why the report also carries the per-rung distribution: a tier
-that reads `declared` does not say whether one criterion is missing or forty.
-Spec tiers fold up to ADRs through each spec's `implements:`.
-
-Two counts are reported separately and must not be merged:
-
-- **contradicted** — the document claims `Implemented` and *has* measurable
-  criteria that fall short. Its own artefacts refute it.
-- **unverifiable** — the document claims `Implemented` and has nothing to
-  measure yet. Unproven, not refuted.
-
-Since #31 this is a **ratchet rather than a report**. Ten debt counters —
-contradicted, unverifiable, specs awaiting AC-id retrofit, markers naming no
-criterion, criteria ticked but unproven, Gherkin scenarios with no tag, Gherkin
-parse errors, and (since #164) specs implementing no ADR, taken ADRs with no
-implementing spec, and specs declaring no criteria at all — are recorded in
-`quality/ac-state-ceilings.json` and may only go down. A rise fails: a document started claiming more than its artefacts
-support, and the fix is to prove the claim or correct the status, never to raise
-the ceiling. An *unbanked improvement* fails too, for the reason the vulture
-ledger stopped being a count ceiling: a margin left sitting there is slack that
-a later regression spends invisibly. Bank one with
-`--ratchet --bank` and read the diff.
-
-The ratchet refuses to compare across measurement modes. Without `--run-tests`
-no criterion can reach `passing`, so every claim above it reads as contradicted;
-comparing those numbers against ceilings banked from a real run would make the
-gate's verdict depend on how it was invoked. The mode is checked before anything
-is measured, so a wrong-mode run leaves `quality/ac-state.json` untouched rather
-than overwriting it with an unmeasured payload.
-
-The starting ceilings are the debt as measured on 2026-08-22: **9 contradicted,
-68 unverifiable, 139 specs awaiting retrofit**, 2 orphan markers, 76 specs
-implementing no ADR, 34 taken ADRs with no implementing spec, 7 specs declaring
-no criteria, and zero on the remaining three. Those are not targets — they are
-the line below which the repository may not slip while the burn-down happens.
-
-## Design coverage — the one number that goes up
-
-Everything above measures **debt**. Nothing above measures **distance**: how
-much of the design the ADRs describe is implemented and proven. Without that,
-"every green PR moves us closer to the designed future state" is an aspiration
-CI cannot check, because there is no number that would have to rise.
-Traceability plus non-regression is necessary and is not progress — *a PR that
-changes nothing satisfies both*.
-
-**ADR-082226-ff3c** defines it. For each ADR whose status is `Accepted` or
-`Implemented`, take the fraction of its criteria — its own, plus those of every
-spec whose `implements:` names it — that have reached `reachable`. Design
-coverage is the **mean of those fractions**.
-
-The choice that matters is the denominator:
-
-| Formulation | Value | Denominator |
-|---|---:|---|
-| criterion-weighted, over ADRs that have criteria | 30.5% | 348 criteria belonging to 23 ADRs |
-| **decision-weighted, every taken decision counts** | **3.96%** | 99 decisions; 94 of them score zero |
-
-76 of 99 taken decisions declare no acceptance criteria anywhere. The first
-number lets each of them vanish from its own denominator, so it reads
-respectably while three-quarters of the design is unmeasured — and it is
-gameable in the wrong direction, since deleting an unproven criterion *raises*
-it. Under the decision-weighted form, a decision that declares no criteria
-contributes **0**, and deleting every criterion returns it to 0.
-
-Four consequences, all intended:
-
-- **Every taken decision weighs the same.** A one-criterion ADR and a
-  forty-criterion ADR are each one unit of design.
-- **Writing criteria can only help.** An ADR at 0 with nothing written moves the
-  moment one criterion is proven.
-- **`Proposed` is excluded.** A decision not yet taken cannot be owed an
-  implementation, and counting it would make writing an idea down look like
-  incurring debt.
-- **Accepting an ADR lowers the number**, because newly-owed work is now owed.
-  This is correct, and it will feel wrong the first time it blocks a PR.
-
-The bar is `reachable` and not `passing`: a passing test whose module the import
-graph cannot reach proves the test runs, not that the system does.
-
-The number is ratcheted by the same mechanism as the debt counters with the
-inequality reversed — the recorded value is a **floor**, a fall is what fails,
-and an unbanked rise fails too. A deliberate fall (retiring an ADR, accepting a
-new one, discovering a criterion was never real) is banked with `--bank` and
-justified in the diff. It is compared at four decimal places, which resolves
-0.0001 against a smallest-real-move of 0.022 points, so proving one criterion
-can never round away into a no-op.
-
-**The starting value is 3.9582%, and it looks bad.** That is the honest reading
-of a corpus where 94 of 99 taken decisions have nothing proven; a metric chosen
-to flatter would not be worth ratcheting. The gap between it and the 30.5% is
-itself the report — it names how much of the design has never been written down
-as anything checkable.
-
-Two things it does not say, both permanent: it says nothing about whether the
-ADRs describe a *good* system, and a criterion can be tautological and still
-reach `reachable`. This measures that evidence exists, never that it is
-meaningful, which is why an approving human review stays in the merge path.
-
-## Criteria are written in Gherkin
-
-Not a new convention — the existing one, finally enforced. 11 documents already
-carried 224 `Scenario:` blocks in ```gherkin fences, and `pytest-bdd` was
-already a declared dependency of hive-conductor. Nothing read any of it: no step
-definitions, no `.feature` files, no runner. Another built-but-never-wired
-subsystem, this one inside the acceptance-criteria machinery itself.
-
-So criteria are Gherkin, parsed with the real grammar rather than a regex —
-the point of adopting a standard is that its own tooling decides what is
-well-formed. That buys three things a prose bullet does not:
-
-- **A structure that can be checked.** A `Scenario` with no `Then` states no
-  observable outcome, so nothing about it is falsifiable. The report counts
-  those separately from criteria that merely lack a test.
-- **Tables instead of repetition.** `Scenario Outline` with an `Examples` table
-  states a rule and its cases once. Four near-identical prose bullets become one
-  criterion with four rows.
-- **A path to executable criteria.** Valid Gherkin can later be bound with
-  `pytest-bdd` without rewriting anything. That is deliberately *not* done here:
-  step definitions are a large glue layer, the repo has 8,700 plain pytest
-  tests, and the marker binding already works. The option is kept open, not
-  taken.
-
-A criterion's identity is a Gherkin **tag** — `@AC-3` above the scenario — never
-the scenario's name. Names get reworded, and a reworded name would silently
-break the binding to the test claiming it: the criterion would drop back to
-`declared` with nothing saying why. One criterion may carry several scenarios.
-
-Bullet-form `**AC-N**` criteria still count while the corpus converges, and the
-report says which form each spec uses so the progress is visible rather than
-normalised away.
-
-Report-only for now: nothing fails a build, and no status is rewritten. Most of
-the corpus is still prose-only, so the honest first pass is finding out what is
-true. Run it with `--run-tests` — without that flag the `passing` rung is never
-settled and every criterion stops at `covered`, which the report says on its
-first line rather than leaving you to infer.
-
-Security scanning (bandit, semgrep, gitleaks), dependency audit (pip-audit),
-container scan/SBOM/cosign, and mutation testing run in their own workflows —
-`security.yml` and `mutation.yml`.
-
-## Why a ratchet rather than a clean sweep
-
-Several baselines are large. They are the honest count of a backlog that
-predates the gate, and the point of recording them is that the number can only
-go down. Lowering one is ordinary work; raising one requires saying so in a
-diff.
-
-Two rules follow from that, and they are the ones most often got wrong:
-
-- **Fix at the source, not in the baseline.** A new finding is a reason to
-  change the code. Adding it to a baseline is for a finding that is genuinely
-  intended — a library-only surface, test scaffolding — and then it wants a
-  note saying which.
-- **Shrink the baseline in the same pull request as the improvement.** The
-  identity-keyed ratchets enforce this; the count-keyed ones cannot, so it is on
-  the author.
-
-## Running them locally
-
-The gates are ordinary scripts. Nothing here needs CI:
+## Running the architecture/governance gates locally
 
 ```bash
 uv run ruff check . && uv run ruff format --check .
-uv run mypy packages/maistro-core/src   # …and the other eight packages/*/src
+uv run mypy packages/maistro-core/src
 uv run python scripts/check-radon-baseline.py
 uv run python scripts/check-reachability.py
 uv run python scripts/check-convergence-matrix.py
@@ -413,6 +118,7 @@ uv run python scripts/check-reachability-dispositions.py
 uv run python scripts/check-backlog-consistency.py
 uv run python scripts/check-execution-lifecycles.py
 uv run python scripts/check-model-egress.py
+uv run pytest packages/maistro-core/tests/fitness -v --timeout=30
 uv run python scripts/check-suite-inventory.py
 uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check
@@ -421,6 +127,4 @@ uv run python scripts/check-vulture-baseline.py packages/*/src \
 uv run python scripts/check-ac-state.py --run-tests --ratchet
 ```
 
-`scripts/check-suite-inventory.py --update` rewrites the inventory from an
-actual collection. Always regenerate it that way — never by adjusting the
-number by hand to match a delta, which defeats the point of the gate.
+Banking is an explicit reviewed operation. Do not hand-edit a baseline merely to make a failing gate match a new defect.

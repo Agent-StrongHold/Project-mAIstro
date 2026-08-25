@@ -3,7 +3,7 @@ id: SPEC-254
 title: "Agent file-edit rollback via shadow git workspace (ADR-049)"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-018

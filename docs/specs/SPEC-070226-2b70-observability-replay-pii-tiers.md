@@ -3,7 +3,7 @@ id: SPEC-070226-2b70
 title: "Observability extensions: replayable LLM/tool proxies and PII sensitivity-tier routing"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-037

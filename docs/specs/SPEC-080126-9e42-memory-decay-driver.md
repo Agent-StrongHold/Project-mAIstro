@@ -3,7 +3,7 @@ id: SPEC-080126-9e42
 title: "Periodic memory-decay driver — making 'memory must forget' true at runtime"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-08-01
 substrate:
   - maistro-engine#ADR-046
@@ -30,6 +30,10 @@ history:
     date: 2026-08-01
   - status: Implemented
     date: 2026-08-01
+  - status: Accepted
+    date: 2026-08-25
+    reason: "M0 strict evidence reconciliation: current acceptance evidence does not support an Implemented completion claim; implementation history remains recorded."
+
 ---
 
 # SPEC-080126-9e42: Periodic memory-decay driver

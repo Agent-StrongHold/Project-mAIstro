@@ -3,7 +3,7 @@ id: SPEC-062126-d421
 title: "Medley import sanitization pipeline — scan, salvage-or-block, register, re-scan-on-use"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-21
 substrate:
   - maistro-engine#ADR-072

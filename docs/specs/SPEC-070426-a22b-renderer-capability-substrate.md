@@ -3,7 +3,7 @@ id: SPEC-070426-a22b
 title: "Renderer capability substrate — slots, providers, discovery, graceful absence"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-07-04
 substrate:
   - maistro-engine#ADR-061

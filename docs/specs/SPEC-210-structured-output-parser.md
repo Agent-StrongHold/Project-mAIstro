@@ -3,7 +3,7 @@ id: SPEC-210
 title: "StructuredOutputParser: typed LLM output extraction, validation, and retry context"
 repo: maistro-engine
 kind: spec
-status: Implemented
+status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-005
