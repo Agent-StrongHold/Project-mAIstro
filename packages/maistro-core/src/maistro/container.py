@@ -43,6 +43,7 @@ from maistro.runs.wiring import (
     wire_chat_admission,
     wire_execution_spine,
 )
+from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
@@ -151,6 +152,10 @@ class Container:
     #: of the spine is: a Container built directly, without `create_container`,
     #: still routes requests — it just cannot resolve a template.
     template_store: GraphTemplateStore | None = None
+    #: Durable home for Schedule definitions and their fire cursors (#231).
+    #: The live scheduler reads it, so an occurrence claim survives a restart
+    #: and two replicas share one cursor instead of keeping private ones.
+    schedule_store: ScheduleStore = None  # type: ignore[assignment]
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
@@ -707,6 +712,7 @@ async def create_container(
         run_store,
         task_admitter,
         graph_template_store,
+        schedule_store,
     ) = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
@@ -906,6 +912,7 @@ async def create_container(
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
+        schedule_store=schedule_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,

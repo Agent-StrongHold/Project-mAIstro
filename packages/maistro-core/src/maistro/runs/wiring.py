@@ -17,6 +17,7 @@ from maistro.graph.templates import GraphTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.store import RunStore
+from maistro.scheduling.store import ScheduleStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 
 __all__ = ["wire_chat_admission", "wire_execution_spine"]
@@ -71,13 +72,43 @@ async def _spine_is_migrated(pg_pool: Any) -> bool:
     return False
 
 
+async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
+    """The PostgreSQL schedule store, or an in-memory one with a warning.
+
+    Probed separately from `SPINE_PG_TABLES` rather than added to it. A Run does
+    not need a schedule to exist, so a database migrated to `015` but not `016`
+    has a perfectly good durable spine — folding `schedules` into that tuple
+    would drop such a deployment's Runs to in-memory over a table it never asked
+    for, which is a far worse failure than the one being guarded against.
+
+    Falling back is warned about rather than silent, for the same reason
+    `_spine_is_migrated` warns: a durable pool that ends up with ephemeral
+    schedules is the shape of #122, and saying so is the whole difference.
+    """
+    if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.schedules"):
+        from maistro.scheduling.pg_store import PgScheduleStore
+
+        return PgScheduleStore(pg_pool)
+
+    from maistro.scheduling.store import InMemoryScheduleStore
+
+    logger.warning(
+        "PostgreSQL pool has no `schedules` table, so schedules are in-process and "
+        "lost on restart, and two scheduler replicas cannot share a cursor. Run "
+        "`alembic upgrade head` against this database to make them durable (#231)."
+    )
+    return InMemoryScheduleStore()
+
+
 async def wire_execution_spine(
     conn: Any,
     *,
     workspace_id: str,
     intents: IntentRegistry | None = None,
     pg_pool: Any = None,
-) -> tuple[ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter, GraphTemplateStore]:
+) -> tuple[
+    ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter, GraphTemplateStore, ScheduleStore
+]:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
     PostgreSQL when the deployment has one, SQLite for a homelab, in-memory
@@ -99,6 +130,7 @@ async def wire_execution_spine(
     project_scope_store: ProjectScopeStore
     run_store: RunStore
     template_store: GraphTemplateStore
+    schedule_store: ScheduleStore
     if pg_pool is not None and await _spine_is_migrated(pg_pool):
         # No ensure_schema: these tables come from `alembic/versions/012` and
         # `014`. A store that quietly created its own tables would be a second
@@ -111,10 +143,12 @@ async def wire_execution_spine(
         project_scope_store = PgProjectScopeStore(pg_pool)
         run_store = PgRunStore(pg_pool, project_store=project_scope_store)
         template_store = PgGraphTemplateStore(pg_pool)
+        schedule_store = await _pg_schedule_store(pg_pool)
     elif conn is not None:
         from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.runs.sqlite_store import SqliteRunStore
+        from maistro.scheduling.store import SqliteScheduleStore
 
         sqlite_scope_store = SqliteProjectScopeStore(conn)
         await sqlite_scope_store.ensure_schema()
@@ -122,17 +156,22 @@ async def wire_execution_spine(
         await sqlite_run_store.ensure_schema()
         sqlite_template_store = SqliteGraphTemplateStore(conn)
         await sqlite_template_store.ensure_schema()
+        sqlite_schedule_store = SqliteScheduleStore(conn)
+        await sqlite_schedule_store.ensure_schema()
         project_scope_store = sqlite_scope_store
         run_store = sqlite_run_store
         template_store = sqlite_template_store
+        schedule_store = sqlite_schedule_store
     else:
         from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
         from maistro.runs.store import InMemoryRunStore
+        from maistro.scheduling.store import InMemoryScheduleStore
 
         project_scope_store = InMemoryProjectScopeStore()
         run_store = InMemoryRunStore(project_store=project_scope_store)
         template_store = InMemoryGraphTemplateStore()
+        schedule_store = InMemoryScheduleStore()
 
     # The Project store refuses to delete a Project that owns Runs, and only
     # the Run store can answer that. PostgreSQL has a foreign key for it; this
@@ -157,7 +196,7 @@ async def wire_execution_spine(
     # submission names later (#158) are built on first use, because they do not
     # exist yet at startup.
     await admitter.admitter_for(workspace_id)
-    return project_scope_store, run_store, admitter, template_store
+    return project_scope_store, run_store, admitter, template_store, schedule_store
 
 
 def wire_chat_admission(
