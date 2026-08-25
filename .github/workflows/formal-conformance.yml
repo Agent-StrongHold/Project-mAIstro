@@ -64,10 +64,20 @@ jobs:
       - name: Install maistro-evolve
         run: pip install -e packages/maistro-evolve
 
-      # The driver I29 needs. Installed explicitly rather than through an extra
-      # so this job's dependency on a database is visible in the workflow.
-      - name: Install asyncpg and alembic
-        run: pip install asyncpg alembic
+      # Two drivers, not one, and the second is the non-obvious half.
+      #
+      # `asyncpg` is what I29 itself uses. `psycopg[binary]` is what *alembic*
+      # needs: `maistro.config.database.to_sync_url` hands it a
+      # `postgresql+psycopg://` URL because alembic drives a synchronous engine
+      # and "the asyncio extension requires an async driver" otherwise. Without
+      # it the migration step dies on `ModuleNotFoundError: No module named
+      # 'psycopg'` — measured, on the first run of this job.
+      #
+      # ci.yml gets both from `uv sync --extra dev`; this job installs by pip,
+      # so the dependency has to be named. The version matches the root
+      # pyproject's own pin rather than floating.
+      - name: Install database drivers and alembic
+        run: pip install asyncpg "psycopg[binary]>=3.2" alembic
 
       # The canonical tables I29 writes to. Without this the model fails on a
       # missing relation, which reads as a broken test rather than a missing

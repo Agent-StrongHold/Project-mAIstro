@@ -29,7 +29,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
-| Run / NodeRun / Attempt lifecycle | `maistro.runs`, `maistro.runtime` | Run, NodeRun, Attempt, ExecutionRuntime | itself (canonical) | `runs.sqlite_store`, `runs.store` | caller-supplied `actor_principal_id` only |
+| Run / NodeRun / Attempt lifecycle | `maistro.runs`, `maistro.runtime` | Run, NodeRun, Attempt, ExecutionRuntime | itself (canonical) | `runs.pg_store` (canonical, #132), `runs.sqlite_store`, `runs.store` | caller-supplied `actor_principal_id` only |
 | Graph execution | `maistro.graph` | Graph, Node, GraphExecutionState | `graph.durable_runs` over `maistro.runs` | `graph.durable_runs.stores` (in-memory + execution store) | — |
 | Request front door and DI | `maistro.conduit`, `maistro.container` | Request admission | none — Conduit decides and delegates, holds no state | — | container-wired Warden/Sentinel |
 | Task queue and runner | `maistro.tasks` | Admission receipt | `tasks.queue` + `tasks.status` (second universal lifecycle) | `TaskRecord` upsert, best-effort (ADR-018) | `security.task_policy` |
