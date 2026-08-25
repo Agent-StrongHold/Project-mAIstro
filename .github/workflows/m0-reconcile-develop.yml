@@ -43,6 +43,11 @@ jobs:
           fi
           sed -i 's/ADR-2026-08-16/ADR-081626-f383/g' docs/architecture/CONVERGENCE-MATRIX.md
 
+          # checkout --ours/--theirs resolves content but does not mark an index
+          # conflict resolved. Stage these three deliberate resolutions before
+          # asking Git whether anything unresolved remains.
+          git add quality/ac-state.json quality/ac-state-ceilings.json docs/architecture/CONVERGENCE-MATRIX.md
+
           unresolved=$(git diff --name-only --diff-filter=U)
           if [ -n "$unresolved" ]; then
             echo "Unresolved merge conflicts:"
