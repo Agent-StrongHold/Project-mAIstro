@@ -735,6 +735,12 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
         pg_pool=pg_pool,
+        # The same archive tier the Container holds, handed to the one
+        # subsystem that writes to it (#273). Until this line the field was
+        # built, stored, and read by nothing -- the defect
+        # `quality/wiring-reads-baseline.json` recorded as "Retirement or a
+        # reader is its own issue". This is the reader.
+        archive_store=archive_store,
     )
     chat_admitter = wire_chat_admission(
         run_store,

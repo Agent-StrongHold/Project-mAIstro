@@ -3,7 +3,7 @@
     "maistro.container.Container": {
       "source": "packages/maistro-core/src/maistro/container.py",
       "unread": {
-        "archive_store": "Built by build_archive_store() at container construction and only stored. No production reader; #133 found this one by hand and consolidated the duplicate tier without giving the field a consumer. Retirement or a reader is its own issue.",
+        "archive_store": "Consumed by injection \u2014 passed to wire_execution_spine, which hands it to PgRunStore/InMemoryRunStore so RunArchiveSweeper can drive archive_cold_runs (#273). The same shape as db_pool: the field is an unread second reference. Before #273 it was genuinely inert, which is what the old disposition recorded; the tier now has a production consumer, and what is left unread is the handle rather than the dependency. Retiring the field is still its own issue \u2014 forcing a read to clear this entry would be gaming the gate rather than removing wiring that does nothing.",
         "context_assembly_policy": "DefaultContextAssemblyPolicy is constructed and only stored. Nothing in production reads it back, and no other wiring is injected with it.",
         "db_pool": "Consumed by injection \u2014 passed to wire_execution_spine and _wire_sqlite_durable_events before the Container is constructed. The field is an unread second reference, kept because downstream products construct a Container and reach the pool through it.",
         "elevation_store": "Consumed by injection \u2014 passed to Sentinel at construction. The field is an unread second reference.",

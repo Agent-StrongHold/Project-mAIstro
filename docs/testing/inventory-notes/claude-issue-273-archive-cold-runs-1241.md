@@ -1,11 +1,16 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +25
+  packages/maistro-core/tests: +51
 ---
 # claude-issue-273-archive-cold-runs
 
-Twenty-five new node IDs across two files, split by what they hold. Nothing
+Fifty-one new node IDs across three files, split by what they hold. Nothing
 removed or reparametrised.
+
+`test_archive_conformance.py` contributes 26 rather than 13 because its
+`archive_spine` fixture is parametrised over two backends. The PostgreSQL leg
+skips without `MAISTRO_TEST_PG_DSN` — so it is 13 tests locally and 26 in CI,
+and the inventory counts node IDs rather than outcomes.
 
 ## `test_archive_sweep.py` — the predicate (12)
 
@@ -52,3 +57,31 @@ unreachable bucket must not become a refused chat turn; the throttle skips a
 second sweep inside the interval and a zero interval opts out of it; two
 concurrent sweeps produce one scan; and the three policy validations refuse a
 zero horizon, a negative interval and a non-positive batch.
+
+## `test_archive_conformance.py` — both backends (26)
+
+The in-memory store keeps the Run resident after archiving; it is the reference
+implementation of the *protocol*, not a tier that saves bytes. So the half that
+can actually fail is untested until PostgreSQL runs it: there the payload column
+really is set to NULL, and everything downstream of a read has to keep working.
+
+`test_a_read_after_archiving_still_returns_the_run` is the one that would have
+caught the obvious bug. Without read-through in `_payload`, `get_run` returns
+None for an archived Run — decision 6's forbidden case, and data loss at the API
+boundary rather than a cost optimisation.
+
+The rest: identity and scope outlive the payload, so foreign keys still resolve
+and the Project still knows it owns Runs; the NodeRuns and Attempts under an
+archived Run stay readable, because an audit reads down from the Run; non-finite
+evidence survives, since archiving is a fourth place the payload is serialised
+and `evidence_json` exists so the backends cannot disagree; a cold Run moves and
+one with a deletion date never does; recent and live work stay put; nothing is
+archived twice; the batch limit bounds a sweep and a non-positive one is
+refused; and the tier is off without an archive store.
+
+One case is PostgreSQL-only and skips elsewhere:
+`test_an_archived_row_without_a_tier_says_so_rather_than_vanishing`. Only a
+store that really moves the payload can lose it, and the operator mistake worth
+surviving is the archive URL going away after Runs were archived. It raises
+`ArchivedPayloadUnavailable` — the record exists, the tier it moved to does not,
+and reconfiguring makes the read work again.

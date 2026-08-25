@@ -63,6 +63,25 @@ class RunIntegrityError(ValueError):
     pass
 
 
+class ArchivedPayloadUnavailable(RunIntegrityError):
+    """The row says its payload is in the archive and the archive cannot answer.
+
+    A distinct failure because it is a distinct operator mistake: the record
+    exists, the tombstone is intact, and what is missing is the tier that was
+    configured when it was archived. Every other answer here is worse.
+    Returning `None` would be decision 6's forbidden case -- indistinguishable
+    from deletion by every caller -- and raising `RunNotFound` would say the
+    opposite of what is true. Reconfigure the archive URL and the read works
+    again; nothing has been lost.
+    """
+
+    def __init__(self, run_id: str, archive_key: str) -> None:
+        super().__init__(
+            f"canonical record {run_id!r} was archived to {archive_key!r} but no archive "
+            f"store is configured; the record still exists in the tier it was moved to"
+        )
+
+
 class ActiveAttemptExists(RunIntegrityError):
     pass
 
