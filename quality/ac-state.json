@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 550,
+    "criteria_declared": 556,
     "criteria_annotated": 214,
-    "markers_found": 260,
+    "markers_found": 266,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 14.8817
+    "design_coverage": 15.6416
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,8 +1081,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 14.8817,
-    "decisions": 111,
+    "percent": 15.6416,
+    "decisions": 112,
     "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1686,6 +1686,13 @@
         "declared_status": "Accepted",
         "criteria": 7,
         "reachable": 7,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082326-5386",
+        "declared_status": "Accepted",
+        "criteria": 6,
+        "reachable": 6,
         "percent": 100.0
       },
       {
@@ -12900,15 +12907,70 @@
     {
       "id": "ADR-082326-5386",
       "file": "docs/adr/ADR-082326-5386-outbound-http-policy-at-the-shared-client-seam.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 6,
+      "own_detail": [
+        {
+          "id": "ADR-082326-5386/AC-1",
+          "claimed": true,
+          "module": "maistro.http",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_outbound_policy.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-5386/AC-2",
+          "claimed": true,
+          "module": "maistro.security.outbound",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_outbound_policy.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-5386/AC-3",
+          "claimed": true,
+          "module": "maistro.security.outbound",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_outbound_policy.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-5386/AC-4",
+          "claimed": true,
+          "module": "maistro.security.outbound",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_outbound_policy.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-5386/AC-5",
+          "claimed": true,
+          "module": "maistro.security.outbound",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_outbound_policy.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-5386/AC-6",
+          "claimed": true,
+          "module": "maistro.security.outbound",
+          "covered_by": [
+            "packages/maistro-core/tests/security/test_outbound_policy.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
       "declared_unproven": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-082326-8194",
