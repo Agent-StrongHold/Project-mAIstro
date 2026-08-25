@@ -157,16 +157,13 @@ def adr_refs(entries: list[str]) -> list[str]:
 #: `Will Not Implement`, `Deferred`) and the ones that retire a decision
 #: (`Superseded`, `Deprecated`, whose successors carry the debt instead).
 #:
-#: The three ADR-097 states between `Accepted` and `Implemented` are included,
-#: and `Fully Specced` most of all: it *means* every child spec has acceptance
-#: criteria, so an ADR carrying it with no child spec at all is precisely the
-#: absent link this counter exists to report. None of the three sits on any ADR
-#: today, which is exactly why leaving them out would have been invisible.
+#: ADR-097 gives ADRs one taken intermediate state between `Accepted` and
+#: `Implemented`: `Fully Specced`. `In Progress` and `Tests Passing` are SPEC
+#: states, not ADR states, so including them here would silently make this
+#: governance metric accept lifecycle vocabulary the kind-specific linter rejects.
 DECISION_TAKEN = (
     "Accepted",
     "Fully Specced",
-    "In Progress",
-    "Tests Passing",
     "Implemented",
 )
 AC_MODULES_RE = re.compile(r"^ac[-_]modules:\s*$((?:\n  \S+:\s*\S+)*)", re.MULTILINE)
@@ -1179,7 +1176,7 @@ def main(argv: list[str]) -> int:
         "specs_declaring_no_criteria": silent_specs,
         "design_coverage": {
             "definition": (
-                "mean over Accepted|Implemented ADRs of the fraction of their criteria "
+                "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria "
                 "(own, plus every implementing spec's) at the `reachable` rung; an ADR "
                 "declaring no criteria contributes 0 (ADR-082226-ff3c)"
             ),

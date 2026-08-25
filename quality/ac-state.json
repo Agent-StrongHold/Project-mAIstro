@@ -1080,7 +1080,7 @@
     }
   ],
   "design_coverage": {
-    "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
+    "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
     "percent": 7.4704,
     "decisions": 106,
     "decisions_scoring_zero": 97,
