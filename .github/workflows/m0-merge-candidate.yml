@@ -84,7 +84,7 @@ jobs:
           uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'
           uv run pytest packages/maistro-core/tests/fitness tests/tools/registry tests/tools/test_lint_lifecycle.py --confcutdir=tests/tools -q
           cd packages/hive-conductor
-          uv run pytest backend/tests/test_maistro_core_adapter.py \
+          uv run --project ../.. pytest backend/tests/test_maistro_core_adapter.py \
             --cov=backend/adapters/maistro_core.py --cov-report=term-missing -q
       - name: Push final candidate
         run: git push origin HEAD:chatgpt/m0-closeout
