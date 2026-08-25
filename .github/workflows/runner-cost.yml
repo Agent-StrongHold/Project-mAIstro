@@ -1,0 +1,46 @@
+name: Runner cost
+
+# Manual only, on purpose.
+#
+# This regenerates the measurement behind docs/ci/RUNNER-COST.md (#161). It is
+# not a gate and it is not a per-PR job: it reads the Actions API for one head,
+# which costs a request per workflow run and tells you nothing new unless the
+# check set itself has changed.
+#
+# It is also what makes `scripts/measure-ci-cost.py` a *real* entry point rather
+# than a script nobody can reach. `scripts/check-reachability.py` roots tooling
+# at the workflow steps that execute it, matching on filename — so naming a
+# script in a workflow comment alone would manufacture a root that does not run.
+# This job runs it.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number whose head to measure"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: runner-cost-${{ inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: measure
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Measure the check set on that head
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/measure-ci-cost.py --pr "${{ inputs.pr }}"
