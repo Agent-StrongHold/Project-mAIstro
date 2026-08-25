@@ -696,3 +696,61 @@ class TestDesignCoverage:
         report = json.loads((ROOT / "quality" / "ac-state.json").read_text())
         assert recorded["ceilings"]["design_coverage"] == report["totals"]["design_coverage"]
         assert report["design_coverage"]["percent"] == report["totals"]["design_coverage"]
+
+
+class TestToolingReachesTheTopRung:
+    """#249: a gate's own criteria can reach `reachable`.
+
+    Before tooling entered the reachability graph this was unreachable by
+    construction — `scripts/` was in no graph, so `_is_reachable` had nothing
+    to consult and every gate ADR capped at `passing`. These pin both
+    directions, because a ladder that says `reachable` for *any* tooling module
+    would be worse than one that says it for none: it would grant the top rung
+    to the nine mutation scripts that are dead behind a disabled workflow.
+    """
+
+    @pytest.mark.ac("ADR-082526-aef8/AC-6")
+    def test_a_workflow_rooted_tooling_module_reaches_the_top_rung(self, check) -> None:
+        criterion = check.Criterion(
+            ac_id="ADR-X/AC-1",
+            module="scripts/check-wiring-reads.py",
+            covered_by=["tests/test_check_wiring_reads.py::test_x"],
+            passing=True,
+        )
+        assert criterion.rung({"scripts/mutation_ratchet.py"}) == "reachable"
+
+    @pytest.mark.ac("ADR-082526-aef8/AC-6")
+    def test_an_unreachable_tooling_module_stays_at_passing(self, check) -> None:
+        """The counterweight: a dead script's tests prove they run, not that it does."""
+        criterion = check.Criterion(
+            ac_id="ADR-X/AC-1",
+            module="scripts/mutation_ratchet.py",
+            covered_by=["tests/test_mutation.py::test_x"],
+            passing=True,
+        )
+        assert criterion.rung({"scripts/mutation_ratchet.py"}) == "passing"
+
+    @pytest.mark.ac("ADR-082526-aef8/AC-6")
+    def test_the_real_ledger_agrees_with_both(self, check) -> None:
+        """Against the committed baseline, not a hand-made set."""
+        import json
+        import pathlib as _pathlib
+
+        root = _pathlib.Path(__file__).resolve().parents[1]
+        unreachable = set(
+            json.loads((root / "quality" / "reachability-baseline.json").read_text())["unreachable"]
+        )
+        live = check.Criterion(
+            ac_id="ADR-X/AC-1",
+            module="scripts/check-wiring-reads.py",
+            covered_by=["t::x"],
+            passing=True,
+        )
+        dead = check.Criterion(
+            ac_id="ADR-X/AC-2",
+            module="scripts/mutation_ratchet.py",
+            covered_by=["t::x"],
+            passing=True,
+        )
+        assert live.rung(unreachable) == "reachable"
+        assert dead.rung(unreachable) == "passing"

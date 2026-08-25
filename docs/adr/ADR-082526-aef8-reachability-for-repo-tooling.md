@@ -24,7 +24,7 @@ ac-modules:
   AC-3: scripts/check-reachability.py
   AC-4: scripts/check-reachability.py
   AC-5: scripts/check-reachability.py
-  AC-6: scripts/check-wiring-reads.py
+  AC-6: scripts/check-ac-state.py
 history:
   - status: Proposed
     date: 2026-08-25
