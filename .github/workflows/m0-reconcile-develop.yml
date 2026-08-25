@@ -27,25 +27,16 @@ jobs:
           git fetch origin develop
           git merge --no-commit origin/develop || true
 
-          # Generated acceptance-state artefacts must start from the newer develop
-          # measurement and be regenerated after the M0 ADR corrections below.
           if git ls-files -u -- quality/ac-state.json | grep -q .; then
             git checkout --theirs -- quality/ac-state.json
           fi
           if git ls-files -u -- quality/ac-state-ceilings.json | grep -q .; then
             git checkout --theirs -- quality/ac-state-ceilings.json
           fi
-
-          # M0 rewrote the living matrix deliberately. Keep that rewrite, while
-          # carrying forward develop's ADR filename correction from #240.
           if git ls-files -u -- docs/architecture/CONVERGENCE-MATRIX.md | grep -q .; then
             git checkout --ours -- docs/architecture/CONVERGENCE-MATRIX.md
           fi
           sed -i 's/ADR-2026-08-16/ADR-081626-f383/g' docs/architecture/CONVERGENCE-MATRIX.md
-
-          # checkout --ours/--theirs resolves content but does not mark an index
-          # conflict resolved. Stage these three deliberate resolutions before
-          # asking Git whether anything unresolved remains.
           git add quality/ac-state.json quality/ac-state-ceilings.json docs/architecture/CONVERGENCE-MATRIX.md
 
           unresolved=$(git diff --name-only --diff-filter=U)
@@ -54,6 +45,48 @@ jobs:
             echo "$unresolved"
             exit 1
           fi
+
+      - name: Align design-coverage status vocabulary with ADR-097
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/check-ac-state.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''#: The three ADR-097 states between `Accepted` and `Implemented` are included,
+          #: and `Fully Specced` most of all: it *means* every child spec has acceptance
+          #: criteria, so an ADR carrying it with no child spec at all is precisely the
+          #: absent link this counter exists to report. None of the three sits on any ADR
+          #: today, which is exactly why leaving them out would have been invisible.
+          DECISION_TAKEN = (
+              "Accepted",
+              "Fully Specced",
+              "In Progress",
+              "Tests Passing",
+              "Implemented",
+          )'''
+          new = '''#: ADR-097 gives ADRs one taken intermediate state between `Accepted` and
+          #: `Implemented`: `Fully Specced`. `In Progress` and `Tests Passing` are SPEC
+          #: states, not ADR states, so including them here would silently make this
+          #: governance metric accept lifecycle vocabulary the kind-specific linter rejects.
+          DECISION_TAKEN = (
+              "Accepted",
+              "Fully Specced",
+              "Implemented",
+          )'''
+          if old not in text:
+              raise SystemExit("DECISION_TAKEN block did not match expected source")
+          text = text.replace(old, new)
+          old_definition = '"mean over Accepted|Implemented ADRs of the fraction of their criteria "'
+          new_definition = (
+              '"mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria "'
+          )
+          if old_definition not in text:
+              raise SystemExit("design coverage definition did not match expected source")
+          text = text.replace(old_definition, new_definition)
+          path.write_text(text, encoding="utf-8")
+          PY
+
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
@@ -68,8 +101,6 @@ jobs:
           set -e
           echo "$output"
 
-          # #239 intentionally adds four zero-scoring taken decisions. That may
-          # lower only design coverage; no debt counter is allowed to widen.
           if echo "$output" | grep -Eq 'completion_claims_|specs_awaiting_retrofit|markers_without_criterion|criteria_claimed_but_unproven|scenarios_without_ac_tag|gherkin_parse_errors|specs_implementing_nothing|adrs_without_implementing_spec|specs_declaring_no_criteria'; then
             echo "M0 changed a debt counter; refusing to bank it"
             exit 1
@@ -81,8 +112,8 @@ jobs:
 
           uv run python scripts/check-ac-state.py --run-tests --ratchet --bank
           uv run python scripts/check-ac-state.py --run-tests --ratchet
-      - name: Commit reconciled merge
+      - name: Commit reconciled M0 state
         run: |
           git add -A
-          git commit -m "Merge latest develop into M0 closeout and refresh measured state"
+          git commit -m "Align M0 governance metrics with ADR lifecycle"
           git push origin HEAD:chatgpt/m0-closeout
