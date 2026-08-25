@@ -186,6 +186,17 @@ class TestMeasuredScope:
         assert len(found) == 1
         assert "absent from the coverage report" in found[0]
 
+    @pytest.mark.ac("ADR-082526-cb51/AC-2")
+    def test_a_measured_file_with_no_executable_lines_passes(self, gate, tmp_path, monkeypatch):
+        """Membership, not truthiness. Coverage emits a `<class>` with zero
+        `<line>` children for a file with no statements — verified against a
+        real report: an empty `__init__.py` and a docstring-only module both
+        arrive with `line-elements=0`. Reading that empty record as "absent"
+        failed exactly the files that are trivially correct."""
+        report = _report(tmp_path, {f"{SRC}/__init__.py": []})
+        monkeypatch.setattr(gate, "changed_lines", lambda base: {f"{SRC}/__init__.py": {1}})
+        assert gate.audit("base", report, 90.0, 80.0) == []
+
     @pytest.mark.ac("ADR-082526-cb51/AC-3")
     def test_a_file_no_producer_reaches_is_not_a_failure(self, gate, tmp_path, monkeypatch):
         """Out-of-scope is not the same as broken. It is reported as unmeasured

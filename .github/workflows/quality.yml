@@ -437,16 +437,25 @@ jobs:
             -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
             -m pytest packages/maistro-design/tests --timeout=30 -q
-          # hive-conductor declares its test dependencies in its OWN pyproject
-          # `dev` extra, and `uv sync --all-extras` resolves the extras of the
-          # root project only — not of every workspace member. So pytest-bdd is
-          # absent here even though it is in uv.lock, and the two BDD step-def
-          # modules fail to import. ci.yml's `test` job already installs this
-          # requirements file for the same suite; this mirrors it.
+          # hive-conductor's pytest-bdd is declared in that workspace member's
+          # OWN `dev` extra, and `--all-extras` includes every optional
+          # dependency of the ROOT project only — not of each member. So the
+          # sync above actively REMOVES pytest-bdd (`- pytest-bdd==8.1.0` in a
+          # dry run) and the two BDD step-def modules abort collection.
           #
-          # Installed here rather than beside `uv sync`, so a version it pulls
-          # cannot perturb the three coverage runs above that are already
-          # recorded.
+          # `uv sync --all-packages` is the obvious fix and does not work here:
+          # hive-conductor's wheel config rewrites a path prefix
+          # (`sources = { "backend" = "hive_conductor" }`), and hatchling
+          # refuses an editable install for a prefix rewrite rather than a
+          # removal (editables#20), so the sync fails to build the member. The
+          # dry run passes because it never builds. Do not re-try that flag
+          # without changing that `sources` mapping first.
+          #
+          # ci.yml's `test` job already installs this requirements file before
+          # the same suite. Installed HERE rather than beside `uv sync`, so a
+          # version it resolves outside the lock (it pulls protobuf 5.29.6 ->
+          # 7.36.0) cannot perturb the three coverage runs above that are
+          # already recorded.
           uv pip install -r packages/hive-conductor/backend/requirements.txt
           uv run coverage run --append --branch --source=packages/hive-conductor/backend \
             -m pytest packages/hive-conductor/backend/tests --timeout=30 -q

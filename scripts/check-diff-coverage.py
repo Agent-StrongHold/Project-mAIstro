@@ -200,8 +200,7 @@ def audit(base: str, report: Path, line_floor: float, branch_floor: float) -> li
         verdict, detail = classify(filename)
         if verdict != "measured":
             continue
-        lines = coverage.get(filename)
-        if not lines:
+        if filename not in coverage:
             # In scope and absent from the report: the measurement did not
             # happen. Skipping here is what let a mistyped `--source` or an
             # empty producer artefact read as a pass.
@@ -210,6 +209,12 @@ def audit(base: str, report: Path, line_floor: float, branch_floor: float) -> li
                 f"the coverage report — the measurement did not happen"
             )
             continue
+        # Membership, not truthiness. Coverage emits a `<class>` with zero
+        # `<line>` children for a file with no executable statements — an empty
+        # `__init__.py`, a docstring-only module — and those are measured, with
+        # nothing to score. Reading the empty dict as "absent" failed exactly
+        # the files that are trivially correct.
+        lines = coverage[filename]
         relevant = {n: lines[n] for n in sorted(touched) if n in lines}
         if not relevant:
             continue
