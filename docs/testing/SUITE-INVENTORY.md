@@ -4,36 +4,70 @@ Per-suite collected **node-ID counts**, for C1 (#286). Node IDs, not static
 `def test_` counts — parametrization expands one `def` into many IDs, so
 counting definitions understates every parametrized suite.
 
-**This table is enforced.** `ci.yml`'s `test` job runs
+**This is enforced.** `ci.yml`'s `test` job runs
 [`scripts/check-suite-inventory.py`](../../scripts/check-suite-inventory.py) as
-its last step; it collects every suite below and fails the build if any count
-drifts. When you legitimately add or remove tests, refresh the table and commit
-it with your change:
+its last step; it collects every suite listed below and fails the build if any
+count drifts from what the ledger expects.
+
+The counts themselves are not in this file. They are
+`inventory/baseline.json` plus one delta per change in
+[`inventory-notes/`](inventory-notes/) — see
+[Recording a count that moved](#recording-a-count-that-moved) for why, and
+`ADR-082526-547c` for the decision. Render the current expected counts with:
+
+```bash
+python3 scripts/check-suite-inventory.py --show
+```
+
+## Recording a count that moved
+
+**You will not get a conflict here.** Since ADR-082526-547c the expected count
+is not stored in this file, or in any other single place two branches both
+write. It is a sum:
+
+```
+expected(suite) = baseline(suite) + Σ delta(suite) over every recorded change
+```
+
+- `inventory/baseline.json` — the counts as of the last compaction. It moves
+  only when someone runs `--compact`, deliberately.
+- `inventory-notes/<your-branch>.md` — your change's delta, in front matter,
+  beside the prose explaining it.
+
+So when you add or remove tests:
 
 ```bash
 python3 scripts/check-suite-inventory.py            # check (what CI runs)
-python3 scripts/check-suite-inventory.py --update   # rewrite the counts below
+python3 scripts/check-suite-inventory.py --update   # write YOUR note's delta
+python3 scripts/check-suite-inventory.py --show     # render current expected counts
 ```
 
-## Resolving a merge conflict here
+`--update` writes one file named after your branch. Another branch doing the
+same writes a different file, so git has nothing to reconcile — even if you
+both changed the same suite.
 
-This file conflicts between any two branches that both add tests, because both
-edit the same counts. **Regenerate; do not hand-merge.** Taking either side
-gives a number that matches neither branch, and hand-adding the two deltas is
-guesswork that happens to be right until it is not:
+**A base move needs no regeneration.** Your delta is still true after someone
+else merges, and the sum absorbs theirs. This is the part worth internalizing:
+under the old shared-absolute table, a branch that had not touched a single
+test still had to re-collect thirteen suites every time its base moved,
+because someone else's merge invalidated the number it had recorded.
 
-```bash
-git checkout --theirs docs/testing/SUITE-INVENTORY.md   # placeholder, either side
-python3 scripts/check-suite-inventory.py --update       # the real answer
-```
+The exception, so it is not a surprise: counts are not additive when two
+changes *interact*. Append a value to each of two parametrize lists in two
+files and the merged Cartesian product grows multiplicatively, so the two
+recorded deltas under-count. Nothing predicts that, but nothing hides it
+either — the sum stops matching collection, you get ordinary drift, and
+`--update` fixes it. Rare case, old cost, instead of every base move.
 
-Then rewrite the paragraph above the table so it explains the merged number
-rather than one branch's half of it. The count is the alarm, not the record —
-its whole value is that a suite silently dropping out of collection changes it,
-and a hand-merged number is one that was never measured.
+Write the prose in the note too. The count alone hides compensating changes —
+when #130 added nineteen maistro-core node IDs while PM-demo retirement removed
+eighteen backend node IDs and one e2e case, the total barely moved and a reader
+checking only the number would have seen nothing. That is the case the notes
+exist for.
 
-`quality/ac-state.json` conflicts the same way and for the same reason;
-regenerate it with `python3 scripts/check-ac-state.py --run-tests --ratchet`.
+`quality/ac-state.json` still conflicts the way this file used to, and for the
+same reason; regenerate it with
+`python3 scripts/check-ac-state.py --run-tests --ratchet`.
 
 The gate compares **counts, not node-ID sets** — a checked-in manifest of ~9,500
 node IDs would churn on every `@parametrize` tweak, and the rename case it would
@@ -58,34 +92,37 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src:packages/maistr
   uv run pytest formal --collect-only -q | tail -3
 ```
 
-## Counts as of current branch
+## The gated suites
 
-Everything below this heading is generated. `check-suite-inventory.py
---update` rewrites the counts by collecting each suite; do not edit them by
-hand, and resolve any merge conflict here by regenerating rather than by
-picking a side.
+Every suite below is collected and compared on every CI run. The counts are
+**not** here — see the section above for where they live and why. This table
+records which suites exist and which workflow executes each, which changes only
+when a suite is added, removed, or rewired.
 
-*Why* a count moved is recorded in [`inventory-notes/`](inventory-notes/),
-one file per change. That used to be a block of prose right here, which meant
-every branch adding tests rewrote the same lines and collided with every other
-such branch on merge (#208). Notes moved out so this file could stay purely
-derived.
+A row here must have a matching entry in `RECIPES` in
+[`check-suite-inventory.py`](../../scripts/check-suite-inventory.py), and a
+recorded count for a suite with no recipe is an error rather than a silent
+skip — otherwise recording a number for it would look like gating that is not
+happening.
 
-| Suite | Node IDs | Runs in CI |
-|---|---:|---|
-| `packages/maistro-core/tests` | 7690 | `ci.yml` |
-| `packages/maistro-evolve/tests` | 629 | `ci.yml` |
-| `packages/maistro-rsi/tests` | 428 | `ci.yml` |
-| `packages/maistro-server/tests` | 255 | `ci.yml` |
-| `packages/maistro-turing/tests` | 177 | `ci.yml` |
-| `packages/maistro-design/tests` | 161 | `ci.yml` |
-| `packages/maistro-bootstrap/tests` | 124 | `ci.yml` |
-| `packages/maistro-canvas/tests` | 250 | `ci.yml` |
-| `packages/maistro-turing/backend/tests` | 26 | `ci.yml` (own invocation) |
-| `tests/` (root) | 1185 | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
-| `formal/` | 417 | `formal-conformance.yml` + `quality.yml` Pillar 2 |
-| `packages/hive-conductor/backend/tests` | 1262 | `ci.yml` (bare python) |
-| `packages/hive-conductor/tests/e2e` | 23 | `ci.yml` `hive-conductor-e2e` (docker-compose) |
+*Why* a count moved is recorded in [`inventory-notes/`](inventory-notes/), one
+file per change, alongside the delta itself.
+
+| Suite | Runs in CI |
+|---|---|
+| `packages/maistro-core/tests` | `ci.yml` |
+| `packages/maistro-evolve/tests` | `ci.yml` |
+| `packages/maistro-rsi/tests` | `ci.yml` |
+| `packages/maistro-server/tests` | `ci.yml` |
+| `packages/maistro-turing/tests` | `ci.yml` |
+| `packages/maistro-design/tests` | `ci.yml` |
+| `packages/maistro-bootstrap/tests` | `ci.yml` |
+| `packages/maistro-canvas/tests` | `ci.yml` |
+| `packages/maistro-turing/backend/tests` | `ci.yml` (own invocation) |
+| `tests/` (root) | `ci.yml` (minus `tests/tools/registry`, which `registry.yml` owns) |
+| `formal/` | `formal-conformance.yml` + `quality.yml` Pillar 2 |
+| `packages/hive-conductor/backend/tests` | `ci.yml` (bare python) |
+| `packages/hive-conductor/tests/e2e` | `ci.yml` `hive-conductor-e2e` (docker-compose) |
 
 ## `packages/hive-conductor/tests/e2e` — read before "wiring it in"
 

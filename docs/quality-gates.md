@@ -51,7 +51,7 @@ later regression.
 | coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
 | coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
-| suite inventory | identity ratchet | `docs/testing/SUITE-INVENTORY.md` | a suite silently ceasing to collect |
+| suite inventory | identity ratchet | `docs/testing/inventory/baseline.json` + per-change deltas in `inventory-notes/` | a suite silently ceasing to collect |
 | enumeration coverage | identity ratchet | `scripts/check_enumerations.py` | a derived control list drifting from its source enum |
 | doc links | floor | zero broken | a relative markdown link whose target does not exist |
 | version consistency | floor | exact match | any version site disagreeing with `VERSION` |

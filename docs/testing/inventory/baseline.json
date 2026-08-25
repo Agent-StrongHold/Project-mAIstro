@@ -1,0 +1,19 @@
+{
+  "_comment": "Suite node-ID counts as of the last compaction (ADR-082526-547c). This file is HALF the expected count; the other half is the sum of per-change deltas in docs/testing/inventory-notes/*.md front matter. expected = counts[suite] + sum(deltas). Storing an absolute here and nowhere else is the point: a shared absolute is what made every test-adding branch conflict with every other one (#208), because two PRs both rewrote it -- and adjacent table rows conflicted even across unrelated suites. Deltas live one-per-change so two PRs never write the same path. Do not hand-edit `counts`: it moves only when `check-suite-inventory.py --compact` folds deltas in, which also appends their slugs to `folded` so notes themselves are never rewritten. `folded` is how a note is known to be already counted; a note listed there is skipped.",
+  "counts": {
+    "packages/maistro-core/tests": 7690,
+    "packages/maistro-evolve/tests": 629,
+    "packages/maistro-rsi/tests": 428,
+    "packages/maistro-server/tests": 255,
+    "packages/maistro-turing/tests": 177,
+    "packages/maistro-design/tests": 161,
+    "packages/maistro-bootstrap/tests": 124,
+    "packages/maistro-canvas/tests": 250,
+    "packages/maistro-turing/backend/tests": 26,
+    "tests/": 1185,
+    "formal/": 417,
+    "packages/hive-conductor/backend/tests": 1262,
+    "packages/hive-conductor/tests/e2e": 23
+  },
+  "folded": []
+}

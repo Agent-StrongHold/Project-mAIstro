@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Gate: collected pytest node IDs must match ``docs/testing/SUITE-INVENTORY.md``.
+"""Gate: collected pytest node IDs must match the recorded inventory.
 
 C1 (#286) asks that "the expected inventory is generated with ``pytest
 --collect-only -q`` per suite (node IDs — not static ``def test_`` counts, which
 parametrization expands) and CI-collected node IDs match it (± documented
-skips)". ``SUITE-INVENTORY.md`` is the recorded half; this script is the
-comparison half.
+skips)". This script is the comparison half.
 
 What it catches
 ---------------
@@ -15,6 +14,42 @@ quietly drops a path, or a `pytest.ini` `testpaths` edit turns a 400-test suite
 into 0 collected and **every downstream job still goes green**, because "0 tests
 ran" is not a pytest failure. Comparing against a recorded number makes that
 loud.
+
+Where the recorded number lives (ADR-082526-547c)
+-------------------------------------------------
+Not in one shared row. The expected count for a suite is::
+
+    expected = baseline[suite] + Σ delta[suite] over every recorded change
+
+- ``docs/testing/inventory/baseline.json`` holds the counts as of the last
+  compaction. It moves only when ``--compact`` runs.
+- Each change that moves a count records its own delta in the front matter of
+  its own note under ``docs/testing/inventory-notes/``.
+
+This is the whole point, so it is worth stating plainly. When the number was a
+shared absolute in ``SUITE-INVENTORY.md``, two branches that both added tests
+both rewrote it, and one merge to ``develop`` put 11 of 32 open PRs into
+conflict on that single file (#208). Worse, table rows are adjacent lines, so
+git had no unchanged context between them: a branch touching
+``maistro-core/tests`` conflicted with one touching ``maistro-evolve/tests``,
+two entirely unrelated changes. #209 moved the prose out; the number stayed.
+
+Deltas fix both halves. Two changes never write the same path, so there is
+nothing to reconcile even when they touch the same suite. And where two changes
+move the count independently — which is very nearly always — a branch whose
+base moves needs no regeneration at all: its own delta is still true, and the
+sum absorbs whatever else merged. That second saving is the larger one in
+practice: re-recording an absolute meant collecting thirteen suites on a branch
+that had not changed a test.
+
+"Independently" is a real qualifier, not a hedge. Node-ID counts are not
+additive in general: if a case is parametrized over two lists in two files, one
+branch can add a value to each without a source conflict, and the merged
+Cartesian product grows multiplicatively rather than by the sum of the two
+deltas. The ledger does not detect that in advance and does not claim to. It
+fails LOUDLY when it happens — the sum no longer matches collection, so the
+check reports drift and the contributor re-runs ``--update``, which is exactly
+the old cost, paid only in the rare case instead of on every base move.
 
 Counts, not node-ID sets
 ------------------------
@@ -40,12 +75,17 @@ Usage
 -----
     python3 scripts/check-suite-inventory.py              # check every suite
     python3 scripts/check-suite-inventory.py --suite formal/
-    python3 scripts/check-suite-inventory.py --update     # rewrite the table
+    python3 scripts/check-suite-inventory.py --show       # render expected counts
+    python3 scripts/check-suite-inventory.py --update     # record this change's delta
+    python3 scripts/check-suite-inventory.py --update --note 208-delta-ledger
+    python3 scripts/check-suite-inventory.py --compact    # fold deltas into baseline
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -56,10 +96,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = REPO_ROOT / "docs" / "testing" / "SUITE-INVENTORY.md"
 NOTES = REPO_ROOT / "docs" / "testing" / "inventory-notes"
+BASELINE = REPO_ROOT / "docs" / "testing" / "inventory" / "baseline.json"
 
 #: Env every collection runs under. Matches ci.yml's pytest steps — without it,
 #: suites that build a settings object at import time raise on a missing secret.
 BASE_ENV = {"REQUIRE_AUTH": "false", "MAISTRO_DRY_RUN": "1"}
+
+#: The front-matter key a note uses to record what it moved.
+DELTA_KEY = "inventory-delta"
 
 
 @dataclass(frozen=True)
@@ -80,9 +124,9 @@ class Recipe:
 #: install them into the root env (ci.yml does the same for their test step).
 _EVOLVE_RSI = ["packages/maistro-evolve/src", "packages/maistro-rsi/src"]
 
-#: Keyed by the suite path recorded in the inventory table. Every table row must
-#: have an entry here — an unrecognized row is an error, not a silent skip,
-#: otherwise adding a row to the doc would appear to be gated when it is not.
+#: Keyed by suite path. Every baseline entry and every delta must name one of
+#: these — an unrecognized suite is an error, not a silent skip, otherwise
+#: recording a count for it would appear to be gated when it is not.
 RECIPES: dict[str, Recipe] = {
     "packages/maistro-core/tests": Recipe(args=[]),
     "packages/maistro-evolve/tests": Recipe(args=[], pythonpath=_EVOLVE_RSI),
@@ -95,7 +139,7 @@ RECIPES: dict[str, Recipe] = {
     "packages/maistro-turing/backend/tests": Recipe(args=[]),
     # Whole root tree, including tests/tools/registry (which registry.yml owns
     # at run time). The inventory records what the tree *contains*; which
-    # workflow executes which part is the table's third column.
+    # workflow executes which part is documented in SUITE-INVENTORY.md.
     "tests/": Recipe(args=[]),
     "formal/": Recipe(args=[], pythonpath=["packages/maistro-core/src", *_EVOLVE_RSI]),
     # Trap 1 — bare python, never uv.
@@ -103,20 +147,225 @@ RECIPES: dict[str, Recipe] = {
     "packages/hive-conductor/tests/e2e": Recipe(args=[], bare_python=True),
 }
 
-#: `| `path` (note) | 1234 | where it runs |`
-ROW_RE = re.compile(r"^\|\s*`([^`]+)`[^|]*\|\s*(\d+)\s*\|")
+#: A suite row in SUITE-INVENTORY.md's table: `| `path` (note) | where it runs |`.
+#: The counts left this table (ADR-082526-547c) but the identities did not, and
+#: the document still claims every row is collected — so the claim is checked.
+INVENTORY_ROW_RE = re.compile(r"^\|\s*`([^`]+)`[^|]*\|")
+
 COLLECTED_RE = re.compile(r"(\d+)\s+tests?\s+collected")
 ERROR_RE = re.compile(r"(\d+)\s+errors?\b")
 
+#: `  packages/maistro-core/tests: +12` — one delta line inside the front matter.
+DELTA_LINE_RE = re.compile(r"^(\s+)([^:]+):\s*([+-]?\d+)\s*$")
 
-def parse_inventory(text: str) -> list[tuple[int, str, int]]:
-    """Return ``(line_index, suite_path, recorded_count)`` per table row."""
-    rows: list[tuple[int, str, int]] = []
-    for i, line in enumerate(text.splitlines()):
-        m = ROW_RE.match(line)
-        if m:
-            rows.append((i, m.group(1), int(m.group(2))))
-    return rows
+
+class LedgerError(Exception):
+    """A recorded number could not be read. Never silently skipped."""
+
+
+# --------------------------------------------------------------------------
+# the ledger: baseline + per-change deltas
+# --------------------------------------------------------------------------
+
+
+def load_baseline() -> tuple[dict[str, int], list[str]]:
+    """Return ``(counts, folded_note_slugs)`` from ``baseline.json``."""
+    if not BASELINE.is_file():
+        raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} is missing")
+    try:
+        doc = json.loads(BASELINE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} is not valid JSON: {exc}") from exc
+
+    counts = doc.get("counts")
+    if not isinstance(counts, dict) or not counts:
+        raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} has no non-empty `counts` object")
+    for suite, value in counts.items():
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise LedgerError(f"baseline count for `{suite}` is not an integer: {value!r}")
+
+    folded = doc.get("folded", [])
+    if not isinstance(folded, list) or any(not isinstance(s, str) for s in folded):
+        raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} `folded` must be a list of strings")
+    return dict(counts), list(folded)
+
+
+def split_front_matter(text: str) -> tuple[list[str], list[str]]:
+    """Return ``(front_matter_lines, body_lines)``; front matter may be empty.
+
+    Only a block delimited by ``---`` on the very first line counts, matching
+    the ADR/spec convention used everywhere else in this repository.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return [], lines
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return lines[1:i], lines[i + 1 :]
+    raise LedgerError("front matter opens with `---` but is never closed")
+
+
+def _opens_delta_block(line: str, where: str) -> bool:
+    """Whether a top-level front-matter ``line`` opens the delta block.
+
+    Raises on the two shapes that would otherwise read as "no delta": a suite
+    path written at the top level (a dedented entry, which silently ends the
+    block) and a value on the key's own line.
+    """
+    key, _, value = line.partition(":")
+    key = key.strip()
+    if key in RECIPES:
+        raise LedgerError(
+            f"{where}: `{line.strip()}` is at the top level of the front matter; "
+            f"a delta entry must be indented under `{DELTA_KEY}:`"
+        )
+    if key != DELTA_KEY:
+        return False
+    if value.strip():
+        raise LedgerError(
+            f"{where}: `{DELTA_KEY}:` must be followed by an indented "
+            f"`<suite>: <±count>` block, not a value on the same line"
+        )
+    return True
+
+
+def parse_delta(text: str, where: str) -> dict[str, int]:
+    """Read a note's ``inventory-delta`` block.
+
+    A note with no front matter, or front matter without the key, records no
+    delta — that is the normal case for a change that moved no count, and for
+    every note written before ADR-082526-547c. A block that is *present but
+    unreadable* raises: a delta the gate cannot parse would otherwise silently
+    become zero, which is exactly the kind of quiet wrong number this file
+    exists to prevent.
+    """
+    try:
+        front, _body = split_front_matter(text)
+    except LedgerError as exc:
+        raise LedgerError(f"{where}: {exc}") from exc
+    if not front:
+        return {}
+
+    delta: dict[str, int] = {}
+    inside = False
+    seen_key = False
+    for line in front:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            inside = _opens_delta_block(line, where)
+            seen_key = seen_key or inside
+            continue
+        if not inside:
+            continue
+        m = DELTA_LINE_RE.match(line)
+        if not m:
+            raise LedgerError(
+                f"{where}: cannot read `{line.strip()}` as `<suite>: <±count>` under `{DELTA_KEY}:`"
+            )
+        suite, raw = m.group(2).strip(), m.group(3)
+        if suite in delta:
+            raise LedgerError(f"{where}: `{suite}` appears twice under `{DELTA_KEY}:`")
+        delta[suite] = int(raw)
+    if seen_key and not delta:
+        raise LedgerError(
+            f"{where}: `{DELTA_KEY}:` is present but records nothing. Remove the "
+            f"key, or give it at least one indented `<suite>: <±count>` entry."
+        )
+    return delta
+
+
+def inventory_suites(text: str) -> set[str]:
+    """The suite paths the inventory table lists."""
+    return {m.group(1) for line in text.splitlines() if (m := INVENTORY_ROW_RE.match(line))}
+
+
+def table_problems() -> list[str]:
+    """The documented table and the collection recipes must name the same suites.
+
+    ``SUITE-INVENTORY.md`` states that every row below it is collected on every
+    CI run. Once the counts moved to the ledger there was nothing left parsing
+    that table, so a contributor could add a row — documenting a suite as
+    gated — without adding a recipe, and CI would agree with them. A claim in a
+    document that no gate checks is the failure this repository exists to
+    prevent; it does not get an exemption for being in this document.
+    """
+    if not INVENTORY.is_file():
+        return [f"{INVENTORY.relative_to(REPO_ROOT)} is missing"]
+    listed = inventory_suites(INVENTORY.read_text(encoding="utf-8"))
+    problems = []
+    if undocumented := sorted(set(RECIPES) - listed):
+        problems.append(
+            f"collected but absent from {INVENTORY.relative_to(REPO_ROOT)}'s table: "
+            f"{', '.join(undocumented)}"
+        )
+    if ungated := sorted(listed - set(RECIPES)):
+        problems.append(
+            f"listed in {INVENTORY.relative_to(REPO_ROOT)}'s table but with no collection "
+            f"recipe, so nothing collects them: {', '.join(ungated)}"
+        )
+    return problems
+
+
+def note_files() -> list[Path]:
+    """Every note, sorted, excluding the directory's own README."""
+    return sorted(p for p in NOTES.glob("*.md") if p.name != "README.md")
+
+
+def load_deltas(folded: list[str]) -> dict[str, dict[str, int]]:
+    """Return ``{note_slug: delta}`` for every note not already folded in."""
+    already = set(folded)
+    out: dict[str, dict[str, int]] = {}
+    for path in note_files():
+        slug = path.stem
+        if slug in already:
+            continue
+        delta = parse_delta(
+            path.read_text(encoding="utf-8"), path.relative_to(REPO_ROOT).as_posix()
+        )
+        if delta:
+            out[slug] = delta
+    return out
+
+
+def expected_counts() -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    """Return ``(expected_per_suite, contributing_deltas)``.
+
+    Raises ``LedgerError`` if any recorded suite has no collection recipe. An
+    expected count for a suite nothing collects is a number that can never be
+    checked, which reads as coverage and is not.
+    """
+    counts, folded = load_baseline()
+    deltas = load_deltas(folded)
+
+    recorded = set(counts) | {suite for delta in deltas.values() for suite in delta}
+    if unknown := sorted(recorded - set(RECIPES)):
+        raise LedgerError(
+            "recorded suites with no collection recipe in "
+            f"{Path(__file__).name}: {', '.join(unknown)}\n"
+            "       Add each to RECIPES so it is actually gated."
+        )
+    # The other direction, and the one that fails open: a recipe with no
+    # baseline entry would simply be absent from `expected`, so the check loop
+    # would skip it and report success — and `--suite <that-one>` would report
+    # success having collected nothing at all.
+    if missing := sorted(set(RECIPES) - set(counts)):
+        raise LedgerError(
+            "collection recipes with no baseline count: "
+            f"{', '.join(missing)}\n"
+            f"       Add each to {BASELINE.relative_to(REPO_ROOT)} so it is actually checked."
+        )
+
+    expected = dict(counts)
+    for delta in deltas.values():
+        for suite, moved in delta.items():
+            expected[suite] = expected.get(suite, 0) + moved
+    return expected, deltas
+
+
+# --------------------------------------------------------------------------
+# collection
+# --------------------------------------------------------------------------
 
 
 def collect(suite: str, recipe: Recipe) -> tuple[int, str]:
@@ -150,36 +399,104 @@ def collect(suite: str, recipe: Recipe) -> tuple[int, str]:
     return int(matches[-1]), cmd
 
 
-def select_rows(text: str, wanted: list[str] | None) -> list[tuple[int, str, int]]:
-    """Parse and validate the inventory table, optionally narrowed to ``wanted``.
+# --------------------------------------------------------------------------
+# writing this change's delta
+# --------------------------------------------------------------------------
 
-    Raises ``ValueError`` with an operator-readable message on any problem.
+
+def default_note_slug() -> str | None:
+    """Derive a note name from the current branch, or ``None`` if we cannot.
+
+    The branch is the one identifier that is unique per change and available
+    without asking, which is what keeps two PRs off the same path.
+
+    Sanitising alone does not keep that promise. ``feature/foo``, ``feature-foo``
+    and ``Feature_Foo`` are three distinct branches that all fold to the same
+    readable slug, so two of them would write the same note and reproduce the
+    exact conflict this ledger exists to remove. The name therefore carries a
+    short digest of the *exact* branch string: readable for the common case,
+    distinct whenever the branches are. Same scheme as this repository's ADR
+    ids (``ADR-MMDDYY-XXXX``), and deterministic, so re-running ``--update`` on
+    a branch always lands on the same note.
     """
-    rows = parse_inventory(text)
-    if not rows:
-        raise ValueError(f"no suite rows parsed from {INVENTORY}")
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    branch = proc.stdout.strip()
+    if proc.returncode != 0 or not branch or branch == "HEAD":
+        return None
+    readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
+    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    return f"{readable}-{digest}" if readable else digest
 
-    unknown = [s for _, s, _ in rows if s not in RECIPES]
-    if unknown:
-        raise ValueError(
-            "inventory rows with no collection recipe in "
-            f"{Path(__file__).name}: {', '.join(unknown)}\n"
-            "       Add each to RECIPES so it is actually gated."
+
+#: A note slug must be one plain filename component. `--note feature/foo` would
+#: otherwise write `inventory-notes/feature/foo.md`, which `note_files()` never
+#: scans, so the delta would be recorded and then ignored; `..` and absolute
+#: paths would write outside the directory altogether.
+SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_slug(slug: str) -> None:
+    """Raise unless ``slug`` is a single safe filename component."""
+    if not SAFE_SLUG_RE.match(slug) or slug == ".." or slug.endswith(".md"):
+        raise LedgerError(
+            f"`{slug}` is not a usable note name. Give one plain filename "
+            f"component — letters, digits, dot, dash, underscore — with no "
+            f"path separator and no `.md` suffix."
         )
 
-    if wanted:
-        rows = [r for r in rows if r[1] in set(wanted)]
-        if not rows:
-            raise ValueError(f"no inventory row matches {sorted(wanted)}")
-    return rows
+
+def render_delta_block(delta: dict[str, int]) -> list[str]:
+    """The front-matter lines recording ``delta``."""
+    return [f"{DELTA_KEY}:"] + [f"  {suite}: {moved:+d}" for suite, moved in sorted(delta.items())]
 
 
-def _rewrite_count(line: str, actual: int) -> str:
-    """Replace the recorded count in one table row with ``actual``."""
-    m = ROW_RE.match(line)
-    assert m is not None
-    head, rest = m.group(0), line[m.end() :]
-    return head[: m.start(2) - m.start(0)] + str(actual) + head[m.end(2) - m.start(0) :] + rest
+def write_note_delta(path: Path, delta: dict[str, int]) -> None:
+    """Create or rewrite ``path``'s ``inventory-delta`` block, keeping its prose.
+
+    Only the block is replaced. Any other front-matter key, and the whole body,
+    survive untouched — a note is a person's explanation with a number attached,
+    not a generated file.
+    """
+    if path.is_file():
+        text = path.read_text(encoding="utf-8")
+        front, body = split_front_matter(text)
+    else:
+        front, body = (
+            [],
+            [
+                f"# {path.stem}",
+                "",
+                "<!-- Say what moved and why, not just how much. The count alone hides",
+                "     compensating changes; that is the case these notes exist for. -->",
+                "",
+            ],
+        )
+
+    kept: list[str] = []
+    inside = False
+    for line in front:
+        if line and not line[0].isspace():
+            inside = line.split(":", 1)[0].strip() == DELTA_KEY
+        if not inside:
+            kept.append(line)
+
+    new_front = render_delta_block(delta) + kept if delta else kept
+    out = (["---", *new_front, "---"] if new_front else []) + body
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# other doc-shape checks this gate already owned
+# --------------------------------------------------------------------------
 
 
 def notes_problems() -> list[str]:
@@ -187,8 +504,9 @@ def notes_problems() -> list[str]:
 
     The prose explaining *why* a count moved lives in ``inventory-notes/``
     rather than in the inventory itself, because a shared prose block made
-    every test-adding branch conflict with every other one (#208). That split
-    only works while the pointer and the directory agree, so a rename or an
+    every test-adding branch conflict with every other one (#208). Since
+    ADR-082526-547c the same files also carry the numbers. That split only
+    works while the pointer and the directory agree, so a rename or an
     accidental deletion should be loud rather than leaving a dead link.
 
     This deliberately does not require a note per change. Such a mandate would
@@ -209,45 +527,162 @@ def notes_problems() -> list[str]:
     return problems
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--suite", action="append", help="check only this suite path (repeatable)")
-    ap.add_argument(
-        "--update",
-        action="store_true",
-        help="rewrite SUITE-INVENTORY.md's counts from the current tree",
-    )
-    args = ap.parse_args()
+def render_table(expected: dict[str, int]) -> str:
+    """A human-readable rendering of the current expected counts."""
+    width = max(len(s) for s in expected)
+    rows = [f"{'suite'.ljust(width)}  node IDs", f"{'-' * width}  --------"]
+    rows += [
+        f"{suite.ljust(width)}  {expected[suite]:>8}" for suite in RECIPES if suite in expected
+    ]
+    rows.append(f"{'total'.ljust(width)}  {sum(expected.values()):>8}")
+    return "\n".join(rows)
 
-    if problems := notes_problems():
-        for problem in problems:
-            print(f"error: {problem}", file=sys.stderr)
-        return 2
 
-    text = INVENTORY.read_text(encoding="utf-8")
-    try:
-        rows = select_rows(text, args.suite)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+def compact(expected: dict[str, int], deltas: dict[str, dict[str, int]]) -> int:
+    """Fold every outstanding delta into the baseline; return how many."""
+    doc = json.loads(BASELINE.read_text(encoding="utf-8"))
+    doc["counts"] = {suite: expected[suite] for suite in RECIPES if suite in expected}
+    doc["folded"] = sorted(set(doc.get("folded", [])) | set(deltas))
+    BASELINE.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    return len(deltas)
 
-    lines = text.splitlines()
+
+def run_checks(
+    suites: list[str], expected: dict[str, int]
+) -> tuple[list[tuple[str, int, int]], list[str]]:
+    """Collect each suite and compare. Returns ``(drift, collection_failures)``.
+
+    The two are kept apart deliberately. Drift is a number that moved and may
+    well be intentional; a collection failure is a suite that did not run at
+    all, and recording a delta for it would bank the breakage as the new truth.
+    """
     drift: list[tuple[str, int, int]] = []
     failures: list[str] = []
-
-    for idx, suite, recorded in rows:
+    for suite in suites:
         try:
             actual, _cmd = collect(suite, RECIPES[suite])
         except RuntimeError as exc:
             failures.append(str(exc))
             print(f"ERROR  {suite}", file=sys.stderr)
             continue
-        if actual == recorded:
+        if actual == expected[suite]:
             print(f"ok     {suite}: {actual}")
             continue
-        drift.append((suite, recorded, actual))
-        print(f"DRIFT  {suite}: inventory {recorded}, collected {actual}")
-        lines[idx] = _rewrite_count(lines[idx], actual)
+        drift.append((suite, expected[suite], actual))
+        print(f"DRIFT  {suite}: expected {expected[suite]}, collected {actual}")
+    return drift, failures
+
+
+def record_delta(
+    note: str | None,
+    drift: list[tuple[str, int, int]],
+    deltas: dict[str, dict[str, int]],
+    folded: list[str],
+) -> int:
+    """Write this change's delta into its own note. Returns an exit code."""
+    slug = note or default_note_slug()
+    if not slug:
+        print(
+            "error: could not derive a note name from the current branch; pass --note <slug>",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        validate_slug(slug)
+    except LedgerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if slug in folded:
+        # Its delta is already inside the baseline, so `load_deltas` skips the
+        # note for good. Writing here would report success and change nothing —
+        # the check would go on failing with no way to satisfy it.
+        print(
+            f"error: `{slug}` has already been folded into "
+            f"{BASELINE.relative_to(REPO_ROOT)}, so a delta recorded there would "
+            f"never be counted again. Record this movement under a new note name: "
+            f"--note <something-else>.",
+            file=sys.stderr,
+        )
+        return 2
+    path = NOTES / f"{slug}.md"
+    # This note's delta is whatever makes the sum come out right, so re-running
+    # --update after a base move is idempotent rather than cumulative.
+    mine = dict(deltas.get(slug, {}))
+    for suite, was, now in drift:
+        mine[suite] = mine.get(suite, 0) + (now - was)
+    write_note_delta(path, {s: v for s, v in mine.items() if v})
+    print(
+        f"\nrecorded {len(drift)} delta(s) in {path.relative_to(REPO_ROOT)}\n"
+        "Write the prose too — the number alone hides compensating changes."
+    )
+    return 0
+
+
+def ledger_only_mode(
+    args: argparse.Namespace,
+    expected: dict[str, int],
+    deltas: dict[str, dict[str, int]],
+) -> int | None:
+    """Handle the modes that read or fold the ledger without collecting anything.
+
+    Returns an exit code if one of them ran, ``None`` to carry on to the check.
+    """
+    if args.show:
+        print(render_table(expected))
+        if deltas:
+            print(f"\n{len(deltas)} unfolded delta note(s): {', '.join(sorted(deltas))}")
+        return 0
+    if args.compact:
+        print(
+            f"folded {compact(expected, deltas)} delta note(s) into "
+            f"{BASELINE.relative_to(REPO_ROOT)}"
+        )
+        return 0
+    return None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--suite", action="append", help="check only this suite path (repeatable)")
+    ap.add_argument(
+        "--update",
+        action="store_true",
+        help="record this change's delta in its own note, so no shared line is written",
+    )
+    ap.add_argument(
+        "--note",
+        help="note slug to record the delta under (default: derived from the git branch)",
+    )
+    ap.add_argument("--show", action="store_true", help="print the expected counts and exit")
+    ap.add_argument(
+        "--compact",
+        action="store_true",
+        help="fold outstanding deltas into baseline.json (deliberate maintenance)",
+    )
+    args = ap.parse_args()
+
+    if problems := notes_problems() + table_problems():
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 2
+
+    try:
+        _counts, folded = load_baseline()
+        expected, deltas = expected_counts()
+    except LedgerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if (code := ledger_only_mode(args, expected, deltas)) is not None:
+        return code
+
+    wanted = set(args.suite) if args.suite else None
+    if wanted and (missing := sorted(wanted - set(RECIPES))):
+        print(f"error: no collection recipe for {missing}", file=sys.stderr)
+        return 2
+    suites = [s for s in RECIPES if s in expected and (wanted is None or s in wanted)]
+
+    drift, failures = run_checks(suites, expected)
 
     if failures:
         print("\n".join(["", *failures]), file=sys.stderr)
@@ -259,28 +694,29 @@ def main() -> int:
         return 1
 
     if not drift:
-        print(f"\nok: {len(rows)} suite(s) match {INVENTORY.relative_to(REPO_ROOT)}")
+        print(f"\nok: {len(suites)} suite(s) match the recorded inventory")
         return 0
 
     if args.update:
-        INVENTORY.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"\nupdated {INVENTORY.relative_to(REPO_ROOT)} ({len(drift)} row(s))")
-        return 0
+        return record_delta(args.note, drift, deltas, folded)
 
     total = sum(a - r for _, r, a in drift)
     print(
         "\n"
-        f"FAIL: {len(drift)} suite(s) drifted from "
-        f"{INVENTORY.relative_to(REPO_ROOT)} (net {total:+d} node IDs).\n"
+        f"FAIL: {len(drift)} suite(s) drifted from the recorded inventory "
+        f"(net {total:+d} node IDs).\n"
         "\n"
-        "If you added or removed tests on purpose, this is expected — refresh the\n"
-        "inventory and commit it with your change:\n"
+        "If you added or removed tests on purpose, this is expected — record the\n"
+        "delta in your own note and commit it with your change:\n"
         "\n"
         "    python3 scripts/check-suite-inventory.py --update\n"
         "\n"
+        "That writes docs/testing/inventory-notes/<your-branch>.md and touches no\n"
+        "shared line, so it cannot conflict with another branch doing the same.\n"
+        "\n"
         "If you did NOT change any test, a suite has silently stopped collecting\n"
         "(conftest import error, moved directory, changed testpaths). Investigate\n"
-        "before touching the inventory — the number is the alarm, not the bug.",
+        "before recording anything — the number is the alarm, not the bug.",
         file=sys.stderr,
     )
     return 1

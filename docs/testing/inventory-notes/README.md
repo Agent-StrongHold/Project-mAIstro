@@ -1,7 +1,8 @@
 # Inventory notes
 
-One file per change, explaining why the suite counts in
-[`../SUITE-INVENTORY.md`](../SUITE-INVENTORY.md) moved.
+One file per change: the delta it made to the suite counts, and the prose
+explaining why. Both live here, in the same file, written by the same change —
+see [`../SUITE-INVENTORY.md`](../SUITE-INVENTORY.md) and `ADR-082526-547c`.
 
 ## Why this is a directory and not a section
 
@@ -28,8 +29,32 @@ retirement removed eighteen backend node IDs and one e2e case, the total
 barely moved and a reader checking only the number would have seen nothing.
 That is the case these notes exist for.
 
-Nothing here is machine-parsed, so there is no schema to satisfy. It is read
-by people trying to understand a number that changed.
+## The one machine-read part
+
+A note may open with front matter recording what it moved:
+
+```markdown
+---
+inventory-delta:
+  packages/maistro-core/tests: +12
+  tests/: -3
+---
+```
+
+`check-suite-inventory.py` sums these over every note and adds
+`../inventory/baseline.json` to get the count it expects. Do not write the
+block by hand — `check-suite-inventory.py --update` measures it and writes it
+into the note named after your branch, which is what keeps two changes off the
+same path.
+
+Everything below the front matter is prose, parsed by nobody, read by people
+trying to understand a number that changed. A note with no front matter records
+no delta, which is correct both for a change that moved no count and for every
+note written before the ledger existed.
+
+A block that is present but unreadable is an error, not a zero. A delta the
+gate cannot parse would otherwise quietly contribute nothing, which is the
+class of silent wrong number this gate exists to catch.
 
 ## Archives
 
