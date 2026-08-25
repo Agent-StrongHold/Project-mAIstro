@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -906,6 +907,7 @@ class TestNewAbsentLinks:
         found = check.new_absent_links(base | _others(), head | _others())
         assert found["specs_implementing_nothing"] == []
 
+    @pytest.mark.ac("ADR-082526-ef55/AC-1")
     def test_a_link_this_change_introduced_is_reported(self, check):
         found = check.new_absent_links(
             {"specs_implementing_nothing": set()} | _others(),
@@ -913,6 +915,7 @@ class TestNewAbsentLinks:
         )
         assert found["specs_implementing_nothing"] == ["SPEC-2"]
 
+    @pytest.mark.ac("ADR-082526-ef55/AC-2")
     def test_a_new_violation_cannot_be_paid_for_by_fixing_a_legacy_one(self, check):
         """The audit's finding, stated as a test. The aggregate is unchanged —
         one in, one out — so the ceiling is satisfied while a new absent link
@@ -922,6 +925,7 @@ class TestNewAbsentLinks:
         assert len(base["specs_implementing_nothing"]) == len(head["specs_implementing_nothing"])
         assert check.new_absent_links(base, head)["specs_implementing_nothing"] == ["SPEC-NEW"]
 
+    @pytest.mark.ac("ADR-082526-ef55/AC-1")
     def test_closing_a_link_is_never_a_violation(self, check):
         found = check.new_absent_links(
             {"specs_implementing_nothing": {"SPEC-1"}} | _others(),
@@ -929,6 +933,7 @@ class TestNewAbsentLinks:
         )
         assert found["specs_implementing_nothing"] == []
 
+    @pytest.mark.ac("ADR-082526-ef55/AC-3")
     def test_every_absence_counter_is_carried(self, check):
         """Three counters, and a mandate covering two of them would be worse
         than none: the uncovered one reads as gated when it is not."""
@@ -954,6 +959,7 @@ class TestChainMandateGate:
             **kwargs,
         )
 
+    @pytest.mark.ac("ADR-082526-ef55/AC-4")
     def test_an_unchanged_corpus_passes(self, check):
         facts = {"SPEC-1": self._facts(check, id="SPEC-1", file="docs/specs/SPEC-1.md")}
         assert check.chain_mandate("base", facts, facts) == 0
@@ -978,6 +984,31 @@ class TestChainMandateGate:
         facts = {"SPEC-1": self._facts(check, id="SPEC-1", file="docs/specs/SPEC-1.md")}
         assert check.chain_mandate("base", facts, facts) == 0
 
+    def test_head_and_base_select_the_same_corpus(self, check):
+        """The two walks differ in *selection*, not in derivation: the base
+        lists `git ls-tree` paths, the head rglobs the checkout. A document one
+        side counts and the other does not is a spurious violation waiting, so
+        on a clean tree the two must agree exactly.
+
+        Unmarked deliberately. It can only run when `docs/` matches HEAD, and a
+        criterion whose evidence is skippable would sit at `covered` and fail
+        the mandate it belongs to — an acceptance criterion has to be bound to
+        a test that always runs.
+        """
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--", "docs/"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            check=False,
+        )
+        if dirty.returncode != 0 or dirty.stdout.strip():
+            pytest.skip("docs/ differs from HEAD; the checkout is not the revision")
+        at_head = check.corpus_at("HEAD")
+        assert at_head is not None
+        assert at_head[1] == check.working_tree_facts()
+
+    @pytest.mark.ac("ADR-082526-ef55/AC-5")
     def test_an_unreadable_base_refuses_rather_than_failing_everything(self, check):
         """Same refusal the criterion mandate makes, for the same reason: an
         unreadable base makes every absent link look introduced."""
