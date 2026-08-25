@@ -447,3 +447,56 @@ async def test_cancelling_a_multi_node_run_is_refused() -> None:
 
     with pytest.raises(RunIntegrityError, match="admits exactly one"):
         await TaskAttemptExecutor(store).cancel(run.run_id)
+
+
+# ── the task worker opts into crash recovery (#143 scope item 5) ───────
+#
+# #143 named this and PR #199 deferred it to #132, which did not add it; #232
+# built the mechanism. These prove the chain reaches the *task runner*, which
+# is the only place it matters: a TTL the task path cannot pass is a mechanism
+# reachable only from tests.
+
+
+@pytest.mark.asyncio
+async def test_a_task_worker_can_opt_its_attempts_into_a_lease(wired) -> None:
+    """`TaskAttemptExecutor` threads the TTL to the Attempt, so a task worker's
+    death is recoverable (ADR-082526-b36a)."""
+    from datetime import timedelta
+
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    await runs.transition_run(task.run_id or "", RunStatus.RUNNING)
+    seam = TaskAttemptExecutor(runs, lease_ttl=timedelta(seconds=30))
+
+    await seam.execute(
+        task.run_id or "", TaskCreate(description="Fix the parser"), _Executor(_ok([]))
+    )
+
+    node_runs = await runs.list_node_runs(task.run_id or "")
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert attempts[0].execution_lease is not None
+    assert attempts[0].execution_lease.expires_at is not None, (
+        "a task Attempt must carry an expiry, or recovery has nothing to reclaim"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_task_worker_without_a_ttl_is_unchanged(wired) -> None:
+    """The default. #143's original behaviour is preserved exactly: no TTL, no
+    heartbeat, no reclamation — opting in is a deployment's decision because it
+    is a promise to keep renewing, and a deployment with no sweeper running
+    would be making a promise nobody collects on."""
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    await runs.transition_run(task.run_id or "", RunStatus.RUNNING)
+    seam = TaskAttemptExecutor(runs)
+
+    await seam.execute(
+        task.run_id or "", TaskCreate(description="Fix the parser"), _Executor(_ok([]))
+    )
+
+    node_runs = await runs.list_node_runs(task.run_id or "")
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert attempts[0].execution_lease is not None
+    assert attempts[0].execution_lease.expires_at is None
+    assert await runs.reclaim_expired_attempts() == []

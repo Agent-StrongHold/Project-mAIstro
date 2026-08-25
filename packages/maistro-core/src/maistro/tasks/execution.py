@@ -31,6 +31,7 @@ caller in-process.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, NodeRun
@@ -93,6 +94,7 @@ class TaskAttemptExecutor:
         *,
         runtime: ExecutionRuntime | None = None,
         timeout_s: float | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> None:
         if timeout_s is not None and timeout_s <= 0:
             # Rejected here rather than by `AttemptExecutionService`, which
@@ -104,7 +106,16 @@ class TaskAttemptExecutor:
         self._service = RunExecutionService(
             store=run_store,
             runtime=runtime or PythonExecutionRuntime(),
+            lease_ttl=lease_ttl,
         )
+        # Explicitly None by default, for the same reason `timeout_s` is. A TTL
+        # is a promise this process will keep renewing, and a deployment that
+        # has no sweeper running would be making a promise nobody collects on:
+        # every Attempt would carry an expiry that nothing acts upon. Opting in
+        # means running `Container.recover_abandoned_attempts` on a timer, which
+        # is an operational decision this constructor cannot make
+        # (ADR-082526-b36a).
+        self._lease_ttl = lease_ttl
         # Explicitly None by default. `TaskCreate` carries no deadline, so there
         # is no per-task number to pass, and inventing a global one here would
         # start timing out long tasks that have always been allowed to run —

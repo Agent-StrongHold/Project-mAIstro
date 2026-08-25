@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from maistro.runs.lifecycle import (
+    lease_is_expired,
+    reclaim_attempt,
+    renew_attempt_lease,
+    renewed_lease,
     transition_attempt,
     transition_node_run,
     transition_run,
@@ -27,7 +31,13 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.store import ActiveAttemptExists, RunIntegrityError, StaleExecutionFence
+from maistro.runs.store import (
+    DEFAULT_RECLAIM_BATCH,
+    ActiveAttemptExists,
+    AttemptNotFound,
+    RunIntegrityError,
+    StaleExecutionFence,
+)
 
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
@@ -124,6 +134,7 @@ class DurableRunExecutionStore:
         deadline_at: datetime | None = None,
         resume_checkpoint_id: str | None = None,
         lease_holder: str | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> Attempt:
         created: Attempt | None = None
 
@@ -162,6 +173,8 @@ class DurableRunExecutionStore:
                     lease_epoch=ordinal,
                     holder=lease_holder,
                 )
+                if lease_ttl is not None:
+                    lease = renewed_lease(lease, at=lease.issued_at, ttl=lease_ttl)
                 created = Attempt.model_validate(
                     {**created.model_dump(mode="python"), "execution_lease": lease}
                 )
@@ -170,6 +183,75 @@ class DurableRunExecutionStore:
         await self._mutate(update)
         assert created is not None
         return created.model_copy(deep=True)
+
+    async def renew_lease(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> Attempt:
+        """Prove the holder is still alive, and push its expiry out by ``ttl``.
+
+        The fourth store implementing this, and it needs it for the same reason
+        the other three do: `AttemptExecutionService` renews through whatever
+        store it was given, and a durable Graph node is executed by a process
+        that can die exactly like a task worker.
+        """
+        renewed: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal renewed
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
+                attempts[index] = renewed
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
+
+        await self._mutate(update)
+        assert renewed is not None
+        return renewed.model_copy(deep=True)
+
+    async def reclaim_expired_attempts(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = DEFAULT_RECLAIM_BATCH,
+    ) -> list[Attempt]:
+        """Settle this Run's Attempts whose holder stopped renewing.
+
+        Scoped to one Run, because this store is: it is a lifecycle view over a
+        single `DurableRunRecord`. A sweep across every durable Run is the
+        `DurableRunStore`'s question, not this view's, and answering it here
+        would quietly widen what a caller holding one Run can touch.
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        reclaimed: list[Attempt] = []
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            reclaimed.clear()
+            attempts = list(record.attempts)
+            doomed = sorted(
+                (a for a in attempts if lease_is_expired(a, moment)),
+                key=lambda a: (a.execution_lease.expires_at, a.attempt_id),  # type: ignore[union-attr]
+            )[:limit]
+            if not doomed:
+                return record
+            by_id = {a.attempt_id for a in doomed}
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id not in by_id:
+                    continue
+                settled = reclaim_attempt(attempt, at=moment)
+                attempts[index] = settled
+                reclaimed.append(settled)
+            return record.model_copy(update={"attempts": tuple(attempts)})
+
+        await self._mutate(update)
+        return [item.model_copy(deep=True) for item in reclaimed]
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         record = await self._get_record()

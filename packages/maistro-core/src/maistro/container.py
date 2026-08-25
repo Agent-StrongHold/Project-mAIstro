@@ -13,6 +13,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -447,6 +448,26 @@ class Container:
             limit=limit,
         )
         return self.durable_event_cursor
+
+    async def recover_abandoned_attempts(
+        self, *, now: datetime | None = None, limit: int = 100
+    ) -> int:
+        """Tick the crash-recovery sweep (ADR-082526-b36a). Returns how many settled.
+
+        The counterpart to `process_durable_events`, and deliberately the same
+        shape: a bounded, idempotent tick an operator schedules, rather than a
+        background task the Container starts on its own. A Container that swept
+        on a timer would make importing the library start work, which
+        `maistro-core` does not do (ADR-019).
+
+        Settles Attempts whose holder stopped renewing its lease. Attempts
+        created without a TTL are never touched, so a deployment that has not
+        opted into leases sees this do nothing.
+        """
+        reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
+        if reclaimed:
+            logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
+        return len(reclaimed)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
         """List the durable trigger definitions backing the reactor loop."""
