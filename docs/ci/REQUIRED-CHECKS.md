@@ -29,6 +29,9 @@ python3 scripts/check-required-checks.py            # check (what CI runs)
 python3 scripts/check-required-checks.py --update   # rewrite the table below
 ```
 
+Runner cost for the check set is measured in
+[`RUNNER-COST.md`](RUNNER-COST.md).
+
 ## Scope: what decides whether a check runs
 
 Three values appear in the `Runs on` column, and the distinction is the whole
