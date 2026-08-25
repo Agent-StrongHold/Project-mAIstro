@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 571,
+    "criteria_declared": 575,
     "criteria_annotated": 214,
-    "markers_found": 277,
+    "markers_found": 281,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 17.2425
+    "design_coverage": 17.9322
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,8 +540,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 17.2425,
-    "decisions": 119,
+    "percent": 17.9322,
+    "decisions": 120,
     "decisions_scoring_zero": 97,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1152,6 +1152,13 @@
         "declared_status": "Accepted",
         "criteria": 6,
         "reachable": 6,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082326-8194",
+        "declared_status": "Accepted",
+        "criteria": 4,
+        "reachable": 4,
         "percent": 100.0
       },
       {
@@ -12483,15 +12490,52 @@
     {
       "id": "ADR-082326-8194",
       "file": "docs/adr/ADR-082326-8194-memory-embedding-column-and-dimensionality.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 4,
+      "own_detail": [
+        {
+          "id": "ADR-082326-8194/AC-1",
+          "claimed": false,
+          "module": "maistro.memory.vectors",
+          "covered_by": [
+            "tests/test_memory_embedding_decision_evidence.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-8194/AC-2",
+          "claimed": false,
+          "module": "maistro.memory.vectors",
+          "covered_by": [
+            "tests/test_memory_embedding_decision_evidence.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-8194/AC-3",
+          "claimed": false,
+          "module": "maistro.persistence.pg_learnings",
+          "covered_by": [
+            "tests/test_memory_embedding_decision_evidence.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082326-8194/AC-4",
+          "claimed": false,
+          "module": "maistro.memory.learnings.durable_hybrid",
+          "covered_by": [
+            "tests/test_memory_embedding_decision_evidence.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
       "declared_unproven": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-082326-c126",
