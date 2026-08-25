@@ -55,6 +55,64 @@ jobs:
       - name: Apply strict M0 corrections
         run: uv run python scripts/m0-finalize.py
 
+      - name: Keep Container composition below complexity ceiling
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('packages/maistro-core/src/maistro/container.py')
+          text = path.read_text()
+          inline = '''    # Prompts are part of the same persistence decision as the agent definitions
+              # that reference them. Hive used to construct an InMemoryPromptManager after
+              # the Container had already selected PostgreSQL, which made agent souls the
+              # last pg_* surface silently lost on restart (#122).
+              if pg_pool is not None:
+                  from maistro.persistence.pg_prompts import PgPromptManager
+
+                  prompt_manager = PgPromptManager(pg_pool)
+              elif db_pool is not None:
+                  from maistro.persistence.sqlite_prompts import SqlitePromptManager
+
+                  prompt_manager = SqlitePromptManager(db_pool)
+                  await prompt_manager.ensure_schema()
+              else:
+                  from maistro.prompts.store import InMemoryPromptManager
+
+                  prompt_manager = InMemoryPromptManager()
+          '''.replace('          ', '')
+          call = '''    # Prompt persistence is selected by the same backend decision as the
+              # rest of the Container, but kept out of this composition function so adding a
+              # backend does not grow the orchestration branch count (#122).
+              prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
+          '''.replace('          ', '')
+          if inline not in text:
+              raise SystemExit('inline prompt wiring shape changed')
+          text = text.replace(inline, call, 1)
+          marker = 'async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:\n'
+          helper = '''async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
+              """Select the versioned prompt store from the configured relational backend."""
+              if pg_pool is not None:
+                  from maistro.persistence.pg_prompts import PgPromptManager
+
+                  return PgPromptManager(pg_pool)
+              if db_pool is not None:
+                  from maistro.persistence.sqlite_prompts import SqlitePromptManager
+
+                  manager = SqlitePromptManager(db_pool)
+                  await manager.ensure_schema()
+                  return manager
+
+              from maistro.prompts.store import InMemoryPromptManager
+
+              return InMemoryPromptManager()
+
+
+          '''.replace('          ', '')
+          if marker not in text:
+              raise SystemExit('audit wiring marker changed')
+          text = text.replace(marker, helper + marker, 1)
+          path.write_text(text)
+          PY
+
       - name: Format touched Python
         shell: bash
         run: |
