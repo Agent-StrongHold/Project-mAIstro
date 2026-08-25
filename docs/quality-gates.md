@@ -77,7 +77,7 @@ A document tier is the highest rung **all** of its criteria have reached. A pass
 
 Two enforcement modes operate over the same corpus:
 
-- `--ratchet` holds the reviewed legacy debt in `quality/ac-state-ceilings.json`. The current ledger still contains historical contradicted/unverifiable completion claims and AC-ID retrofit debt; M0 makes that debt explicit and non-growing rather than pretending it vanished.
+- `--ratchet` holds reviewed legacy evidence debt in `quality/ac-state-ceilings.json`. The M0 closeout reconciled every current contradicted/unverifiable completion claim, so both completion-claim counters are now zero; remaining AC-ID/spec evidence retrofit debt stays explicit and non-growing.
 - `--mandate <base>` is zero-tolerance for criteria a PR creates or newly claims. A new criterion must be evidenced or carry a visible per-criterion unproven marker with a reason.
 
 Example explicit deferral:
@@ -86,7 +86,7 @@ Example explicit deferral:
 <!-- ac-state: unproven AC-3 - blocked on the durable store (#132) -->
 ```
 
-The mandate cannot be banked away. Legacy debt stays grandfathered to the ratchet; new claims do not become legacy merely because a PR wants to merge.
+The mandate cannot be banked away. Legacy retrofit debt stays grandfathered to the ratchet; new claims do not become legacy merely because a PR wants to merge.
 
 ## ADR lifecycle evidence
 
