@@ -7,8 +7,10 @@ from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.archive.protocols import ArchiveStore
+from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
@@ -365,6 +367,13 @@ class InMemoryRunStore:
         # warning, because warning on a deliberate choice is how operators
         # learn to ignore warnings.
         self._archive_store = archive_store
+        # The tombstone the durable stores keep in a column. `PgRunStore`
+        # selects candidates with `archive_key IS NULL`, so a Run it has
+        # already archived is not a candidate again; without the same record
+        # here this store would re-put identical bytes on every sweep and
+        # report them as newly archived work. The put itself is idempotent
+        # (keys are content-addressed) -- the count is what would lie.
+        self._archived: dict[str, ArchiveKey] = {}
         self._max_runs = max_runs
         self._prune_target = prune_target
         self._runs: OrderedDict[str, Run] = OrderedDict()
@@ -579,11 +588,17 @@ class InMemoryRunStore:
         cold = [
             run
             for run in self._runs.values()
-            if is_archivable(run, cutoff, archive_after=archive_after)
+            if run.run_id not in self._archived
+            and is_archivable(run, cutoff, archive_after=archive_after)
         ]
         for run in cold[:limit]:
-            await self._archive_store.put(
-                run.model_dump_json().encode("utf-8"), scope=run.project_id
+            # `json_of`, not `model_dump_json`: pydantic serialises NaN and
+            # Infinity to `null`, and `evidence_json` exists precisely so the
+            # three backends cannot disagree about what was recorded. Archiving
+            # through the default serialiser would make the archive the one
+            # place a non-finite result silently became `None`.
+            self._archived[run.run_id] = await self._archive_store.put(
+                json_of(run).encode("utf-8"), scope=run.project_id
             )
         return min(len(cold), limit)
 

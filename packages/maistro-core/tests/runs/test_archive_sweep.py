@@ -172,3 +172,36 @@ async def test_the_horizon_is_a_parameter_not_a_constant(spine: Any) -> None:
 
     assert await store.archive_cold_runs(now=NOW, archive_after=DEFAULT_ARCHIVE_AFTER) == 0
     assert await store.archive_cold_runs(now=NOW, archive_after=timedelta(days=1)) == 1
+
+
+async def test_a_run_is_not_archived_twice(spine: Any) -> None:
+    """The tombstone, without which the count lies.
+
+    `PgRunStore` selects candidates with `archive_key IS NULL`; this store
+    keeps the same record in a dict. The `put` is idempotent either way — keys
+    are content-addressed, so re-archiving writes the same object — but a sweep
+    that reported the same Run as newly archived on every pass would make the
+    return value useless for deciding whether a backlog is draining.
+    """
+    store, archive, _graph, project_id = spine
+    await _run(spine, status=RunStatus.COMPLETED, finished=COLD, retention=None)
+
+    assert await store.archive_cold_runs(now=NOW) == 1
+    assert await store.archive_cold_runs(now=NOW) == 0
+    assert len(await _keys(archive, project_id)) == 1
+
+
+async def test_a_terminal_run_with_no_finish_time_is_not_archived(spine: Any) -> None:
+    """A state the model forbids and a row can still hold.
+
+    `Run` validates that a terminal Run has a `finished_at`, but `model_copy`
+    skips validation and so does a row hand-built by a migration or an older
+    writer. The sweep's own check is what keeps that from becoming
+    `None <= datetime`, which is a TypeError raised from inside housekeeping
+    rather than a Run quietly left where it is.
+    """
+    store, archive, _graph, project_id = spine
+    await _run(spine, status=RunStatus.COMPLETED, finished=None, retention=None)
+
+    assert await store.archive_cold_runs(now=NOW) == 0
+    assert await _keys(archive, project_id) == []
