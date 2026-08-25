@@ -340,3 +340,68 @@ async def test_a_non_positive_lease_ttl_is_refused_at_construction() -> None:
         AttemptExecutionService(
             store=store, runtime=PythonExecutionRuntime(), lease_ttl=timedelta(0)
         )
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_with_no_lease_cannot_be_renewed() -> None:
+    """Renewal presupposes a lease. An unleased Attempt has no holder to prove
+    alive, so the refusal is the same one a wrong token gets — there is no
+    weaker path in for a caller that simply never took a lease."""
+    from datetime import timedelta
+
+    from maistro.runs.lifecycle import StaleLeaseRenewal
+
+    projects, graph = await _scope()
+    store = InMemoryRunStore(project_store=projects)
+    node_run = await _running_node_run(store, graph)
+    attempt = await store.create_attempt(node_run.node_run_id)
+
+    assert attempt.execution_lease is None
+    with pytest.raises(StaleLeaseRenewal):
+        await store.renew_lease(
+            attempt.attempt_id, fencing_token="anything", ttl=timedelta(seconds=30)
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_attempt_cannot_be_renewed() -> None:
+    """Renewing a finished Attempt would resurrect a lease over work that is
+    already over, and a later sweep would then reclaim a completed record."""
+    from datetime import timedelta
+
+    from maistro.runs.lifecycle import InvalidLifecycleTransition
+    from maistro.runs.model import AttemptStatus
+
+    projects, graph = await _scope()
+    store = InMemoryRunStore(project_store=projects)
+    node_run = await _running_node_run(store, graph)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-a", lease_ttl=timedelta(seconds=30)
+    )
+    token = attempt.execution_lease.fencing_token
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token)
+    await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, fencing_token=token, result={"ok": True}
+    )
+
+    with pytest.raises(InvalidLifecycleTransition, match="completed"):
+        await store.renew_lease(attempt.attempt_id, fencing_token=token, ttl=timedelta(seconds=30))
+
+
+def test_a_non_positive_ttl_is_refused_by_the_lease_helper() -> None:
+    """The guard on the pure helper, independent of the executor's own check.
+
+    Both exist on purpose: the executor refuses at construction so a
+    misconfiguration fails before any durable state, and this refuses at the
+    write so a caller reaching the helper directly cannot mint a lease that is
+    already expired.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from maistro.runs.lifecycle import renewed_lease
+    from maistro.runs.model import ExecutionLease
+
+    lease = ExecutionLease(node_run_id="n", attempt_id="a", lease_epoch=1, holder="worker-a")
+
+    with pytest.raises(ValueError, match="ttl must be positive"):
+        renewed_lease(lease, at=datetime.now(UTC), ttl=timedelta(0))
