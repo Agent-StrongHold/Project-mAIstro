@@ -15,7 +15,7 @@
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 537,
     "criteria_annotated": 214,
-    "markers_found": 244,
+    "markers_found": 247,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 11.9617
+    "design_coverage": 12.5173
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,9 +1081,9 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 11.9617,
+    "percent": 12.5173,
     "decisions": 108,
-    "decisions_scoring_zero": 94,
+    "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
@@ -1720,8 +1720,8 @@
         "id": "ADR-082526-3ca6",
         "declared_status": "Accepted",
         "criteria": 5,
-        "reachable": 0,
-        "percent": 0.0
+        "reachable": 3,
+        "percent": 60.0
       },
       {
         "id": "ADR-082526-7f02",
@@ -13187,23 +13187,29 @@
         {
           "id": "ADR-082526-3ca6/AC-1",
           "claimed": true,
-          "module": null,
-          "covered_by": [],
-          "rung": "declared"
+          "module": "maistro.container",
+          "covered_by": [
+            "packages/maistro-core/tests/test_container_delegation_wiring.py"
+          ],
+          "rung": "reachable"
         },
         {
           "id": "ADR-082526-3ca6/AC-2",
           "claimed": true,
-          "module": null,
-          "covered_by": [],
-          "rung": "declared"
+          "module": "maistro.container",
+          "covered_by": [
+            "packages/maistro-core/tests/test_container_delegation_wiring.py"
+          ],
+          "rung": "reachable"
         },
         {
           "id": "ADR-082526-3ca6/AC-3",
           "claimed": true,
-          "module": null,
-          "covered_by": [],
-          "rung": "declared"
+          "module": "maistro.container",
+          "covered_by": [
+            "packages/maistro-core/tests/test_container_delegation_wiring.py"
+          ],
+          "rung": "reachable"
         },
         {
           "id": "ADR-082526-3ca6/AC-4",
@@ -13222,7 +13228,10 @@
       ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
-      "declared_unproven": [],
+      "declared_unproven": [
+        "AC-4",
+        "AC-5"
+      ],
       "tier": "declared"
     },
     {
