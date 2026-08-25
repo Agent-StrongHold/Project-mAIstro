@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 537,
+    "criteria_declared": 542,
     "criteria_annotated": 214,
-    "markers_found": 247,
+    "markers_found": 252,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 12.5173
+    "design_coverage": 13.3198
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -1081,8 +1081,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 12.5173,
-    "decisions": 108,
+    "percent": 13.3198,
+    "decisions": 109,
     "decisions_scoring_zero": 93,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1742,6 +1742,13 @@
         "declared_status": "Accepted",
         "criteria": 8,
         "reachable": 8,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082526-cb51",
+        "declared_status": "Accepted",
+        "criteria": 5,
+        "reachable": 5,
         "percent": 100.0
       },
       {
@@ -13421,6 +13428,65 @@
           "module": "maistro.runs.execution",
           "covered_by": [
             "packages/maistro-core/tests/runs/test_execution_fencing.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
+    },
+    {
+      "id": "ADR-082526-cb51",
+      "file": "docs/adr/ADR-082526-cb51-diff-coverage-measured-scope-is-declared.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 5,
+      "own_detail": [
+        {
+          "id": "ADR-082526-cb51/AC-1",
+          "claimed": true,
+          "module": "scripts/check-diff-coverage.py",
+          "covered_by": [
+            "tests/test_check_diff_coverage.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-cb51/AC-2",
+          "claimed": true,
+          "module": "scripts/check-diff-coverage.py",
+          "covered_by": [
+            "tests/test_check_diff_coverage.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-cb51/AC-3",
+          "claimed": true,
+          "module": "scripts/check-diff-coverage.py",
+          "covered_by": [
+            "tests/test_check_diff_coverage.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-cb51/AC-4",
+          "claimed": true,
+          "module": "scripts/check-diff-coverage.py",
+          "covered_by": [
+            "tests/test_check_diff_coverage.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-cb51/AC-5",
+          "claimed": true,
+          "module": "scripts/check-diff-coverage.py",
+          "covered_by": [
+            "tests/test_check_diff_coverage.py"
           ],
           "rung": "reachable"
         }
