@@ -73,7 +73,7 @@ derived.
 
 | Suite | Node IDs | Runs in CI |
 |---|---:|---|
-| `packages/maistro-core/tests` | 7628 | `ci.yml` |
+| `packages/maistro-core/tests` | 7665 | `ci.yml` |
 | `packages/maistro-evolve/tests` | 629 | `ci.yml` |
 | `packages/maistro-rsi/tests` | 428 | `ci.yml` |
 | `packages/maistro-server/tests` | 255 | `ci.yml` |

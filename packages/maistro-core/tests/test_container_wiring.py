@@ -472,3 +472,51 @@ async def test_oauth_client_factory_builds_client() -> None:
         assert isinstance(client, OAuth2Client)
         url, state = await client.authorize_url("github", "http://localhost/cb")
         assert "code_challenge=" in url and state
+
+
+# --- crash recovery (ADR-082526-b36a / #232) -----------------------------------
+
+
+async def test_the_container_sweeps_abandoned_attempts() -> None:
+    """The production entry point for lease recovery.
+
+    Wired rather than left as a bare store method, because a public surface
+    nobody calls is the shape #225 and #244 are both about: it reads as
+    supported while nothing exercises it.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery")).project_id
+    graph = Graph(
+        workspace_id="recovery",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-A", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    # Nothing to do while the holder's lease is still live.
+    assert await container.recover_abandoned_attempts(now=datetime.now(UTC)) == 0
+
+    swept = await container.recover_abandoned_attempts(now=lease.expires_at + timedelta(seconds=1))
+
+    assert swept == 1
+    settled = await store.get_attempt(attempt.attempt_id)
+    assert settled is not None
+    assert settled.status is AttemptStatus.CANCELLED
+    assert "worker-A" in (settled.error or "")

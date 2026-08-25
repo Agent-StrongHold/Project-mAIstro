@@ -78,6 +78,16 @@ class AttemptExecutionStore(AttemptLifecycleStore, Protocol):
         deadline_at: datetime | None = None,
         resume_checkpoint_id: str | None = None,
         lease_holder: str | None = None,
+        lease_ttl: timedelta | None = None,
+    ) -> Attempt: ...
+
+    async def renew_lease(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        ttl: timedelta,
+        at: datetime | None = None,
     ) -> Attempt: ...
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]: ...
@@ -104,11 +114,69 @@ class AttemptExecutionService:
         store: AttemptExecutionStore,
         runtime: ExecutionRuntime,
         reconciler: AttemptReconciler | None = None,
+        lease_ttl: timedelta | None = None,
     ) -> None:
+        """``lease_ttl`` opts this executor's Attempts into crash recovery.
+
+        When set, every Attempt this service creates carries an expiring lease
+        and is renewed from *this process* while the executor runs. If the
+        process dies, the renewals stop with it, the lease lapses, and
+        `reclaim_expired_attempts` settles the Attempt (ADR-082526-b36a).
+
+        Left None, an Attempt's lease never expires and is never reclaimable —
+        exactly today's behaviour, which is what makes the opt-in additive.
+        """
+        if lease_ttl is not None and lease_ttl <= timedelta(0):
+            raise ValueError("lease_ttl must be positive")
         self._store = store
         self._runtime = runtime
         self._lifecycle = AttemptLifecycleReconciler(store)
         self._after_reconcile = reconciler
+        self._lease_ttl = lease_ttl
+
+    def _start_heartbeat(self, attempt_id: str, token: str) -> asyncio.Task[None] | None:
+        """Renew this Attempt's lease from this process while the executor runs.
+
+        Returns None when no TTL was configured, which is the default and means
+        no heartbeat and no reclamation.
+
+        The cadence is a third of the TTL, so two consecutive missed renewals
+        are needed before the lease lapses — one lost tick under load must not
+        look like a dead worker (ADR-082526-b36a).
+
+        Liveness is exactly what this proves: the task runs *in* this process,
+        so if the process dies the heartbeat dies with it and the lease lapses
+        on its own. Nothing has to notice the death.
+        """
+        ttl = self._lease_ttl
+        if ttl is None:
+            return None
+
+        async def _beat() -> None:
+            interval = ttl.total_seconds() / 3
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._store.renew_lease(attempt_id, fencing_token=token, ttl=ttl)
+                except Exception:
+                    # The Attempt may have terminalized under us, or the store
+                    # may be briefly unavailable. Neither is this task's problem
+                    # to solve: stop renewing and let the lease lapse, which is
+                    # the same outcome as the process dying and is safe.
+                    return
+
+        return asyncio.create_task(_beat())
+
+    @staticmethod
+    async def _stop_heartbeat(heartbeat: asyncio.Task[None] | None) -> None:
+        """Stop renewing. Idempotent, and never raises into the caller's path."""
+        if heartbeat is None:
+            return
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except (asyncio.CancelledError, Exception):
+            return
 
     async def execute(
         self,
@@ -162,6 +230,7 @@ class AttemptExecutionService:
             deadline_at=deadline_at,
             resume_checkpoint_id=resume_checkpoint_id,
             lease_holder=executor_id or runtime_name,
+            lease_ttl=self._lease_ttl,
         )
         lease = attempt.execution_lease
         if lease is None:
@@ -178,14 +247,22 @@ class AttemptExecutionService:
             context_factory,
         )
 
+        heartbeat = self._start_heartbeat(attempt.attempt_id, token)
         try:
-            result = await self._runtime.execute(
-                work_item,
-                runtime_context,
-                execution_id=attempt.attempt_id,
-                executor=executor,
-                timeout_s=timeout_s,
-            )
+            # Nested so the `finally` runs *before* any handler below: a renewal
+            # landing between the executor stopping and the Attempt terminalizing
+            # would race the terminal write, and the whole point of stopping is
+            # that this process is done vouching for the work.
+            try:
+                result = await self._runtime.execute(
+                    work_item,
+                    runtime_context,
+                    execution_id=attempt.attempt_id,
+                    executor=executor,
+                    timeout_s=timeout_s,
+                )
+            finally:
+                await self._stop_heartbeat(heartbeat)
         except asyncio.CancelledError as exc:
             terminal = await self._terminalize(
                 attempt.attempt_id,

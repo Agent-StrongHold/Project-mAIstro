@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from maistro.runs.model import (
@@ -9,6 +9,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    ExecutionLease,
     NodeRun,
     Run,
     RunStatus,
@@ -244,6 +245,106 @@ def check_completion_is_earned(target: RunStatus, node_runs: list[NodeRun]) -> N
             raise UnearnedRunCompletion(node_id, node_run.node_run_id, node_run.status)
 
 
+#: What a reclaimed Attempt records. Not FAILED and not TIMED_OUT: the work did
+#: not fail and did not exceed its own deadline — its *worker* stopped proving
+#: it was alive. CANCELLED carries that without inventing an outcome the
+#: Attempt never had, and it is the status ADR-082426-f170's RECOVERED cause
+#: already parks a NodeRun for retry from.
+RECLAIMED_ATTEMPT_STATUS = AttemptStatus.CANCELLED
+
+
+def reclaimed_attempt_error(holder: str) -> str:
+    """Why an Attempt was reclaimed, naming the holder that stopped renewing.
+
+    The holder is the whole value here: without it a reclaimed Attempt is
+    indistinguishable from one a user cancelled, which is the distinction
+    ADR-082426-f170 exists to keep.
+    """
+    return f"lease expired; holder {holder!r} stopped renewing before the Attempt finished"
+
+
+def lease_is_expired(attempt: Attempt, now: datetime) -> bool:
+    """Whether this Attempt's lease has lapsed as of ``now``.
+
+    An Attempt with no lease, or a lease with no ``expires_at``, is **never**
+    expired. That is deliberate and it is what makes lease expiry additive: a
+    caller that never asks for a TTL keeps exactly today's behaviour, and no
+    existing Attempt becomes reclaimable because this shipped.
+
+    A terminal Attempt is never expired either — it already finished, and
+    reclaiming it would overwrite a real outcome with a recovery artefact.
+    """
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        return False
+    lease = attempt.execution_lease
+    if lease is None or lease.expires_at is None:
+        return False
+    return lease.expires_at <= now
+
+
+def renewed_lease(lease: ExecutionLease, *, at: datetime, ttl: timedelta) -> ExecutionLease:
+    """The same lease, alive for another ``ttl`` from ``at``.
+
+    Epoch, holder and fencing token are unchanged: renewal proves the *existing*
+    holder is still alive, and is not a new claim. Minting a new token on
+    renewal would invalidate the fence its own holder is carrying
+    (ADR-082426-e3ff), which is the opposite of what renewal means.
+    """
+    if ttl <= timedelta(0):
+        raise ValueError("lease ttl must be positive")
+    return lease.model_copy(update={"expires_at": at + ttl})
+
+
+class StaleLeaseRenewal(ValueError):
+    """A renewal presented a token that is not this Attempt's (ADR-082426-e3ff)."""
+
+    def __init__(self, attempt_id: str) -> None:
+        self.attempt_id = attempt_id
+        super().__init__(
+            f"Attempt {attempt_id!r} cannot be renewed with a token it does not hold; "
+            "renewal proves the current holder is alive, it does not claim the lease"
+        )
+
+
+def renew_attempt_lease(
+    attempt: Attempt,
+    *,
+    fencing_token: str,
+    ttl: timedelta,
+    at: datetime | None = None,
+) -> Attempt:
+    """One shared renewal rule, so three stores cannot grow three of them.
+
+    Fenced, and for the same reason `transition_attempt` is: a renewal is a
+    worker-authored write. A stale worker that could renew would keep an
+    Attempt alive that recovery is trying to reclaim, which is exactly the
+    stuck state this mechanism exists to end.
+    """
+    lease = attempt.execution_lease
+    if lease is None:
+        raise StaleLeaseRenewal(attempt.attempt_id)
+    if lease.fencing_token != fencing_token:
+        raise StaleLeaseRenewal(attempt.attempt_id)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot renew the lease of a {attempt.status.value} Attempt"
+        )
+    moment = _now(at)
+    return attempt.model_copy(update={"execution_lease": renewed_lease(lease, at=moment, ttl=ttl)})
+
+
+def reclaim_attempt(attempt: Attempt, *, at: datetime | None = None) -> Attempt:
+    """Settle one Attempt whose lease lapsed, naming the holder that went quiet."""
+    lease = attempt.execution_lease
+    holder = lease.holder if lease is not None else "unknown"
+    return transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=at,
+        error=reclaimed_attempt_error(holder),
+    )
+
+
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
 #:
 #: Not the Run's own terminal status. The node did not succeed, fail or time
@@ -320,12 +421,19 @@ def transition_attempt(
 __all__ = [
     "ATTEMPT_TRANSITIONS",
     "CASCADED_NODE_RUN_STATUS",
+    "RECLAIMED_ATTEMPT_STATUS",
     "RUN_TRANSITIONS",
     "InvalidLifecycleTransition",
+    "StaleLeaseRenewal",
     "UnearnedRunCompletion",
     "cascaded_node_run_error",
     "check_completion_is_earned",
     "latest_node_runs",
+    "lease_is_expired",
+    "reclaim_attempt",
+    "reclaimed_attempt_error",
+    "renew_attempt_lease",
+    "renewed_lease",
     "settle_open_node_run",
     "transition_attempt",
     "transition_node_run",
