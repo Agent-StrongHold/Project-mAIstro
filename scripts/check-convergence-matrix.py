@@ -96,7 +96,18 @@ def parse_table(text: str, marker: str) -> list[list[str]]:
 
 
 def _matches(module: str, prefix: str) -> bool:
-    return module == prefix or module.startswith(f"{prefix}.") or module.startswith(f"{prefix}::")
+    """Whether `prefix` owns `module`, across all three identity shapes.
+
+    `.` for packages, `::` for a flat app's scoped modules, and `/` for repo
+    tooling, whose identity is its path (`scripts/check-ac-state.py`) because
+    the file name is not a legal dotted identifier (ADR-082526-aef8).
+    """
+    return (
+        module == prefix
+        or module.startswith(f"{prefix}.")
+        or module.startswith(f"{prefix}::")
+        or module.startswith(f"{prefix}/")
+    )
 
 
 def _assign(modules: list[str], prefixes: dict[str, str]) -> dict[str, str]:

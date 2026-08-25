@@ -563,6 +563,7 @@ class TestDesignCoverage:
     number that rises when you delete the evidence of your own debt.
     """
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-1")
     def test_every_decision_weighs_the_same_however_verbosely_it_was_written(self, check):
         """One fully-proven criterion and forty fully-proven criteria are each
         one unit of design. Criterion-weighting would make the forty-criterion
@@ -574,10 +575,12 @@ class TestDesignCoverage:
         assert pct == 100.0
         assert [r["fraction"] for r in rows] == [1, 1]
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-1")
     def test_a_half_proven_decision_contributes_a_half(self, check):
         pct, _ = check.design_coverage([], [_adr("ADR-A", own=["reachable", "declared"])])
         assert pct == 50.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-2")
     def test_a_decision_declaring_no_criteria_scores_zero_rather_than_vanishing(self, check):
         """The property the whole shape turns on. Measured over criteria that
         *exist* the corpus reads 30.5%; measured over decisions *taken*, 4.0%.
@@ -590,6 +593,7 @@ class TestDesignCoverage:
         assert pct == 50.0, "the silent decision was excluded from the denominator"
         assert [r["criteria"] for r in rows] == [1, 0]
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-3")
     def test_deleting_an_unproven_criterion_cannot_raise_the_number(self, check):
         """Gameable-in-the-wrong-direction is what disqualified the
         criterion-weighted formulation. Here the ADR falls from 1/2 to 0/0,
@@ -600,6 +604,7 @@ class TestDesignCoverage:
         assert after == 0.0
         assert after < before
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-4")
     def test_proposed_decisions_are_excluded(self, check):
         """A decision not yet taken cannot be owed an implementation, and
         counting it would make writing an idea down look like incurring debt."""
@@ -609,6 +614,7 @@ class TestDesignCoverage:
         assert [r["id"] for r in rows] == ["ADR-A"]
         assert pct == 100.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-4")
     def test_implemented_counts_as_taken_alongside_accepted(self, check):
         pct, rows = check.design_coverage(
             [], [_adr("ADR-A", status="Implemented", own=["declared"])]
@@ -616,12 +622,14 @@ class TestDesignCoverage:
         assert [r["id"] for r in rows] == ["ADR-A"]
         assert pct == 0.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-5")
     def test_the_bar_is_reachable_and_not_passing(self, check):
         """A passing test whose module the import graph cannot reach proves the
         test runs, not that the system does."""
         pct, _ = check.design_coverage([], [_adr("ADR-A", own=["passing", "covered", "declared"])])
         assert pct == 0.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-6")
     def test_an_implementing_specs_criteria_count_toward_its_decision(self, check):
         """The fold the ADR specifies: own criteria *plus* every spec whose
         `implements:` names it. Most decisions carry no criteria of their own,
@@ -631,6 +639,7 @@ class TestDesignCoverage:
         assert rows[0]["criteria"] == 2
         assert pct == 50.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-6")
     def test_own_and_spec_criteria_are_pooled_into_one_fraction(self, check):
         spec = _spec("SPEC-1", rungs=["reachable"])
         adr = _adr("ADR-A", own=["declared"], specs=["SPEC-1"])
@@ -638,6 +647,7 @@ class TestDesignCoverage:
         assert (rows[0]["reachable"], rows[0]["criteria"]) == (1, 2)
         assert pct == 50.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-6")
     def test_a_spec_naming_its_decision_twice_is_not_counted_twice(self, check):
         """`collect_adrs` appends a child per resolved reference, so an
         `implements:` list naming one ADR twice puts the same spec in that
@@ -657,6 +667,7 @@ class TestDesignCoverage:
         assert check.design_coverage([], []) == (0.0, [])
         assert check.design_coverage([], [_adr("ADR-A", status="Proposed")])[0] == 0.0
 
+    @pytest.mark.ac("ADR-082226-ff3c/AC-7")
     def test_the_banked_precision_resolves_a_single_criterion(self, check):
         """The claim `COVERAGE_PRECISION` actually has to carry.
 

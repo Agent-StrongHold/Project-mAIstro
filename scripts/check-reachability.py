@@ -17,6 +17,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "quality" / "reachability-baseline.json"
 _FLAT_PREFIX = "@flat/"
+_TOOL_PREFIX = "@tool/"
+
+#: Repo tooling. Not production code and not on any package path, so the walk
+#: above cannot see it — which is why a CI gate's acceptance criteria could
+#: never reach the ladder's top rung (ADR-082526-aef8). Rooted at the workflow
+#: steps that execute it rather than at a declared list: a list drifts the
+#: moment a step is renamed, and the workflow file is already the authority on
+#: what CI runs.
+TOOLING_DIR = "scripts"
+WORKFLOW_GLOB = ".github/workflows/*.yml"
 
 
 @dataclass(frozen=True)
@@ -78,6 +88,66 @@ DYNAMIC_ROOTS = (
     "maistro_turing.runtime",
     "maistro_canvas.canvas.routes",
 )
+
+
+def _tool_key(name: str) -> str:
+    return f"{_TOOL_PREFIX}{name}"
+
+
+def _collect_tooling(root: Path) -> dict[str, Path]:
+    """Every tooling script, keyed by filename stem.
+
+    Keyed by stem rather than dotted name because these are not importable
+    modules: `check-ac-state.py` is not a legal identifier, and the scripts run
+    as files. The stem is what a workflow names and what a sibling import would
+    use, so it is the identity both root discovery and the import walk need.
+    """
+    tooling = root / TOOLING_DIR
+    if not tooling.is_dir():
+        return {}
+    return {_tool_key(path.stem): path for path in sorted(tooling.glob("*.py"))}
+
+
+def _workflow_text(root: Path) -> str:
+    return "\n".join(path.read_text(errors="replace") for path in sorted(root.glob(WORKFLOW_GLOB)))
+
+
+def _tooling_roots(mods: dict[str, Path], workflows: str) -> set[str]:
+    """Scripts a workflow step executes, found by filename in the workflow text.
+
+    Matching on the file name is deliberately literal. A script invoked through
+    a shell variable, or from a shell script the workflow calls, is not seen —
+    the same blind spot `_eager_sweep` exists for on the package side, and it
+    errs toward reporting a script unreachable rather than toward silence.
+    """
+    return {
+        key for key, path in mods.items() if key.startswith(_TOOL_PREFIX) and path.name in workflows
+    }
+
+
+def _tooling_edges(path: Path, tooling: dict[str, Path]) -> set[str]:
+    """Sibling scripts this one imports, or names as a string.
+
+    The string half is not optional. `scripts/ac_outcome_plugin.py` is reached
+    only as the literal "ac_outcome_plugin" inside `check-ac-state.py`, loaded
+    as a pytest plugin and never imported. An import-only walk reports a live
+    plugin as dead, which is the wrong answer in the direction this gate exists
+    to get right.
+    """
+    try:
+        tree = ast.parse(path.read_text(errors="replace"))
+    except SyntaxError:
+        return set()
+    stems = {key[len(_TOOL_PREFIX) :] for key in tooling}
+    named: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            named.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            named.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            named.add(node.value)
+    return {_tool_key(stem) for stem in named & stems}
 
 
 def _is_production_python(path: Path, base: Path) -> bool:
@@ -178,6 +248,8 @@ def _collect_modules(
 
     for app in flat_apps:
         add_tree(root / app.path, "", app.name)
+
+    mods.update(_collect_tooling(root))
 
     return mods
 
@@ -351,8 +423,14 @@ def _reachability(
     dynamic_roots: tuple[str, ...] = DYNAMIC_ROOTS,
 ) -> tuple[dict[str, Path], set[str]]:
     mods = _collect_modules(root, flat_apps)
+    tooling = {key: path for key, path in mods.items() if key.startswith(_TOOL_PREFIX)}
     edges: dict[str, set[str]] = {}
     for key, path in mods.items():
+        if key in tooling:
+            # Tooling resolves against its own flat namespace, never against a
+            # package name that happens to match a script stem.
+            edges[key] = _tooling_edges(path, tooling) - {key}
+            continue
         app_name = _module_app_name(key)
         import_name = _module_import_name(key)
         edges[key] = {
@@ -362,6 +440,7 @@ def _reachability(
         }
 
     stack = [root_name for root_name in (*static_roots, *dynamic_roots) if root_name in mods]
+    stack.extend(_tooling_roots(tooling, _workflow_text(root)))
     for app in flat_apps:
         stack.extend(
             key
@@ -384,6 +463,11 @@ def _reachability(
 
 
 def _display_name(key: str, flat_apps: tuple[FlatApp, ...]) -> str:
+    if key.startswith(_TOOL_PREFIX):
+        # The repo path, not a dotted name: these are files a person opens, and
+        # `scripts/mutation_ratchet.py` is findable where `mutation_ratchet` is
+        # one grep away from the wrong thing.
+        return f"{TOOLING_DIR}/{key[len(_TOOL_PREFIX) :]}.py"
     flat = _flat_identity(key)
     if not flat:
         return key

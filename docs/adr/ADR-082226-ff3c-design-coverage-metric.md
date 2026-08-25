@@ -3,8 +3,9 @@ id: ADR-082226-ff3c
 title: "Design coverage: one monotone number for how much of the decided design is proven"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-22
+accepted: 2026-08-25
 substrate:
   - maistro-engine#ADR-062026-9b30
 implements: []
@@ -12,8 +13,23 @@ related: []
 supersedes: []
 blocks: []
 blocked-by: []
-contracts: []
-tests: []
+contracts:
+  - behavioral
+tests:
+  - tests/test_check_ac_state.py
+ac-modules:
+  AC-1: scripts/check-ac-state.py
+  AC-2: scripts/check-ac-state.py
+  AC-3: scripts/check-ac-state.py
+  AC-4: scripts/check-ac-state.py
+  AC-5: scripts/check-ac-state.py
+  AC-6: scripts/check-ac-state.py
+  AC-7: scripts/check-ac-state.py
+history:
+  - status: Proposed
+    date: 2026-08-22
+  - status: Accepted
+    date: 2026-08-25
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -136,3 +152,27 @@ graph cannot reach proves the test runs, not that the system does.
   that.
 - Publication lives in `docs/architecture/CONVERGENCE-MATRIX.md`, which already
   carries per-subsystem convergence rows and is already machine-checked.
+
+## Acceptance criteria
+
+Retrofitted in #249, not newly claimed. This decision shipped in #166 and its
+thirteen tests in `TestDesignCoverage` have been asserting it since; what was
+missing was the criteria naming what they prove. It stayed `Proposed` after
+shipping because accepting it would have owed an implementing spec it does not
+have — the ceiling that #236's ADR also had to route around, and the reason
+#249 exists.
+
+- [x] **AC-1** One decision weighs the same however verbosely it was written,
+  and a half-proven decision contributes a half.
+- [x] **AC-2** A decision declaring no criteria scores zero rather than dropping
+  out of the denominator.
+- [x] **AC-3** Deleting an unproven criterion cannot raise the number.
+- [x] **AC-4** `Proposed` is excluded; `Accepted` and `Implemented` both count
+  as taken.
+- [x] **AC-5** The bar is `reachable`, not `passing` — a passing test whose
+  module the graph cannot reach proves the test runs, not that the system does.
+- [x] **AC-6** An implementing spec's criteria count toward its decision, pooled
+  with the decision's own into one fraction, and a spec naming its decision
+  twice is not counted twice.
+- [x] **AC-7** The banked precision resolves the smallest move a single
+  criterion can make.

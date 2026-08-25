@@ -251,3 +251,105 @@ def _load():
         unreachable, _ = check.unreachable_modules()
         swept = [module for module in unreachable if module.startswith("maistro.graph.nodes.")]
         assert swept == []
+
+
+# --- #249: repo tooling is in the graph, rooted at the workflow steps that run it ---
+
+
+def _tooling_tree(tmp_path, *, workflow: str, **scripts: str):
+    """A synthetic repo: some workflow YAML and some scripts."""
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(workflow)
+    (tmp_path / "scripts").mkdir()
+    for name, body in scripts.items():
+        (tmp_path / "scripts" / f"{name}.py").write_text(body)
+    return tmp_path
+
+
+def _unreachable_tooling(check, tmp_path) -> list[str]:
+    unreachable, _ = check.unreachable_modules(
+        root=tmp_path, flat_apps=(), static_roots=(), dynamic_roots=()
+    )
+    return sorted(unreachable)
+
+
+@pytest.mark.ac("ADR-082526-aef8/AC-1")
+def test_a_script_a_workflow_step_runs_is_reachable(check, tmp_path):
+    tree = _tooling_tree(
+        tmp_path,
+        workflow="jobs:\n  q:\n    steps:\n      - run: python scripts/gate.py\n",
+        gate="print('hi')\n",
+    )
+    assert _unreachable_tooling(check, tree) == []
+
+
+@pytest.mark.ac("ADR-082526-aef8/AC-2")
+def test_a_script_no_workflow_runs_is_reported(check, tmp_path):
+    tree = _tooling_tree(
+        tmp_path,
+        workflow="jobs:\n  q:\n    steps:\n      - run: python scripts/gate.py\n",
+        gate="print('hi')\n",
+        orphan="print('nobody runs me')\n",
+    )
+    assert _unreachable_tooling(check, tree) == ["scripts/orphan.py"]
+
+
+@pytest.mark.ac("ADR-082526-aef8/AC-3")
+def test_a_script_named_only_as_a_string_is_reachable(check, tmp_path):
+    """`ac_outcome_plugin` is loaded by name, never imported.
+
+    An import-only walk reports a live pytest plugin as dead — the wrong
+    verdict in the direction this gate exists to get right.
+    """
+    tree = _tooling_tree(
+        tmp_path,
+        workflow="jobs:\n  q:\n    steps:\n      - run: python scripts/gate.py\n",
+        gate='PLUGINS = ["plugin"]\n',
+        plugin="def pytest_configure(config):\n    return None\n",
+    )
+    assert _unreachable_tooling(check, tree) == []
+
+
+@pytest.mark.ac("ADR-082526-aef8/AC-4")
+def test_a_script_imported_by_a_reached_script_is_reachable(check, tmp_path):
+    tree = _tooling_tree(
+        tmp_path,
+        workflow="jobs:\n  q:\n    steps:\n      - run: python scripts/gate.py\n",
+        gate="import helper\n\nhelper.go()\n",
+        helper="def go():\n    return 1\n",
+    )
+    assert _unreachable_tooling(check, tree) == []
+
+
+@pytest.mark.ac("ADR-082526-aef8/AC-2")
+def test_an_import_from_an_unreached_script_does_not_rescue_it(check, tmp_path):
+    """Two orphans importing each other are still two orphans.
+
+    Reachability is from a root, not from having a caller — the distinction
+    ADR-082526-1899 had to make the hard way for `AgentCard.from_identity`.
+    """
+    tree = _tooling_tree(
+        tmp_path,
+        workflow="jobs:\n  q:\n    steps:\n      - run: python scripts/gate.py\n",
+        gate="print('hi')\n",
+        orphan="import friend\n\nfriend.go()\n",
+        friend="def go():\n    return 1\n",
+    )
+    assert _unreachable_tooling(check, tree) == ["scripts/friend.py", "scripts/orphan.py"]
+
+
+@pytest.mark.ac("ADR-082526-aef8/AC-5")
+def test_tooling_entries_are_in_the_committed_baseline(check):
+    """The real tree: the ratchet covers tooling like any other module."""
+    unreachable, _ = check.unreachable_modules()
+    baseline = set(json.loads(BASELINE.read_text())["unreachable"])
+    tooling = {name for name in unreachable if name.startswith("scripts/")}
+    assert tooling, "tooling should be in the graph at all"
+    assert tooling <= baseline, sorted(tooling - baseline)
+
+
+def test_the_gate_scripts_themselves_are_reachable(check):
+    """A gate CI runs must never read as dead — that would be the alarm failing."""
+    unreachable, _ = check.unreachable_modules()
+    for gate in ("check-reachability.py", "check-ac-state.py", "check-wiring-reads.py"):
+        assert f"scripts/{gate}" not in unreachable

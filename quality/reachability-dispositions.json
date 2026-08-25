@@ -619,6 +619,47 @@
       "modules": [
         "maistro.scheduling.admission"
       ]
+    },
+    {
+      "id": "mutation-testing-tooling",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "The mutation-testing pillar's scripts. They are unreachable for one reason and it is not neglect of the scripts: .github/workflows/mutation.yml is a stub whose only step prints 'Mutation temporarily disabled', with the job named 'Mutation testing deferred to self-hosted runners'. Nine scripts are therefore dead behind a switched-off gate, which nothing reported until tooling entered the reachability graph (ADR-082526-aef8). Restoring the workflow reaches all nine at once; that is its own issue with its own evidence, not a side effect of measuring them.",
+      "root": ".github/workflows/mutation.yml, once its real job replaces the disabled stub",
+      "modules": [
+        "scripts/check_mutation_baseline.py",
+        "scripts/mutation_aggregate.py",
+        "scripts/mutation_history.py",
+        "scripts/mutation_packet.py",
+        "scripts/mutation_ratchet.py",
+        "scripts/mutation_resume.py",
+        "scripts/mutation_scheduler.py",
+        "scripts/mutation_targets.py",
+        "scripts/mutation_viability.py"
+      ]
+    },
+    {
+      "id": "operator-cli-tooling",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "Operator-invoked CLIs rather than CI gates, and each says so itself. check_assertion_quality reports syntax-level assertion risks and its own docstring defers the real evidence to the mutation ratchet, so wiring it as a blocking gate would assert something it states it cannot certify. generate_repo_tasks (with its _impl) mines retained development history on demand. openrouter_rpm_pacer paces a live account against OpenRouter's shared daily budget, which is an operational act against a real external quota and not something a PR should trigger. Unreachable from CI is the correct state for all four, not a gap to close.",
+      "modules": [
+        "scripts/check_assertion_quality.py",
+        "scripts/generate_repo_tasks.py",
+        "scripts/generate_repo_tasks_impl.py",
+        "scripts/openrouter_rpm_pacer.py"
+      ]
+    },
+    {
+      "id": "rsi-containment-review-simulations",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "Supporting artifacts for docs/reviews/2026-07-29-rsi-containment-review.md section 9.6, which they are cited by name in. They demonstrate the RLPHD uncertainty band shrinking as an operator rules; they compute nothing the product depends on and assert nothing CI could check. A simulation whose output is a figure in a review document is reachable from that document, which is the only root it needs \u2014 running them in CI would spend minutes to reproduce a number already written down.",
+      "modules": [
+        "scripts/rlphd_band_sim.py",
+        "scripts/rlphd_cold_start_sim.py",
+        "scripts/rlphd_two_tier_sim.py"
+      ]
     }
   ]
 }
