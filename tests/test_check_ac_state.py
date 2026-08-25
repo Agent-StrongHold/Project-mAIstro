@@ -1012,3 +1012,94 @@ class TestChainMandateGate:
         """Same refusal the criterion mandate makes, for the same reason: an
         unreadable base makes every absent link look introduced."""
         assert check.corpus_at("definitely-not-a-rev") is None
+
+
+class TestPassingPerRoot:
+    """One pytest session per root, and what each outcome is allowed to mean (#267).
+
+    This used to be a single invocation over every root at once, which worked
+    only because the roots it held did not collide. Adding
+    `packages/hive-conductor/backend/tests` made them collide -- `tests/config/`
+    under maistro-core claims the top-level name `config`, which Hive's flat
+    layout also uses -- and the interrupted session reported *every* criterion
+    in the repository as unmeasured. Measured: design coverage 17.24% -> 0.0%.
+
+    So the distinction these tests defend is the one the script exists for. An
+    empty set is "the suite ran and nothing passed"; None is "we do not know".
+    A root that cannot run must produce the second, and must not let the roots
+    that did run stand in for the whole answer.
+    """
+
+    def test_no_existing_root_is_unmeasured(self, check):
+        assert check.passing_ac_ids([Path("/nonexistent-root")]) is None
+
+    def test_outcomes_union_across_roots(self, check, monkeypatch, tmp_path):
+        """Each root contributes its own passing ids; the answer is all of them."""
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        seen: list[Path] = []
+
+        def fake(root: Path) -> set[str]:
+            seen.append(root)
+            return {"SPEC-1/AC-1"} if root == a else {"SPEC-2/AC-1"}
+
+        monkeypatch.setattr(check, "_passing_in_root", fake)
+        assert check.passing_ac_ids([a, b]) == {"SPEC-1/AC-1", "SPEC-2/AC-1"}
+        assert seen == [a, b], "each root gets its own session"
+
+    def test_one_unmeasured_root_takes_the_whole_answer_down(self, check, monkeypatch, tmp_path):
+        """The property #267 turned on. Returning the roots that did run would
+        report every criterion proven elsewhere as *not passing*, which is a
+        fabrication rather than a gap -- and the ratchet would then fail on a
+        floor nobody actually broke."""
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        monkeypatch.setattr(
+            check, "_passing_in_root", lambda root: None if root == b else {"SPEC-1/AC-1"}
+        )
+        assert check.passing_ac_ids([a, b]) is None
+
+    def test_a_root_with_no_markers_is_empty_not_unmeasured(self, check, monkeypatch, tmp_path):
+        """pytest exits 5 when `-m ac` deselects everything, which per-root is
+        ordinary: most roots carry no markers at all. Reading that as a failed
+        measurement would make the common case indistinguishable from a broken
+        one. It was unreachable while every root shared a session."""
+
+        def fake_run(args, **kwargs):
+            return subprocess.CompletedProcess(args, 5, "", "")
+
+        monkeypatch.setattr(check.subprocess, "run", fake_run)
+        assert check._passing_in_root(tmp_path) == set()
+
+    def test_an_interrupted_session_is_unmeasured(self, check, monkeypatch, tmp_path):
+        """Exit 2 is a collection error or an interrupt -- the session did not
+        run to completion, so its outcome map is partial by definition."""
+
+        def fake_run(args, **kwargs):
+            return subprocess.CompletedProcess(args, 2, "29 errors during collection", "")
+
+        monkeypatch.setattr(check.subprocess, "run", fake_run)
+        assert check._passing_in_root(tmp_path) is None
+
+    def test_a_completed_session_reports_what_passed(self, check, monkeypatch, tmp_path):
+        """The plugin writes its outcome map to the path the env var names, and
+        exit 1 (some marked test failed) is still a completed measurement."""
+
+        def fake_run(args, **kwargs):
+            out = Path(kwargs["env"]["AC_OUTCOME_JSON"])
+            out.write_text(json.dumps({"passing": ["SPEC-9/AC-2"]}), encoding="utf-8")
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        monkeypatch.setattr(check.subprocess, "run", fake_run)
+        assert check._passing_in_root(tmp_path) == {"SPEC-9/AC-2"}
+
+    def test_a_session_that_never_started_is_unmeasured(self, check, monkeypatch, tmp_path):
+        """A timeout or a missing interpreter is not evidence about criteria."""
+
+        def fake_run(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, 1800)
+
+        monkeypatch.setattr(check.subprocess, "run", fake_run)
+        assert check._passing_in_root(tmp_path) is None
