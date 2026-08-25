@@ -49,8 +49,10 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install workspace
-        run: uv sync --frozen
+      - name: Install workspace and quality scanners
+        run: |
+          uv sync --frozen
+          bash scripts/install-quality-scanners.sh
 
       - name: Apply strict M0 corrections
         run: uv run python scripts/m0-finalize.py
