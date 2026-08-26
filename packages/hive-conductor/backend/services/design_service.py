@@ -277,6 +277,39 @@ async def start_design_service(settings: Settings) -> None:
         _status = DesignServiceStatus(cause=f"{type(exc).__name__}: {exc}")
 
 
+def _importable(slug: str) -> bool:
+    """Whether one catalogue slug's files are present *and* parse.
+
+    The same reads and the same JSON parse `import_from_catalog` performs, so
+    the answer means what the word says. Deliberately not a call into the
+    importer itself: that also runs the content scan and registers the system,
+    and a startup probe must do neither.
+    """
+    import json
+
+    from maistro_design.systems.importer import CATALOG_ROOT, ESSENTIAL_FILES
+
+    directory = CATALOG_ROOT / slug
+    for name in ESSENTIAL_FILES:
+        if name == "design-tokens.json":
+            continue  # optional, exactly as the importer treats it
+        path = directory / name
+        if not path.is_file():
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if name.endswith(".json"):
+            try:
+                json.loads(text)
+            except ValueError:
+                return False
+        elif not text.strip():
+            return False
+    return True
+
+
 def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
     """The importable Tier-2 slugs, or the reason they cannot be listed.
 
@@ -286,12 +319,7 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
     only, so returning the index verbatim would offer six systems that cannot
     be imported from the path the offer implies.
     """
-    from maistro_design.systems.importer import (
-        CATALOG_ROOT,
-        ESSENTIAL_FILES,
-        ORIGIN_CATALOG,
-        load_catalog,
-    )
+    from maistro_design.systems.importer import ORIGIN_CATALOG, load_catalog
 
     try:
         entries = load_catalog()
@@ -308,13 +336,13 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
     # The index is a claim; the files are the fact (#413). `import_from_catalog`
     # reads `systems/catalog/<slug>/`, not the index, so a build carrying
     # catalog.json without the payloads would advertise 144 importable systems
-    # and fail every one on click. `design-tokens.json` is excluded from the
-    # requirement for the same reason the importer treats it as optional -- a
-    # system without tokens still imports, it just carries none.
-    required = [name for name in ESSENTIAL_FILES if name != "design-tokens.json"]
-    present = [
-        slug for slug in indexed if all((CATALOG_ROOT / slug / name).is_file() for name in required)
-    ]
+    # and fail every one on click.
+    #
+    # Existence is not enough either (#413 review): the importer *parses* what
+    # it reads, so a present-but-malformed `manifest.json` gets advertised and
+    # then fails on selection. `_importable` performs the same reads and the
+    # same parse, which is the only thing that earns the word "importable".
+    present = [slug for slug in indexed if _importable(slug)]
     missing = len(indexed) - len(present)
     if not present:
         cause = f"catalog index lists {len(indexed)} system(s), none of them installed"

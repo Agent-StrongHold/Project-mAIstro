@@ -295,13 +295,65 @@ class TestOnlyModuleScopeCounts:
         )
         assert _scan(check, workspace, "from thing.opt import dumps\n") == []
 
-    def test_a_name_bound_under_type_checking_still_counts(self, check, workspace):
+    def test_a_name_bound_under_type_checking_is_not_a_runtime_name(self, check, workspace):
+        """#413 review. The block never executes, so a runtime import of that
+        name fails — and an earlier version of this test asserted the opposite,
+        which was a false green written into the suite.
+
+        `maistro.archive` is the live instance: it declares `S3ArchiveStore`
+        under TYPE_CHECKING and serves it from a `__getattr__`. Accepting the
+        type-only binding would pass a runtime import with that `__getattr__`
+        deleted."""
         pkg = workspace / "packages" / "thing" / "src" / "thing"
         (pkg / "tc.py").write_text(
             "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Alias = int\n",
             encoding="utf-8",
         )
-        assert _scan(check, workspace, "from thing.tc import Alias\n") == []
+        (finding,) = _scan(check, workspace, "from thing.tc import Alias\n")
+        assert "only under TYPE_CHECKING" in finding.reason
+
+    def test_a_type_checking_import_may_use_a_type_only_name(self, check, workspace):
+        """The other half of the rule: an importer that is itself under
+        TYPE_CHECKING only has to satisfy a type checker."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "tc.py").write_text(
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Alias = int\n",
+            encoding="utf-8",
+        )
+        body = (
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    from thing.tc import Alias\n"
+        )
+        assert _scan(check, workspace, body) == []
+
+    def test_an_else_branch_of_type_checking_is_runtime(self, check, workspace):
+        """`if TYPE_CHECKING: ... else: ...` — the else runs."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "both.py").write_text(
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    Only = int\nelse:\n    Real = 1\n",
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.both import Real\n") == []
+
+    def test_a_getattr_export_is_trusted_as_far_as_dunder_all(self, check, workspace):
+        """A module-level `__getattr__` can produce names no static read finds,
+        so what it publishes in `__all__` counts as runtime-present."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "lazy.py").write_text(
+            '__all__ = ["Widget"]\n\n\ndef __getattr__(name):\n    raise AttributeError(name)\n',
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.lazy import Widget\n") == []
+
+    def test_a_getattr_without_dunder_all_publishes_nothing_verifiable(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "opaque.py").write_text(
+            "def __getattr__(name):\n    raise AttributeError(name)\n", encoding="utf-8"
+        )
+        assert [f.target for f in _scan(check, workspace, "from thing.opaque import X\n")] == [
+            "thing.opaque.X"
+        ]
 
     def test_a_tuple_unpack_at_module_scope_counts(self, check, workspace):
         pkg = workspace / "packages" / "thing" / "src" / "thing"
@@ -324,6 +376,13 @@ class TestTheScanCoversWhatItClaims:
     def test_the_root_test_tree_is_scanned(self, check):
         files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
         assert "tests/test_check_cross_package_imports.py" in files
+
+    def test_the_tools_tree_is_scanned(self, check):
+        """#413 review. `tools/` holds first-party importers too — one of its
+        scripts is run by a workflow — so leaving it out kept the same
+        overclaim alive one directory over."""
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert any(f.startswith("tools/") for f in files)
 
     def test_the_scripts_tree_is_scanned(self, check):
         """A gate that cannot import what it names is a gate that does not run,

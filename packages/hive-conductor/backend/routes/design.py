@@ -278,6 +278,7 @@ async def create_render_job(project_id: str, format: str = "pdf") -> dict[str, A
     Returns:
       {job_id, status, created_at}
     """
+    _require_ready()
     try:
         from services.design_preview import get_design_preview_service
 

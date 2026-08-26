@@ -230,10 +230,23 @@ class TestTheOptionalFileIsDeclared:
             sys.path.pop(0)
         assert declared == set(BUNDLED_SLUGS)
 
-    def test_all_four_essential_files_are_declared_per_system(self, check):
-        """Not three. The list mirrors `importer.ESSENTIAL_FILES` exactly, so a
-        fifth file added upstream shows up here as a gap rather than silently
-        going unchecked."""
+    def test_the_local_constant_equals_the_importers(self, check):
+        """The verifier duplicates `ESSENTIAL_FILES` because it must run before
+        anything is installed. Nothing tied the copy to the original, so a
+        fifth file added upstream left the verifier, its declaration and this
+        test all green while the wheel could omit the new requirement (#413
+        review). Compared against the source of truth, not against itself."""
+        import sys
+
+        sys.path.insert(0, str(ROOT / "packages" / "maistro-design" / "src"))
+        try:
+            from maistro_design.systems.importer import ESSENTIAL_FILES
+        finally:
+            sys.path.pop(0)
+        assert tuple(check.ESSENTIAL_FILES) == tuple(ESSENTIAL_FILES)
+
+    def test_every_essential_file_is_declared_per_system(self, check):
+        """Whatever the importer requires, declared for all six systems."""
         pkg = next(p for p in check.PACKAGES if p.dist == "maistro-design")
         bundled = [r for r in pkg.data_files if r.startswith("systems/bundled/")]
         assert len(bundled) == 6 * len(check.ESSENTIAL_FILES)

@@ -287,3 +287,55 @@ class TestTheCatalogClaimIsVerified:
         slugs, cause = design_service._probe_catalog()
         assert slugs == ("airbnb",)
         assert cause is None
+
+
+class TestImportableMeansParseable:
+    """#413 review. Checking that three files exist is not the same claim the
+    word "importable" makes: `import_from_catalog` *parses* what it reads, so a
+    present-but-malformed `manifest.json` was advertised and then failed on
+    selection. `_importable` runs the same reads and the same parse."""
+
+    def test_the_real_catalog_slugs_all_parse(self):
+        from maistro_design.systems.importer import CATALOG_ROOT
+
+        slugs = sorted(p.name for p in CATALOG_ROOT.iterdir() if p.is_dir())
+        assert slugs, "no catalogue systems installed"
+        assert [s for s in slugs if not design_service._importable(s)] == []
+
+    def test_a_malformed_manifest_is_not_importable(self, monkeypatch, tmp_path):
+        """The case existence alone accepted."""
+        from maistro_design.systems import importer
+
+        root = tmp_path / "catalog"
+        (root / "broken").mkdir(parents=True)
+        (root / "broken" / "manifest.json").write_text("{not json", encoding="utf-8")
+        (root / "broken" / "DESIGN.md").write_text("# Broken", encoding="utf-8")
+        (root / "broken" / "tokens.css").write_text(":root{}", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        assert not design_service._importable("broken")
+
+    def test_an_empty_required_file_is_not_importable(self, monkeypatch, tmp_path):
+        """A zero-byte `tokens.css` parses as nothing and carries nothing; the
+        importer reads it expecting content."""
+        from maistro_design.systems import importer
+
+        root = tmp_path / "catalog"
+        (root / "hollow").mkdir(parents=True)
+        (root / "hollow" / "manifest.json").write_text('{"id": "hollow"}', encoding="utf-8")
+        (root / "hollow" / "DESIGN.md").write_text("# Hollow", encoding="utf-8")
+        (root / "hollow" / "tokens.css").write_text("   \n", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        assert not design_service._importable("hollow")
+
+    def test_a_missing_optional_tokens_file_is_still_importable(self, monkeypatch, tmp_path):
+        """`design-tokens.json` stays optional exactly as the importer treats
+        it — a system without tokens still imports, it just carries none."""
+        from maistro_design.systems import importer
+
+        root = tmp_path / "catalog"
+        (root / "sparse").mkdir(parents=True)
+        (root / "sparse" / "manifest.json").write_text('{"id": "sparse"}', encoding="utf-8")
+        (root / "sparse" / "DESIGN.md").write_text("# Sparse", encoding="utf-8")
+        (root / "sparse" / "tokens.css").write_text(":root{}", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        assert design_service._importable("sparse")
