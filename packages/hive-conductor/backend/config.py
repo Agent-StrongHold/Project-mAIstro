@@ -185,7 +185,6 @@ class Settings(BaseSettings):
     # exactly like the bug this closes.
     memory_decay_interval_s: int = 3600
 
-
     @property
     def maistro_llm_base_url(self) -> str | None:
         """Compatibility view of the canonical gateway endpoint.
