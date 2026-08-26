@@ -70,7 +70,7 @@ def main() -> None:
             "uvicorn",
             "maistro_server.main:app",
             "--host",
-            "0.0.0.0",
+            "0.0.0.0",  # nosec B104 - container must accept traffic from its network.
             "--port",
             "8000",
         ],
