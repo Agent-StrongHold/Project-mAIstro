@@ -9,6 +9,9 @@ set -euo pipefail
 #   - it binds services to localhost by default;
 #   - it starts the checked-out source tree with docker/podman compose.
 
+# Where this script lives, so its helpers resolve whatever the caller's cwd is.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 COMPOSE_FILE="${MAISTRO_COMPOSE_FILE:-docker-compose.yml}"
 ENV_FILE="${MAISTRO_ENV_FILE:-.env}"
 BIND_HOST="${MAISTRO_BIND_HOST:-127.0.0.1}"
@@ -248,11 +251,31 @@ env_get() {
     fi
 }
 
+# Every write to $ENV_FILE goes through scripts/secret_env.py (#357).
+#
+# `printf >>` and `cat >` create the file under the caller's umask -- 0644 on a
+# typical system -- and the old code narrowed it with `chmod 600` only after
+# every secret had already been written. Any process that could read the
+# directory could read the credentials in that window, and a crash inside it
+# left them world-readable for good.
+#
+# The helper creates a new file with O_CREAT|O_EXCL at 0600 and replaces an
+# existing one through a same-directory temp file, so the mode is never wider
+# than 0600 and an interrupted run leaves the previous file intact.
+# Usage: secret_env_run <command> [args...]   -- $ENV_FILE is inserted as the
+# path argument the CLI expects immediately after the command.
+secret_env_run() {
+    local command="$1"
+    shift
+    ensure_python
+    "${PYTHON_CMD[@]}" "$SCRIPT_DIR/scripts/secret_env.py" "$command" "$ENV_FILE" "$@"
+}
+
 append_env_once() {
     local key="$1"
     local value="$2"
     if ! env_has "$key"; then
-        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+        secret_env_run append-once "$key" "$value"
     fi
 }
 
@@ -260,95 +283,18 @@ append_env_once() {
 # Use for secrets that compose requires non-empty; a prior install may have
 # written the key with an empty value as a placeholder.
 fill_env_value() {
-    local key="$1"
-    local value="$2"
-    ensure_python
-    "${PYTHON_CMD[@]}" - "$ENV_FILE" "$key" "$value" <<'PY'
-import sys
-from pathlib import Path
-
-path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
-p = Path(path)
-lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
-prefix = key + "="
-found = False
-for i, line in enumerate(lines):
-    if line.startswith(prefix):
-        found = True
-        if line[len(prefix):].strip() == "":
-            lines[i] = prefix + value
-        break
-if not found:
-    lines.append(prefix + value)
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
+    secret_env_run set-key "$1" "$2" --only-if-blank
 }
 
-# Ensure API_KEYS (a JSON array) contains token. Preserves other existing
-# keys. Uses append_env_once semantics only as a final fallback.
+# Ensure API_KEYS (a JSON array) contains token. Preserves other existing keys.
 ensure_api_keys_contains() {
-    local token="$1"
-    ensure_python
-    "${PYTHON_CMD[@]}" - "$ENV_FILE" "$token" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path, token = sys.argv[1], sys.argv[2]
-p = Path(path)
-lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
-prefix = "API_KEYS="
-found_idx = None
-keys: list[str] = []
-for i, line in enumerate(lines):
-    if line.startswith(prefix):
-        found_idx = i
-        raw = line[len(prefix):].strip()
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    keys = [str(x) for x in parsed]
-            except json.JSONDecodeError:
-                keys = []
-        break
-if token not in keys:
-    keys.append(token)
-new_line = prefix + json.dumps(keys)
-if found_idx is not None:
-    lines[found_idx] = new_line
-else:
-    lines.append(new_line)
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
+    secret_env_run ensure-api-keys "$1"
 }
 
 # Insert or replace a key in $ENV_FILE. Unlike append_env_once this keeps the
-# value current across runs (e.g. the docker socket path can change when the
-# user switches between Colima and Docker Desktop).
-upsert_env() {
-    local key="$1"
-    local value="$2"
-    ensure_python
-    "${PYTHON_CMD[@]}" - "$ENV_FILE" "$key" "$value" <<'PY'
-import pathlib
-import sys
-
-path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
-p = pathlib.Path(path)
-lines = p.read_text().splitlines() if p.exists() else []
-prefix = key + "="
-out, replaced = [], False
-for line in lines:
-    if line.startswith(prefix):
-        out.append(prefix + value)
-        replaced = True
-    else:
-        out.append(line)
-if not replaced:
-    out.append(prefix + value)
-p.write_text("\n".join(out) + "\n")
-PY
+# key's position and overwrites whatever value is there.
+set_env_value() {
+    secret_env_run set-key "$1" "$2"
 }
 
 append_provider_placeholders() {
@@ -374,8 +320,13 @@ append_provider_placeholders() {
     done
 }
 
-chmod_env_file() {
-    chmod 600 "$ENV_FILE" 2>/dev/null || warn "Could not chmod 600 $ENV_FILE on this filesystem."
+# The mode is established at creation now, not here (#357). This remains as a
+# check: if the file somehow is not 0600 and owned by this user, say so loudly
+# rather than assume. `check` never rewrites the file, so a refusal here is
+# information, not a repair that might mask the cause.
+verify_env_file() {
+    secret_env_run check \
+        || warn "$ENV_FILE did not pass the credential-file safety check above."
 }
 
 write_new_env() {
@@ -386,7 +337,11 @@ write_new_env() {
     langfuse_secret="$(random_secret "" 32)"
     langfuse_salt="$(random_secret "" 24)"
 
-    cat > "$ENV_FILE" <<EOF
+    # Piped into `create`, which makes the file with O_CREAT|O_EXCL at 0600.
+    # Exclusive on purpose: sync_env_file only calls this when the file is
+    # absent, so a file appearing in between is something else writing to
+    # the same path and must not be clobbered with credentials.
+    secret_env_run create <<EOF
 # Generated by install.sh. Do not commit this file.
 # Regenerate with: rm .env && ./install.sh
 
@@ -443,7 +398,7 @@ DEEPINFRA_API_KEY=
 BENCHMARK_FIDELITY=proxy
 EOF
 
-    chmod_env_file
+    verify_env_file
     ok "Generated $ENV_FILE with local credentials."
 }
 
@@ -496,7 +451,7 @@ repair_existing_env() {
     append_env_once LANGFUSE_SECRET_KEY ""
     append_env_once BENCHMARK_FIDELITY "proxy"
     append_provider_placeholders
-    chmod_env_file
+    verify_env_file
     ok "Repaired missing/blank installer keys in $ENV_FILE."
 }
 
