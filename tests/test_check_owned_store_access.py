@@ -113,3 +113,61 @@ class TestTheDeclarationsAreHonest:
         read it, which means reaching past the scoped view on purpose."""
         assert gate._is_test(Path("tests/test_chat_session_ownership.py"))
         assert not gate._is_test(Path("routes/chat.py"))
+
+
+class TestTheFailurePathWorks:
+    """The half that has to work on the day it matters. `audit()` returning
+    `[]` and `main()` printing `ok` is the state the repository is in every
+    day; the reporting path only ever runs when someone is about to ship a
+    leak, which is a poor moment to find out it raises."""
+
+    @pytest.fixture
+    def fake_backend(self, tmp_path: Path, gate, monkeypatch: pytest.MonkeyPatch) -> Path:
+        (tmp_path / "stores.py").write_text("chat_sessions: ModelStore = ...\n", encoding="utf-8")
+        (tmp_path / "services").mkdir()
+        (tmp_path / "services" / "owned_records.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(gate, "BACKEND", tmp_path)
+        return tmp_path
+
+    def test_a_planted_violation_is_named_with_its_path_and_line(
+        self, fake_backend: Path, gate
+    ) -> None:
+        (fake_backend / "routes").mkdir()
+        (fake_backend / "routes" / "leaky.py").write_text(
+            "import stores\n\n\ndef handler():\n    return stores.chat_sessions.values()\n",
+            encoding="utf-8",
+        )
+
+        failures = gate.audit()
+
+        assert len(failures) == 1
+        assert "routes/leaky.py:5" in failures[0]
+        assert "OwnedStore" in failures[0]
+
+    def test_main_reports_and_fails(self, fake_backend: Path, gate, capsys) -> None:
+        (fake_backend / "leaky.py").write_text("stores.chat_sessions\n", encoding="utf-8")
+
+        assert gate.main() == 1
+        assert "unscoped access" in capsys.readouterr().out
+
+    def test_main_passes_a_clean_tree(self, fake_backend: Path, gate, capsys) -> None:
+        assert gate.main() == 0
+        assert "ok:" in capsys.readouterr().out
+
+    def test_a_missing_backend_is_a_failure_not_a_pass(
+        self, tmp_path: Path, gate, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A gate that walks nothing finds nothing. If the layout moves, this
+        has to go red rather than report `ok` over an empty walk."""
+        monkeypatch.setattr(gate, "BACKEND", tmp_path / "not-here")
+
+        assert gate.main() == 1
+
+    def test_compiled_caches_are_not_walked(self, fake_backend: Path, gate) -> None:
+        """`rglob` reaches into `__pycache__`; a stale .py copied in there
+        would be reported at a path nobody can fix."""
+        cache = fake_backend / "routes" / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "stale.py").write_text("stores.chat_sessions\n", encoding="utf-8")
+
+        assert gate.audit() == []

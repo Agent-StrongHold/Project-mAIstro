@@ -31,6 +31,9 @@ BOB_ID = "user-bob-312"
 BOB_USERNAME = "bob-312"
 BOB_PASSWORD = "bob-password-312"
 
+#: Distinguishes "no `user` attribute at all" from "an attribute set to None".
+_MISSING = object()
+
 
 def _clear_chat() -> None:
     for key in list(stores.chat_sessions.keys()):
@@ -271,3 +274,67 @@ class TestTheChecklistCountsChatsYouWrote:
         _create(bob)
 
         assert _has_chat_session("user") is False
+
+
+class TestTheViewFailsClosedWithoutAPrincipal:
+    """`AuthMiddleware` rejects an unauthenticated `/v1/` request before any
+    handler runs, so these branches are unreachable through the routes today.
+    They are the answer to a route that escapes the middleware — a new public
+    prefix, a router mounted outside `/v1/` — and an unreachable branch that
+    has never run is a guess, not a guarantee."""
+
+    def _request(self, user: object) -> object:
+        class _State:
+            pass
+
+        state = _State()
+        if user is not _MISSING:
+            state.user = user
+
+        class _Request:
+            pass
+
+        request = _Request()
+        request.state = state
+        return request
+
+    def test_no_attached_user_is_a_401(self) -> None:
+        from fastapi import HTTPException
+        from services.owned_records import owner_of
+
+        with pytest.raises(HTTPException) as caught:
+            owner_of(self._request(_MISSING))
+
+        assert caught.value.status_code == 401
+
+    def test_a_user_that_is_not_a_mapping_is_a_401(self) -> None:
+        """Anything that is not the middleware's dict — a model, a string, a
+        `None` left by a half-written dependency — is not a principal."""
+        from fastapi import HTTPException
+        from services.owned_records import owner_of
+
+        with pytest.raises(HTTPException) as caught:
+            owner_of(self._request("testuser"))
+
+        assert caught.value.status_code == 401
+
+    def test_a_user_with_no_id_is_a_401(self) -> None:
+        """The one that would be silent: an empty id compares equal to the
+        `user_id` every legacy row carries, so admitting it would hand the
+        quarantined rows to whoever arrived without one."""
+        from fastapi import HTTPException
+        from services.owned_records import owner_of
+
+        with pytest.raises(HTTPException) as caught:
+            owner_of(self._request({"id": "", "role": "user"}))
+
+        assert caught.value.status_code == 401
+
+
+class TestSeedingNeedsSomeoneToSeedFor:
+    def test_an_empty_user_id_seeds_nothing(self) -> None:
+        """Otherwise the guard above would be the only thing between an
+        unattributed caller and a row keyed on the empty string."""
+        stores.seed_chat_for("")
+
+        assert list(stores.chat_sessions.keys()) == []
