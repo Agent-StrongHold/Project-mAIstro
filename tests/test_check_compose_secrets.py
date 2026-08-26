@@ -372,3 +372,12 @@ class TestTheTwoProfilesThisPrFixed:
         gate knows how to judge. Documented as left alone rather than guessed
         at, so the behaviour is a decision instead of a fall-through."""
         assert _scan(check, "      - API_KEYS=${PREFIX}-suffix") == []
+
+    def test_a_query_string_is_not_read_as_userinfo(self, check) -> None:
+        """The `@` that makes this look like userinfo is in the path, past a
+        `/` the userinfo run cannot cross. Pinned because widening that run to
+        admit `?` is what a naive fix for the case above would do."""
+        assert _scan(check, "      - DATABASE_URL=http://db:5432/path?owner=a@b") == []
+
+    def test_a_password_containing_a_question_mark_is_reported(self, check) -> None:
+        assert len(_scan(check, "      - DATABASE_URL=postgresql://mcp:hun?ter@db:5432/app")) == 1

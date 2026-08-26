@@ -1,14 +1,13 @@
 ---
 inventory-delta:
-  tests/: +68
+  tests/: +70
 ---
 # claude-issue-367-committed-default-credentials
 
-Sixty-eight new node IDs, all in `tests/test_check_compose_secrets.py`. Nothing
+Seventy new node IDs, all in `tests/test_check_compose_secrets.py`. Nothing
 removed or reparametrised. Thirty-two of them landed with the first version of
-this gate; the remaining thirty-six pin the seven defects review found in it and
-one the coverage measurement surfaced, described under "What review found"
-below.
+this gate; the remaining thirty-eight pin the seven defects review found in it
+and the one coverage found, described under "What review found" below.
 
 ## One file departed from a convention the rest already followed
 
@@ -130,9 +129,20 @@ could not reach was the one that recognises a *parameterised* URL password. The
 userinfo pattern excluded whitespace, so
 `postgresql://u:${DB_PASSWORD:?Set DB_PASSWORD in .env}@host` — the exact
 spelling this gate asks people to write — parsed as having no userinfo at all.
-It passed, for the wrong reason, and the same exclusion hid a literal password
-that merely contained a space. The uncovered line was the symptom; the gate
-agreeing with itself was the defect.
+It passed, for the wrong reason.
+
+The first fix admitted spaces and the line was *still* uncovered: `:?` contains
+a `?`, which the pattern also excluded. So the test written to pin this defect
+was itself passing at the "no userinfo here" branch — the same defect, in the
+test meant to catch it, and only the coverage number said so. Both characters
+are admitted now; the run stops at `/` and `#`, which is what keeps
+`http://db/path?owner=a@b` from reading its query string as userinfo.
+`test_a_query_string_is_not_read_as_userinfo` pins that, because widening the
+run to admit `?` is exactly what a careless fix would do.
+
+The uncovered line was the symptom twice over; the gate agreeing with itself was
+the defect. The script is at 99% now — the remaining line is the `if __name__`
+guard.
 
 ### Two false positives that would have taught people to route around the gate
 

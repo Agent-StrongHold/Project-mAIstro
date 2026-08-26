@@ -132,13 +132,18 @@ def _userinfo_password(value: str) -> str:
     """The literal password inside a connection URL, or "" if there is none.
 
     The userinfo run is greedy up to the last `@` before the path, and it
-    admits spaces. Both matter: `postgresql://u:${DB_PASSWORD:?set it}@host`
-    has a space inside its own required-variable message, and excluding
-    whitespace made that URL parse as having no userinfo at all -- the right
-    answer for the wrong reason, and the same exclusion hid a literal password
-    that simply contained a space.
+    admits both spaces and `?`. Both matter, and for the same reason:
+    `postgresql://u:${DB_PASSWORD:?Set DB_PASSWORD in .env}@host` is the
+    spelling this gate asks for, and it contains one of each. Excluding either
+    made that URL parse as having no userinfo at all -- the right verdict
+    reached without ever looking at the password, which is also how a literal
+    password containing a space or a `?` got past.
+
+    Stopping at `/` and `#` is what keeps this from reading a query string as
+    userinfo: `http://host/p?a=b@c` cannot match, because the run cannot cross
+    the path separator to reach that `@`.
     """
-    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]*)@", value)
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/#]*)@", value)
     if not match:
         return ""
     userinfo = match.group(1)
