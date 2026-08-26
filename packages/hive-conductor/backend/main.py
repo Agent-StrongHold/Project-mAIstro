@@ -156,7 +156,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import stores
     from settings_defaults import apply_default_settings_if_needed
 
+    from maistro.security.transport import assert_session_transport_is_safe
+
     _lifespan_log = _logging.getLogger("hive.lifespan")
+
+    # Before anything else, and deliberately NOT inside a try/except (#369).
+    # Every other start-up step below degrades on failure, because a Conductor
+    # without a design service is still a Conductor. A Conductor that will send
+    # its session cookie over plaintext is not a degraded Conductor; it is one
+    # whose sessions any network in the path can lift. This raises and the
+    # process does not come up.
+    #
+    # A warning would not do. A warning about a cookie is read once, by whoever
+    # ran the container, in a log nobody keeps.
+    _settings = get_settings()
+    assert_session_transport_is_safe(
+        cookie_secure=_settings.session_cookie_secure,
+        allow_insecure_transport=_settings.allow_insecure_transport,
+        profile="hive-conductor",
+    )
+
     try:
         await foundation_service.start_foundation(get_settings())
     except Exception as exc:

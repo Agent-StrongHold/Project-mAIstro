@@ -95,11 +95,39 @@ class Settings(BaseSettings):
     _check_cors_origins = field_validator("cors_origins")(validate_cors_origins)
 
     # Mark the session cookie Secure so browsers refuse to send it over plain
-    # HTTP. Off by default because the documented dev loop is
-    # http://localhost:8101 and a Secure cookie is silently dropped there,
-    # which would look like "login does nothing". Turn it on for any
-    # deployment reachable over TLS.
-    session_cookie_secure: bool = False
+    # HTTP. **On by default** (#369). It used to default off, with the reason
+    # given as the documented dev loop being http://localhost:8101 — where a
+    # Secure cookie is silently dropped and login looks like it does nothing.
+    #
+    # That reason is real and it is an argument for a local-development escape,
+    # not for the default. A default is the shape every deployment that did not
+    # think about it takes, and "every deployment that did not think about it
+    # sends its session cookie in the clear" is the wrong way round. The escape
+    # is `allow_insecure_transport` below, which a local run sets deliberately
+    # and a reviewer can grep for.
+    session_cookie_secure: bool = True
+
+    # `lax` lets the cookie ride a top-level navigation from another site,
+    # which is what makes an emailed link to a Conductor page work. `strict`
+    # would break that; `none` would send it on every cross-site subrequest and
+    # is only meaningful with Secure, so it is not offered as a default.
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+
+    # The single, explicit, greppable local-development escape. Startup refuses
+    # a Secure-disabled session cookie unless this is set — see
+    # `maistro.security.transport.assert_session_transport_is_safe`.
+    #
+    # Deliberately its own flag rather than another value of
+    # `session_cookie_secure`: turning off a security control and declaring a
+    # development run are different statements, and collapsing them into one
+    # setting is how the first becomes invisible inside the second.
+    allow_insecure_transport: bool = False
+
+    # Addresses or CIDR blocks allowed to set `X-Forwarded-Proto`. Empty means
+    # no forwarded header is believed from anyone, which is the safe default: a
+    # deployment that forgets to name its proxy loses HSTS rather than gaining
+    # a header any caller can forge (#369).
+    trusted_proxy_ips: str = ""
 
     hardware_preset: Literal["potato", "laptop", "desktop", "beast"] = "laptop"
     poc_mode: str = ""

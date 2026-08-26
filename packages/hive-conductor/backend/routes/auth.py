@@ -158,6 +158,19 @@ def _cookie_secure() -> bool:
     return bool(get_settings().session_cookie_secure)
 
 
+def _cookie_samesite() -> str:
+    """Read SameSite at call time, for the same reason as Secure (#369).
+
+    Configurable rather than the hardcoded `"lax"` it was, because a deployment
+    that fronts the Conductor with nothing cross-site wants `strict` and had no
+    way to ask for it. The default stays `lax`, which is what makes an emailed
+    link to a Conductor page work.
+    """
+    from config import get_settings
+
+    return str(get_settings().session_cookie_samesite)
+
+
 def _username_taken(username: str) -> bool:
     import stores
 
@@ -181,7 +194,7 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
         value=session_id,
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        samesite=_cookie_samesite(),
         secure=_cookie_secure(),
         path="/",
     )
@@ -284,7 +297,7 @@ def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[
         key=_SESSION_COOKIE,
         path="/",
         httponly=True,
-        samesite="lax",
+        samesite=_cookie_samesite(),
         secure=_cookie_secure(),
     )
     return {"ok": True}

@@ -24,6 +24,25 @@ from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(tags=["auth"])
 
+#: One week, matching hive-conductor's `_COOKIE_MAX_AGE`. A session cookie with
+#: no `max_age` is a *session cookie* in the browser's sense — it lives as long
+#: as the browser process, which on a machine that is never rebooted and a
+#: browser that restores tabs is indefinitely. The AC asks for a bounded
+#: lifetime, and "until you quit Chrome" is not one (#369).
+_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+
+
+def _cookie_secure() -> bool:
+    """Whether to mark the session cookie Secure. On unless explicitly waived.
+
+    This cookie carried no `secure` argument at all, so it defaulted to False
+    and travelled over plaintext on any non-TLS deployment. Same default and
+    same single-purpose escape as hive-conductor: on by default, and a local
+    HTTP run says so out loud with TURING_ALLOW_INSECURE_TRANSPORT=1.
+    """
+    return os.environ.get("TURING_ALLOW_INSECURE_TRANSPORT", "") not in {"1", "true", "TRUE"}
+
+
 # user_id -> {username, role}
 _DEV_USERS: dict[str, dict[str, str]] = {
     "user": {"username": "testuser", "password": "testpass", "role": "user"},
@@ -62,8 +81,15 @@ def login(body: LoginBody, response: Response) -> dict:
             response.set_cookie(
                 "turing_session",
                 session_id,
+                max_age=_COOKIE_MAX_AGE,
                 httponly=True,
                 samesite="lax",
+                secure=_cookie_secure(),
+                # Narrow rather than inherited: without an explicit path the
+                # cookie takes the path of the route that set it, so a later
+                # move of the login endpoint would silently change which
+                # requests carry the session.
+                path="/",
             )
             return {"id": user_id, "username": record["username"], "role": record["role"]}
     raise HTTPException(status_code=401, detail="Invalid credentials")
