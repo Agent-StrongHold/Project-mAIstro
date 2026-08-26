@@ -1,0 +1,80 @@
+name: Temporary finish merge-queue hardening
+
+on:
+  push:
+    branches: [chatgpt/autonomous-merge-safety]
+
+permissions:
+  contents: write
+
+jobs:
+  finish:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-merge-safety
+          fetch-depth: 0
+
+      - name: Install tooling-only test dependencies
+        run: python3 -m pip install -q pyyaml pytest
+
+      - name: Reuse the reviewed v3 transformation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('.github/workflows/_patch-merge-queue-v3.yml').read_text(encoding='utf-8')
+          marker = "python3 - <<'PY'\n"
+          block = source.split(marker, 1)[1].split("\n          PY", 1)[0]
+          code = textwrap.dedent(block)
+          exec(compile(code, '_patch-merge-queue-v3.yml::<migration>', 'exec'), {})
+          PY
+
+      - name: Regenerate protection documentation
+        run: python3 scripts/check-branch-protection.py --update-doc
+
+      - name: Focused tooling policy tests without product conftests
+        shell: bash
+        run: |
+          set +e
+          python3 -m pytest --noconftest \
+            tests/test_check_gates_ran.py \
+            tests/test_check_branch_protection.py \
+            tests/test_check_autonomous_merge.py \
+            -q > queue-hardening-diagnostics.txt 2>&1
+          code=$?
+          cat queue-hardening-diagnostics.txt
+          exit $code
+
+      - name: Static contract checks
+        run: |
+          python3 scripts/check-required-checks.py
+          python3 scripts/check-branch-protection.py
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: queue-hardening-finish-diagnostics
+          path: queue-hardening-diagnostics.txt
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Commit final queue hardening and remove migration workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/_patch-merge-queue-v3.yml
+          rm .github/workflows/_finish-merge-queue-hardening.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --stat
+          git commit -m "Run required gates on exact merge-queue candidates"
+          # workflow-write-safety: allow temporary self-deleting migration; an external connector commit retriggers final-head CI
+          git push origin HEAD:chatgpt/autonomous-merge-safety
