@@ -321,8 +321,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
     from services.evolution import _EvolutionService
 
     class _Settings:
-        maistro_llm_base_url = "http://test.example/api"
-        litellm_api_base = ""
+        litellm_api_base = "http://test.example/api"
         maistro_llm_api_key = "test-key"
         litellm_api_key = ""
         chat_default_model = "test-model"
