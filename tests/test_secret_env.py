@@ -312,12 +312,20 @@ class TestTheKeyOperations:
         secret_env.ensure_api_keys(env_path, "tok")
         assert env_path.read_text(encoding="utf-8").count("tok") == 1
 
-    def test_a_corrupt_api_keys_line_is_replaced_not_crashed_on(self, secret_env, env_path) -> None:
-        """A hand-edited `.env` should not stop the installer; the token still
-        has to end up present."""
+    def test_a_corrupt_api_keys_line_is_rejected_without_overwriting_it(
+        self, secret_env, env_path
+    ) -> None:
+        """Invalid auth configuration must fail before service startup."""
         secret_env.create_exclusive(env_path, "API_KEYS=not json\n")
-        secret_env.ensure_api_keys(env_path, "tok")
-        assert '["tok"]' in env_path.read_text(encoding="utf-8")
+        with pytest.raises(ValueError, match="expected a JSON array"):
+            secret_env.ensure_api_keys(env_path, "tok")
+        assert env_path.read_text(encoding="utf-8") == "API_KEYS=not json\n"
+
+    @pytest.mark.parametrize("value", ['{"key": "value"}', '["valid", 3]', '[""]'])
+    def test_non_string_api_key_arrays_are_rejected(self, secret_env, env_path, value: str) -> None:
+        secret_env.create_exclusive(env_path, f"API_KEYS={value}\n")
+        with pytest.raises(ValueError, match="non-empty strings"):
+            secret_env.ensure_api_keys(env_path, "tok")
 
 
 class TestTheInstallersUseIt:
