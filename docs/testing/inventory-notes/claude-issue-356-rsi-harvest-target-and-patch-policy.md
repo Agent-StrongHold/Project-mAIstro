@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +69
+  packages/maistro-rsi/tests: +68
 ---
 # claude-issue-356-rsi-harvest-target-and-patch-policy
 
-Sixty-nine new node IDs across two files: fifty-one in
+Sixty-eight new node IDs across two files: fifty in
 `test_export_policy.py` (the policy) and eighteen in
 `test_harvest_entry_point.py` (that the policy is reached through the command
 the workflow actually runs). Nothing removed or reparametrised.
