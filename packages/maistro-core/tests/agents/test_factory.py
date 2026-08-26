@@ -636,8 +636,9 @@ class TestTheBuiltinRow:
     why this is asserted rather than assumed."""
 
     def test_it_carries_no_org_id(self) -> None:
-        """Multi-tenancy belongs to the importing product, never to
-        maistro-core (ADR-019, ADR-068)."""
+        """`agents` declares no such column. Not a prohibition on org scope --
+        that is a soft axis maistro-core does carry (root decision 7, ADR-068,
+        #386) -- and `org_id=""` was not a scope value in any case."""
         row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "soul", "rules")
         assert "org_id" not in row
 

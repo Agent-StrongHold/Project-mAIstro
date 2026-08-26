@@ -136,10 +136,16 @@ class TestABuiltinAgentReachesTheRegistry:
         assert await registry.souls() == {"builtin-probe": "second"}
 
 
-class TestTheRowCarriesNoTenancy:
+class TestTheRowNamesOnlyRealColumns:
     """The dead `AgentRecord(...)` call passed `org_id=""` and `preamble=True`.
-    Neither is a column, and `org_id` must not become one: multi-tenancy belongs
-    to the importing product, never to maistro-core (ADR-019, ADR-068).
+    `agents` declares neither, and the registry's declared column set is the
+    whole contract for what a row may name.
+
+    The reason is the schema, not a prohibition on org scope: root decision 7
+    and ADR-068 put the soft axes `global -> org -> team -> user -> agent ->
+    session` in maistro-core and keep only the hard `tenant` boundary in the
+    importing product (#386). `org_id=""` was never a scope value regardless --
+    an empty string is the absence of one.
     """
 
     def test_the_row_has_no_org_id(self) -> None:

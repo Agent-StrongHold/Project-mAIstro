@@ -336,9 +336,16 @@ def _builtin_agent_row(identity: Any, full_soul: str, rules: str) -> dict[str, A
     function raised `ModuleNotFoundError` on its first statement on every
     deployment and no built-in agent has ever reached the registry (#297).
 
-    Two of that call's arguments are also gone, and their absence is the record
-    of why: `agents` has no `preamble` column, and no `org_id` -- multi-tenancy
-    is the importing product's, never `maistro-core`'s (ADR-019, ADR-068).
+    Two of that call's arguments are also gone: `agents` declares neither a
+    `preamble` column nor an `org_id` one, and the registry's declared column
+    set is the whole contract for what a row may name. `org_id=""` was not a
+    scope value in any case -- an empty string is the absence of one.
+
+    Not because org scope is forbidden here. Root decision 7 and ADR-068 put
+    the soft axes `global -> org -> team -> user -> agent -> session` in
+    maistro-core and keep only the hard `tenant` boundary in the importing
+    product; the older "no org_id in core" shorthand conflated the two and is
+    superseded (#386).
     """
     return {
         "name": identity.name,

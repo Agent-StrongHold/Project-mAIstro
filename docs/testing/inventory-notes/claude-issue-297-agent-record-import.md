@@ -6,7 +6,7 @@ inventory-delta:
 
 Thirteen new node IDs. Eight in
 `packages/maistro-core/tests/persistence/test_pg_agents_real_schema.py` (six in
-`TestABuiltinAgentReachesTheRegistry`, two in `TestTheRowCarriesNoTenancy`); five
+`TestABuiltinAgentReachesTheRegistry`, two in `TestTheRowNamesOnlyRealColumns`); five
 net in `packages/maistro-core/tests/agents/test_factory.py`, where
 `TestPersistAgentRecord`'s two cases became four and `TestTheBuiltinRow` adds
 three. The two replaced cases are described below — they are part of the
@@ -80,13 +80,24 @@ claim worth pinning.
 actually runs: seeding happens on every start, so the second start must not
 double the roster.
 
-## `TestTheRowCarriesNoTenancy`
+## `TestTheRowNamesOnlyRealColumns`
 
-The dead `AgentRecord(...)` call passed `org_id=""` and `preamble=True`. Neither
-is a column in `agents`, and `org_id` must not become one — multi-tenancy
-belongs to the importing product, never to `maistro-core` (ADR-019, ADR-068).
-These two are the only cases here that need no server, because they are about
-the row's shape rather than the database's answer.
+The dead `AgentRecord(...)` call passed `org_id=""` and `preamble=True`. `agents`
+declares neither, and the registry's declared column set is the whole contract
+for what a row may name. These two are the only cases here that need no server,
+because they are about the row's shape rather than the database's answer.
+
+**The reason is the schema, not a prohibition on org scope**, and the difference
+matters because getting it wrong is what #386 is about. `packages/maistro-core/CLAUDE.md`
+still carries the shorthand "No `org_id` in core", which root decision 7 and
+ADR-068 explicitly supersede: the soft axes `global → org → team → user → agent →
+session` live in maistro-core, and only the hard `tenant` boundary is the
+importing product's. The first draft of these tests cited the superseded rule —
+that propagation is precisely the failure #386 reports, so it is corrected here
+rather than merged.
+
+`org_id=""` was never a scope value regardless: an empty string is the absence
+of one.
 
 ## The handler
 
