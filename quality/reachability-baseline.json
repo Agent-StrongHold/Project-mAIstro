@@ -187,6 +187,7 @@
     "scripts/generate_repo_tasks.py",
     "scripts/generate_repo_tasks_impl.py",
     "scripts/mutation_aggregate.py",
+    "scripts/mutation_filter_annotations.py",
     "scripts/mutation_history.py",
     "scripts/mutation_packet.py",
     "scripts/mutation_ratchet.py",
