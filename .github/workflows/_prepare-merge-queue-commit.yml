@@ -1,0 +1,122 @@
+name: Temporary prepare verified merge-queue commit
+
+on:
+  push:
+    branches: [chatgpt/autonomous-merge-safety]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-merge-safety
+          fetch-depth: 0
+
+      - name: Install tooling-only dependencies
+        run: python3 -m pip install -q pyyaml pytest
+
+      - name: Rebuild and verify final tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          source = Path('.github/workflows/_finalize-merge-queue-v4.yml').read_text(encoding='utf-8')
+          marker = "python3 - <<'PY'\n"
+          block = source.split(marker, 1)[1].split("\n          PY", 1)[0]
+          exec(compile(textwrap.dedent(block), '_finalize-merge-queue-v4.yml::<migration>', 'exec'), {})
+          PY
+          python3 scripts/check-required-checks.py --update
+          python3 scripts/check-branch-protection.py --update-doc
+          python3 -m pytest --noconftest \
+            tests/test_check_gates_ran.py \
+            tests/test_check_branch_protection.py \
+            tests/test_check_autonomous_merge.py -q
+          python3 scripts/check-required-checks.py
+          python3 scripts/check-branch-protection.py
+
+      - name: Create commit object only, do not move the branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import subprocess
+          import urllib.request
+
+          repo = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+
+          changed = subprocess.check_output(['git', 'diff', '--name-only', 'HEAD'], text=True).splitlines()
+          delete_paths = [
+              '.github/workflows/_patch-merge-queue-v3.yml',
+              '.github/workflows/_finish-merge-queue-hardening.yml',
+              '.github/workflows/_finalize-merge-queue-v4.yml',
+              '.github/workflows/_diagnose-merge-queue-static.yml',
+              '.github/workflows/_land-merge-queue-hardening.yml',
+              '.github/workflows/_export-merge-queue-final.yml',
+              '.github/workflows/_prepare-merge-queue-commit.yml',
+          ]
+
+          entries = []
+          for path in changed:
+              p = Path(path)
+              if p.is_file():
+                  entries.append({
+                      'path': path,
+                      'mode': '100644',
+                      'type': 'blob',
+                      'content': p.read_text(encoding='utf-8'),
+                  })
+          for path in delete_paths:
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': None})
+
+          def post(endpoint: str, payload: dict) -> dict:
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/{endpoint}',
+                  data=json.dumps(payload).encode(),
+                  method='POST',
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'Content-Type': 'application/json',
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  return json.load(resp)
+
+          tree = post('git/trees', {'base_tree': base_tree, 'tree': entries})
+          commit = post('git/commits', {
+              'message': 'Run required gates on exact merge-queue candidates',
+              'tree': tree['sha'],
+              'parents': [parent],
+          })
+          Path('/tmp/prepared-commit-sha.txt').write_text(commit['sha'] + '\n', encoding='utf-8')
+          Path('/tmp/prepared-commit-meta.json').write_text(
+              json.dumps({'parent': parent, 'tree': tree['sha'], 'commit': commit['sha'], 'files': changed}, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          print(f"Prepared commit {commit['sha']} with parent {parent}; branch ref intentionally untouched")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prepared-merge-queue-commit
+          path: |
+            /tmp/prepared-commit-sha.txt
+            /tmp/prepared-commit-meta.json
+          retention-days: 1
