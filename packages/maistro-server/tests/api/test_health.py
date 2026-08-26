@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from maistro.agents.circuit_breaker import CircuitState
+from maistro.config.settings import SandboxSettings, Settings, get_settings
 from maistro_server.api.health import ProbeResult, _check_docker, _check_postgres
 from maistro_server.main import APP_VERSION, app
 
@@ -161,15 +162,38 @@ class TestReadinessEndpoint:
     def test_readiness_docker_down_returns_503(self, client: TestClient) -> None:
         ok = ProbeResult(status="ok")
         bad = ProbeResult(status="error", detail="docker binary not found")
-        with (
-            patch("maistro_server.api.health._check_docker", AsyncMock(return_value=bad)),
-            patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=ok)),
-        ):
-            response = client.get("/health/ready")
+        app.dependency_overrides[get_settings] = lambda: Settings(
+            require_auth=False,
+            sandbox=SandboxSettings(readiness_required=True),
+        )
+        try:
+            with (
+                patch("maistro_server.api.health._check_docker", AsyncMock(return_value=bad)),
+                patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=ok)),
+            ):
+                response = client.get("/health/ready")
+        finally:
+            app.dependency_overrides.pop(get_settings, None)
         assert response.status_code == 503
         data = response.json()
         assert data["status"] == "degraded"
         assert data["checks"]["docker"]["status"] == "error"
+
+    def test_readiness_does_not_require_an_unconfigured_docker_sandbox(
+        self, client: TestClient
+    ) -> None:
+        ok = ProbeResult(status="ok")
+        docker = AsyncMock(side_effect=AssertionError("Docker should not be probed"))
+        with (
+            patch("maistro_server.api.health._check_docker", docker),
+            patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=ok)),
+        ):
+            response = client.get("/health/ready")
+        assert response.status_code == 200
+        assert response.json()["checks"]["docker"]["detail"] == (
+            "Docker sandbox is not required by this deployment"
+        )
+        docker.assert_not_awaited()
 
     def test_readiness_circuit_open_returns_503(self, client: TestClient) -> None:
         ok = ProbeResult(status="ok")
