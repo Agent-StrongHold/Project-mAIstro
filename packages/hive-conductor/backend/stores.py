@@ -556,13 +556,30 @@ def _seed_memory_entries_b() -> None:
         )
 
 
-def seed_chat_if_empty() -> None:
-    if chat_sessions:
+#: Ids of the starter session handed to a user who has none. Seeds are real
+#: rows a user can read and delete, but they are not something *they* wrote,
+#: so anything asking "has this person used chat yet" has to be able to tell
+#: them apart (`routes/setup_checklist.py`).
+SEED_SESSION_PREFIX = "chat-seed-"
+
+
+def seed_chat_for(user_id: str) -> None:
+    """Give `user_id` a starter session if they have none of their own.
+
+    Was `seed_chat_if_empty()`, seeding one unowned row for the whole
+    deployment. Once sessions are scoped to their owner (#312) that row belongs
+    to nobody and is visible to nobody, so the welcome chat has to be seeded per
+    user or it is not seeded at all.
+    """
+    if not user_id:
         return
-    sid = "chat-seed-1"
+    if any(s.user_id == user_id for s in chat_sessions.values()):
+        return
+    sid = f"{SEED_SESSION_PREFIX}{user_id}"
     t = now()
     chat_sessions[sid] = ChatSession(
         id=sid,
+        user_id=user_id,
         title="Welcome",
         messages=[
             ChatMessage(
