@@ -30,8 +30,8 @@ dependencies = [
     "argon2-cffi>=23.1",
     "maistro-registry",
     # [identity] so the dev/test environment can exercise maistro.identity. The
-    # API image deliberately installs maistro-core[llm,sandbox,observability]
-    # WITHOUT it — see the identity extra's comment in maistro-core/pyproject.toml.
+    # API image installs the same identity extra. Keeping it here ensures the
+    # dev/test environment exercises the startup import path shipped in Docker.
     "maistro-core[tui,identity]",
     # Depend on the package rather than re-listing its transitive libs here: this
     # is what supplies Pillow to the root env for `uv run mypy`/`uv run pytest`
