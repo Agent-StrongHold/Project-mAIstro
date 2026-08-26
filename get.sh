@@ -240,8 +240,15 @@ migrate_legacy_install() {
 
     warn "Found legacy install at $LEGACY_DIR — migrating .env to $INSTALL_DIR."
     mkdir -p "$INSTALL_DIR"
-    cp "$LEGACY_DIR/.env" "$INSTALL_DIR/.env"
-    chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
+    # `cp` creates under the caller's umask and the old `chmod 600` ran after
+    # the credentials were already on disk (#357). Pipe through the installer's
+    # helper instead, which creates the destination at 0600 with O_CREAT|O_EXCL
+    # before the first byte. `|| true` is gone with it: a migration that
+    # silently failed left the user believing their keys had moved.
+    if ! python3 "$INSTALL_DIR/scripts/secret_env.py" create "$INSTALL_DIR/.env" \
+            < "$LEGACY_DIR/.env"; then
+        fail "Could not migrate $LEGACY_DIR/.env to $INSTALL_DIR/.env (see above). Your existing file is untouched."
+    fi
     ok "Migrated .env. Old copy left at $LEGACY_DIR/.env — remove it once verified."
 }
 
