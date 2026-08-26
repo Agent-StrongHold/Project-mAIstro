@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.config.settings import validate_cors_origins
@@ -33,7 +33,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    litellm_api_base: str | None = None
+    # One canonical gateway field, with every deployment spelling accepted at
+    # the settings boundary. Code below this layer must not inspect the alias
+    # environment variables independently or the outbound SSRF allowance and
+    # the request destination can disagree (#285).
+    litellm_api_base: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "litellm_api_base",
+            "LITELLM_API_BASE",
+            "LITELLM_PROXY_URL",
+            "LITELLM_BASE_URL",
+            "LITELLM_URL",
+            "maistro_llm_base_url",
+            "MAISTRO_LLM_BASE_URL",
+        ),
+    )
     litellm_api_key: SecretStr | None = None
     # Must exist in litellm_config.yaml; compose passes CHAT_DEFAULT_MODEL with
     # the same value. setup.py's first-run fallback reads this field — change it
@@ -56,7 +71,6 @@ class Settings(BaseSettings):
     # deployment states, not two that happen to agree.
     hive_default_workspace_id: str = "default"
     maistro_agents_dir: str = "agents"
-    maistro_llm_base_url: str | None = None
     maistro_llm_api_key: SecretStr | None = None
     maistro_model: str = "mistral-large"
 
@@ -170,6 +184,17 @@ class Settings(BaseSettings):
     # `memory_decay.state == "disabled"`. A silent off switch here would look
     # exactly like the bug this closes.
     memory_decay_interval_s: int = 3600
+
+
+    @property
+    def maistro_llm_base_url(self) -> str | None:
+        """Compatibility view of the canonical gateway endpoint.
+
+        Older callers used a second settings field for the same OpenAI-
+        compatible service. Keeping a read-only view avoids breaking those
+        callers while ensuring every environment alias seeds one value.
+        """
+        return self.litellm_api_base
 
 
 @lru_cache
