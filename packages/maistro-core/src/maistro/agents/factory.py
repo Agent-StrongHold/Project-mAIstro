@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from sqlalchemy.exc import SQLAlchemyError
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
@@ -321,42 +322,73 @@ async def _load_agents_from_db(
         return None
 
 
+def _builtin_agent_row(identity: Any, full_soul: str, rules: str) -> dict[str, Any]:
+    """The registry row for a built-in agent, keyed by the columns it declares.
+
+    `PgAgentRegistry.upsert` takes ``AgentIdentity | Mapping``, and a mapping is
+    what this needs: the identity alone carries no soul (that lives in the
+    prompt store) and its ``rules`` are the manifest's, not the rendered file.
+
+    This used to construct ``maistro.models.agent.AgentRecord``. That module
+    exists nowhere -- not in `maistro-core`, not in the Conductor app, and it
+    could not have been contributed from outside `maistro-core` in any case,
+    because `maistro` is a regular package rather than a namespace one. So the
+    function raised `ModuleNotFoundError` on its first statement on every
+    deployment and no built-in agent has ever reached the registry (#297).
+
+    Two of that call's arguments are also gone, and their absence is the record
+    of why: `agents` has no `preamble` column, and no `org_id` -- multi-tenancy
+    is the importing product's, never `maistro-core`'s (ADR-019, ADR-068).
+    """
+    return {
+        "name": identity.name,
+        "version": identity.version,
+        "description": identity.description,
+        "soul": full_soul,
+        "rules": rules,
+        "reasoning_strategy": identity.reasoning_strategy,
+        "model": identity.model,
+        "model_fallbacks": list(identity.model_fallbacks),
+        "model_constraints": dict(identity.model_constraints),
+        "tools": list(identity.tools),
+        "skills": list(identity.skills),
+        "max_tool_rounds": identity.max_tool_rounds,
+        "memory_config": dict(identity.memory_config),
+        "trust_tier": identity.trust_tier,
+        "priority_tier": identity.priority_tier,
+        "provenance": "builtin",
+        "active": True,
+    }
+
+
 async def _persist_agent_record(
     persist_registry: Any,
     identity: Any,
     full_soul: str,
-    rules: Any,
+    rules: str,
 ) -> None:
-    """Upsert a built-in agent identity into the Postgres registry (best-effort)."""
-    try:
-        # maistro.models lives in the hive-conductor app (no py.typed); owned elsewhere.
-        # cross-package-imports: allow no such module anywhere in the workspace; tracked by #297
-        from maistro.models.agent import AgentRecord
+    """Write a built-in agent identity back to the Postgres registry.
 
-        record = AgentRecord(
-            name=identity.name,
-            version=identity.version,
-            description=identity.description,
-            soul=full_soul,
-            rules=rules,
-            reasoning_strategy=identity.reasoning_strategy,
-            model=identity.model,
-            model_fallbacks=list(identity.model_fallbacks),
-            model_constraints=identity.model_constraints,
-            tools=list(identity.tools),
-            skills=list(identity.skills),
-            max_tool_rounds=identity.max_tool_rounds,
-            memory_config=identity.memory_config,
-            trust_tier=identity.trust_tier,
-            priority_tier=identity.priority_tier,
-            provenance="builtin",
-            org_id="",
-            preamble=True,
-            active=True,
+    Tolerant of the database being unreachable, and of nothing else. A
+    `SQLAlchemyError` here means the registry is down or the row was rejected,
+    and seeding from the filesystem is still the right outcome -- the agents
+    load, the write-back does not. Anything else is a defect in the row this
+    module builds, and it is raised.
+
+    The old handler was `except Exception` around an import that always failed,
+    logged at WARNING as "Failed to persist agent ... to DB". That message is
+    indistinguishable from a transient database problem, so a permanent,
+    unconditional failure read as an occasional one for as long as it existed.
+    """
+    try:
+        await persist_registry.upsert(_builtin_agent_row(identity, full_soul, rules))
+    except SQLAlchemyError:
+        logger.warning(
+            "Agent '%s' loaded from the filesystem but was not written back to the "
+            "registry: the database rejected or refused the upsert",
+            identity.name,
+            exc_info=True,
         )
-        await persist_registry.upsert(record)
-    except Exception:
-        logger.warning("Failed to persist agent '%s' to DB", identity.name, exc_info=True)
 
 
 async def create_agents(

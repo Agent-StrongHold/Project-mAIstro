@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 import maistro.agents.factory as factory_mod
 from maistro.agents.factory import (
@@ -516,6 +517,13 @@ class TestCreateAgentsFilesystem:
             async def count(self) -> int:
                 return 0
 
+            # Neither this fake nor `_BrokenRegistry` below had an `upsert`
+            # until #297. They did not need one: `_persist_agent_record` raised
+            # `ModuleNotFoundError` on its import before it could call it, so an
+            # incomplete double was indistinguishable from a complete one.
+            async def upsert(self, record: dict[str, Any]) -> None:
+                return None
+
         monkeypatch.setattr("maistro.persistence.pg_agents.PgAgentRegistry", _EmptyRegistry)
         kwargs = _create_agents_kwargs(tmp_path, sa_engine=object())
 
@@ -535,6 +543,9 @@ class TestCreateAgentsFilesystem:
             async def count(self) -> int:
                 raise RuntimeError("db down")
 
+            async def upsert(self, record: dict[str, Any]) -> None:
+                return None
+
         monkeypatch.setattr("maistro.persistence.pg_agents.PgAgentRegistry", _BrokenRegistry)
         kwargs = _create_agents_kwargs(tmp_path, sa_engine=object())
 
@@ -544,53 +555,101 @@ class TestCreateAgentsFilesystem:
 
 
 class TestPersistAgentRecord:
-    async def test_swallows_exceptions_and_logs(self, caplog: pytest.LogCaptureFixture) -> None:
-        identity = AgentIdentity(name="x")
-        with caplog.at_level(logging.WARNING):
-            await factory_mod._persist_agent_record(object(), identity, "soul", "")
-        assert "Failed to persist agent" in caplog.text
+    """The write-back that never happened (#297).
 
-    async def test_success_path_builds_record_and_upserts(self) -> None:
-        """maistro.models.agent lives in hive-conductor, not installed in core's
-        test env -- inject a fake module so the success path is exercised."""
-        import sys
-        import types
+    What used to be here is worth recording, because it is why this went
+    unnoticed for as long as it did. `test_success_path_builds_record_and_upserts`
+    **injected `maistro.models` and `maistro.models.agent` into `sys.modules`**
+    with a fake `AgentRecord`, so the "success path" it exercised was one that
+    could not occur: the module does not exist in this repository, and `maistro`
+    is a regular package, so nothing outside `maistro-core` can contribute it.
+    The test manufactured the missing module rather than noticing it was missing.
 
-        fake_models = types.ModuleType("maistro.models")
-        fake_models_agent = types.ModuleType("maistro.models.agent")
+    Its neighbour asserted the failure was swallowed and logged, which was true
+    and was the whole defect: an unconditional failure logged as if it were an
+    occasional one.
+    """
 
-        class _FakeAgentRecord:
-            def __init__(self, **kwargs: Any) -> None:
-                self.kwargs = kwargs
+    async def test_the_row_reaches_the_registry(self) -> None:
+        upserted: list[dict[str, Any]] = []
 
-        fake_models_agent.AgentRecord = _FakeAgentRecord  # type: ignore[attr-defined]
-        sys.modules["maistro.models"] = fake_models
-        sys.modules["maistro.models.agent"] = fake_models_agent
-
-        upserted: list[Any] = []
-
-        class _FakeRegistry:
-            async def upsert(self, record: Any) -> None:
+        class _Registry:
+            async def upsert(self, record: dict[str, Any]) -> None:
                 upserted.append(record)
 
-        try:
-            identity = AgentIdentity(
-                name="x",
-                tools=("read_file",),
-                skills=("search",),
-                model_fallbacks=("gpt",),
-            )
-            await factory_mod._persist_agent_record(
-                _FakeRegistry(), identity, "full soul text", "some rules"
-            )
-        finally:
-            del sys.modules["maistro.models.agent"]
-            del sys.modules["maistro.models"]
+        identity = AgentIdentity(
+            name="x",
+            tools=("read_file",),
+            skills=("search",),
+            model_fallbacks=("gpt",),
+        )
+        await factory_mod._persist_agent_record(_Registry(), identity, "full soul text", "rules")
 
         assert len(upserted) == 1
-        record = upserted[0]
-        assert record.kwargs["name"] == "x"
-        assert record.kwargs["soul"] == "full soul text"
-        assert record.kwargs["rules"] == "some rules"
-        assert record.kwargs["tools"] == ["read_file"]
-        assert record.kwargs["provenance"] == "builtin"
+        row = upserted[0]
+        assert row["name"] == "x"
+        assert row["soul"] == "full soul text"
+        assert row["rules"] == "rules"
+        assert row["tools"] == ["read_file"]
+        assert row["provenance"] == "builtin"
+
+    async def test_a_database_error_is_tolerated_and_named(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The agents still load from the filesystem; only the write-back is
+        lost. The message says which of those two happened, rather than reusing
+        one line for a transient outage and a permanent defect."""
+
+        class _Down:
+            async def upsert(self, record: dict[str, Any]) -> None:
+                raise SQLAlchemyError("connection refused")
+
+        identity = AgentIdentity(name="x")
+        with caplog.at_level(logging.WARNING):
+            await factory_mod._persist_agent_record(_Down(), identity, "soul", "")
+        assert "was not written back to the registry" in caplog.text
+
+    async def test_a_defect_in_the_row_is_raised_not_logged(self) -> None:
+        """The direction that matters. `except Exception` is what let a
+        permanent `ModuleNotFoundError` present as a database problem for the
+        life of the function; anything that is not the database is a defect in
+        this module and has to be loud."""
+
+        class _Registry:
+            async def upsert(self, record: dict[str, Any]) -> None:
+                raise TypeError("row has a field the registry does not write")
+
+        with pytest.raises(TypeError):
+            await factory_mod._persist_agent_record(_Registry(), AgentIdentity(name="x"), "s", "")
+
+    async def test_a_missing_upsert_is_raised_too(self) -> None:
+        """A registry double without the method is a defect in the test, not a
+        database outage. Both `_EmptyRegistry` and `_BrokenRegistry` above were
+        exactly this until #297, and nothing said so."""
+        with pytest.raises(AttributeError):
+            await factory_mod._persist_agent_record(object(), AgentIdentity(name="x"), "s", "")
+
+
+class TestTheBuiltinRow:
+    """`_builtin_agent_row` is what the registry receives. The two fields the
+    dead `AgentRecord(...)` call passed that are not columns are the record of
+    why this is asserted rather than assumed."""
+
+    def test_it_carries_no_org_id(self) -> None:
+        """Multi-tenancy belongs to the importing product, never to
+        maistro-core (ADR-019, ADR-068)."""
+        row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "soul", "rules")
+        assert "org_id" not in row
+
+    def test_it_carries_no_preamble_flag(self) -> None:
+        """`preamble=True` was passed to a table with no such column. The
+        rendered preamble is part of `soul`, which is where it belongs."""
+        row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "PREAMBLE\nsoul", "rules")
+        assert "preamble" not in row
+        assert row["soul"] == "PREAMBLE\nsoul"
+
+    def test_the_soul_is_the_rendered_text_not_the_identity_s(self) -> None:
+        """`AgentIdentity` has no soul text -- it names a prompt. Passing the
+        identity alone would persist an empty soul."""
+        row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "rendered", "rules")
+        assert row["soul"] == "rendered"
