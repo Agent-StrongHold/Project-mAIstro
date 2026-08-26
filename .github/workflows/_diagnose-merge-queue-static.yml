@@ -1,0 +1,52 @@
+name: Temporary diagnose merge-queue static contract
+
+on:
+  push:
+    branches: [chatgpt/autonomous-merge-safety]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-merge-safety
+          fetch-depth: 0
+      - run: python3 -m pip install -q pyyaml
+      - name: Reproduce v4 transformed tree
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          source = Path('.github/workflows/_finalize-merge-queue-v4.yml').read_text(encoding='utf-8')
+          marker = "python3 - <<'PY'\n"
+          block = source.split(marker, 1)[1].split("\n          PY", 1)[0]
+          exec(compile(textwrap.dedent(block), '_finalize-merge-queue-v4.yml::<migration>', 'exec'), {})
+          PY
+          python3 scripts/check-branch-protection.py --update-doc
+      - name: Capture static contract diagnostics
+        shell: bash
+        run: |
+          set +e
+          {
+            echo '=== check-required-checks ==='
+            python3 scripts/check-required-checks.py
+            echo "required_exit=$?"
+            echo
+            echo '=== check-branch-protection ==='
+            python3 scripts/check-branch-protection.py
+            echo "protection_exit=$?"
+          } > static-contract-diagnostics.txt 2>&1
+          cat static-contract-diagnostics.txt
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: merge-queue-static-contract-diagnostics
+          path: static-contract-diagnostics.txt
+          retention-days: 1
