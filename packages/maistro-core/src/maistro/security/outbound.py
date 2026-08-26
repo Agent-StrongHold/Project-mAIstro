@@ -141,7 +141,21 @@ def outbound_origin(url: str) -> str:
     and fragment are dropped — an allowance is about *where* a request goes,
     and matching on anything longer would let a crafted path widen it.
     """
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # Unparseable — `http://[::1` and friends. This function is called to
+        # *describe* a refusal, so it must never be the thing that fails: it
+        # raised `ValueError: Invalid IPv6 URL` from inside the handler that had
+        # already correctly refused the same URL, and the exception escaped
+        # (#430).
+        #
+        # A sentinel rather than an empty string, for the same reason the port
+        # branch below returns one: this value is compared against configured
+        # allowances, and an origin nobody can parse must never compare equal to
+        # one an operator authorized. `://` cannot appear in a real origin, so
+        # nothing can be configured that matches it.
+        return "unparseable://:invalid"
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
     try:

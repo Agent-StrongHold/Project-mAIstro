@@ -8,6 +8,7 @@ is covered by routing through the shared pool rather than by remembering.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 import httpx
@@ -26,6 +27,7 @@ from maistro.security.outbound import (
     configure_outbound_policy,
     configured_endpoints,
     current_outbound_policy,
+    enforce_outbound_policy,
     guarded,
     outbound_origin,
     reset_outbound_policy,
@@ -490,3 +492,42 @@ def test_the_progress_webhook_endpoint_is_seeded_from_settings() -> None:
     origins = OutboundPolicy().with_origins(configured_endpoints(_Settings())).origins
 
     assert origins == frozenset({"http://10.9.9.9:8080"})
+
+
+class TestOutboundOriginIsTotal:
+    """`outbound_origin` is called to *describe* a refusal, so it must never be
+    the thing that fails.
+
+    It re-parsed a URL the guard had already rejected, and `urlsplit` raised
+    `ValueError: Invalid IPv6 URL` from inside the handler that had correctly
+    refused the same URL — not an `httpx.HTTPError`, so it escaped the refusal
+    branch it was standing in. One unusable stored MCP server took the whole
+    listing with it (#430).
+
+    These live here rather than beside the route that surfaced the defect: the
+    function is core, the property is core, and a test in the Conductor's suite
+    is not reached by the run that measures core.
+    """
+
+    @pytest.mark.parametrize("url", ["http://[::1", "http://[", "http://[:::]/x"])
+    def test_an_unparseable_url_yields_a_sentinel(self, url: str) -> None:
+        assert outbound_origin(url) == "unparseable://:invalid"
+
+    def test_the_sentinel_matches_no_configured_allowance(self) -> None:
+        """The security property, and the reason it is a sentinel rather than
+        an empty string: an origin nobody can parse must never compare equal to
+        one an operator authorized, or a malformed URL becomes a way past the
+        allowlist. `://` cannot appear in a real origin, so nothing that any
+        deployment configures can match it."""
+        policy = OutboundPolicy().with_origins(["https://api.example.com", "http://localhost:3000"])
+
+        for url in ["http://[::1", "http://[", "http://[:::]/x"]:
+            assert not policy.allows(url)
+            assert outbound_origin(url) not in policy.origins
+
+    def test_an_unparseable_url_is_still_refused_rather_than_reached(self) -> None:
+        """Totality must not turn into permissiveness. Not matching an
+        allowance is only half the property — the URL then has to be refused by
+        validation, which is what makes returning a sentinel safe."""
+        with pytest.raises(SSRFBlockedError):
+            asyncio.run(enforce_outbound_policy("http://[::1"))

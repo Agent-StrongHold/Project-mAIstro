@@ -114,6 +114,11 @@ BLOCK_NO_HOST = "no_host"
 BLOCK_INTERNAL_HOSTNAME = "internal_hostname"
 BLOCK_INTERNAL_ADDRESS = "internal_address"
 BLOCK_NO_ADDRESSES = "no_addresses"
+#: Covers both ways a host can fail to resolve: `socket.gaierror` (no answer)
+#: and `UnicodeError` (input DNS cannot represent — an ASCII label longer than
+#: 63 characters raises "label empty or too long" from `getaddrinfo` before any
+#: lookup happens). Both mean the host is not there; only the first was
+#: translated, so the second escaped the guard entirely (#430).
 BLOCK_UNRESOLVABLE = "unresolvable"
 
 #: The reasons that mean "this host is not reachable", as opposed to "this
@@ -239,7 +244,7 @@ def validate_outbound_url(url: str) -> None:
     hostname = _check_shape(url)
     try:
         addresses = _resolve(hostname)
-    except socket.gaierror as exc:
+    except (socket.gaierror, UnicodeError) as exc:
         raise SSRFBlockedError(
             f"Outbound URL blocked (host {hostname!r} could not be resolved, so it "
             f"cannot be shown to be external): {url!r}",
@@ -260,7 +265,7 @@ async def avalidate_outbound_url(url: str) -> None:
     loop = asyncio.get_running_loop()
     try:
         addresses = await loop.run_in_executor(None, _resolve, hostname)
-    except socket.gaierror as exc:
+    except (socket.gaierror, UnicodeError) as exc:
         raise SSRFBlockedError(
             f"Outbound URL blocked (host {hostname!r} could not be resolved, so it "
             f"cannot be shown to be external): {url!r}",

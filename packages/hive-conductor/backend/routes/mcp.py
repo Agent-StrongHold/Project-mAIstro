@@ -88,6 +88,31 @@ async def _health_check(server: MCPServer, *, user_id: str | None = None) -> MCP
         logger.info("mcp health check could not reach server=%s reason=%s", server.id, exc.reason)
     except httpx.HTTPError as exc:
         logger.info("mcp health check failed: server=%s error=%s", server.id, type(exc).__name__)
+    except Exception:
+        # Last resort, and deliberately not the blanket this replaced (#430).
+        #
+        # `POST /v1/mcp/servers` takes `url` as an unrestricted string, and
+        # `list_servers` gathers over every stored record, so anything escaping
+        # here fails the listing for *every* server rather than one row. Two
+        # such escapes were live: `outbound_origin` re-parsing a URL the guard
+        # had already refused, and `UnicodeError` from the resolver. Both are
+        # fixed at their source; this is the net under the next one.
+        #
+        # It reports `error`, not `disconnected`, and logs at ERROR with a
+        # traceback. The pre-#368 handler swallowed everything into
+        # `disconnected` -- which reads as "start the server" and is the exact
+        # defect #368 removed. A net that recreates it is not worth having.
+        logger.exception("mcp health check raised unexpectedly: server=%s", server.id)
+        return server.model_copy(
+            update={
+                "status": "error",
+                "last_ping": now,
+                "last_error": (
+                    "this server could not be checked: the health check itself "
+                    "failed. See the Conductor log for the cause."
+                ),
+            }
+        )
     return server.model_copy(
         update={"status": "disconnected", "last_ping": now, "last_error": None}
     )
