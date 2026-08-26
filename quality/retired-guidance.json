@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Normative statements that an accepted decision has retired, and what replaced them.",
+    "scripts/check-retired-guidance.py fails when one appears as a live directive.",
+    "",
+    "A line carrying a retired pattern is allowed when it also carries one of the",
+    "entry's `citation_markers` -- naming the superseding decision, or saying the",
+    "guidance is stale. That is the difference between DIRECTING against accepted",
+    "architecture and RECORDING that the old rule was retired, and only the first",
+    "is a defect. It also means the fix is never to delete the history: cite the",
+    "replacement and the line passes.",
+    "",
+    "Add an entry whenever a decision supersedes normative text that is written",
+    "down somewhere else, so the retired phrasing cannot quietly outlive it."
+  ],
+  "entries": [
+    {
+      "id": "no-org-id-in-core",
+      "pattern": "(?i)no\\s+`?org_id`?\\s+(in\\s+core|anywhere)",
+      "retired_by": "ADR-068",
+      "also_recorded_in": [
+        "CLAUDE.md design decision 7",
+        "docs/adr/ADR-019-source-split.md, section \"Scope vs. tenancy\""
+      ],
+      "replacement": "maistro-core carries the soft scope axes global -> org -> team -> user -> agent -> session; only the hard `tenant` boundary is Stronghold-specific. The retired shorthand conflated scope with tenancy.",
+      "citation_markers": [
+        "ADR-068",
+        "supersed",
+        "stale",
+        "retired",
+        "corrected",
+        "conflat",
+        "used to read"
+      ],
+      "issue": "386"
+    }
+  ]
+}

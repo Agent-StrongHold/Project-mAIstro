@@ -81,6 +81,19 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # An accepted decision can retire a rule that is written down somewhere
+      # else, and the retired phrasing then outlives it. `maistro-core`'s own
+      # CLAUDE.md told agents "No `org_id` in core" long after ADR-068
+      # superseded that shorthand, while the package it governs carried 214
+      # `org_id` references -- and being the highest-proximity instruction
+      # file, it outranked the root decision that corrected it (#386).
+      #
+      # Registry-driven (`quality/retired-guidance.json`), so what counts as
+      # retired is declared rather than inferred. A line that names its
+      # replacement passes: recording that a rule was retired is not directing
+      # against it, and the fix must never be to delete the history.
+      - name: Retired guidance does not still direct implementation
+        run: python3 scripts/check-retired-guidance.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
