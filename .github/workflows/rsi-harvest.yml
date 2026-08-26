@@ -15,10 +15,18 @@ on:
       export_ref:
         description: "Branch/ref that carries the exported patches under .rsi-exports/."
         required: true
-      pr_base:
-        description: "Base branch the per-file PRs target."
+      allow_release_tier:
+        description: >-
+          Authorize PRs against a release tier (main/integration). Leave false.
+          ADR-095 routes topic branches through `develop`; a harvest branch is a
+          topic branch, so targeting a release tier skips both integration
+          tiers and the approval `main` requires. This replaces the old
+          `pr_base` input, which was a free-text target defaulting to `main` —
+          the tier a run aimed at was chosen by whoever dispatched it rather
+          than by policy (#356).
         required: false
-        default: main
+        type: boolean
+        default: false
 
 # Least privilege: push branches + open PRs, nothing else. No merge, no admin.
 permissions:
@@ -59,9 +67,17 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --python 3.12 --locked
 
-      # harvest --clone-url clones the repo fresh at pr_base (LF working tree) and
-      # opens one PR per file. GH_TOKEN (the scoped built-in token) authenticates
-      # the push + PR via `gh auth setup-git`; the credential never leaves this job.
+      # harvest --clone-url clones the repo fresh at the policy tier (LF working
+      # tree) and opens one PR per file. GH_TOKEN (the scoped built-in token)
+      # authenticates the push + PR via `gh auth setup-git`; the credential never
+      # leaves this job.
+      #
+      # No `--base`/`--pr-base` here on purpose. The harvester defaults both to
+      # the canonical development branch, and refuses a release tier without
+      # `--allow-release-tier` — so the tier cannot be chosen by a dispatch
+      # input, a manifest, or a candidate (#356). Every patch is also checked
+      # against the same protected-path policy `quarantine.py` applies inside
+      # the loop, before `git am` sees it.
       - name: Harvest exported promotions into per-file PRs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,7 +86,6 @@ jobs:
           uv run --python 3.12 python -m maistro_rsi harvest \
             --export-dir .rsi-exports \
             --clone-url "${{ github.server_url }}/${{ github.repository }}" \
-            --base "${{ inputs.pr_base }}" \
-            --pr-base "${{ inputs.pr_base }}" \
             --session "run-${{ github.run_id }}" \
+            ${{ inputs.allow_release_tier && '--allow-release-tier' || '' }} \
             --push

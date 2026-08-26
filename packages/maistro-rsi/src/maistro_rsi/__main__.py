@@ -18,11 +18,21 @@ import argparse
 import sys
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from maistro_rsi.competitors import parse_competitors
+from maistro_rsi.export_policy import (
+    CANONICAL_DEVELOPMENT_BRANCH,
+    ExportPolicyError,
+    resolve_export_path,
+    resolve_pr_base,
+    validate_patch,
+)
 from maistro_rsi.free_router import FREE_ROUTER_ALIASES, expand_free_router, make_free_selector
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
+
+if TYPE_CHECKING:
+    from maistro_rsi.harvest import PromotedPatch
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -217,11 +227,22 @@ def _build_parser() -> argparse.ArgumentParser:
     harvest.add_argument(
         "--base",
         default=None,
-        help="Branch to base the PR branches on (default: current branch, or the "
-        "cloned branch when --clone-url is used).",
+        help="Branch to base the PR branches on (default: the canonical development "
+        "branch, or the current branch for --repo-dir).",
     )
     harvest.add_argument(
-        "--pr-base", default="main", help="Target branch for the PRs (default: main)."
+        "--pr-base",
+        default=None,
+        help=f"Target branch for the PRs (default: {CANONICAL_DEVELOPMENT_BRANCH}). A "
+        f"release tier is refused unless --allow-release-tier is also passed.",
+    )
+    harvest.add_argument(
+        "--allow-release-tier",
+        action="store_true",
+        help="Authorize a PR against a release tier (main/integration). ADR-095 routes "
+        "topic branches through the development tier, so this exists to be set by "
+        "workflow policy on a deliberate release harvest -- never by a candidate, a "
+        "manifest, or a dispatch input.",
     )
     harvest.add_argument(
         "--session", default=None, help="Session slug for branch names (default: a UTC timestamp)."
@@ -409,6 +430,30 @@ def _evolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validated_export(export: Path, groups: dict[str, list[PromotedPatch]]) -> dict[str, Path]:
+    """Resolve and check every patch the manifest names. Raises on the first
+    artifact that may not become a pull request.
+
+    Returns the resolved path per manifest entry, so the apply loop uses the
+    path this function vetted rather than re-deriving it -- re-deriving is how
+    a check and the thing it checked drift apart.
+    """
+    resolved: dict[str, Path] = {}
+    for declared_file, group in groups.items():
+        for patch in group:
+            entry = patch.patch_file
+            path = resolve_export_path(export, entry)
+            verdict = validate_patch(
+                path.read_text(encoding="utf-8", errors="replace"),
+                declared_file=declared_file,
+            )
+            if not verdict.ok:
+                reasons = "\n".join(f"  - {reason}" for reason in verdict.reasons)
+                raise ExportPolicyError(f"refusing {entry}:\n{reasons}")
+            resolved[entry] = path
+    return resolved
+
+
 def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup + am/skip/PR loop
     import subprocess
     import tempfile
@@ -431,6 +476,40 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
         return 2
     session = args.session or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
+    # The tier is policy, resolved before a single patch is read (#356). It used
+    # to be `--pr-base` defaulting to "main", fed straight from a
+    # `workflow_dispatch` input -- so the documented way to run a harvest opened
+    # agent-authored PRs against the release tier, skipping both integration
+    # tiers ADR-095 defines, with the target chosen by whoever dispatched it.
+    try:
+        pr_base = resolve_pr_base(args.pr_base, release_tier_authorized=args.allow_release_tier)
+    except ExportPolicyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # What every patch *contains*, before any of them acts on a working tree
+    # (#356). The workflow already refused an export directory holding anything
+    # but patches and a manifest -- but a patch is a program for the working
+    # tree, and nothing asked what was in it. It could create a symlink, move a
+    # submodule pointer, write outside the file the manifest names, or edit the
+    # containment surface that decides what a future self-modification may do.
+    #
+    # All of them up front, and a refusal fails the whole harvest. Two reasons
+    # it is not a per-patch skip like the unappliable case further down:
+    #
+    # * A stale patch is an accident and the rest of the run is still good. A
+    #   patch reaching for `.github/` is a statement about this export, and
+    #   opening the other PRs from it would be treating one artifact as
+    #   trustworthy and untrustworthy at the same time.
+    # * Failing here means no branch was created and nothing was pushed. Doing
+    #   it inside the apply loop would leave the branches for whichever files
+    #   happened to sort first.
+    try:
+        patch_paths_by_entry = _validated_export(export, groups)
+    except ExportPolicyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+
     base = args.base
     if args.clone_url:
         # Cloud path: wire GH_TOKEN into git FIRST (so a private clone + the push
@@ -439,7 +518,10 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
         if args.push:
             subprocess.run(["gh", "auth", "setup-git"], check=True)
         repo = tempfile.mkdtemp(prefix="rsi-harvest-")
-        clone_base = base or "main"
+        # Branching off the release tier and then targeting the development tier
+        # would put every commit between them into the PR. Same default as the
+        # target, for the same reason.
+        clone_base = base or pr_base
         subprocess.run(
             [
                 "git",
@@ -492,7 +574,7 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
             # A patch from an older run may no longer apply once the base has
             # moved past it (even with --3way). Skip it and keep harvesting —
             # one stale patch must not sink the rest of the run's promotions.
-            am = git("am", "--3way", str((export / patch.patch_file).resolve()), check=False)
+            am = git("am", "--3way", str(patch_paths_by_entry[patch.patch_file]), check=False)
             if am.returncode != 0:
                 git("am", "--abort", check=False)
                 unappliable += 1
@@ -515,7 +597,7 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
                     "pr",
                     "create",
                     "--base",
-                    args.pr_base,
+                    pr_base,
                     "--head",
                     branch,
                     "--title",
