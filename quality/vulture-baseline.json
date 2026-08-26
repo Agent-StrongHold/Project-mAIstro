@@ -152,7 +152,6 @@
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'cache_breakpoints_enabled'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'client_secret'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'cors'",
-        "packages/maistro-core/src/maistro/config/settings.py::unused variable 'default_model'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'gate_model'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'gate_query_improve'",
         "packages/maistro-core/src/maistro/config/settings.py::unused variable 'langfuse'",
