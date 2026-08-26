@@ -29,6 +29,7 @@ _SCRATCH_TABLES = (
     "learnings",
     "outcomes",
     "prompts",
+    "agents",
 )
 
 
@@ -73,3 +74,25 @@ async def pg_pool() -> AsyncIterator[Any]:
         yield pool
     finally:
         await pool.close()
+
+
+@pytest.fixture
+async def sa_engine() -> AsyncIterator[Any]:
+    """A SQLAlchemy async engine on the same migrated database.
+
+    `PgAgentRegistry` takes an engine rather than an asyncpg pool, so the
+    `pg_pool` fixture above cannot serve it. Yields ``None`` when no server is
+    configured, for the same reason `pg_pool` does.
+    """
+    dsn = postgres_dsn()
+    if not dsn:
+        yield None
+        return
+    pytest.importorskip("asyncpg")
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(dsn.replace("postgresql://", "postgresql+asyncpg://", 1))
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
