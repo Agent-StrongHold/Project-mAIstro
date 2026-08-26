@@ -215,3 +215,127 @@ class TestTheOptionalCatalog:
         assert not status.catalog_available
         assert "catalog.json" in (status.catalog_cause or "")
         assert status.catalog_slugs == ()
+
+
+class TestTheCatalogClaimIsVerified:
+    """#413. `_probe_catalog` read `catalog.json` and reported its 144 slugs as
+    available. `import_from_catalog` reads `systems/catalog/<slug>/`, not the
+    index — so a build carrying the index without the payloads advertised 144
+    importable systems and failed every one on click.
+
+    The index is a claim; the files are the fact.
+    """
+
+    async def test_the_reported_slugs_all_have_files_installed(self, engine):
+        from maistro_design.systems.importer import CATALOG_ROOT
+
+        status = design_service.get_design_status()
+        missing = [
+            slug
+            for slug in status.catalog_slugs
+            if not (CATALOG_ROOT / slug / "manifest.json").is_file()
+        ]
+        assert missing == []
+
+    async def test_an_index_with_no_payloads_is_unavailable_not_available(self, monkeypatch):
+        """The state the wheel declaration used to permit. Reporting 144
+        available here is the exact "fabricated completeness" #293 was."""
+        from maistro_design.systems import importer
+
+        monkeypatch.setattr(
+            importer,
+            "load_catalog",
+            lambda: [{"slug": "ghost", "tier": "catalog"}, {"slug": "phantom", "tier": "catalog"}],
+        )
+        slugs, cause = design_service._probe_catalog()
+        assert slugs == ()
+        assert cause is not None
+        assert "none of them installed" in cause
+
+    async def test_a_partial_install_is_degraded_with_a_count(self, monkeypatch):
+        """Degraded, not unavailable: what is there can still be imported, and
+        saying how much is missing beats a round number nobody can act on."""
+        from maistro_design.systems import importer
+
+        monkeypatch.setattr(
+            importer,
+            "load_catalog",
+            lambda: [
+                {"slug": "airbnb", "tier": "catalog"},
+                {"slug": "ghost", "tier": "catalog"},
+            ],
+        )
+        slugs, cause = design_service._probe_catalog()
+        assert slugs == ("airbnb",)
+        assert cause is not None and "1 of 2" in cause
+
+    async def test_the_bundled_tier_is_still_excluded(self, monkeypatch):
+        """The tier split from #293 must survive the payload check: `default`
+        lives under `systems/bundled/`, so a payload probe against
+        `systems/catalog/` would drop it for the wrong reason if it were ever
+        counted as catalogue."""
+        from maistro_design.systems import importer
+
+        monkeypatch.setattr(
+            importer,
+            "load_catalog",
+            lambda: [
+                {"slug": "default", "tier": "bundled"},
+                {"slug": "airbnb", "tier": "catalog"},
+            ],
+        )
+        slugs, cause = design_service._probe_catalog()
+        assert slugs == ("airbnb",)
+        assert cause is None
+
+
+class TestImportableMeansParseable:
+    """#413 review. Checking that three files exist is not the same claim the
+    word "importable" makes: `import_from_catalog` *parses* what it reads, so a
+    present-but-malformed `manifest.json` was advertised and then failed on
+    selection. `_importable` runs the same reads and the same parse."""
+
+    def test_the_real_catalog_slugs_all_parse(self):
+        from maistro_design.systems.importer import CATALOG_ROOT
+
+        slugs = sorted(p.name for p in CATALOG_ROOT.iterdir() if p.is_dir())
+        assert slugs, "no catalogue systems installed"
+        assert [s for s in slugs if not design_service._importable(s)] == []
+
+    def test_a_malformed_manifest_is_not_importable(self, monkeypatch, tmp_path):
+        """The case existence alone accepted."""
+        from maistro_design.systems import importer
+
+        root = tmp_path / "catalog"
+        (root / "broken").mkdir(parents=True)
+        (root / "broken" / "manifest.json").write_text("{not json", encoding="utf-8")
+        (root / "broken" / "DESIGN.md").write_text("# Broken", encoding="utf-8")
+        (root / "broken" / "tokens.css").write_text(":root{}", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        assert not design_service._importable("broken")
+
+    def test_an_empty_required_file_is_not_importable(self, monkeypatch, tmp_path):
+        """A zero-byte `tokens.css` parses as nothing and carries nothing; the
+        importer reads it expecting content."""
+        from maistro_design.systems import importer
+
+        root = tmp_path / "catalog"
+        (root / "hollow").mkdir(parents=True)
+        (root / "hollow" / "manifest.json").write_text('{"id": "hollow"}', encoding="utf-8")
+        (root / "hollow" / "DESIGN.md").write_text("# Hollow", encoding="utf-8")
+        (root / "hollow" / "tokens.css").write_text("   \n", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        assert not design_service._importable("hollow")
+
+    def test_a_missing_optional_tokens_file_is_still_importable(self, monkeypatch, tmp_path):
+        """`design-tokens.json` stays optional exactly as the importer treats
+        it — a system without tokens still imports, it just carries none."""
+        from maistro_design.systems import importer
+
+        root = tmp_path / "catalog"
+        (root / "sparse").mkdir(parents=True)
+        (root / "sparse" / "manifest.json").write_text('{"id": "sparse"}', encoding="utf-8")
+        (root / "sparse" / "DESIGN.md").write_text("# Sparse", encoding="utf-8")
+        (root / "sparse" / "tokens.css").write_text(":root{}", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        assert design_service._importable("sparse")

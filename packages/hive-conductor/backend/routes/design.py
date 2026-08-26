@@ -32,6 +32,29 @@ from maistro_design.types import (
 router = APIRouter(prefix="/design", tags=["design"])
 
 
+def _require_ready() -> Any:
+    """The design service's startup outcome, or 503 with the cause it recorded.
+
+    #293 gave startup an answerable status; #413 is that only one route asked.
+    The rest called `get_design_engine()`, caught its generic
+    `RuntimeError("DesignEngine not initialized ...")` in a blanket handler and
+    returned 500 -- discarding the recorded cause and the service-unavailable
+    semantics the status exists to express. A broken install answered "internal
+    server error" on three routes out of four, which is the shape of #293 with
+    a smaller blast radius.
+
+    Called before the blanket `except Exception` in each route, so its
+    HTTPException is raised rather than reclassified.
+    """
+    status = get_design_status()
+    if not status.ready:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Design service unavailable: {status.cause or 'cause not recorded'}",
+        )
+    return status
+
+
 def _get_org_id(request: Request) -> str:
     """Extract org_id from request context.
 
@@ -61,6 +84,7 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
       {id, name, skill_slug, design_system_slug, org_id, team_id, trust_tier,
        output_count, created_at, updated_at}
     """
+    _require_ready()
     try:
         engine = get_design_engine()
         org_id = _get_org_id(request)
@@ -86,6 +110,7 @@ async def get_design_project(project_id: str) -> dict[str, Any]:
       {id, name, skill_slug, design_system_slug, org_id, team_id, trust_tier,
        outputs: [{format, content, url, trust_tier, metadata}], discovery: {...}, ...}
     """
+    _require_ready()
     try:
         store = get_design_store()
         if store is None:
@@ -118,6 +143,7 @@ async def list_design_projects(
     Returns:
       [{id, name, skill_slug, design_system_slug, org_id, output_count, created_at, ...}]
     """
+    _require_ready()
     try:
         store = get_design_store()
         if store is None:
@@ -146,6 +172,7 @@ async def list_design_skills() -> list[dict[str, Any]]:
     Returns:
       [{slug, name, mode, description, featured, output_formats, tags, discovery_form, render_slot}]
     """
+    _require_ready()
     try:
         engine = get_design_engine()
         try:
@@ -201,13 +228,7 @@ async def list_design_systems() -> dict[str, Any]:
        spacing_count}], catalog: {available, cause, count}, ready, cause,
        bundled_count}
     """
-    status = get_design_status()
-    if not status.ready:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Design service unavailable: {status.cause or 'cause not recorded'}",
-        )
-
+    status = _require_ready()
     engine = get_design_engine()
     systems = [
         {
@@ -233,6 +254,7 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
     Returns:
       [{key, label, description, field_type, options, required, default}]
     """
+    _require_ready()
     try:
         engine = get_design_engine()
         form = await engine.run_discovery(skill_slug)
@@ -256,6 +278,7 @@ async def create_render_job(project_id: str, format: str = "pdf") -> dict[str, A
     Returns:
       {job_id, status, created_at}
     """
+    _require_ready()
     try:
         from services.design_preview import get_design_preview_service
 

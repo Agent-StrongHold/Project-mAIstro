@@ -277,6 +277,39 @@ async def start_design_service(settings: Settings) -> None:
         _status = DesignServiceStatus(cause=f"{type(exc).__name__}: {exc}")
 
 
+def _importable(slug: str) -> bool:
+    """Whether one catalogue slug's files are present *and* parse.
+
+    The same reads and the same JSON parse `import_from_catalog` performs, so
+    the answer means what the word says. Deliberately not a call into the
+    importer itself: that also runs the content scan and registers the system,
+    and a startup probe must do neither.
+    """
+    import json
+
+    from maistro_design.systems.importer import CATALOG_ROOT, ESSENTIAL_FILES
+
+    directory = CATALOG_ROOT / slug
+    for name in ESSENTIAL_FILES:
+        if name == "design-tokens.json":
+            continue  # optional, exactly as the importer treats it
+        path = directory / name
+        if not path.is_file():
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if name.endswith(".json"):
+            try:
+                json.loads(text)
+            except ValueError:
+                return False
+        elif not text.strip():
+            return False
+    return True
+
+
 def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
     """The importable Tier-2 slugs, or the reason they cannot be listed.
 
@@ -294,15 +327,35 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
         logger.warning("Tier-2 design system catalog unavailable: %s", exc)
         return (), f"{type(exc).__name__}: {exc}"
 
-    slugs = tuple(
-        sorted(
-            str(entry["slug"])
-            for entry in entries
-            if entry.get("tier") == ORIGIN_CATALOG and entry.get("slug")
-        )
+    indexed = sorted(
+        str(entry["slug"])
+        for entry in entries
+        if entry.get("tier") == ORIGIN_CATALOG and entry.get("slug")
     )
-    logger.info("Tier-2 design system catalog available: %d system(s)", len(slugs))
-    return slugs, None
+
+    # The index is a claim; the files are the fact (#413). `import_from_catalog`
+    # reads `systems/catalog/<slug>/`, not the index, so a build carrying
+    # catalog.json without the payloads would advertise 144 importable systems
+    # and fail every one on click.
+    #
+    # Existence is not enough either (#413 review): the importer *parses* what
+    # it reads, so a present-but-malformed `manifest.json` gets advertised and
+    # then fails on selection. `_importable` performs the same reads and the
+    # same parse, which is the only thing that earns the word "importable".
+    present = [slug for slug in indexed if _importable(slug)]
+    missing = len(indexed) - len(present)
+    if not present:
+        cause = f"catalog index lists {len(indexed)} system(s), none of them installed"
+        logger.warning("Tier-2 design system catalog unavailable: %s", cause)
+        return (), cause
+    if missing:
+        # Degraded, not unavailable: what is there can still be imported, and
+        # saying so beats reporting a round number nobody can act on.
+        cause = f"{missing} of {len(indexed)} indexed system(s) have no files installed"
+        logger.warning("Tier-2 design system catalog partially installed: %s", cause)
+        return tuple(present), cause
+    logger.info("Tier-2 design system catalog available: %d system(s)", len(present))
+    return tuple(present), None
 
 
 async def stop_design_service() -> None:
