@@ -13,6 +13,8 @@ import socket
 import pytest
 
 from maistro.security.ssrf import (
+    BLOCK_UNRESOLVABLE,
+    OPERATIONAL_BLOCKS,
     SSRFBlockedError,
     _offending_address,
     _resolve,
@@ -328,6 +330,42 @@ class TestAsyncFormAgrees:
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
         await avalidate_outbound_url("http://example.com/x")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://" + "a" * 64 + ".example.com/",
+            "http://" + "b" * 300 + "/",
+        ],
+    )
+    async def test_a_name_that_cannot_be_encoded_for_dns_is_refused(self, url: str) -> None:
+        """A label longer than 63 characters parses as a URL and is a valid
+        hostname string, but `getaddrinfo` refuses to IDNA-encode it and raises
+        **`UnicodeError`**, not `socket.gaierror`. Only `gaierror` was caught,
+        so the guard raised an exception nothing on the path expected instead
+        of a refusal — and one such stored URL 500'd the whole MCP listing
+        (#430).
+
+        Real rather than contrived: `getaddrinfo` on this machine reports
+        `encoding with 'idna' codec failed (UnicodeError: label empty or too
+        long)`. No monkeypatching, because the point is what the standard
+        library actually does."""
+        with pytest.raises(SSRFBlockedError) as caught:
+            await avalidate_outbound_url(url)
+
+        assert caught.value.reason == BLOCK_UNRESOLVABLE
+
+    @pytest.mark.asyncio
+    async def test_it_reads_as_unresolvable_rather_than_as_a_config_fault(self) -> None:
+        """The distinction #368 established has to survive: an unresolvable
+        host is the same situation as a server being down, so it must carry the
+        operational reason code rather than the one that means "an operator
+        configured this wrong"."""
+        with pytest.raises(SSRFBlockedError) as caught:
+            await avalidate_outbound_url("http://" + "a" * 64 + ".example.com/")
+
+        assert caught.value.reason in OPERATIONAL_BLOCKS
 
 
 class TestPublicHostsThatResembleInternalOnes:

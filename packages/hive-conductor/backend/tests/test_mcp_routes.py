@@ -412,26 +412,3 @@ class TestOneBadRecordCannotBreakTheListing:
         assert body["status"] == "error"
         assert "could not be checked" in body["last_error"]
         assert any(record.levelno >= logging.ERROR for record in caplog.records)
-
-
-class TestOutboundOriginIsTotal:
-    """It is called to *describe* a refusal, so it must never be the thing that
-    fails. `_check_shape` already reaches the same conclusion about these URLs
-    safely — the describing step was the unguarded one."""
-
-    @pytest.mark.parametrize("url", ["http://[::1", "http://[", "http://[:::]/x"])
-    def test_an_unparseable_url_yields_a_sentinel(self, url) -> None:
-        from maistro.security.outbound import outbound_origin
-
-        assert outbound_origin(url)
-
-    def test_the_sentinel_matches_no_configured_allowance(self) -> None:
-        """The security property. An origin nobody can parse must never compare
-        equal to one an operator authorized, or a malformed URL becomes a way
-        past the allowlist."""
-        from maistro.security.outbound import OutboundPolicy, outbound_origin
-
-        policy = OutboundPolicy().with_origins(["https://api.example.com", "http://localhost:3000"])
-        for url in ["http://[::1", "http://[", "http://[:::]/x"]:
-            assert not policy.allows(url)
-            assert outbound_origin(url) not in policy.origins

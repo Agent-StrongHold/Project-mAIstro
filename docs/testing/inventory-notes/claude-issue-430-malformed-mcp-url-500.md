@@ -1,13 +1,37 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +10
+  packages/hive-conductor/backend/tests: +6
+  packages/maistro-core/tests: +8
 ---
 # claude-issue-430-malformed-mcp-url-500
 
-Ten new node IDs in `packages/hive-conductor/backend/tests/test_mcp_routes.py`:
-six in `TestOneBadRecordCannotBreakTheListing`, four in
-`TestOutboundOriginIsTotal` (three of them one parametrised case). Nothing
-removed or reparametrised.
+Fourteen new node IDs across two suites. Six in
+`packages/hive-conductor/backend/tests/test_mcp_routes.py`
+(`TestOneBadRecordCannotBreakTheListing`), and eight in
+`packages/maistro-core/tests/security/` — five in
+`test_outbound_policy.py::TestOutboundOriginIsTotal` and three in
+`test_ssrf.py::TestAsyncFormAgrees`. Nothing removed or reparametrised.
+
+## Why the core half is in the core suite
+
+The first version put `TestOutboundOriginIsTotal` beside the route that
+surfaced the defect, in the Conductor's suite. The diff-coverage gate then
+failed on `outbound.py` (50% of 4 changed lines) and `ssrf.py` (50% of 2) —
+because the run that measures `maistro-core` does not execute the Conductor's
+tests, so the two guards this change added had **no** covering test in the
+suite that governs them.
+
+That is not a coverage technicality. `outbound_origin` returning a sentinel
+that matches no configured allowance is a core security property, and the
+`UnicodeError` the resolver raises is core behaviour; a test for either that
+only runs in a downstream package's suite is a test the owning package does
+not have. The class moved rather than being duplicated, and the async
+resolver case is now pinned in `test_ssrf.py` beside the sync one it had
+diverged from.
+
+Measured after the move: `ssrf.py` 100%, `outbound.py` 99% — the one
+remaining line is `GuardedTransport.aclose`, which this change did not
+touch.
 
 ## A regression I introduced, found after it merged
 
