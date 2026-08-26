@@ -1,19 +1,31 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import httpx
 import stores
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import MCPServer, MCPTool
 from pydantic import BaseModel, ConfigDict
 
 from maistro.http import shared_client
+from maistro.security.outbound import OutboundBlockedError, outbound_origin
+from maistro.security.ssrf import OPERATIONAL_BLOCKS
 
 router = APIRouter(tags=["mcp"])
 
 logger = logging.getLogger(__name__)
+
+#: Per-request ceiling on concurrent MCP health checks. A single GET /servers
+#: used to issue one request per stored server simultaneously.
+HEALTH_FANOUT_LIMIT = 8
+
+#: A health check only needs the status line. Kept short so one unresponsive
+#: server cannot hold the whole listing open.
+HEALTH_TIMEOUT_SECONDS = 3.0
 
 
 def _user_id(request: Request) -> str | None:
@@ -35,34 +47,71 @@ async def _health_check(server: MCPServer, *, user_id: str | None = None) -> MCP
                 "last_ping": datetime.now(UTC),
             }
         )
+    now = datetime.now(UTC)
     try:
-        async with shared_client(timeout=3.0) as client:
+        async with shared_client(timeout=HEALTH_TIMEOUT_SECONDS) as client:
             r = await client.get(server.url)
             if r.status_code < 500:
                 return server.model_copy(
-                    update={
-                        "status": "connected",
-                        "last_ping": datetime.now(UTC),
-                    }
+                    update={"status": "connected", "last_ping": now, "last_error": None}
                 )
-    except Exception as _exc:
-        __import__("logging").getLogger("hive.routes.mc").warning(
-            "error_swallowed file=%s line=%d: %s",
-            "packages/hive-conductor/backend/routes/mcp.py",
-            47,
-            _exc,
-        )
-        pass
-    return server.model_copy(update={"status": "disconnected", "last_ping": datetime.now(UTC)})
+    except OutboundBlockedError as exc:
+        # Not every block is a refusal. The guard fails closed on a host it
+        # cannot resolve, which is the same situation as a server being down --
+        # so `OPERATIONAL_BLOCKS` falls through to `disconnected` below, and
+        # only an actual policy decision becomes `error`.
+        #
+        # Collapsing the two would replace one inaccuracy with another: a
+        # standing authorization decision hidden behind a transient-looking
+        # status, or a stopped server reported as a configuration fault (#368).
+        #
+        # The origin is logged, never the full URL: a stored MCP URL can carry
+        # a token in its query string or userinfo.
+        if exc.reason not in OPERATIONAL_BLOCKS:
+            logger.warning(
+                "mcp health refused by outbound policy: server=%s origin=%s reason=%s",
+                server.id,
+                outbound_origin(server.url),
+                exc.reason or "unspecified",
+            )
+            return server.model_copy(
+                update={
+                    "status": "error",
+                    "last_ping": now,
+                    "last_error": (
+                        f"refused by outbound policy ({exc.reason or 'unspecified'}): "
+                        f"the origin {outbound_origin(server.url)} is not configured "
+                        f"for this deployment"
+                    ),
+                }
+            )
+        logger.info("mcp health check could not reach server=%s reason=%s", server.id, exc.reason)
+    except httpx.HTTPError as exc:
+        logger.info("mcp health check failed: server=%s error=%s", server.id, type(exc).__name__)
+    return server.model_copy(
+        update={"status": "disconnected", "last_ping": now, "last_error": None}
+    )
 
 
 @router.get("/servers", response_model=list[MCPServer])
 async def list_servers(request: Request) -> list[MCPServer]:
-    import asyncio
+    """List every stored MCP server, health-checked with a bounded fan-out.
 
+    The fan-out used to be `asyncio.gather` over the whole store, so one GET
+    opened one connection per registered server at once. A caller who can add
+    servers could therefore turn a single request into arbitrarily many
+    concurrent outbound connections (#368). The semaphore caps that at
+    `HEALTH_FANOUT_LIMIT` without changing the result.
+    """
     uid = _user_id(request)
     servers = list(stores.mcp_servers.values())
-    checked = await asyncio.gather(*[_health_check(s, user_id=uid) for s in servers])
+    limit = asyncio.Semaphore(HEALTH_FANOUT_LIMIT)
+
+    async def bounded(server: MCPServer) -> MCPServer:
+        async with limit:
+            return await _health_check(server, user_id=uid)
+
+    checked = await asyncio.gather(*[bounded(s) for s in servers])
     for s in checked:
         stores.mcp_servers[s.id] = s
     return list(checked)
