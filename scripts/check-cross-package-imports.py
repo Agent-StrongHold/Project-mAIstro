@@ -92,15 +92,71 @@ def _module_file(root: Path, parts: list[str]) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _imported_by(node: ast.Import | ast.ImportFrom) -> set[str]:
+    """The names one import statement binds locally.
+
+    `import a.b` binds `a`; `from a import b` binds `b`; `as` renames either.
+    """
+    if isinstance(node, ast.Import):
+        return {alias.asname or alias.name.split(".")[0] for alias in node.names}
+    return {alias.asname or alias.name for alias in node.names}
+
+
+def _assigned_by(node: ast.Assign | ast.AnnAssign | ast.AugAssign) -> set[str]:
+    """The names one assignment binds, tuple and starred targets included."""
+    if isinstance(node, ast.Assign):
+        return {
+            sub.id
+            for target in node.targets
+            for sub in ast.walk(target)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store)
+        }
+    return {node.target.id} if isinstance(node.target, ast.Name) else set()
+
+
+def _bound_by(node: ast.stmt, names: set[str]) -> None:
+    """Record the names one module-scope statement binds."""
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        names.add(node.name)
+    elif isinstance(node, ast.Import | ast.ImportFrom):
+        names |= _imported_by(node)
+    elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+        names |= _assigned_by(node)
+
+
+def _collect(body: list[ast.stmt], names: set[str]) -> None:
+    """Walk module scope, descending into the blocks that are still module scope.
+
+    `if TYPE_CHECKING:`, `try: ... except ImportError:` and `with` are all used
+    for conditional exports in these packages, so a name bound inside one is a
+    real module attribute. A function or class body is not: it opens a new
+    scope, and that is the whole distinction this function exists to draw.
+    """
+    for node in body:
+        _bound_by(node, names)
+        if isinstance(node, ast.If | ast.Try | ast.With | ast.For | ast.While):
+            for attr in ("body", "orelse", "finalbody"):
+                _collect(getattr(node, attr, []) or [], names)
+            for handler in getattr(node, "handlers", []) or []:
+                _collect(handler.body, names)
+
+
 @cache
 def _names_in(path: Path) -> frozenset[str]:
-    """Every name a module presents: defined or imported.
+    """Every name a module presents at import time: defined or imported.
 
     Imported counts because `__init__.py` re-export is how these packages
-    publish an API, and refusing that would flag every legitimate façade.
+    publish an API, and refusing that would flag every legitimate facade.
+
+    **Module scope only.** An earlier version walked the whole tree, so a local
+    variable inside a function counted as a module attribute and
+    `from target import local_name` resolved against something no importer can
+    reach -- the exact missing-attribute case this gate exists to catch, passing
+    it (#413). A function body is a different scope; a module-level `if` or
+    `try` is not, and both are walked.
 
     Cached because the same target is asked about once per importing statement,
-    and a handful of façades (`maistro.types`, `maistro.protocols`) are imported
+    and a handful of facades (`maistro.types`, `maistro.protocols`) are imported
     from hundreds of files. Uncached, a full scan re-parsed those hundreds of
     times and took long enough under coverage to trip a 30-second test timeout.
     Safe: this is a one-shot process reading a tree nothing is writing to.
@@ -110,17 +166,7 @@ def _names_in(path: Path) -> frozenset[str]:
     except (OSError, SyntaxError):
         return frozenset()
     names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            names.add(node.name)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            names.add(node.id)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.asname or alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                names.add(alias.asname or alias.name)
+    _collect(tree.body, names)
     return frozenset(names)
 
 
@@ -214,18 +260,37 @@ def scan(path: Path, roots: dict[str, Path], repo_root: Path = REPO_ROOT) -> lis
     return found
 
 
+#: Trees outside `packages/` that are still first-party Python.
+#:
+#: The docstring below promised "every first-party Python file, tests
+#: included", and the scan globbed `packages/` only -- so the repository's own
+#: root `tests/`, `scripts/` and Alembic trees were outside a check advertised
+#: as covering them, including the very `pytest.raises` paths the reason names
+#: (#413). Measured when they were added: 207 further files, zero new findings,
+#: so the claim was the only thing that was wrong.
+_EXTRA_ROOTS = ("tests", "scripts", "alembic", "formal")
+
+
 def source_files() -> list[Path]:
     """Every first-party Python file, tests included.
 
     Tests too: a test importing a module that does not exist fails loudly, but
     one importing a *name* that does not exist can sit inside a `pytest.raises`
     or a skip and never say so.
+
+    `scripts/` too, for the same reason one layer up: a gate that cannot import
+    what it names is a gate that does not run, and #262 is the record of what
+    an absent check looks like from the outside.
     """
+    trees = [PACKAGES, *(REPO_ROOT / name for name in _EXTRA_ROOTS)]
     files: list[Path] = []
-    for path in sorted(PACKAGES.rglob("*.py")):
-        if _SKIP_PARTS.intersection(path.parts):
+    for tree in trees:
+        if not tree.is_dir():
             continue
-        files.append(path)
+        for path in sorted(tree.rglob("*.py")):
+            if _SKIP_PARTS.intersection(path.parts):
+                continue
+            files.append(path)
     return files
 
 

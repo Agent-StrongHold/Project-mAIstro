@@ -154,6 +154,11 @@ class Package:
 #   maistro.cli       typer/rich  -> `tui` extra
 #   maistro.identity  bip-utils   -> `identity` extra (coincurve has no wheel for
 #                                    the Python the API image ships)
+#: The four files `maistro_design.systems.importer` reads for one system.
+#: Mirrors `importer.ESSENTIAL_FILES`; kept here rather than imported because
+#: this script must run before anything is installed.
+ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
+
 PACKAGES = [
     Package("maistro-core", "maistro", CORE_PUBLIC_SURFACE, widest_extra="all"),
     Package("maistro-canvas", "maistro_canvas", widest_extra="export"),
@@ -166,12 +171,26 @@ PACKAGES = [
         # partial copy is the failure a directory check would pass. `default`
         # is the slug `DiscoveryResult` falls back to, so its absence is the
         # one that reaches every caller.
+        #
+        # `design-tokens.json` is in this list precisely because
+        # `_read_system_files()` treats it as OPTIONAL (#413). Drop it in
+        # packaging and nothing complains: the wheel imports, `load_bundled`
+        # succeeds, startup reports ready -- and every system loads with zero
+        # colour and spacing tokens, which is the empty shell #293 removed,
+        # reached from the other direction. The one file whose absence is
+        # silent is the one that most needs declaring.
         data_files=[
             f"systems/bundled/{slug}/{name}"
             for slug in ("default", "shadcn", "apple", "material", "editorial", "enterprise")
-            for name in ("manifest.json", "DESIGN.md", "tokens.css")
+            for name in ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
         ]
-        + ["systems/catalog/catalog.json"],
+        # The catalogue index AND a payload from it. The index alone would let
+        # a wheel advertise 144 importable systems whose files are absent --
+        # `import_from_catalog` reads `systems/catalog/<slug>/`, not the index.
+        + [
+            "systems/catalog/catalog.json",
+            *(f"systems/catalog/airbnb/{name}" for name in ESSENTIAL_FILES),
+        ],
     ),
     # [ifeval] carries the vendored Google IFEval verifier's own runtime deps
     # (nltk, langdetect, absl-py, immutabledict). That vendored tree imports

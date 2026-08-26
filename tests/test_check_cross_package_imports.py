@@ -250,3 +250,92 @@ class TestTheReport:
         monkeypatch.setattr(check, "source_files", list)
         assert check.main() == 1
         assert "no first-party Python files" in capsys.readouterr().err
+
+
+class TestOnlyModuleScopeCounts:
+    """#413. `_names_in` walked the whole tree, so a local variable inside a
+    function counted as a module attribute and `from target import local_name`
+    resolved against something no importer can reach — the exact
+    missing-attribute case this gate exists to catch, passing it."""
+
+    def test_a_function_local_is_not_a_module_attribute(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "local.py").write_text(
+            "def build():\n    helper = 1\n    return helper\n", encoding="utf-8"
+        )
+        (finding,) = _scan(check, workspace, "from thing.local import helper\n")
+        assert finding.target == "thing.local.helper"
+
+    def test_a_name_imported_only_inside_a_function_is_not_either(self, check, workspace):
+        """The shape that made the old behaviour plausible: the name *is* in the
+        file, just not reachable from outside."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "lazy.py").write_text(
+            "def go():\n    from json import dumps\n    return dumps\n", encoding="utf-8"
+        )
+        assert [f.target for f in _scan(check, workspace, "from thing.lazy import dumps\n")] == [
+            "thing.lazy.dumps"
+        ]
+
+    def test_a_class_attribute_is_not_a_module_attribute(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "cls.py").write_text("class Holder:\n    VALUE = 1\n", encoding="utf-8")
+        assert [f.target for f in _scan(check, workspace, "from thing.cls import VALUE\n")] == [
+            "thing.cls.VALUE"
+        ]
+        assert _scan(check, workspace, "from thing.cls import Holder\n") == []
+
+    def test_a_name_bound_in_a_module_level_try_still_counts(self, check, workspace):
+        """`try: import x except ImportError: x = None` is how these packages
+        do optional dependencies. Still module scope, so still an attribute."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "opt.py").write_text(
+            "try:\n    from json import dumps\nexcept ImportError:\n    dumps = None\n",
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.opt import dumps\n") == []
+
+    def test_a_name_bound_under_type_checking_still_counts(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "tc.py").write_text(
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Alias = int\n",
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.tc import Alias\n") == []
+
+    def test_a_tuple_unpack_at_module_scope_counts(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "tup.py").write_text("LEFT, RIGHT = 1, 2\n", encoding="utf-8")
+        assert _scan(check, workspace, "from thing.tup import LEFT\n") == []
+
+    def test_an_annotated_assignment_counts(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "ann.py").write_text("COUNT: int = 3\n", encoding="utf-8")
+        assert _scan(check, workspace, "from thing.ann import COUNT\n") == []
+
+
+class TestTheScanCoversWhatItClaims:
+    """#413. The docstring promised "every first-party Python file, tests
+    included" and gave the reason — a missing *name* can sit inside a
+    `pytest.raises` and never say so — while the glob covered `packages/`
+    only. The repository's own root trees, including the ones that reason
+    names, were outside a check advertised as covering them."""
+
+    def test_the_root_test_tree_is_scanned(self, check):
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert "tests/test_check_cross_package_imports.py" in files
+
+    def test_the_scripts_tree_is_scanned(self, check):
+        """A gate that cannot import what it names is a gate that does not run,
+        and #262 is the record of what an absent check looks like."""
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert "scripts/check-ac-state.py" in files
+
+    def test_the_packages_tree_is_still_scanned(self, check):
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert "packages/hive-conductor/backend/services/design_service.py" in files
+
+    def test_widening_did_not_cost_coverage_elsewhere(self, check):
+        """Measured when the roots were added: 207 further files, zero new
+        findings. If this ever drops, a tree stopped being scanned."""
+        assert len(check.source_files()) > 2000

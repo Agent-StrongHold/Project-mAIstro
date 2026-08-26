@@ -204,3 +204,49 @@ class TestTheReport:
             {"checked": 2, "failures": [{"module": "a.json", "error": "missing", "traceback": ""}]}
         )
         assert "failed to import" not in detail
+
+
+class TestTheOptionalFileIsDeclared:
+    """#413. `design-tokens.json` is the one file `_read_system_files()` treats
+    as optional, and the one that carries every colour and spacing token.
+
+    Drop it in packaging and nothing complains: the wheel imports,
+    `load_bundled` succeeds, startup reports ready — and every bundled system
+    loads with zero tokens, which is the empty shell #293 removed, reached from
+    the other direction. The file whose absence is silent is the one that most
+    needs declaring."""
+
+    def test_every_bundled_system_declares_its_tokens_file(self, check):
+        pkg = next(p for p in check.PACKAGES if p.dist == "maistro-design")
+        declared = {
+            rel.split("/")[2]
+            for rel in pkg.data_files
+            if rel.startswith("systems/bundled/") and rel.endswith("/design-tokens.json")
+        }
+        sys.path.insert(0, str(ROOT / "packages" / "maistro-design" / "src"))
+        try:
+            from maistro_design.systems.importer import BUNDLED_SLUGS
+        finally:
+            sys.path.pop(0)
+        assert declared == set(BUNDLED_SLUGS)
+
+    def test_all_four_essential_files_are_declared_per_system(self, check):
+        """Not three. The list mirrors `importer.ESSENTIAL_FILES` exactly, so a
+        fifth file added upstream shows up here as a gap rather than silently
+        going unchecked."""
+        pkg = next(p for p in check.PACKAGES if p.dist == "maistro-design")
+        bundled = [r for r in pkg.data_files if r.startswith("systems/bundled/")]
+        assert len(bundled) == 6 * len(check.ESSENTIAL_FILES)
+
+    def test_a_catalog_payload_is_declared_not_only_the_index(self, check):
+        """The index alone would let a wheel advertise 144 importable systems
+        whose files are absent — `import_from_catalog` reads
+        `systems/catalog/<slug>/`, not the index."""
+        pkg = next(p for p in check.PACKAGES if p.dist == "maistro-design")
+        assert "systems/catalog/catalog.json" in pkg.data_files
+        payload = [
+            r
+            for r in pkg.data_files
+            if r.startswith("systems/catalog/") and not r.endswith("catalog.json")
+        ]
+        assert payload, "the index is declared but no catalogue payload is"

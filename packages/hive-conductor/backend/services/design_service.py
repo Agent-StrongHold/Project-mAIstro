@@ -286,7 +286,12 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
     only, so returning the index verbatim would offer six systems that cannot
     be imported from the path the offer implies.
     """
-    from maistro_design.systems.importer import ORIGIN_CATALOG, load_catalog
+    from maistro_design.systems.importer import (
+        CATALOG_ROOT,
+        ESSENTIAL_FILES,
+        ORIGIN_CATALOG,
+        load_catalog,
+    )
 
     try:
         entries = load_catalog()
@@ -294,15 +299,35 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
         logger.warning("Tier-2 design system catalog unavailable: %s", exc)
         return (), f"{type(exc).__name__}: {exc}"
 
-    slugs = tuple(
-        sorted(
-            str(entry["slug"])
-            for entry in entries
-            if entry.get("tier") == ORIGIN_CATALOG and entry.get("slug")
-        )
+    indexed = sorted(
+        str(entry["slug"])
+        for entry in entries
+        if entry.get("tier") == ORIGIN_CATALOG and entry.get("slug")
     )
-    logger.info("Tier-2 design system catalog available: %d system(s)", len(slugs))
-    return slugs, None
+
+    # The index is a claim; the files are the fact (#413). `import_from_catalog`
+    # reads `systems/catalog/<slug>/`, not the index, so a build carrying
+    # catalog.json without the payloads would advertise 144 importable systems
+    # and fail every one on click. `design-tokens.json` is excluded from the
+    # requirement for the same reason the importer treats it as optional -- a
+    # system without tokens still imports, it just carries none.
+    required = [name for name in ESSENTIAL_FILES if name != "design-tokens.json"]
+    present = [
+        slug for slug in indexed if all((CATALOG_ROOT / slug / name).is_file() for name in required)
+    ]
+    missing = len(indexed) - len(present)
+    if not present:
+        cause = f"catalog index lists {len(indexed)} system(s), none of them installed"
+        logger.warning("Tier-2 design system catalog unavailable: %s", cause)
+        return (), cause
+    if missing:
+        # Degraded, not unavailable: what is there can still be imported, and
+        # saying so beats reporting a round number nobody can act on.
+        cause = f"{missing} of {len(indexed)} indexed system(s) have no files installed"
+        logger.warning("Tier-2 design system catalog partially installed: %s", cause)
+        return tuple(present), cause
+    logger.info("Tier-2 design system catalog available: %d system(s)", len(present))
+    return tuple(present), None
 
 
 async def stop_design_service() -> None:
