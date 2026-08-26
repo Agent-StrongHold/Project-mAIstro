@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +65
+  packages/maistro-rsi/tests: +69
 ---
 # claude-issue-356-rsi-harvest-target-and-patch-policy
 
-Sixty-five new node IDs across two files: forty-seven in
+Sixty-nine new node IDs across two files: fifty-one in
 `test_export_policy.py` (the policy) and eighteen in
 `test_harvest_entry_point.py` (that the policy is reached through the command
 the workflow actually runs). Nothing removed or reparametrised.
@@ -124,6 +124,23 @@ unappliable case beside it. A stale patch is an accident and the rest of the run
 is still good; a patch reaching for `.github/` is a statement about this export,
 and opening the other PRs from it would be treating one artifact as trustworthy
 and untrustworthy at the same time.
+
+## Two more the coverage number asked for
+
+`export_policy.py` came out at 98%, and both gaps were real cases rather than
+unreachable defensiveness:
+
+* The "strip a surrounding quote pair" branch in `_unquote` was never taken,
+  because the header pattern captures the *inside* of the quotes. The rename
+  lines are the only place quotes arrive still attached — and git quotes those
+  too, so a quoted rename onto the containment surface would have been compared
+  against a name no pattern matches.
+* The loop arc where a deleted path is *not* protected. That is the
+  counterweight to the protected-deletion check: a promotion removing a dead
+  ordinary module is a legitimate improvement, and a policy refusing every
+  deletion would block it for nothing.
+
+100% lines and branches on the module after those.
 
 ## Discrimination, measured
 

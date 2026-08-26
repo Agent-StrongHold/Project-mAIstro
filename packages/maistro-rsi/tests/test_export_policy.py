@@ -175,6 +175,33 @@ class TestWhichPathsAPatchTouches:
         text = 'diff --git "a/maistro/security/warden.py" "b/maistro/security/warden.py"\n'
         assert "maistro/security/warden.py" in patch_paths(text)
 
+    def test_a_quoted_rename_target_is_unwrapped(self) -> None:
+        """git quotes a rename line the same way it quotes a header, and the
+        rename lines are the only place the quotes reach `_unquote` still
+        attached — the header pattern captures the inside of them. So this is
+        the one path on which stripping a surrounding pair matters at all."""
+        text = (
+            "diff --git a/old.py b/new.py\n"
+            "similarity index 95%\n"
+            'rename from "packages/maistro-core/src/maistro/security/warden.py"\n'
+            'rename to "packages/maistro-core/src/maistro/security/warden2.py"\n'
+        )
+        paths = patch_paths(text)
+
+        assert "packages/maistro-core/src/maistro/security/warden.py" in paths
+        assert not any(path.startswith('"') for path in paths)
+
+    def test_a_quoted_rename_onto_the_containment_surface_is_refused(self) -> None:
+        """The consequence, rather than the parsing. A quoted rename that left
+        its quotes attached would compare against a name no pattern matches."""
+        text = (
+            "diff --git a/docs/a.py b/docs/b.py\n"
+            "similarity index 95%\n"
+            'rename from "docs/a.py"\n'
+            'rename to "packages/maistro-rsi/src/maistro_rsi/quarantine.py"\n'
+        )
+        assert not validate_patch(text).ok
+
     def test_a_patch_touching_nothing_is_reported(self) -> None:
         """A body with no `diff --git` identifies nothing about what it
         changes, which is not a thing to apply and open a PR for."""
@@ -221,6 +248,18 @@ class TestTheContainmentSurfaceIsTheSameOnTheWayOut:
             "index 1111111..0000000\n"
         )
         assert not validate_patch(text).ok
+
+    def test_deleting_an_ordinary_file_is_allowed(self) -> None:
+        """The counterweight to the protected-deletion check. A promotion that
+        removes a dead ordinary module is a legitimate improvement, and a
+        policy that refused every deletion would block it for nothing."""
+        text = (
+            "diff --git a/packages/maistro-core/src/maistro/dead.py "
+            "b/packages/maistro-core/src/maistro/dead.py\n"
+            "deleted file mode 100644\n"
+            "index 1111111..0000000\n"
+        )
+        assert validate_patch(text).ok
 
     def test_ordinary_application_code_is_not_refused(self) -> None:
         """The counterweight. A policy that refused everything would stop the
