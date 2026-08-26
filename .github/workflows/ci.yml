@@ -525,12 +525,22 @@ jobs:
       SHELLCHECK_VERSION: "0.10.0"
     steps:
       - uses: actions/checkout@v4
+      # `--retry` on both: these fetch from github.com/releases, which returns a
+      # 502 often enough to matter. One did on this job, and the whole check
+      # went red having linted nothing — a red that says nothing about the
+      # branch is worse than a slow check, because someone has to spend a cycle
+      # establishing that it means nothing.
+      #
+      # `--retry-all-errors` is the load-bearing flag: without it curl retries
+      # only what it considers transient, and a 502 with `-f` is not on that
+      # list. `-f` still fails the step after the last attempt, and `set -o
+      # pipefail` still fails it if tar rejects what arrived.
       - name: Install actionlint + shellcheck
         run: |
           set -euo pipefail
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar xz -C /tmp actionlint
-          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
             | tar xJ -C /tmp
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
