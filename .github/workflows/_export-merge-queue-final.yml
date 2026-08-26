@@ -1,0 +1,63 @@
+name: Temporary export verified merge-queue hardening
+
+on:
+  push:
+    branches: [chatgpt/autonomous-merge-safety]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-merge-safety
+          fetch-depth: 0
+
+      - name: Install tooling-only dependencies
+        run: python3 -m pip install -q pyyaml pytest
+
+      - name: Build the verified final tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          source = Path('.github/workflows/_finalize-merge-queue-v4.yml').read_text(encoding='utf-8')
+          marker = "python3 - <<'PY'\n"
+          block = source.split(marker, 1)[1].split("\n          PY", 1)[0]
+          exec(compile(textwrap.dedent(block), '_finalize-merge-queue-v4.yml::<migration>', 'exec'), {})
+          PY
+          python3 scripts/check-required-checks.py --update
+          python3 scripts/check-branch-protection.py --update-doc
+          python3 -m pytest --noconftest \
+            tests/test_check_gates_ran.py \
+            tests/test_check_branch_protection.py \
+            tests/test_check_autonomous_merge.py -q
+          python3 scripts/check-required-checks.py
+          python3 scripts/check-branch-protection.py
+
+      - name: Build export manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only > /tmp/final-tree-manifest.txt
+          cat /tmp/final-tree-manifest.txt
+          mkdir -p /tmp/final-tree
+          while IFS= read -r path; do
+            [ -f "$path" ] || continue
+            mkdir -p "/tmp/final-tree/$(dirname "$path")"
+            cp "$path" "/tmp/final-tree/$path"
+          done < /tmp/final-tree-manifest.txt
+          cp /tmp/final-tree-manifest.txt /tmp/final-tree/MANIFEST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merge-queue-final-tree
+          path: /tmp/final-tree
+          include-hidden-files: true
+          retention-days: 1
