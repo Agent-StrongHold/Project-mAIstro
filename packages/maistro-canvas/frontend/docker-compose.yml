@@ -8,7 +8,13 @@ services:
     environment:
       POSTGRES_DB: mcp_orders
       POSTGRES_USER: mcp
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_local_dev}
+      # Required, with no default (#367). Port 5441 is published to the
+      # host, so a fallback published in this repository is a database
+      # anyone who has read it can open. The fallback was also dead: the
+      # server's own default URL in `server/models/db.py` authenticates as
+      # `mcp:mcp`, which never matched it, so nothing was relying on the
+      # value. Set POSTGRES_PASSWORD and the matching DATABASE_URL.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env, and match it in DATABASE_URL}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcp"]
       interval: 5s

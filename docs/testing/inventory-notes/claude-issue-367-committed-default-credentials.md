@@ -1,11 +1,13 @@
 ---
 inventory-delta:
-  tests/: +32
+  tests/: +65
 ---
 # claude-issue-367-committed-default-credentials
 
-Thirty-two new node IDs, all in `tests/test_check_compose_secrets.py`. Nothing
-removed or reparametrised.
+Sixty-five new node IDs, all in `tests/test_check_compose_secrets.py`. Nothing
+removed or reparametrised. Thirty-two of them landed with the first version of
+this gate; the remaining thirty-three pin the seven defects review found in it,
+which are described under "What review found" below.
 
 ## One file departed from a convention the rest already followed
 
@@ -72,12 +74,88 @@ is now deliberately invalid syntax and marked as such.
 With `docker-compose.pm-poc.yml` and `.env.example` restored and the gate kept:
 **exit 1, both lines reported**, each with the right diagnosis — "literal value
 committed" for the first, "falls back to a non-empty default" for the second.
-Five of the thirty-two tests go red. With the fix: exit 0 across 6 tracked
+Five of those tests go red. With the fix: exit 0 across 8 tracked
 Compose files.
 
 `test_the_pm_poc_overlay_is_scanned` asserts the glob reaches the specific file
 this issue is about — a glob that missed it would have looked correct
 throughout, since every other profile was already right.
+
+## What review found
+
+Seven defects, all real, all reproduced before being fixed. One of them is the
+reason the rest are worth writing down.
+
+### The gate reported "ok" about a set it had chosen too narrowly
+
+`COMPOSE_GLOBS` was a hand-written list of directory shapes. The tree held
+**eight** Compose files; the gate found six and printed `ok: 6 tracked Compose
+file(s) hand out no credential`. One of the two it missed —
+`packages/maistro-canvas/frontend/docker-compose.yml` — carried
+`POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_local_dev}` on a service that
+publishes port 5441 to the host.
+
+This is the failure mode the gate exists to prevent, committed by the gate. A
+missing check is visibly missing; a check that answers "ok" about the wrong set
+is worse, because the "ok" is what people read. The globs are recursive now, and
+`TestTheGateSeesEveryComposeFile.test_it_finds_every_compose_file_in_the_tree`
+enumerates the tree *independently of the gate's own globs* — a test that reused
+them would have agreed with the bug. The one hand-written glob that remained in
+the tests was removed for the same reason.
+
+That fallback was also dead. `server/models/db.py` defaults to
+`postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders`, so the committed
+password never matched what the server would send. Nothing was relying on it.
+
+### Four spellings that reached a container as a working credential
+
+* `- "API_KEYS=hunter2"` — Compose reads a quoted list entry identically to an
+  unquoted one; the pattern required the name immediately after the dash.
+* `- API_KEYS=$$hunter2` — Compose reads `$$` as an escaped dollar, so this
+  arrives as the literal `$hunter2`. Treating every value starting with `$` as
+  "parameterised" let it past. The production profile relies on that spelling
+  for `$$REDIS_PASSWORD` inside a shell command, so it could not simply be
+  rejected wholesale.
+* `- DATABASE_URL=postgresql://mcp:hunter2@db:5432/app` — the *name* carries no
+  marker, so nothing keyed on the name ever looked at the value. `_URL`/`_URI`/
+  `_DSN` names are now read for a userinfo password, and a parameterised one
+  (`postgresql://mcp:${DB_PASSWORD:?...}@db`, what the base profile already
+  does) still passes.
+
+### Two false positives that would have taught people to route around the gate
+
+`TOKEN` and `KEY` were matched as substrings, so `MAX_TOKENS=4096` and
+`TOKENIZERS_PARALLELISM=false` failed CI with "replace this with a secret
+substitution". A gate that is wrong about ordinary settings gets worked around,
+and then it is not a gate. Markers are matched by whole `_`-delimited segment
+now.
+
+`API_KEY: null` was reported too. A YAML null *removes* a variable rather than
+supplying one — the opposite of committing a credential, and the documented way
+to clear a secret a base image otherwise provides.
+
+## A second profile that was broken as well as wrong
+
+`docker-compose.pm-poc.yml` sent `MAISTRO_ROUTER_API_KEY=${API_KEYS:?...}`.
+`install.sh` writes `MAISTRO_ACCESS_TOKEN=<token>` and `API_KEYS=["<token>"]` —
+a JSON array — and the base profile already uses `MAISTRO_ACCESS_TOKEN` for this
+variable. So the overlay presented `["<token>"]` as the bearer credential and
+every call would have got 401. Fixing the first line of this file in isolation
+would have left an overlay that refuses to start without a variable, and does
+not work once you set it.
+
+## Still not covered
+
+The AC "CI starts every tracked deployment profile and rejects known/default
+credentials" remains half met, and the review made the gap sharper rather than
+closing it: a static gate can only see the files it enumerates, which is exactly
+what went wrong here. Actually starting each profile is a `docker compose up`
+per overlay and belongs with the installer smoke job.
+
+`server/models/db.py` and `alembic.ini` both carry `mcp:mcp` as a literal
+default. That is a committed credential in a Python module and an ini file, not
+in a Compose profile, so it is outside what this gate and this issue cover.
+Filed separately rather than widened into here.
 
 ## Not covered here
 

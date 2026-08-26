@@ -45,27 +45,60 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: Compose files anywhere in the tree, excluding vendored and generated trees.
+#: Compose files anywhere in the tree. Recursive on purpose: a hand-written
+#: list of directory shapes missed `packages/maistro-canvas/frontend/
+#: docker-compose.yml`, which carries a committed `POSTGRES_PASSWORD`
+#: fallback, while the gate reported a clean scan of six files. A gate that
+#: answers "ok" about a set it chose too narrowly is worse than no gate,
+#: because the "ok" is what people read.
 COMPOSE_GLOBS = (
-    "docker-compose*.yml",
-    "docker-compose*.yaml",
-    "*/docker-compose*.yml",
-    "packages/*/docker-compose*.yml",
-    "deploy/**/docker-compose*.yml",
-    "deploy/**/*.compose.yml",
+    "**/docker-compose*.yml",
+    "**/docker-compose*.yaml",
+    "**/*.compose.yml",
+    "**/*.compose.yaml",
+    "**/compose.yml",
+    "**/compose.yaml",
 )
 
 EXCLUDED_PARTS = ("node_modules", ".venv", "third_party", ".git")
 
-#: Names that carry a credential. Substring match, upper-cased, so
-#: `LANGFUSE_SECRET_KEY` and `POSTGRES_PASSWORD` are both caught without
-#: enumerating every variable this repository will ever add.
-SECRET_MARKERS = ("PASSWORD", "SECRET", "TOKEN", "API_KEY", "API_KEYS", "MASTER_KEY", "PRIVATE_KEY")
+#: Segments that make a name a credential. Matched against the `_`-delimited
+#: parts of the name, not as a substring: `TOKEN` as a substring also matches
+#: `MAX_TOKENS` and `TOKENIZERS_PARALLELISM`, which are ordinary model settings.
+#: A gate that fails CI on `MAX_TOKENS=4096` with "replace this with a secret
+#: substitution" teaches people to work around it.
+SECRET_SEGMENTS = frozenset(
+    {
+        "PASSWORD",
+        "PASSWORDS",
+        "PASSPHRASE",
+        "SECRET",
+        "SECRETS",
+        "TOKEN",
+        "KEY",
+        "KEYS",
+        "CREDENTIAL",
+        "CREDENTIALS",
+    }
+)
 
-#: `NAME=value`, in either the list form (`- NAME=value`) or the mapping form
+#: Names whose *value* can carry a credential even though the name does not:
+#: `DATABASE_URL=postgresql://user:pw@host` hands out a password, and no marker
+#: appears anywhere in `DATABASE_URL`.
+URL_SUFFIXES = ("_URL", "_URI", "_DSN")
+
+#: YAML's null spellings. `API_KEY: null` removes a variable rather than
+#: supplying one, which is the opposite of committing a credential.
+YAML_NULLS = frozenset({"null", "Null", "NULL", "~"})
+
+#: `NAME=value`, in either the list form (`- NAME=value`) or the mapping form.
+#: The list form's optional quote is part of the pattern: Compose accepts
+#: `- "API_KEYS=hunter2"` as a YAML scalar, and a pattern that required the
+#: name immediately after the dash skipped that spelling silently -- a way
+#: to commit a credential past this gate.
 #: (`NAME: value`). Leading `#` is handled by the caller: a commented line is
 #: documentation, and `.env.example`-style guidance is not a deployment.
-_LIST_FORM = re.compile(r"^\s*-\s*([A-Z][A-Z0-9_]*)=(.*)$")
+_LIST_FORM = re.compile(r"^\s*-\s*[\"']?([A-Z][A-Z0-9_]*)=(.*)$")
 _MAP_FORM = re.compile(r"^\s*([A-Z][A-Z0-9_]*):\s+(\S.*)$")
 
 #: `${VAR:?msg}` — required, refuses to start when unset. Always allowed.
@@ -86,30 +119,74 @@ class Finding:
 
 
 def is_secret_name(name: str) -> bool:
-    upper = name.upper()
-    return any(marker in upper for marker in SECRET_MARKERS)
+    """Whether `name` denotes a credential, by whole `_`-delimited segment."""
+    return bool(SECRET_SEGMENTS & set(name.upper().split("_")))
 
 
-def classify(value: str) -> str:
+def is_url_name(name: str) -> bool:
+    """Whether `name`'s value may embed a credential in its userinfo."""
+    return name.upper().endswith(URL_SUFFIXES)
+
+
+def _userinfo_password(value: str) -> str:
+    """The literal password inside a connection URL, or "" if there is none."""
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/@\s]+)@", value)
+    if not match:
+        return ""
+    userinfo = match.group(1)
+    if ":" not in userinfo:
+        return ""
+    password = userinfo.split(":", 1)[1]
+    # `postgresql://maistro:${DB_PASSWORD:?...}@host` is parameterised, which is
+    # what the base profile does and what this gate wants people to do.
+    if password.startswith("$"):
+        return ""
+    return password
+
+
+_LITERAL = (
+    "is a literal value committed to the repository — use ${VAR:?message} "
+    "so the deployment refuses to start without one"
+)
+_FALLBACK = (
+    "falls back to a non-empty default, so a caller who sets nothing "
+    "still gets this value — use ${VAR:?message} so it refuses to start"
+)
+
+
+def classify(value: str, *, name: str = "") -> str:
     """Return why `value` is unacceptable, or "" when it is fine."""
     stripped = value.strip().strip('"').strip("'")
-    if not stripped:
+    if not stripped or stripped in YAML_NULLS:
+        # A YAML null removes a variable rather than supplying one, which is the
+        # opposite of committing a credential. Rejecting it would block a valid
+        # way to clear a secret an image otherwise provides.
         return ""
+    if name and is_url_name(name):
+        # The name carries no marker, so nothing above would have looked at this
+        # value -- but `postgresql://user:pw@host` hands out a password all the
+        # same.
+        return (
+            _LITERAL + " (the password is embedded in this connection URL's userinfo)"
+            if _userinfo_password(stripped)
+            else ""
+        )
     if _REQUIRED.match(stripped) or _EMPTY_DEFAULT.match(stripped) or _PLAIN.match(stripped):
         return ""
     if re.match(r"^\$\{[A-Z0-9_]+:?-.+\}$", stripped):
-        return (
-            "falls back to a non-empty default, so a caller who sets nothing "
-            "still gets this value — use ${VAR:?message} so it refuses to start"
-        )
+        return _FALLBACK
+    if stripped.startswith("$$"):
+        # Compose reads `$$` as an escaped dollar, not a substitution: `$$hunter2`
+        # reaches the container as the literal `$hunter2`. The production profile
+        # relies on that for `$$REDIS_PASSWORD` inside a shell command, so the
+        # spelling is legitimate -- which is exactly why accepting every value
+        # starting with `$` let a committed credential through.
+        return _LITERAL
     if stripped.startswith("$"):
         # Some other substitution form. Not a literal, so not a committed
         # credential; left alone rather than guessed at.
         return ""
-    return (
-        "is a literal value committed to the repository — use ${VAR:?message} "
-        "so the deployment refuses to start without one"
-    )
+    return _LITERAL
 
 
 def compose_files(repo_root: Path = REPO_ROOT) -> list[Path]:
@@ -132,9 +209,9 @@ def scan_text(text: str, *, path: str) -> list[Finding]:
         name, value = match.group(1), match.group(2)
         # An inline comment is not part of the value.
         value = value.split(" #", 1)[0].strip()
-        if not is_secret_name(name):
+        if not is_secret_name(name) and not is_url_name(name):
             continue
-        why = classify(value)
+        why = classify(value, name=name)
         if why:
             findings.append(Finding(path=path, line_no=line_no, name=name, value=value, why=why))
     return findings
