@@ -1399,6 +1399,7 @@
         "packages/maistro-core/src/maistro/workspaces/model.py::unused property 'can_use'",
         "packages/maistro-design/src/maistro_design/engine.py::unused method 'run_discovery'",
         "packages/maistro-design/src/maistro_design/engine.py::unused property 'context_trust_tier'",
+        "packages/maistro-design/src/maistro_design/engine.py::unused property 'systems'",
         "packages/maistro-design/src/maistro_design/nodes.py::unused class 'DesignOrchestrateNode'",
         "packages/maistro-design/src/maistro_design/protocols.py::unused method 'list_available'",
         "packages/maistro-design/src/maistro_design/protocols.py::unused method 'list_by_mode'",
