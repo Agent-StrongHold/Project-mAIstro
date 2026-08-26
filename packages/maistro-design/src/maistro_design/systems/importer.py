@@ -52,6 +52,18 @@ ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.js
 # Install-time "Tier-1" set, registered automatically by load_bundled().
 BUNDLED_SLUGS = ("default", "shadcn", "apple", "material", "editorial", "enterprise")
 
+# Where a registered DesignSystem came from, recorded in `metadata["origin"]`.
+#
+# `trust_tier` is close to this but is not it: T2 is both "imported from the
+# Tier-2 catalog" and "handed to us by a caller", and an API that reports the
+# catalogue as the source of a system nobody vendored is the same class of
+# claim #293 was about. So the loader that knows says so, and anything built
+# through `import_open_design_system` directly is EXTERNAL until it says
+# otherwise.
+ORIGIN_BUNDLED = "bundled"
+ORIGIN_CATALOG = "catalog"
+ORIGIN_EXTERNAL = "external"
+
 
 # ─── Scan ──────────────────────────────────────────────────────────────────
 # Pattern primitives + ScanReport live in maistro_design.scan (shared with output-side
@@ -94,6 +106,7 @@ def import_open_design_system(
     tokens_css: str = "",
     design_tokens: dict[str, Any] | None = None,
     trust_tier: TrustTier = TrustTier.T2,
+    origin: str = ORIGIN_EXTERNAL,
 ) -> DesignSystem:
     """Build a `DesignSystem` from Open Design's bundled-package shape.
 
@@ -120,6 +133,7 @@ def import_open_design_system(
         "source": manifest.get("source", {}),
         "open_design_id": slug,
         "license": "Apache-2.0",
+        "origin": origin,
     }
 
     return DesignSystem(
@@ -171,6 +185,7 @@ def load_bundled(registry: DesignSystemRegistry) -> None:
             tokens_css=files["tokens.css"],
             design_tokens=design_tokens,
             trust_tier=TrustTier.T1,
+            origin=ORIGIN_BUNDLED,
         )
         registry.register(system)
 
@@ -210,6 +225,7 @@ def import_from_catalog(
         tokens_css=files["tokens.css"],
         design_tokens=design_tokens,
         trust_tier=trust_tier,
+        origin=ORIGIN_CATALOG,
     )
     registry.register(system)
     return system
