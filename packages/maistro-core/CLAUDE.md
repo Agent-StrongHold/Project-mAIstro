@@ -26,8 +26,14 @@ Use `maistro.testing` for fixtures: `FauxProvider`, `FauxResponse`, `ToolCallDef
 
 - **`AgentConfig` is canonical.** `MaistroConfig`/`MaistroError`/`StrongholdError` are backwards-compat aliases —
   use the canonical names in new code.
-- **No `org_id` in core.** Multi-tenant isolation is Stronghold-only. Keep scope isolation
-  (global → team → user → agent → session); do not add org-level coupling.
+- **Soft scope here; hard tenancy in the importing product.** maistro-core carries the soft scope
+  axes `global → org → team → user → agent → session` — a user may be in several teams and orgs, so
+  `org`/`team` filters here are legitimate scope (ADR-013/015/016/017). Only the *hard* `tenant`
+  boundary — fully segmented, one tenant per user — belongs to Stronghold.
+  See root `CLAUDE.md` decision 7 and **ADR-068**; ADR-019 §"Scope vs. tenancy" carries the amendment.
+  This bullet used to read *"No `org_id` in core"*, which conflated scope with tenancy and is
+  **superseded** — core has ~214 `org_id` references and the schema has carried the column for
+  releases (#386).
 - **Protocol-driven DI.** Business logic depends on `maistro.protocols` (abstract interfaces), never concrete
   implementations. New subsystems wire through `container.py`.
 

@@ -66,7 +66,10 @@ Phased PRs to `integration`, TDD throughout. Negative tests (no token on bad inp
 - Tests (TestClient): full start→callback→authenticated-request happy path with a stubbed provider; stubbed provider error → 401, no session.
 
 ### Phase 4 — audit + observability
-- `auth.oauth.login|link|refresh|failed` events; tokens never logged (ADR-044). No `org_id` anywhere (ADR-019 CI grep).
+- `auth.oauth.login|link|refresh|failed` events; tokens never logged (ADR-044). No **hard tenant**
+  boundary anywhere — that is Stronghold's. This criterion used to read *"No `org_id` anywhere
+  (ADR-019 CI grep)"*; ADR-068 **supersedes** it and ADR-019 §"Scope vs. tenancy" records the
+  correction, so `org` is a soft scope axis core may carry and there is no such grep (#386).
 
 ## Implementation status (2026-07-02, status corrected 2026-07-29)
 
