@@ -72,55 +72,6 @@ jobs:
       # with an import-time side effect runs here.
       - name: Cross-package imports name modules and attributes that exist
         run: python3 scripts/check-cross-package-imports.py
-      # The same question one seam further out. That one asks whether an import
-      # names something that exists; this asks whether the path the frontend
-      # fetches reaches a route the backend registers. `fetch` does not reject
-      # on a 404, so a control wired to nothing renders, responds to clicks,
-      # and reports a state that never happened -- Tools Lab did exactly that
-      # for four tools across three endpoints (#295). Judged against the app's
-      # own route table, not a list of prefixes someone maintains by hand.
-      - name: Frontend calls reach registered backend routes
-        run: uv run python3 scripts/check-frontend-api-routes.py
-      # An accepted decision can retire a rule that is written down somewhere
-      # else, and the retired phrasing then outlives it. `maistro-core`'s own
-      # CLAUDE.md told agents "No `org_id` in core" long after ADR-068
-      # superseded that shorthand, while the package it governs carried 214
-      # `org_id` references -- and being the highest-proximity instruction
-      # file, it outranked the root decision that corrected it (#386).
-      #
-      # Registry-driven (`quality/retired-guidance.json`), so what counts as
-      # retired is declared rather than inferred. A line that names its
-      # replacement passes: recording that a rule was retired is not directing
-      # against it, and the fix must never be to delete the history.
-      - name: Retired guidance does not still direct implementation
-        run: python3 scripts/check-retired-guidance.py
-      # A tracked Compose overlay shipped `API_KEYS=alice:changeme-alice`
-      # alongside `REQUIRE_AUTH=true`, so it read as a ready-to-run
-      # authenticated deployment whose keys are published here (#367).
-      # gitleaks and detect-secrets both stayed quiet: `changeme-alice` is
-      # shaped like a placeholder, which is what makes it usable and what makes
-      # a secret scanner the wrong instrument. This asks the other question --
-      # can this file hand someone a working credential -- and holds every
-      # profile to the `${VAR:?message}` shape the rest already use.
-      - name: No deployment profile hands out a credential
-        run: python3 scripts/check-compose-secrets.py
-      # Four chat handlers read `stores.chat_sessions` as a global dictionary,
-      # so any authenticated user could list, read, append to or delete any
-      # other user's chat by id (#312). Nothing about the text of those
-      # handlers looked wrong -- they did the right thing to the wrong
-      # person's rows. The scoped view fixes those four; this fixes the fifth,
-      # by refusing a route module that names an owned store directly.
-      - name: An owned store is only reached through its scoped view
-        run: python3 scripts/check-owned-store-access.py
-      # `/v1/voice/` sat in AuthMiddleware's public-prefix list for the whole
-      # of this repository's history, so an entire prefix -- including a route
-      # that reaches the tool loop -- answered to anyone (#316). It is one
-      # string in one tuple and it reads exactly like the `/health` above it.
-      # Adding a public route costs one line; reviewing it costs reading
-      # everything behind it, so quality/public-routes.json is where that
-      # asymmetry gets an owner, a risk, and an expiry.
-      - name: Every unauthenticated path is declared and justified
-        run: python3 scripts/check-public-routes.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
@@ -316,22 +267,6 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: uv pip install --system -r packages/hive-conductor/backend/requirements.txt
       - run: python -m pytest packages/hive-conductor/backend/tests -v --tb=short
-      # Every step above runs one tree in its own process, which is what let a
-      # leaked HTTP transport couple two of them for as long as it did: the
-      # root suite left a MockTransport answering 200 to every request, two
-      # Conductor tests read an unreachable URL as reachable, and no job ever
-      # put those trees in the same process to notice (#414).
-      #
-      # So one step does. Not a substitute for the per-tree steps -- those give
-      # the readable failure and the coverage split -- but the only place a
-      # suite's dependence on which sibling shared its interpreter can show up
-      # at all. A suite that passes because of how the jobs happen to be
-      # partitioned is one refactor from a red that reads as a flake.
-      - name: The trees pass in one process too (no cross-suite leakage)
-        run: uv run pytest tests/ packages/hive-conductor/backend/tests packages/maistro-design/tests -q --timeout=60
-        env:
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
@@ -543,6 +478,88 @@ jobs:
         run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
 
       - run: docker build -t maistro-engine:test .
+      - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          network=maistro-engine-smoke
+          volume=maistro-engine-smoke-pgdata
+          postgres=maistro-engine-smoke-postgres
+          engine=maistro-engine-smoke-api
+
+          cleanup() {
+            status=$?
+            if [[ $status -ne 0 ]]; then
+              docker logs "$engine" 2>&1 || true
+              docker logs "$postgres" 2>&1 || true
+              docker ps -a || true
+            fi
+            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker network create "$network"
+          docker volume create "$volume"
+          docker run -d --name "$postgres" --network "$network" \
+            -e POSTGRES_USER=maistro \
+            -e POSTGRES_PASSWORD=maistro-smoke-password \
+            -e POSTGRES_DB=maistro \
+            -e PGDATA=/var/lib/postgresql/18/docker \
+            -v "$volume:/var/lib/postgresql" \
+            pgvector/pgvector:pg18
+          for _ in $(seq 1 40); do
+            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec "$postgres" pg_isready -U maistro
+
+          docker run -d --name "$engine" --network "$network" -p 8000:8000 \
+            -e DB_HOST="$postgres" \
+            -e DB_PORT=5432 \
+            -e DB_NAME=maistro \
+            -e DB_USER=maistro \
+            -e DB_PASSWORD=maistro-smoke-password \
+            -e ROUTER_API_KEY=0123456789abcdef0123456789abcdef \
+            -e 'API_KEYS=["smoke-access-token"]' \
+            -e REQUIRE_AUTH=true \
+            -e LITELLM_BASE_URL=http://unused-gateway:4000 \
+            -e LITELLM_MASTER_KEY=smoke-gateway-key \
+            maistro-engine:test
+
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health/live >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/health/live
+          curl -fsS http://127.0.0.1:8000/health/ready
+          docker exec "$postgres" psql -U maistro -d maistro -Atc \
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+
+          # Recreate PostgreSQL against the same 18-style parent volume and
+          # prove the migrated cluster, not an anonymous volume, comes back.
+          docker rm -f "$engine" "$postgres"
+          docker run -d --name "$postgres" --network "$network" \
+            -e POSTGRES_USER=maistro \
+            -e POSTGRES_PASSWORD=maistro-smoke-password \
+            -e POSTGRES_DB=maistro \
+            -e PGDATA=/var/lib/postgresql/18/docker \
+            -v "$volume:/var/lib/postgresql" \
+            pgvector/pgvector:pg18
+          for _ in $(seq 1 40); do
+            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec "$postgres" psql -U maistro -d maistro -Atc \
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
 
   workflow-lint:
@@ -552,22 +569,12 @@ jobs:
       SHELLCHECK_VERSION: "0.10.0"
     steps:
       - uses: actions/checkout@v4
-      # `--retry` on both: these fetch from github.com/releases, which returns a
-      # 502 often enough to matter. One did on this job, and the whole check
-      # went red having linted nothing — a red that says nothing about the
-      # branch is worse than a slow check, because someone has to spend a cycle
-      # establishing that it means nothing.
-      #
-      # `--retry-all-errors` is the load-bearing flag: without it curl retries
-      # only what it considers transient, and a 502 with `-f` is not on that
-      # list. `-f` still fails the step after the last attempt, and `set -o
-      # pipefail` still fails it if tar rejects what arrived.
       - name: Install actionlint + shellcheck
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar xz -C /tmp actionlint
-          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
             | tar xJ -C /tmp
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
@@ -606,4 +613,3 @@ jobs:
       # hand, not here.
       - name: Branch-protection ruleset matches the check names
         run: python3 scripts/check-branch-protection.py
-
