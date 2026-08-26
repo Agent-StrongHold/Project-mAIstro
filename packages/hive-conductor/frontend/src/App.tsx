@@ -35,7 +35,6 @@ import Topology from "./pages/Topology";
 import WorkItems from "./pages/WorkItems";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import DeckBuilder from "./pages/DeckBuilder";
-import ToolsLab from "./pages/ToolsLab";
 
 type UserInfo = {
   id: string;
@@ -147,7 +146,6 @@ function AppRoutes() {
                 <Route path="work-items" element={<WorkItems />} />
                 <Route path="knowledge" element={<KnowledgeBase />} />
                 <Route path="decks" element={<DeckBuilder />} />
-                <Route path="tools-lab" element={<ToolsLab />} />
                 <Route path="skills" element={<Skills />} />
                 <Route path="mcp" element={<MCP />} />
                 <Route path="topology" element={<Topology />} />
