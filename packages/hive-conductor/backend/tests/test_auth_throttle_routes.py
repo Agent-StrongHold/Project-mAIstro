@@ -235,3 +235,82 @@ class TestTheClientKeyCannotBeSpoofed:
             headers: ClassVar[dict[str, str]] = {}
 
         assert auth._client_key(_Req()) == "unattributed"
+
+
+class TestADisabledAccountIsNotAnOracle:
+    """`login` answers 403 for a disabled account, which is a different answer
+    from 401 — so it has to be unreachable without the right password.
+
+    The 403 is deliberate: someone who has already proved they own the
+    credential needs to be told why they are locked out, rather than being sent
+    to reset a password that is fine. The property that keeps it from becoming
+    an enumeration oracle is that the wrong password reaches it too late — the
+    `is_active` check sits *inside* the verified branch. That ordering was
+    untested, and reordering those two lines would still pass every other test
+    in this suite.
+    """
+
+    @pytest.fixture
+    def disabled_account(self):
+        from datetime import UTC, datetime
+
+        import stores
+
+        from maistro.security.passwords import hash_password
+
+        stores.users["disabled-366"] = stores.users._model_class(
+            id="disabled-366",
+            username="retired-account",
+            password_hash=hash_password("correct-horse-battery"),
+            role="user",
+            is_active=False,
+            permissions=[],
+            created_at=datetime.now(UTC),
+        )
+        yield "retired-account"
+        stores.users.pop("disabled-366", None)
+
+    def test_the_right_password_is_told_the_account_is_disabled(
+        self, disabled_account: str
+    ) -> None:
+        response = _login(_client(), disabled_account, "correct-horse-battery")
+
+        assert response.status_code == 403
+
+    def test_the_wrong_password_is_indistinguishable_from_an_unknown_account(
+        self, disabled_account: str
+    ) -> None:
+        """The check that would fail if `is_active` were hoisted above the
+        password comparison."""
+        client = _client()
+        disabled = _login(client, disabled_account)
+        unknown = _login(client, "definitely-not-a-user")
+
+        assert disabled.status_code == unknown.status_code == 401
+        assert disabled.json() == unknown.json()
+
+    def test_a_refused_disabled_login_still_spends_no_one_elses_budget(
+        self, disabled_account: str
+    ) -> None:
+        """A 403 is not a credential failure, so it is not charged — the person
+        holding the right password is not throttled out by their own account
+        being disabled."""
+        import routes.auth as auth
+
+        client = _client()
+        for _ in range(4):
+            assert _login(client, disabled_account, "correct-horse-battery").status_code == 403
+
+        decision = auth._LOGIN_THROTTLE.check(
+            client_key=auth._client_key(_ProxylessRequest()), account=disabled_account
+        )
+        assert decision.allowed
+        assert decision.delay_seconds == 0.0
+
+
+class _ProxylessRequest:
+    """The client key a `TestClient` request produces, for asserting on the
+    throttle's state from outside a request."""
+
+    client = type("C", (), {"host": "testclient"})()
+    headers: ClassVar[dict[str, str]] = {}
