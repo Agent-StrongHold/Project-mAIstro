@@ -98,6 +98,16 @@ so `design.orchestrate`'s default `design_system_slug="default"` now resolves.
 - [x] `import_from_catalog(..., banish_list=...)` raises `TrustBannedError` and does not register when content matches the banish list
 - [x] `scan_design_system_content()` flags `<script>`/prompt-injection/base64-blob/zero-width-character content as not passed
 - [x] Every catalog entry has `license == "Apache-2.0"` and `scan_status == "clean"`
+- [x] Every registered system records where it was loaded from in `metadata["origin"]` —
+      `bundled`, `catalog`, or `external` for one a caller assembled itself
+- [x] `catalog.json` entries split into exactly two tiers, the `bundled` tier is exactly
+      `BUNDLED_SLUGS`, and every `catalog`-tier entry has a directory to import from
+- [x] A bundled slug is not importable through `import_from_catalog` — it raises
+      `DesignSystemNotFoundError` rather than resolving from the wrong tree
+- [x] The built wheel ships every bundled system's `manifest.json`, `DESIGN.md` and
+      `tokens.css`, plus `catalog.json` (`scripts/verify-wheel-imports.py`)
+- [x] A malformed `manifest.json` or a missing essential file raises rather than
+      degrading to a substitute system
 
 ## Testing
 
@@ -113,11 +123,25 @@ so `design.orchestrate`'s default `design_system_slug="default"` now resolves.
 - `TestCatalog::test_all_catalog_entries_are_clean`
 - `TestCatalog::test_catalog_apache_licensed`
 - `TestDesignOrchestrateNodeBundling` (class) — covers the node/bundling integration directly
+- `TestOrigin` (class) — provenance recorded by the loader that read the files
+- `TestTheIndexCoversTwoTiers` (class) — the tier split, and that enumeration agrees
+  with importability
+- `TestThePackagedFiles` (class) — packaged data present, optional data absent,
+  malformed data raising
+
+`tests/test_verify_wheel_imports.py`:
+- `TestTheDeclaration` / `TestTheProbeChecksData` — the wheel carries the data files,
+  not just the modules
 
 ## Open questions
 
-- ADR-100 text states 144 catalog entries; the shipped `catalog.json` has 150 — worth
-  a one-line correction to the ADR's count (not a code change, no functional gap).
+- ~~ADR-100 text states 144 catalog entries; the shipped `catalog.json` has 150.~~
+  Resolved (#293): both numbers are right about different things. The index covers
+  both tiers — 144 `tier: catalog` entries plus the 6 `tier: bundled` ones, which live
+  under `systems/bundled/` and are *not* importable through `import_from_catalog`.
+  ADR-100's 144 is the catalog tier. A caller offering the index verbatim as "systems
+  you can import" would offer six that resolve from nowhere, so the tier field is
+  load-bearing and is now asserted rather than assumed.
 - No automated re-sync job exists for pulling updates from `nexu-io/open-design`; if
   upstream design systems change, the catalog and scan results go stale until someone
   manually re-vendors and reruns the scan.

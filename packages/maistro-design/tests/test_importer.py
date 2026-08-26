@@ -298,3 +298,192 @@ class TestDesignOrchestrateNodeBundling:
         out = await node._execute(inputs, ctx=ctx)
         assert out.skill_slug == "pitch-deck"
         assert out.design_system_slug == "default"
+
+
+# ─── provenance and packaging (#293) ────────────────────────────────────────────
+
+
+class TestOrigin:
+    """Where a registered system came from, recorded by the loader that read it.
+
+    `trust_tier` is close to this but is not it: T2 means both "vendored in the
+    Tier-2 catalogue" and "handed to us by a caller". Reporting the catalogue
+    as the source of a system nobody vendored is the same class of claim #293
+    was about, one step removed.
+    """
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("integration")
+    def test_bundled_systems_say_they_are_bundled(self):
+        from maistro_design.systems.importer import ORIGIN_BUNDLED, load_bundled
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+
+        registry = InMemoryDesignSystemRegistry()
+        load_bundled(registry)
+        assert {s.metadata["origin"] for s in registry.list_all()} == {ORIGIN_BUNDLED}
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("integration")
+    def test_catalog_imports_say_they_are_catalog(self):
+        from maistro_design.systems.importer import ORIGIN_CATALOG, import_from_catalog
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+
+        registry = InMemoryDesignSystemRegistry()
+        system = import_from_catalog("airbnb", registry)
+        assert system.metadata["origin"] == ORIGIN_CATALOG
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_a_system_built_directly_claims_neither(self):
+        """The default has to be the honest one. A caller assembling a manifest
+        of its own gets `external`, not the origin of whichever packaged set
+        the reader happens to assume."""
+        from maistro_design.systems.importer import ORIGIN_EXTERNAL, import_open_design_system
+
+        system = import_open_design_system({"id": "mine", "name": "Mine"})
+        assert system.metadata["origin"] == ORIGIN_EXTERNAL
+
+
+class TestTheIndexCoversTwoTiers:
+    """`catalog.json` indexes 150 systems; only 144 live under `systems/catalog/`.
+
+    The other six are the bundled set, and `import_from_catalog` reads the
+    catalogue directory only. A caller that offered the index verbatim as
+    "systems you can import" would be offering six that cannot be imported from
+    the path the offer implies -- which is why the tier field is load-bearing
+    and tested rather than assumed.
+    """
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_every_entry_declares_one_of_the_two_tiers(self):
+        from maistro_design.systems.importer import ORIGIN_BUNDLED, ORIGIN_CATALOG, load_catalog
+
+        assert {e["tier"] for e in load_catalog()} == {ORIGIN_BUNDLED, ORIGIN_CATALOG}
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_the_bundled_tier_entries_are_exactly_the_bundled_slugs(self):
+        from maistro_design.systems.importer import BUNDLED_SLUGS, ORIGIN_BUNDLED, load_catalog
+
+        indexed = {e["slug"] for e in load_catalog() if e["tier"] == ORIGIN_BUNDLED}
+        assert indexed == set(BUNDLED_SLUGS)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("integration")
+    def test_every_catalog_tier_entry_has_a_directory_to_import_from(self):
+        """Enumeration and importability agree. An index entry with no files is
+        a listing that 404s on click."""
+        from maistro_design.systems.importer import CATALOG_ROOT, ORIGIN_CATALOG, load_catalog
+
+        missing = [
+            e["slug"]
+            for e in load_catalog()
+            if e["tier"] == ORIGIN_CATALOG and not (CATALOG_ROOT / e["slug"]).is_dir()
+        ]
+        assert missing == []
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("integration")
+    def test_a_bundled_slug_is_not_importable_from_the_catalog(self):
+        """The reason the tier field cannot be ignored: `default` is in the
+        index and is not in `systems/catalog/`."""
+        from maistro_design.systems.importer import import_from_catalog
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+        from maistro_design.types import DesignSystemNotFoundError
+
+        with pytest.raises(DesignSystemNotFoundError):
+            import_from_catalog("default", InMemoryDesignSystemRegistry())
+
+
+class TestThePackagedFiles:
+    """The bundled systems are data files, not code, so nothing that checks
+    imports checks them. If a packaging change dropped the non-`.py` files, the
+    wheel would import cleanly and `load_bundled` would fail at startup -- in
+    the container, not in CI."""
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_every_bundled_slug_ships_its_essential_files(self):
+        from maistro_design.systems.importer import (
+            BUNDLED_ROOT,
+            BUNDLED_SLUGS,
+            ESSENTIAL_FILES,
+        )
+
+        missing = [
+            f"{slug}/{name}"
+            for slug in BUNDLED_SLUGS
+            for name in ESSENTIAL_FILES
+            if name != "design-tokens.json" and not (BUNDLED_ROOT / slug / name).is_file()
+        ]
+        assert missing == []
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_a_system_without_design_tokens_still_imports(self):
+        """`design-tokens.json` is the one optional file. Absent, the system
+        loads with no colour or spacing tokens -- which is legitimate, and is
+        exactly why "has no tokens" could not be used to detect the #293 stub."""
+        from maistro_design.systems.importer import import_open_design_system
+
+        system = import_open_design_system(
+            {"id": "sparse", "name": "Sparse"}, design_md="# Sparse", tokens_css=":root{}"
+        )
+        assert system.slug == "sparse"
+        assert system.colors == []
+        assert system.spacing == []
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_a_malformed_manifest_raises_rather_than_degrading(self, tmp_path):
+        """The behaviour #293 removed from the Conductor, asserted at the layer
+        below it. Unreadable JSON is a broken install; substituting something
+        that parses is how a defect becomes a product."""
+        import json
+
+        from maistro_design.systems.importer import _read_system_files
+
+        system_dir = tmp_path / "broken"
+        system_dir.mkdir()
+        (system_dir / "manifest.json").write_text("{not json", encoding="utf-8")
+        (system_dir / "DESIGN.md").write_text("# Broken", encoding="utf-8")
+        (system_dir / "tokens.css").write_text(":root{}", encoding="utf-8")
+
+        with pytest.raises(json.JSONDecodeError):
+            _read_system_files(system_dir)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_a_missing_essential_file_raises(self, tmp_path):
+        from maistro_design.systems.importer import _read_system_files
+
+        system_dir = tmp_path / "partial"
+        system_dir.mkdir()
+        (system_dir / "manifest.json").write_text('{"id": "partial"}', encoding="utf-8")
+
+        with pytest.raises(FileNotFoundError):
+            _read_system_files(system_dir)
+
+
+class TestTheEngineExposesItsRegistry:
+    """`DesignEngine.systems` exists so a route in another package can report
+    what is registered (#293) without reaching into `_systems`, which is a
+    coupling that breaks without a word."""
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_it_is_the_registry_the_engine_resolves_against(self):
+        from maistro_design.engine import DesignEngine
+        from maistro_design.skills.registry import InMemoryDesignSkillRegistry
+        from maistro_design.systems.importer import load_bundled
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+
+        registry = InMemoryDesignSystemRegistry()
+        load_bundled(registry)
+        engine = DesignEngine(
+            skill_registry=InMemoryDesignSkillRegistry(), system_registry=registry
+        )
+
+        assert engine.systems is registry
+        assert engine.systems.get("default") is registry.get("default")

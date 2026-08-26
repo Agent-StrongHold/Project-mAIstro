@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -21,12 +22,55 @@ if TYPE_CHECKING:
 logger = logging.getLogger("hive.design_service")
 
 __all__ = [
+    "DesignServiceStatus",
     "get_design_engine",
+    "get_design_status",
     "get_design_store",
     "get_renderer_registry",
     "start_design_service",
     "stop_design_service",
 ]
+
+
+@dataclass(frozen=True)
+class DesignServiceStatus:
+    """What startup actually achieved, as something the API can answer with.
+
+    Before #293 this was a `logger.warning` and nothing else, so a failure to
+    load the design systems was visible only to whoever read the container log
+    on the right day. Every caller after that point saw a service that looked
+    ready, because the code had replaced what it could not load.
+
+    Two states, deliberately not one:
+
+    - `ready` is about the *required* half. The bundled systems are packaged
+      data, not a catalogue: if they cannot load the install is broken, the
+      engine is not built, and every design route reports that with `cause`
+      instead of serving a substitute.
+    - `catalog_available` is about the *optional* half. The Tier-2 catalogue is
+      an extra; a missing or unreadable index degrades the service rather than
+      breaking it -- but it is reported as degraded, with the cause, rather
+      than as an empty list that reads like "nothing to import".
+    """
+
+    ready: bool = False
+    cause: str | None = None
+    bundled_slugs: tuple[str, ...] = ()
+    catalog_available: bool = False
+    catalog_cause: str | None = None
+    catalog_slugs: tuple[str, ...] = field(default=(), repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "cause": self.cause,
+            "bundled_count": len(self.bundled_slugs),
+            "catalog": {
+                "available": self.catalog_available,
+                "cause": self.catalog_cause,
+                "count": len(self.catalog_slugs),
+            },
+        }
 
 
 def _open_design_config(settings: Any | None = None) -> Any | None:
@@ -89,6 +133,13 @@ def _get_async_session_factory() -> async_sessionmaker[Any] | None:
 _engine_singleton: Any = None
 _store_singleton: Any = None
 _renderer_registry_singleton: Any = None
+_status: DesignServiceStatus = DesignServiceStatus(cause="start_design_service() has not run")
+
+
+def get_design_status() -> DesignServiceStatus:
+    """What startup achieved. Never raises -- this is what callers ask when
+    `get_design_engine()` did."""
+    return _status
 
 
 def get_renderer_registry() -> Any:
@@ -123,39 +174,57 @@ async def start_design_service(settings: Settings) -> None:
 
     Called during FastAPI lifespan startup.
     """
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
 
     try:
         from maistro_design.engine import DesignEngine
         from maistro_design.skills.builtins import load_builtins
         from maistro_design.skills.registry import InMemoryDesignSkillRegistry
         from maistro_design.stores import PgDesignProjectStore
+        from maistro_design.systems.importer import load_bundled as load_bundled_systems
         from maistro_design.systems.registry import InMemoryDesignSystemRegistry
-        from maistro_design.trust import TrustTier
-        from maistro_design.types import DesignSystem
 
         # Initialize skill registry with built-in skills
         skill_registry = InMemoryDesignSkillRegistry()
         load_builtins(skill_registry)
         logger.info("Design skill registry initialized")
 
-        # Initialize system registry with bundled systems
+        # Initialize system registry with the bundled Tier-1 design systems.
+        #
+        # `systems.importer.load_bundled` is the real entry point, and the same
+        # one `maistro_design.nodes` already uses. This used to import
+        # `maistro_design.systems.builtins`, a module that has never existed in
+        # any version of the package, and a bare `except Exception` turned the
+        # resulting ModuleNotFoundError into a hand-built stub (#293).
+        #
+        # The stub was worse than an empty registry, because it answered to the
+        # same name as a real system. `default` bundled carries 16 colors, 8
+        # spacing tokens and TrustTier.T1; the stub carried none of either at
+        # T0. Nothing downstream could tell them apart by slug, so a generation
+        # against "default" proceeded with an empty palette and a different
+        # trust tier -- and the other five systems (apple, editorial,
+        # enterprise, material, shadcn) raised DesignSystemNotFoundError from
+        # `DesignEngine`, because they were never registered at all.
+        #
+        # Not wrapped in its own handler now. These systems are packaged data,
+        # not an optional catalog: if they cannot load, the install is broken,
+        # and the outer handler below records that with its cause rather than
+        # inventing a product to ship in their place.
         system_registry = InMemoryDesignSystemRegistry()
-        try:
-            from maistro_design.systems.builtins import load_builtins as load_system_builtins
+        load_bundled_systems(system_registry)
+        bundled = tuple(sorted(system.slug for system in system_registry.list_all()))
+        logger.info(
+            "Design system registry initialized with %d bundled system(s): %s",
+            len(bundled),
+            ", ".join(bundled),
+        )
 
-            load_system_builtins(system_registry)
-            logger.info("Design system registry initialized with bundled systems")
-        except Exception as exc:
-            logger.warning("Failed to load bundled design systems, using default: %s", exc)
-            system_registry.register(
-                DesignSystem(
-                    slug="default",
-                    name="Default",
-                    description="Neutral default design system",
-                    trust_tier=TrustTier.T0,
-                )
-            )
+        # The Tier-2 catalogue, in contrast, IS optional -- 144 systems a user
+        # may import one at a time, none of them registered at startup. Probed
+        # here only so its absence is reported as degraded with a cause rather
+        # than surfacing as an empty list, which reads like "nothing to
+        # import" and is the quieter cousin of the same defect.
+        catalog_slugs, catalog_cause = _probe_catalog()
 
         # Initialize project store if database is available
         project_store: Any | None = None
@@ -188,15 +257,58 @@ async def start_design_service(settings: Settings) -> None:
         _renderer_registry_singleton = registry
         logger.info("Renderer slots available: %s", sorted(s.value for s in filled))
 
+        _status = DesignServiceStatus(
+            ready=True,
+            bundled_slugs=bundled,
+            catalog_available=catalog_cause is None,
+            catalog_cause=catalog_cause,
+            catalog_slugs=catalog_slugs,
+        )
+
+    # Both handlers still catch, because a Conductor install without
+    # maistro-design is supported and must not take the whole app down. What
+    # changed in #293 is what they leave behind: a recorded cause the design
+    # routes answer with, instead of a log line and a service that looks ready.
     except ImportError as exc:
         logger.warning("maistro-design not installed or unavailable: %s", exc)
+        _status = DesignServiceStatus(cause=f"maistro-design is not installed: {exc}")
     except Exception as exc:
         logger.warning("DesignService initialization failed: %s", exc, exc_info=True)
+        _status = DesignServiceStatus(cause=f"{type(exc).__name__}: {exc}")
+
+
+def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
+    """The importable Tier-2 slugs, or the reason they cannot be listed.
+
+    Filtered by the index's own `tier` field. The index covers both tiers --
+    150 entries, six of which are the bundled systems living under
+    `systems/bundled/` -- and `import_from_catalog` reads `systems/catalog/`
+    only, so returning the index verbatim would offer six systems that cannot
+    be imported from the path the offer implies.
+    """
+    from maistro_design.systems.importer import ORIGIN_CATALOG, load_catalog
+
+    try:
+        entries = load_catalog()
+    except Exception as exc:
+        logger.warning("Tier-2 design system catalog unavailable: %s", exc)
+        return (), f"{type(exc).__name__}: {exc}"
+
+    slugs = tuple(
+        sorted(
+            str(entry["slug"])
+            for entry in entries
+            if entry.get("tier") == ORIGIN_CATALOG and entry.get("slug")
+        )
+    )
+    logger.info("Tier-2 design system catalog available: %d system(s)", len(slugs))
+    return slugs, None
 
 
 async def stop_design_service() -> None:
     """Cleanup the DesignService singletons."""
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    _status = DesignServiceStatus(cause="stop_design_service() has run")
     _engine_singleton = None
     _store_singleton = None
     _renderer_registry_singleton = None
