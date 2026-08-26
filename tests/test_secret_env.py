@@ -24,6 +24,7 @@ import sys
 import threading
 from contextlib import suppress
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -585,3 +586,292 @@ cat .env
         result = self._run(tmp_path, "verify_env_file")
         assert "did not pass the credential-file safety check" in result.stderr
         assert "s3cr3t-do-not-leak" not in result.stdout + result.stderr
+
+
+class TestReservingAPathForAnotherProgram:
+    """`create_exclusive` covers a secret this process produces. The recovery
+    phrase is produced by the *server* and lands via `curl -o`, which supplies
+    a mode only when it creates the file — under the caller's umask (#360)."""
+
+    def test_the_reserved_file_is_owner_only(self, secret_env, tmp_path: Path) -> None:
+        target = tmp_path / ".setup-response.json"
+        secret_env.reserve(target)
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_it_is_owner_only_even_under_a_permissive_umask(
+        self, secret_env, tmp_path: Path
+    ) -> None:
+        """0644 is what the installer was actually producing, so the umask is
+        the condition under test rather than a detail of the environment."""
+        target = tmp_path / ".setup-response.json"
+        previous = os.umask(0o000)
+        try:
+            secret_env.reserve(target)
+        finally:
+            os.umask(previous)
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_the_reserved_file_is_empty(self, secret_env, tmp_path: Path) -> None:
+        """A writer that appends rather than truncates must not inherit
+        anything, and a reader must not see a stale body as this run's."""
+        target = tmp_path / ".setup-response.json"
+        secret_env.reserve(target)
+
+        assert target.read_bytes() == b""
+
+    def test_a_writer_that_truncates_keeps_the_narrow_mode(
+        self, secret_env, tmp_path: Path
+    ) -> None:
+        """The property the whole approach rests on: `O_WRONLY|O_CREAT|O_TRUNC`
+        — what curl does — does not widen an existing file's mode."""
+        target = tmp_path / ".setup-response.json"
+        secret_env.reserve(target)
+
+        previous = os.umask(0o000)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+            os.write(fd, b'{"mnemonic": ["word"]}')
+            os.close(fd)
+        finally:
+            os.umask(previous)
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_a_leftover_from_an_interrupted_run_is_purged_not_refused(
+        self, secret_env, tmp_path: Path
+    ) -> None:
+        """`create_exclusive` would raise here. That is the wrong answer: the
+        leftover is itself secret-bearing, so failing preserves exactly the
+        file we want gone, and it fails on every retry from then on."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text('{"mnemonic": ["stale", "words"]}', encoding="utf-8")
+
+        secret_env.reserve(target)
+
+        assert target.read_bytes() == b""
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_a_leftover_at_a_wide_mode_is_narrowed(self, secret_env, tmp_path: Path) -> None:
+        """The exact state the old installer left behind after an interrupt."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text('{"mnemonic": ["stale"]}', encoding="utf-8")
+        target.chmod(0o644)
+
+        secret_env.reserve(target)
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+class TestPurgeIsHonestAboutWhatItDoes:
+    """It is not secure erasure and nothing may say it is. What it must do is
+    be no worse than `rm`, which the shell it replaces was not."""
+
+    def test_the_file_is_gone(self, secret_env, tmp_path: Path) -> None:
+        target = tmp_path / "creds.json"
+        target.write_text("hunter2", encoding="utf-8")
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+    def test_purging_nothing_is_not_an_error(self, secret_env, tmp_path: Path) -> None:
+        """Called from an EXIT trap on paths that already purged."""
+        assert secret_env.purge(tmp_path / "never-existed") is False
+
+    def test_purging_twice_is_not_an_error(self, secret_env, tmp_path: Path) -> None:
+        target = tmp_path / "creds.json"
+        target.write_text("hunter2", encoding="utf-8")
+
+        assert secret_env.purge(target) is True
+        assert secret_env.purge(target) is False
+
+    def test_an_empty_file_is_removed_without_a_zero_write(
+        self, secret_env, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "empty"
+        target.touch()
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+    def test_it_does_not_truncate_before_overwriting(self, secret_env, tmp_path: Path) -> None:
+        """The defect in the shell it replaces. `head -c $size /dev/zero > $f`
+        truncates at redirection setup, *before* a byte is written — so the
+        original blocks return to the allocator first and the zeros land
+        wherever the filesystem next chooses. Asserted on the descriptor flags
+        rather than on an outcome, because the outcome is exactly what a
+        filesystem is free to vary."""
+        target = tmp_path / "creds.json"
+        target.write_text("x" * 64, encoding="utf-8")
+
+        opened: list[int] = []
+        real_open = os.open
+
+        def recording_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if str(path) == str(target):
+                opened.append(flags)
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(secret_env.os, "open", recording_open):
+            secret_env.purge(target)
+
+        assert opened, "purge never opened the target"
+        assert all(not flags & os.O_TRUNC for flags in opened)
+
+    def test_the_bytes_written_cover_the_whole_file(self, secret_env, tmp_path: Path) -> None:
+        """Not a claim that the blocks are gone — a claim that the zeros are at
+        least as long as the secret, so nothing is left half-overwritten."""
+        target = tmp_path / "creds.json"
+        target.write_text("word " * 24, encoding="utf-8")
+        size = target.stat().st_size
+
+        written: list[bytes] = []
+        real_write = os.write
+
+        def recording_write(fd: int, data: bytes) -> int:
+            written.append(data)
+            return real_write(fd, data)
+
+        with mock.patch.object(secret_env.os, "write", recording_write):
+            secret_env.purge(target)
+
+        assert sum(len(chunk) for chunk in written) >= size
+        assert all(set(chunk) <= {0} for chunk in written)
+
+    def test_a_symlink_is_unlinked_rather_than_followed(self, secret_env, tmp_path: Path) -> None:
+        """Following it would zero whatever it points at, which is the classic
+        way a cleanup step becomes a weapon."""
+        victim = tmp_path / "someone-elses-file"
+        victim.write_text("important", encoding="utf-8")
+        link = tmp_path / ".setup-response.json"
+        link.symlink_to(victim)
+
+        assert secret_env.purge(link) is True
+        assert not link.exists()
+        assert victim.read_text(encoding="utf-8") == "important"
+
+    def test_a_hard_linked_file_is_not_zeroed_through(self, secret_env, tmp_path: Path) -> None:
+        """The same attack without a symlink. Zeroing the inode would destroy
+        the other name's contents too."""
+        other = tmp_path / "other-name"
+        other.write_text("important", encoding="utf-8")
+        target = tmp_path / ".setup-response.json"
+        os.link(other, target)
+
+        secret_env.purge(target)
+
+        assert other.read_text(encoding="utf-8") == "important"
+
+    def test_a_directory_is_refused_rather_than_removed(self, secret_env, tmp_path: Path) -> None:
+        target = tmp_path / "a-directory"
+        target.mkdir()
+
+        with pytest.raises(OSError):
+            secret_env.purge(target)
+
+        assert target.is_dir()
+
+    def test_an_already_world_readable_file_is_still_purged(
+        self, secret_env, tmp_path: Path
+    ) -> None:
+        """`validate_target` refuses a wide mode, correctly, because writing
+        more secrets into it would compound the exposure. Purging is the
+        opposite case: an exposed file is the one most worth removing, so
+        refusing it here would leave it exactly where it is."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text('{"mnemonic": ["word"]}', encoding="utf-8")
+        target.chmod(0o644)
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+
+class TestPurgeWhenTheOverwriteCannotHappen:
+    """The overwrite is the part that carries no guarantee anyway. When it
+    cannot run at all, removing the name is still strictly better than leaving
+    the secret in place — so none of these may abort before the unlink."""
+
+    def test_a_write_failure_still_removes_the_file(
+        self, secret_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full disk or a read-only remount. Keeping the file because the
+        zeroing failed would preserve exactly what the caller asked to
+        destroy."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text('{"mnemonic": ["word"]}', encoding="utf-8")
+
+        def failing_write(fd: int, data: bytes) -> int:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(secret_env.os, "write", failing_write)
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+    def test_a_file_owned_by_someone_else_is_unlinked_not_written_through(
+        self, secret_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Zeroing another user's file is the same mistake as following a
+        symlink. Dropping the name we were handed removes this reference
+        without touching what it refers to.
+
+        `secret_env.os` *is* `os`, so the replacement has to close over the
+        value rather than call `os.getuid()` again — otherwise it calls
+        itself."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text("not mine", encoding="utf-8")
+        someone_else = os.getuid() + 1
+        monkeypatch.setattr(secret_env.os, "getuid", lambda: someone_else)
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+    def test_the_refusal_path_reports_it_removed_something(
+        self, secret_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """True and False mean "was there" and "was not", not "overwrote" and
+        "did not" — a caller that treated the refusal path as "nothing here"
+        would skip its own cleanup."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text("not mine", encoding="utf-8")
+        someone_else = os.getuid() + 1
+        monkeypatch.setattr(secret_env.os, "getuid", lambda: someone_else)
+
+        assert secret_env.purge(target) is True
+        assert secret_env.purge(target) is False
+
+
+class TestThePurgeAndReserveCommandLine:
+    """The installer reaches this module only through the CLI, so an
+    unreachable subcommand is an unreachable feature."""
+
+    def test_reserve_creates_the_file(self, secret_env, tmp_path: Path) -> None:
+        target = tmp_path / ".setup-response.json"
+
+        assert secret_env.main(["reserve", str(target)]) == 0
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_purge_removes_the_file(self, secret_env, tmp_path: Path) -> None:
+        target = tmp_path / "creds.json"
+        target.write_text("hunter2", encoding="utf-8")
+
+        assert secret_env.main(["purge", str(target)]) == 0
+        assert not target.exists()
+
+    def test_purging_an_absent_path_succeeds(self, secret_env, tmp_path: Path) -> None:
+        """It runs from an EXIT trap that fires on paths where the file was
+        already removed; a non-zero exit there would make the installer look
+        like it failed."""
+        assert secret_env.main(["purge", str(tmp_path / "gone")]) == 0
+
+    def test_neither_command_prints_the_secret(self, secret_env, tmp_path: Path, capsys) -> None:
+        target = tmp_path / "creds.json"
+        target.write_text("hunter2-the-actual-password", encoding="utf-8")
+
+        secret_env.main(["purge", str(target)])
+        secret_env.main(["reserve", str(target)])
+
+        captured = capsys.readouterr()
+        assert "hunter2" not in captured.out
+        assert "hunter2" not in captured.err

@@ -50,7 +50,7 @@ import os
 import stat
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -241,6 +241,108 @@ def ensure_api_keys(path: Path, token: str) -> None:
     write(path, _rendered(lines))
 
 
+def reserve(path: Path) -> None:
+    """Make `path` an empty regular file at 0600, ready to be written into.
+
+    For the case `create_exclusive` cannot serve: a secret that some *other*
+    program produces. `curl -o` opens with `O_WRONLY|O_CREAT|O_TRUNC` and only
+    supplies a mode when it creates the file — so if the file already exists at
+    0600, curl reuses that mode and the secret never lands world-readable. The
+    installer's setup response carries the 24-word recovery phrase and was
+    landing at 0644 for exactly this reason (#360).
+
+    Any file already at the path is purged first rather than reused. A leftover
+    from an interrupted run is itself secret-bearing, and `O_EXCL` would only
+    turn that into a hard failure on the second attempt.
+    """
+    purge(path)
+    with _restrictive_umask():
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, SECRET_MODE)
+        os.close(fd)
+    _fsync_dir(path.parent)
+
+
+def purge(path: Path) -> bool:
+    """Overwrite `path` in place, then unlink it. True if it was there.
+
+    **This is not secure erasure, and the caller must not describe it as one.**
+    On a journaling, copy-on-write, or compressing filesystem, and on any SSD
+    with wear levelling, the original blocks may survive untouched no matter
+    what is written over the logical file. What this does buy is that the data
+    is not simply unlinked-and-recoverable on the common ext4-on-a-plain-file
+    case, which is worth having as long as nothing depends on it.
+
+    Two things it fixes over the shell it replaces (#360). That version was::
+
+        size="$(wc -c < "$f")"
+        head -c "$size" /dev/zero > "$f"
+
+    The `>` truncates the file to zero **before** `head` writes anything, so
+    the original blocks are released to the allocator first and the zeros land
+    wherever the filesystem chooses — which may be somewhere else entirely.
+    And if that write fails or is interrupted, the file is left truncated and
+    never overwritten at all: strictly worse than `rm`, because it looks like
+    it worked. Here the descriptor is opened **without** `O_TRUNC`, so the
+    zeros go to the blocks the secret is actually in.
+
+    A path that is not a regular file we own is refused rather than written to,
+    for the same reason `validate_target` refuses one: following a symlink here
+    would zero somebody else's file.
+    """
+    try:
+        if not validate_target_for_purge(path):
+            return False
+    except UnsafeEnvFile:
+        # Refusing to write through it does not mean leaving it: unlink the
+        # name we were given. That removes this reference without touching
+        # whatever it pointed at.
+        path.unlink(missing_ok=True)
+        return True
+
+    size = path.stat().st_size
+    if size:
+        fd = os.open(path, os.O_WRONLY)  # deliberately no O_TRUNC
+        try:
+            os.write(fd, b"\0" * size)
+            os.fsync(fd)
+        except OSError:
+            # A full disk or a read-only remount. The unlink below still runs:
+            # a file we could not overwrite is no better for being left in
+            # place, and the caller is told nothing was guaranteed either way.
+            pass
+        finally:
+            os.close(fd)
+    path.unlink(missing_ok=True)
+    _fsync_dir(path.parent)
+    return True
+
+
+def validate_target_for_purge(path: Path) -> bool:
+    """`validate_target`, minus the mode check.
+
+    A file that is already world-readable is precisely the one most worth
+    purging; refusing it because it is exposed would leave it exposed. Every
+    other refusal still stands, because they are all about writing to the wrong
+    inode rather than about how wide this one is.
+    """
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        raise UnsafeEnvFile(f"{path} is a symlink; not writing through it.")
+    if not stat.S_ISREG(info.st_mode):
+        raise UnsafeEnvFile(f"{path} is not a regular file.")
+    if info.st_nlink > 1:
+        raise UnsafeEnvFile(
+            f"{path} has {info.st_nlink} hard links; overwriting it would zero "
+            f"whatever the other names refer to."
+        )
+    if info.st_uid != os.getuid():
+        raise UnsafeEnvFile(f"{path} is owned by uid {info.st_uid}, not {os.getuid()}.")
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write .env safely.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -269,21 +371,34 @@ def main(argv: list[str] | None = None) -> int:
     p_check = sub.add_parser("check", help="validate the target without writing")
     p_check.add_argument("path", type=Path)
 
+    p_reserve = sub.add_parser(
+        "reserve", help="create an empty 0600 file for another program to write into"
+    )
+    p_reserve.add_argument("path", type=Path)
+
+    p_purge = sub.add_parser(
+        "purge", help="overwrite in place and unlink (NOT secure erasure -- see purge())"
+    )
+    p_purge.add_argument("path", type=Path)
+
     args = parser.parse_args(argv)
 
+    # A table rather than an if/elif ladder: the installers reach this module
+    # only through the CLI, so every entry here is a real entry point, and one
+    # more subcommand should not make the dispatch harder to read.
+    actions: dict[str, Callable[[argparse.Namespace], object]] = {
+        "create": lambda a: create_exclusive(a.path, sys.stdin.read()),
+        "write": lambda a: write(a.path, sys.stdin.read()),
+        "set-key": lambda a: set_key(a.path, a.key, a.value, only_if_blank=a.only_if_blank),
+        "append-once": lambda a: append_once(a.path, a.key, a.value),
+        "ensure-api-keys": lambda a: ensure_api_keys(a.path, a.token),
+        "check": lambda a: validate_target(a.path),
+        "reserve": lambda a: reserve(a.path),
+        "purge": lambda a: purge(a.path),
+    }
+
     try:
-        if args.command == "create":
-            create_exclusive(args.path, sys.stdin.read())
-        elif args.command == "write":
-            write(args.path, sys.stdin.read())
-        elif args.command == "set-key":
-            set_key(args.path, args.key, args.value, only_if_blank=args.only_if_blank)
-        elif args.command == "append-once":
-            append_once(args.path, args.key, args.value)
-        elif args.command == "ensure-api-keys":
-            ensure_api_keys(args.path, args.token)
-        elif args.command == "check":
-            validate_target(args.path)
+        actions[args.command](args)
     except UnsafeEnvFile as exc:
         # The message names the path and the reason; it never echoes a value.
         print(f"refusing to write secrets: {exc}", file=sys.stderr)
