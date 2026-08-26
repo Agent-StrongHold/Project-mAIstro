@@ -85,6 +85,33 @@ def _reset_singletons() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_shared_http() -> Iterator[None]:
+    """Drop any test transport override and pooled clients between tests.
+
+    The same fixture `packages/maistro-core/tests/conftest.py` has carried all
+    along, and whose docstring predicted this exactly: "a leaked override would
+    silently route a later test's requests into an unrelated MockTransport --
+    the kind of cross-test coupling that shows up as an unrelated failure days
+    later."
+
+    It showed up (#414). `tests/hive_conductor/test_airtable_cache.py` called
+    `set_test_transport()` and never restored it, so `maistro.http` kept a
+    MockTransport answering 200 to every request. Two Conductor tests that
+    assert an unreachable URL reports "disconnected" then saw it as reachable
+    -- only when the root suite happened to share a process with them, which no
+    CI job does, so nothing was red.
+
+    The calling test is fixed to use `override_transport` too. This is here so
+    the *next* one cannot do it: one tree having the guard and its neighbour
+    not is how a leak this specific survives.
+    """
+    from maistro.http import set_test_transport
+
+    yield
+    set_test_transport(None)
+
+
+@pytest.fixture(autouse=True)
 def _disable_auth_requirement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Disable auth requirement for tests (unless test explicitly configures it)."""
     monkeypatch.setenv("REQUIRE_AUTH", "false")
