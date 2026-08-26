@@ -1,7 +1,24 @@
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+# This suite drives the app over plain HTTP through Starlette's TestClient, so
+# it is a local-development context in the exact sense #369 defines one: a
+# `Secure` cookie is never sent back over `http://`, and every route test that
+# needs a logged-in session would fail with no session rather than with a
+# meaningful error.
+#
+# So the suite declares itself, using the same two settings a developer running
+# `uvicorn main:app --reload` sets — rather than the production default being
+# weakened to suit the tests, which is the arrangement #369 exists to undo.
+#
+# The production shape is asserted separately and deliberately, by
+# `test_session_cookie_policy.py`, which reads `Settings()` directly rather
+# than through this environment.
+os.environ.setdefault("SESSION_COOKIE_SECURE", "false")
+os.environ.setdefault("ALLOW_INSECURE_TRANSPORT", "true")
 
 # The backend dir must come FIRST: the monorepo root also has a `services/`
 # package (sandbox_broker) that shadows ours when the root pytest.ini's

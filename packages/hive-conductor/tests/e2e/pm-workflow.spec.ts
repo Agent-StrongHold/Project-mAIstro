@@ -282,4 +282,50 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
       expect(body?.length).toBeGreaterThan(0);
     }
   });
+
+  // #369's "Browser E2E verifies effective cookie attributes". These assert
+  // what a real Chromium actually stored, not what the server said to store —
+  // a `Set-Cookie` a browser rejects or rewrites looks identical in a unit
+  // test.
+  //
+  // `Secure` is deliberately NOT asserted here, and its absence is not a gap.
+  // This harness serves plain HTTP and declares itself a local-development
+  // context (docker-compose.test.yml), so the cookie is correctly not Secure
+  // in it. Its browser-level effect was demonstrated the hard way: turning the
+  // default on without declaring the harness made Chromium drop the cookie and
+  // seven of the tests above fail with 401 immediately after a successful
+  // login. Asserting `secure === false` here would pin the harness's waiver
+  // rather than the product's default, which is the wrong thing to hold still.
+  test("13 — the session cookie a browser stores is HttpOnly and scoped", async ({
+    page,
+    context,
+  }) => {
+    await loginAsPM(page);
+
+    const cookies = await context.cookies();
+    const session = cookies.find((c) => c.name === "hive_session");
+    expect(session, "no hive_session cookie was stored after login").toBeTruthy();
+
+    // HttpOnly: script cannot read it, so an XSS cannot exfiltrate the session.
+    expect(session!.httpOnly).toBe(true);
+    // Scoped to the whole app rather than inherited from the login route's path.
+    expect(session!.path).toBe("/");
+    // Lax: rides a top-level navigation (an emailed link works) but not a
+    // cross-site subrequest.
+    expect(session!.sameSite).toBe("Lax");
+    // Bounded lifetime. A cookie with no expiry lives as long as the browser
+    // process, which on a machine that is never rebooted is indefinitely —
+    // Playwright reports that case as -1.
+    expect(session!.expires).toBeGreaterThan(0);
+  });
+
+  test("14 — the session cookie is not readable from JavaScript", async ({ page }) => {
+    // The property HttpOnly exists for, asserted from inside the page rather
+    // than from the cookie jar: the flag being set and the value being
+    // unreachable are different claims, and only the second one matters.
+    await loginAsPM(page);
+
+    const visible = await page.evaluate(() => document.cookie);
+    expect(visible).not.toContain("hive_session");
+  });
 });

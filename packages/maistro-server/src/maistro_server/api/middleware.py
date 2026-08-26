@@ -8,11 +8,14 @@ HTTPS-aware for HSTS (see ``_is_https``).
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
+
+from maistro.security.transport import parse_trusted_proxies, request_is_https
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -103,19 +106,29 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
 
 
 def _is_https(request: Request) -> bool:
-    """True if the request appears to have arrived over HTTPS.
+    """True if the request really arrived over HTTPS.
 
-    Checks the ASGI-reported scheme first (true when TLS is terminated by
-    the app server itself), then falls back to the conventional
-    ``X-Forwarded-Proto`` header set by a reverse proxy/load balancer that
-    terminates TLS in front of a plain-HTTP upstream. This keeps local dev
-    over plain HTTP from getting an HSTS header that would force browsers
-    to upgrade every future request to HTTPS.
+    The ASGI-reported scheme is fact — it is true when TLS is terminated by the
+    app server itself. ``X-Forwarded-Proto`` is a *claim* by whoever sent the
+    request, and this used to believe it from anyone: any caller could send
+    ``X-Forwarded-Proto: https`` to a plain-HTTP deployment and be answered with
+    HSTS for two years including subdomains (#369).
+
+    It is now read only from a peer the deployment named in
+    ``MAISTRO_TRUSTED_PROXY_IPS``. Nothing named means nothing trusted, which
+    fails in the safe direction: a deployment that forgets to configure its
+    proxy loses HSTS rather than gaining a header anyone can forge.
+
+    Keeping local dev over plain HTTP from getting an HSTS header that would
+    force browsers to upgrade every future request is still the point of the
+    gate.
     """
-    if request.url.scheme == "https":
-        return True
-    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    return forwarded_proto.split(",")[0].strip().lower() == "https"
+    return request_is_https(
+        scheme=request.url.scheme,
+        headers=request.headers,
+        client_host=request.client.host if request.client else None,
+        trusted_proxies=parse_trusted_proxies(os.environ.get("MAISTRO_TRUSTED_PROXY_IPS", "")),
+    )
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

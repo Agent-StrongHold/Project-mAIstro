@@ -18,6 +18,17 @@ import os
 
 import pytest
 
+# This suite drives the app over plain HTTP through Starlette's TestClient, so
+# it is a local-development context in the sense #369 defines one: a `Secure`
+# cookie is never sent back over `http://`, and every test that needs a
+# logged-in session would fail with no session rather than a useful error.
+#
+# Declared here with the same flag a developer running the service locally
+# sets, rather than weakening the production default to suit the tests — which
+# is the arrangement #369 exists to undo. `test_session_cookie.py` asserts the
+# production shape directly, without this environment.
+os.environ.setdefault("TURING_ALLOW_INSECURE_TRANSPORT", "1")
+
 # The dev-stub login accounts (routes/auth.py) are gated off by default so a
 # real deployment has no universal known admin login; tests opt in explicitly.
 os.environ["TURING_ALLOW_DEV_AUTH"] = "1"
