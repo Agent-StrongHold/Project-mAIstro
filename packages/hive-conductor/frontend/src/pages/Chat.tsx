@@ -375,31 +375,6 @@ export default function ChatPage() {
 
   return (
     <div className="chat-layout">
-      <style>{`
-        .chat-layout { height: 100%; }
-        @media (min-width: 768px) { .chat-layout .drawer { transform: none !important; } }
-        .tool-steps { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; }
-        .tool-step { display: flex; align-items: center; gap: 8px; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--rule, #e4e4e4); background: var(--paper, #fff); }
-        .tool-step--running { border-left: 3px solid #ff9800; }
-        .tool-step--done { border-left: 3px solid var(--ok, #4caf50); }
-        .tool-step--error { border-left: 3px solid var(--danger, #f44336); }
-        .tool-step-icon { width: 14px; text-align: center; flex: none; }
-        .tool-step--running .tool-step-icon { display: inline-block; animation: loading-spin 1s linear infinite; }
-        .tool-step-name { font-weight: 600; flex: none; }
-        .tool-step-args { color: var(--pencil, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .tool-step-summary { margin-left: auto; flex: none; color: var(--ok, #4caf50); }
-        .tool-step--error .tool-step-summary { color: var(--danger, #f44336); }
-        .chat-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--pencil, #888); margin: 2px 0 6px; }
-        .md-p { margin: 0 0 8px; } .md-p:last-child { margin-bottom: 0; }
-        .md-ul { margin: 4px 0 8px; padding-left: 20px; } .md-ul li { margin: 2px 0; }
-        .md-code { background: var(--ink, #1e1e1e); color: var(--paper, #f5f5f5); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; margin: 6px 0; }
-        .md-hr { border: none; border-top: 1px solid var(--rule, #e4e4e4); margin: 8px 0; }
-        .message-bubble code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 4px; font-family: var(--mono, ui-monospace, monospace); font-size: 0.9em; }
-        .chat-reasoning { margin: 2px 0 6px; font-size: 12px; color: var(--pencil, #888); }
-        .chat-reasoning > summary { cursor: pointer; user-select: none; opacity: 0.85; }
-        .chat-reasoning-body { margin-top: 4px; padding: 8px 10px; border-left: 2px solid var(--rule, #e4e4e4); white-space: pre-wrap; font-family: var(--mono, ui-monospace, monospace); opacity: 0.85; }
-        @keyframes loading-spin { to { transform: rotate(360deg); } }
-      `}</style>
       {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />}
       <aside className={`drawer${drawerOpen ? " drawer--open" : ""}`} aria-label="Chat sessions">
         <div className="drawer-header">

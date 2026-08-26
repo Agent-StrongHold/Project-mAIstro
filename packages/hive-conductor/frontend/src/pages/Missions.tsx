@@ -70,15 +70,6 @@ const FILTER_MAP: Record<string, MissionStatus | null> = {
   Pending: "pending",
 };
 
-const PULSE_CSS_ID = "hc-mission-pulse";
-function ensurePulseCss() {
-  if (document.getElementById(PULSE_CSS_ID)) return;
-  const s = document.createElement("style");
-  s.id = PULSE_CSS_ID;
-  s.textContent = "@keyframes hc-mpulse{0%,100%{opacity:1}50%{opacity:.35}}";
-  document.head.appendChild(s);
-}
-
 function statusHexVariant(s: MissionStatus): "ok" | "danger" | "warn" | "accent" | "muted" {
   if (s === "completed") return "ok";
   if (s === "failed") return "danger";
@@ -170,7 +161,6 @@ export default function Missions() {
   }, [toast]);
 
   useEffect(() => {
-    ensurePulseCss();
     void load();
   }, [load]);
 

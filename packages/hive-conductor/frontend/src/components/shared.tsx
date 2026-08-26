@@ -260,17 +260,7 @@ const DOT_COLORS: Record<string, string> = {
   busy: "var(--accent)", connected: "#5a9a4a", disconnected: "var(--pencil)", watching: "#5b8fb3",
 };
 
-const PULSE_STYLE_ID = "hc-statusdot-pulse";
-function ensurePulseStyle() {
-  if (document.getElementById(PULSE_STYLE_ID)) return;
-  const s = document.createElement("style");
-  s.id = PULSE_STYLE_ID;
-  s.textContent = "@keyframes hc-pulse{0%,100%{opacity:1}50%{opacity:.4}}";
-  document.head.appendChild(s);
-}
-
 export function StatusDot({ status, pulse }: { status: "running" | "idle" | "error" | "busy" | "connected" | "disconnected" | "watching"; pulse?: boolean }) {
-  useEffect(() => { if (pulse) ensurePulseStyle(); }, [pulse]);
   return (
     <span style={{
       display: "inline-block", width: 8, height: 8, borderRadius: "50%",
@@ -282,17 +272,7 @@ export function StatusDot({ status, pulse }: { status: "running" | "idle" | "err
 
 /* ── LoadingSpinner ──────────────────────────────────────────── */
 
-const SPINNER_STYLE_ID = "hc-spinner-style";
-function ensureSpinnerStyle() {
-  if (document.getElementById(SPINNER_STYLE_ID)) return;
-  const s = document.createElement("style");
-  s.id = SPINNER_STYLE_ID;
-  s.textContent = "@keyframes hc-spin{to{transform:rotate(360deg)}}";
-  document.head.appendChild(s);
-}
-
 export function LoadingSpinner() {
-  useEffect(() => { ensureSpinnerStyle(); }, []);
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
       <div style={{

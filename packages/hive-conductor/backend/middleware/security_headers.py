@@ -6,6 +6,7 @@ Adds security headers to all responses:
 - X-Content-Type-Options (MIME sniffing prevention)
 - Referrer-Policy (privacy)
 - Permissions-Policy (browser feature restrictions)
+- Content-Security-Policy (#310)
 
 Ported from stronghold's ``api/middleware/security_headers.py`` (and mirrors
 ``maistro_server.api.middleware.SecurityHeadersMiddleware``).
@@ -13,6 +14,11 @@ Ported from stronghold's ``api/middleware/security_headers.py`` (and mirrors
 The header-setting stays a standalone copy: hive-conductor is an app with its
 own ``backend/requirements.txt``, not a package built on maistro-core, and two
 short lists of static headers drifting apart costs nothing.
+
+**The CSP does not either.** Its *shape* is validated by
+``maistro.security.content_security_policy``, which refuses a policy that has
+been hollowed out; its *content* — the origins this SPA actually fetches from —
+lives in ``services/csp_policy.py`` next to the front end it describes.
 
 **The HTTPS decision does not**, and is imported from
 ``maistro.security.transport`` instead (#369). Both copies of it were wrong in
@@ -30,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from maistro.security.content_security_policy import ContentSecurityPolicy
 from maistro.security.transport import parse_trusted_proxies, request_is_https
 
 if TYPE_CHECKING:
@@ -61,6 +68,31 @@ def _is_https(request: Request) -> bool:
     )
 
 
+def _content_security_policy() -> tuple[ContentSecurityPolicy, bool]:
+    """The policy to serve, and whether to serve it report-only.
+
+    Development is the same declaration #369 introduced rather than a new
+    switch: ``ALLOW_INSECURE_TRANSPORT`` is where a deployment says it is a
+    local run, and start-up already refuses to combine that with a production
+    cookie posture. One flag cannot be set by accident in two places.
+
+    Report-only is separate and deliberately independent. It is the rollout
+    instrument the acceptance criteria ask for — the same policy, evaluated and
+    reported but not enforced — so a deployment can watch for violations before
+    switching it on. It defaults to *off*, because a report-only policy that
+    nobody ever promotes is a header that protects nothing while looking like
+    it does.
+    """
+    from config import get_settings
+    from services.csp_policy import conductor_policy
+
+    settings = get_settings()
+    return (
+        conductor_policy(development=settings.allow_insecure_transport),
+        settings.csp_report_only,
+    )
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to every response."""
 
@@ -78,5 +110,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+        policy, report_only = _content_security_policy()
+        response.headers[policy.header_name(report_only=report_only)] = policy.header_value()
 
         return response

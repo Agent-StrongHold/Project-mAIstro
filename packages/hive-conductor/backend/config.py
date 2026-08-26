@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     voice_service_key: SecretStr | None = None
     voice_service_account: str | None = None
 
+    # Serve the Content-Security-Policy under the report-only header instead of
+    # enforcing it (#310). The rollout instrument, not a weaker setting: the
+    # browser evaluates the same policy and reports what it would have blocked.
+    # Off by default, because a report-only policy nobody promotes is a header
+    # that protects nothing while looking like it does.
+    csp_report_only: bool = False
+
     # Open Design renderer plugin (SPEC-070426-6ea8). Off by default; when enabled the
     # design service registers the provider and /design/skills gains web/video skills.
     open_design_enabled: bool = False
