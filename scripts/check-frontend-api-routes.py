@@ -78,6 +78,29 @@ BASE_RE = re.compile(
 #: A call composed from such a base: `${API}/status`.
 COMPOSED_RE = re.compile(r"""`\$\{(?P<name>\w+)\}(?P<rest>/[^`]*)`""")
 
+#: A base handed to a caller whole: `fetch(API)`, `apiGet<T>(API)` (#295 review).
+#: Without this the binding line is skipped as "not a call" and the direct use
+#: produces nothing, so an unregistered base passes as long as the file
+#: contains some other measured call.
+DIRECT_RE = re.compile(
+    r"""\b(?:fetch|api[A-Z]\w*)\s*(?:<[^(]*>)?\(\s*(?P<name>[A-Z_][A-Z0-9_]*)\s*[,)]"""
+)
+
+#: The frontend's API helpers name their verb. `apiGet` is the read; the rest
+#: write. A helper this does not know leaves the verb unread rather than
+#: assumed.
+HELPER_VERBS = {
+    "apiGet": "GET",
+    "apiPost": "POST",
+    "apiPut": "PUT",
+    "apiPatch": "PATCH",
+    "apiDelete": "DELETE",
+}
+HELPER_RE = re.compile(r"\b(?P<helper>api(?:Get|Post|Put|Patch|Delete))\b")
+
+#: `{ method: "POST" }` in a fetch options object.
+METHOD_RE = re.compile(r"""method:\s*["'`](?P<verb>[A-Za-z]+)["'`]""")
+
 #: A well-formed interpolation: `${id}`, `${item.id}`. Deliberately refuses
 #: nested braces and backticks, because `${qs ? `?${qs}` : ""}` is a *query
 #: string* appended to a path, not a path segment, and treating it as one would
@@ -105,12 +128,23 @@ class Call:
     path: str
     """As written, for the report."""
 
+    method: str | None = None
+    """The HTTP verb, when it can be read; None means "any".
+
+    A path match alone is not enough: `GET /v1/chat/complete` reaches a
+    POST-only route, Starlette answers 405, and the control is exactly as
+    broken as if nothing were registered (#295 review). Read from the helper
+    verb (`apiPost`), from an explicit `{ method: "PUT" }`, or defaulted to GET
+    for a bare `fetch`. Unreadable stays None rather than guessing, because a
+    wrong verb here is a false finding.
+    """
+
     prefix_only: bool = False
     """True when the tail could not be resolved, so only a prefix claim is made.
 
     Two idioms produce it, and both are everywhere in this frontend:
 
-        apiGet(`/v1/audit${qs ? `?${qs}` : ""}`)   // a query string, not a segment
+        apiGet(`/v1/audit${qs ? `?${qs}` : ""}`)   // nested, unparseable
         const API = "/v1/evolution"                 // a base, composed elsewhere
 
     A static reader cannot follow either to the full path. It can still say
@@ -136,24 +170,60 @@ def _segments(path: str) -> list[str]:
 def parse(raw: str) -> tuple[list[str], bool]:
     """`(segments, prefix_only)` for one captured literal.
 
-    A well-formed `${...}` becomes a wildcard segment. Anything else -- a
-    nested template, an unterminated interpolation -- truncates the path there
-    and downgrades the claim to a prefix, rather than guessing at what the
-    expression evaluates to.
+    **Adjacency decides what an interpolation is.** One that occupies a whole
+    segment -- preceded by `/`, ending the path or followed by `/` -- is an id,
+    and becomes a wildcard segment. One glued to the end of a segment is a
+    suffix, almost always a query string, and truncates the path there.
+
+    Measured on the real frontend, because the first version got this wrong
+    (#295 review). `/v1/optimizer/proposals${query}`, where `query` is `""` or
+    `"?decision=..."`, became `/v1/optimizer/proposals/*` -- which matched
+    `/v1/optimizer/{dag_id}/proposals` and `/v1/optimizer/{dag_id}/run`,
+    neither of them the route being called, and did **not** match the real
+    `/v1/optimizer/proposals`. Deleting that route would have left this gate
+    green: a false negative in precisely the class it exists for.
     """
-    marked = INTERPOLATION_RE.sub("/\x00/", raw).replace("//", "/")
-    prefix_only = False
-    if INTERPOLATION_START in marked:
-        marked = marked[: marked.index(INTERPOLATION_START)]
-        prefix_only = True
-    segments = [WILDCARD if s == "\x00" else s for s in _segments(marked)]
-    return segments, prefix_only
+    out: list[str] = []
+    rest = raw
+    while INTERPOLATION_START in rest:
+        start = rest.index(INTERPOLATION_START)
+        before = rest[:start]
+        # Left to right, always from the FIRST `${`. Searching for a
+        # well-formed one instead would skip past an earlier unparseable
+        # interpolation and truncate in the wrong place -- in
+        # `/v1/audit${qs ? `?${qs}` the *second* one parses cleanly, and
+        # stopping there left a segment reading ``audit${qs ? `?``.
+        match = INTERPOLATION_RE.match(rest, start)
+        if match is None:
+            out.extend(_segments(before))
+            return out, True
+        after = rest[match.end() :]
+        if not (before.endswith("/") and (after == "" or after.startswith("/"))):
+            # Glued to the segment before it: a suffix, not an id.
+            out.extend(_segments(before))
+            return out, True
+        out.extend(_segments(before))
+        out.append(WILDCARD)
+        rest = after
+    out.extend(_segments(rest))
+    return out, False
 
 
-def matches(call: Call, route_path: str) -> bool:
-    """Whether one frontend call can be served by one registered route."""
+def matches(call: Call, route_path: str, methods: frozenset[str] | None = None) -> bool:
+    """Whether one frontend call can be served by one registered route.
+
+    `methods` is the route's allowed verbs. A path match alone would accept
+    `GET` against a POST-only route, where Starlette answers 405 and the
+    control is as broken as if nothing were registered.
+
+    A prefix claim does not check the verb: the route it will actually reach is
+    not known, so the verb of a route it merely shares a prefix with says
+    nothing.
+    """
     want, prefix_only = parse(call.path)
     have = _segments(route_path)
+    if not prefix_only and methods and call.method is not None and call.method not in methods:
+        return False
     if prefix_only:
         if len(want) > len(have):
             return False
@@ -166,6 +236,29 @@ def matches(call: Call, route_path: str) -> bool:
         if c != r:
             return False
     return True
+
+
+def method_of(lines: list[str], index: int) -> str | None:
+    """The verb a call site uses, or None when it cannot be read.
+
+    Read from the line and the two after it, because `fetch(url, {` routinely
+    puts `method:` on the next line. An explicit `method:` wins over a helper
+    name: `apiPost` is not used with an overriding option today, but if it ever
+    is, the option is what the browser sends.
+
+    A bare `fetch` with no options is a GET -- that is the fetch default, not a
+    guess. Anything else unreadable stays None, and None checks no verb.
+    """
+    window = "\n".join(lines[index : index + 3])
+    explicit = METHOD_RE.search(window)
+    if explicit:
+        return explicit.group("verb").upper()
+    helper = HELPER_RE.search(lines[index])
+    if helper:
+        return HELPER_VERBS[helper.group("helper")]
+    if "fetch(" in lines[index]:
+        return "GET"
+    return None
 
 
 def _is_waived(lines: list[str], index: int) -> bool:
@@ -205,19 +298,25 @@ def calls_in(path: Path, repo_root: Path = REPO_ROOT) -> list[Call]:
     for index, line in enumerate(lines):
         if _is_waived(lines, index):
             continue
+        verb = method_of(lines, index)
+
+        def _add(raw: str, index: int = index, verb: str | None = verb) -> None:
+            _, prefix_only = parse(raw)
+            out.append(Call(rel, index + 1, raw, method=verb, prefix_only=prefix_only))
+
         for match in COMPOSED_RE.finditer(line):
             base = bases.get(match.group("name"))
-            if base is None:
-                continue
-            raw = base + match.group("rest")
-            _, prefix_only = parse(raw)
-            out.append(Call(rel, index + 1, raw, prefix_only=prefix_only))
+            if base is not None:
+                _add(base + match.group("rest"))
+        # `fetch(API)` -- the base handed over whole rather than composed.
+        for match in DIRECT_RE.finditer(line):
+            base = bases.get(match.group("name"))
+            if base is not None:
+                _add(base)
         if index in binding_lines:
             continue
         for match in CALL_RE.finditer(line):
-            raw = match.group("path")
-            _, prefix_only = parse(raw)
-            out.append(Call(rel, index + 1, raw, prefix_only=prefix_only))
+            _add(match.group("path"))
     return out
 
 
@@ -237,11 +336,15 @@ def import_paths() -> list[Path]:
     return [*sorted(REPO_ROOT.glob("packages/*/src")), BACKEND]
 
 
-def registered_routes() -> tuple[list[str], list[str]]:
-    """The app's own route table, and any optional router that failed to load.
+def registered_routes() -> tuple[dict[str, frozenset[str]], list[str]]:
+    """The app's route table as `{path: verbs}`, and any router that failed.
 
     Imported rather than parsed: this is the table Starlette matches against,
     so it is the only thing that answers "would this request find a handler".
+
+    The verbs are kept because a path match alone accepts a GET against a
+    POST-only route (#295 review). Two routes can share a path with different
+    verbs, so the sets are unioned per path.
     """
     for entry in import_paths():
         if str(entry) in sys.path:
@@ -257,7 +360,13 @@ def registered_routes() -> tuple[list[str], list[str]]:
         for module, cause in getattr(app.state, "optional_routers", {}).items()
         if cause is not None
     ]
-    return sorted({r.path for r in app.routes if hasattr(r, "path")}), degraded
+    table: dict[str, set[str]] = {}
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path is None:
+            continue
+        table.setdefault(path, set()).update(getattr(route, "methods", None) or ())
+    return {p: frozenset(v) for p, v in sorted(table.items())}, degraded
 
 
 def main() -> int:
@@ -285,7 +394,11 @@ def main() -> int:
         print("FAIL: no /v1/ call sites found in the frontend; nothing was measured")
         return 1
 
-    findings = [Finding(call) for call in calls if not any(matches(call, r) for r in routes)]
+    findings = [
+        Finding(call)
+        for call in calls
+        if not any(matches(call, path, verbs) for path, verbs in routes.items())
+    ]
     if findings:
         seen: set[tuple[str, int, str]] = set()
         unique = [

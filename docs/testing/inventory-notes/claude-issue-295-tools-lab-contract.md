@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +31
+  tests/: +54
 ---
 # claude-issue-295-tools-lab-contract
 
-Thirty-one new node IDs in one file, all testing the new gate in `scripts/`.
+Fifty-four new node IDs in one file, all testing the new gate in `scripts/`.
 Nothing removed or reparametrised — the Tools Lab page had no tests, which is
 part of why it shipped calling three endpoints nobody wrote.
 
@@ -90,3 +90,42 @@ Against the real app and the real frontend — 161 call sites across 56 files
 resolving to 195 registered routes. `test_it_is_actually_measuring_something`
 holds those counts above a floor, because a scan that silently shrank would
 report a clean tree by checking almost nothing.
+
+
+## Review round: four more classes (+23)
+
+Codex reviewed the first version and found four defects in it. All four were
+real, all four are covered here, and one of them found a second broken control
+in the product.
+
+`TestTheVerbIsCheckedToo` is the one that earned its keep immediately. A path
+match alone accepts a GET against a POST-only route -- Starlette answers 405
+and the control is as broken as if nothing were registered. Comparing verbs
+exposed `apiPost("/v1/agents/scan")`: a live Agent Builder button posting to a
+path that does not exist, which the path-only matcher had accepted against
+`GET /v1/agents/{agent_id}` because a route parameter swallows any single
+segment. Filed as #418 and waived on the line with that number, so this PR
+stays scoped and the gate still lands green.
+
+`TestAnInterpolationGluedToASegmentIsASuffix` covers the subtlest one, and it
+was a false *negative* -- the direction that matters most for a gate.
+`/v1/optimizer/proposals${query}` became `/v1/optimizer/proposals/*`, which
+matched `/v1/optimizer/{dag_id}/proposals` and `/v1/optimizer/{dag_id}/run`,
+neither of them the route being called, and did **not** match the real
+`/v1/optimizer/proposals`. Deleting that route would have left the gate green.
+Adjacency is the rule now: an interpolation between slashes is an id, one glued
+to the segment before it is a suffix.
+
+Fixing that surfaced a second ordering bug in my own parser, caught by an
+existing test rather than by review: `/v1/audit${qs ? `?${qs}` contains a
+*well-formed* interpolation after an unparseable one, so searching for the
+first parseable match skipped past the real boundary and produced a segment
+reading ``audit${qs ? `?``. The loop now always works from the first `${`.
+
+`TestABaseHandedOverWhole` closes a hole the base-binding resolution opened:
+binding lines are skipped as "not a call" and only template uses were resolved,
+so `const API = "/v1/missing"; fetch(API)` produced no Call at all.
+
+`TestTheFeatureInventory` is one line, and the least interesting until you
+notice it is the same defect as the page: `README.md` listed Tools Lab as a
+shipped surface after its route and nav entry were gone.
