@@ -608,6 +608,7 @@
       "modules": [
         "scripts/check_mutation_baseline.py",
         "scripts/mutation_aggregate.py",
+        "scripts/mutation_filter_annotations.py",
         "scripts/mutation_history.py",
         "scripts/mutation_packet.py",
         "scripts/mutation_ratchet.py",

@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import mutation_resume
@@ -19,6 +21,36 @@ import mutation_resume
 
 def run(command: list[str], *, env: dict[str, str] | None = None, stdout=None) -> None:
     subprocess.run(command, check=True, env=env, stdout=stdout)
+
+
+@contextmanager
+def _restored(source: Path) -> Iterator[None]:
+    """Guarantee `source` is byte-identical after the run (#419).
+
+    Cosmic-ray mutates the file in place and restores it between mutants. Kill
+    the process mid-mutant -- a timeout, a cancelled job, Ctrl-C -- and the
+    mutation stays on disk. On a CI runner that is harmless because the
+    checkout is thrown away; locally it is not. Observed twice while measuring
+    this: `(pkg // "__init__.py")` and `for alias in []` were left behind, and
+    only a test run afterwards noticed.
+
+    A leftover mutant is worse than an ordinary dirty file, because it reads as
+    deliberate: a small, plausible, syntactically valid change that a reviewer
+    would have to know the original to question.
+
+    Restores from the bytes read before the run rather than from git, so it
+    works on an already-dirty tree and cannot discard unrelated edits.
+    """
+    original = source.read_bytes()
+    try:
+        yield
+    finally:
+        if source.read_bytes() != original:
+            source.write_bytes(original)
+            print(
+                f"restored {source}: a mutation was left on disk by an interrupted run",
+                file=sys.stderr,
+            )
 
 
 def package_pythonpath() -> str:
@@ -120,7 +152,14 @@ def execute_source(
     config.write_text(cosmic_config(source, tests, pythonpath), encoding="utf-8")
     mutation_start = time.monotonic()
     run(["cosmic-ray", "init", str(config), str(session)])
-    run(["cosmic-ray", "exec", str(config), str(session)])
+    # Between init and exec, drop the mutants no test could ever kill (#419).
+    # Under `from __future__ import annotations` an annotation is a string, so
+    # `-> Path | None` yields six unkillable mutants that each cost a full test
+    # run and then need triaging as "equivalent". Measured repository-wide:
+    # ~11,166 of them, ~18 hours of runner time, zero signal.
+    run([sys.executable, "scripts/mutation_filter_annotations.py", str(session), "--report"])
+    with _restored(Path(source)):
+        run(["cosmic-ray", "exec", str(config), str(session)])
     mutation_seconds = time.monotonic() - mutation_start
     with rows_path.open("w", encoding="utf-8") as handle:
         run(["cosmic-ray", "dump", str(session)], stdout=handle)
