@@ -67,10 +67,21 @@ function suppliedToken(req) {
   return req.get("x-canvas-token") || "";
 }
 
-export function requireToken(config) {
+// `handoffStore` is optional: without one this is exactly the shared-token
+// check it always was. With one, a session credential minted by redeeming a
+// one-time handoff code is accepted as well (#372).
+//
+// The shared token is NOT weakened by this. It keeps working for the callers
+// that need a long-lived credential — curl, CI, the book-maker's own scripts.
+// What the session adds is a second, deliberately weaker way in for the one
+// case where the strong credential was being handled worst: a human opening a
+// link. A session expires on its own and can be revoked one tab at a time,
+// where rotating CANVAS_API_TOKEN revokes everybody.
+export function requireToken(config, handoffStore = null) {
   return (req, res, next) => {
     if (!config.token) return next();           // loopback-only mode
     const supplied = suppliedToken(req);
+    if (supplied && handoffStore && handoffStore.verifySession(supplied)) return next();
     if (!tokensMatch(supplied, config.token)) {
       if (typeof res.set === "function") {
         res.set("WWW-Authenticate", 'Basic realm="MAIstro Canvas", charset="UTF-8"');

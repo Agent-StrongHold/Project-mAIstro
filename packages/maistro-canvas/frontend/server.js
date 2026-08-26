@@ -2,6 +2,12 @@ import express from "express";
 import cors from "cors";
 import pg from "pg";
 import { resolveSecurityConfig, isOriginAllowed, requireToken } from "./server/security.js";
+import {
+  createHandoffStore,
+  handoffLink,
+  HANDOFF_EXPIRED,
+  HANDOFF_ORIGIN_MISMATCH,
+} from "./server/handoff.js";
 
 const { Pool } = pg;
 const pool = new Pool({
@@ -14,10 +20,53 @@ const pool = new Pool({
 
 const security = resolveSecurityConfig();
 
+const handoffs = createHandoffStore();
+
 const app = express();
 app.use(cors({ origin: (o, cb) => cb(null, isOriginAllowed(o, security.origins)), credentials: true }));
 app.use(express.json({ limit: security.bodyLimit }));
-app.use("/api", requireToken(security));
+
+// No credential this server issues may reach a third party through a header
+// the browser adds on its own. `Referer` is the one that does that by default,
+// and a Canvas page links out (asset hosts, docs), so the policy is set for
+// every response rather than per-route (#372).
+app.use((req, res, next) => {
+  res.set("Referrer-Policy", "no-referrer");
+  next();
+});
+
+// Unauthenticated on purpose: the handoff code IS the credential being
+// presented, so requiring one to redeem it would be circular. It is safe to
+// leave open because the code is single-use, expires in two minutes, and is
+// bound to the origin it was minted for — and because the response says
+// nothing a guesser can use (see the store's UNKNOWN reason).
+//
+// Mounted BEFORE the /api token guard so the redeem itself is reachable.
+app.post("/api/handoff/redeem", (req, res) => {
+  // A credential must never be cached by a proxy or the browser's bfcache.
+  res.set("Cache-Control", "no-store");
+  const result = handoffs.redeem(req.body?.code, { origin: req.get("origin") });
+  if (result.ok) {
+    // The code is deliberately absent from this log line. A code in a log is
+    // the same exposure the URL fragment was.
+    console.log("Canvas handoff redeemed; session issued");
+    return res.json({ token: result.token, expiresAt: result.expiresAt });
+  }
+  // 401 for every rejection, with the reason only as a recovery hint. The
+  // status code must not distinguish "never existed" from "already used".
+  return res.status(401).json({
+    error: "handoff_rejected",
+    reason: result.reason,
+    recovery:
+      result.reason === HANDOFF_EXPIRED
+        ? "This link has expired. Ask the operator for a fresh one."
+        : result.reason === HANDOFF_ORIGIN_MISMATCH
+          ? "This link was issued for a different Canvas deployment."
+          : "This link has already been used, or is not valid. Ask the operator for a fresh one.",
+  });
+});
+
+app.use("/api", requireToken(security, handoffs));
 
 function safeKey(key) {
   return (key || "untitled").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
@@ -719,4 +768,14 @@ app.post("/api/llm/image-edit", async (req, res) => {
 // resolveSecurityConfig() refuses to return a non-loopback host without a token.
 app.listen(PORT, security.host, () => {
   console.log(`Canvas Studio API → Postgres :5440, listening on ${security.host}:${PORT}`);
+  if (!security.exposed) return;
+  // One link, printed once, to the operator's own terminal — not into a chat
+  // window, a ticket, or a screenshot. It carries a two-minute single-use code
+  // rather than CANVAS_API_TOKEN, so a link that leaks after it is used, or
+  // after two minutes, is worth nothing (#372).
+  const origin = security.origins[0] || `http://${security.host}:${PORT}`;
+  const { code, expiresAt } = handoffs.mint({ origin });
+  const seconds = Math.round((expiresAt - Date.now()) / 1000);
+  console.log(`Open Canvas within ${seconds}s: ${handoffLink(origin, code)}`);
+  console.log("That link admits one browser, once. It is not the API token.");
 });
