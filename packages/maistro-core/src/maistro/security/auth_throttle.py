@@ -252,7 +252,7 @@ class AuthThrottle:
         """
         if failures < 3:
             return 0.0
-        return min(0.1 * (2 ** (failures - 3)), self._limits.max_delay_seconds)
+        return min(0.1 * (2.0 ** (failures - 3)), self._limits.max_delay_seconds)
 
     @staticmethod
     def _client_key(client_key: str) -> str:
