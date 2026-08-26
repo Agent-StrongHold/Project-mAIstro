@@ -75,17 +75,30 @@ def _include_optional_router(
     *,
     prefix: str = "",
 ) -> None:
-    """Mount an optional feature router, making degraded startup observable."""
+    """Mount an optional feature router, making degraded startup observable.
+
+    The outcome is recorded on `app.state.optional_routers`, not only logged.
+    A log line is observable by whoever reads the container output on the right
+    day; this is answerable -- and one caller needs the answer, because a route
+    table missing a router cannot be used to decide that a path is unregistered
+    (#295). Without it, `routes.design` failing to import looks exactly like
+    the Design page calling endpoints nobody wrote.
+    """
+    state: dict[str, str | None] = getattr(app.state, "optional_routers", {})
     try:
         module = import_module(module_name)
         app.include_router(module.router, prefix=prefix)
     except Exception as exc:
+        state[module_name] = f"{type(exc).__name__}: {exc}"
         _log.warning(
             "optional_router_unavailable: module=%s error=%s",
             module_name,
             exc,
             exc_info=True,
         )
+    else:
+        state[module_name] = None
+    app.state.optional_routers = state
 
 
 class ConfirmResponseBody(BaseModel):

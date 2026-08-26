@@ -61,6 +61,14 @@ jobs:
           packages/maistro-evolve/src
           packages/maistro-rsi/src
           packages/maistro-design/src
+      # Does the path the frontend fetches reach a route the backend
+      # registers? `fetch` does not reject on a 404, so a control wired to
+      # nothing renders, responds to clicks, and reports a state that never
+      # happened -- Tools Lab did exactly that for four tools across three
+      # endpoints (#295). Judged against the app's own route table, not
+      # against a list of prefixes someone maintains by hand.
+      - name: Frontend calls reach registered backend routes
+        run: uv run python3 scripts/check-frontend-api-routes.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
