@@ -18,9 +18,13 @@ logger = logging.getLogger("hive.auth_middleware")
 
 _PUBLIC_PREFIXES = (
     "/v1/setup/",
-    "/v1/voice/",
     "/health",
 )
+
+#: Authenticated like everything else, but by a device credential rather than a
+#: session — see `services/voice_identity.py`. This is not an exemption: with
+#: no credential configured the prefix answers 401 like any other `/v1/` path.
+_VOICE_PREFIX = "/v1/voice/"
 
 # FastAPI's default docs/openapi paths don't end in "/" (the real route is
 # /openapi.json), so they can't use the boundary-safe prefix check below —
@@ -301,7 +305,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return True
 
     def _get_user(self, request: Request) -> dict | None:
-        return resolve_principal(request.cookies, request.headers.get("Authorization"))
+        authorization = request.headers.get("Authorization")
+        user = resolve_principal(request.cookies, authorization)
+        if user is not None:
+            return user
+        # Scoped to the voice prefix on purpose. Resolving the device
+        # credential for every path would make one key a second way into the
+        # whole API; here it opens the surface it was issued for and nothing
+        # else, and a caller holding it still gets that account's own
+        # authorization for everything downstream.
+        if _matches_public_prefix(request.url.path, _VOICE_PREFIX):
+            from services.voice_identity import principal_for
+
+            return principal_for(authorization)
+        return None
 
     def _is_chat(self, path: str) -> bool:
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
