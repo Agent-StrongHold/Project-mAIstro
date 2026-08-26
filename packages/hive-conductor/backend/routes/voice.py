@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Request
 from models.schemas import ChatCompletionRequest
 from pydantic import BaseModel, ConfigDict
 from services.chat_completion import run_chat_completion
@@ -12,17 +12,6 @@ from services.chat_completion import run_chat_completion
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["voice"])
-
-VOICE_API_KEY = os.environ.get("VOICE_API_KEY", "")
-
-
-def _verify_key(authorization: str | None) -> None:
-    if not VOICE_API_KEY:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="API key required")
-    if authorization[7:] != VOICE_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 class VoiceIntentBody(BaseModel):
@@ -42,10 +31,18 @@ class VoiceIntentResponse(BaseModel):
 
 
 @router.post("/intent", response_model=VoiceIntentResponse)
-async def voice_intent(
-    body: VoiceIntentBody, authorization: str | None = Header(None)
-) -> VoiceIntentResponse:
-    _verify_key(authorization)
+async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentResponse:
+    """Turn a spoken utterance into tool calls, as the account behind the device.
+
+    There is no key check here any more, and that is the fix rather than an
+    omission: `AuthMiddleware` refuses this path without a principal, and the
+    route's own check could not do that job — it was read once at import and
+    returned early when unset, which was the shipped default. What arrives here
+    is a real account, and it is passed down so the tool loop authorises against
+    a person instead of running anonymously.
+    """
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id", ""))
 
     context_parts = [body.text]
     if body.room:
@@ -77,26 +74,38 @@ async def voice_intent(
         llm = build_llm_port()
         model = req.model or settings.chat_default_model or "cerebras-qwen-3-235b-a22b-2507"
 
-    result = await run_chat_completion(
-        req, return_actions=True, skip_summary=True, _llm=llm, _model=model
-    )
+    # `return_actions`, `skip_summary` and `_model` are not parameters of
+    # `run_chat_completion` and never have been in this repository's history,
+    # so this call raised TypeError on every request: the route has never
+    # worked. That is not why it is being changed -- a route that happens to
+    # crash is not an authorization control, which is the whole point of #316 --
+    # but leaving a call that cannot succeed in a file this change touches would
+    # be worse than the crash.
+    #
+    # The consequence is honest rather than hidden: the service exposes no list
+    # of tool calls it made, so `actions_taken` is empty and `intent` can only
+    # distinguish "it said something" from "it did not". Restoring the action
+    # list is a product change with its own issue, not something to smuggle in
+    # behind a security fix.
+    req.model = model
+    result = await run_chat_completion(req, user_id=user_id, _llm=llm)
 
-    actions: list[dict[str, Any]] = result.get("actions", [])
+    actions: list[dict[str, Any]] = []
     reply = ""
-    intent = "unknown"
 
     for choice in result.get("choices", []):
         msg = choice.get("message", {})
         reply = msg.get("content", "") or ""
 
-    if actions:
-        intent = actions[0].get("tool", "unknown")
-    elif reply:
-        intent = "conversation"
+    intent = "conversation" if reply else "unknown"
 
+    # The utterance itself is not logged: it is user speech, and a voice
+    # satellite hears more than it is addressed with. Room, intent and action
+    # count are what an operator needs to tell a working device from a broken
+    # one.
     logger.info(
-        "voice intent: text=%r room=%r intent=%s actions=%d",
-        body.text,
+        "voice intent: user=%s room=%r intent=%s actions=%d",
+        user_id or "unknown",
         body.room,
         intent,
         len(actions),

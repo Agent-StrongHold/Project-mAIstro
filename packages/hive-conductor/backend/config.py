@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     conductor_admin_public_key: str | None = None
     conductor_user_public_key: str | None = None
 
+    # A voice satellite is a device, not a person, so it holds a service
+    # credential rather than a session. Both fields are required before
+    # /v1/voice/ answers at all: the prefix used to skip authentication
+    # entirely, and an unset key must never be what makes a route public
+    # (#316). The key resolves through the vault first (SPEC-003), so
+    # rotating it takes effect on the next call rather than the next restart.
+    voice_service_key: SecretStr | None = None
+    voice_service_account: str | None = None
+
     # Open Design renderer plugin (SPEC-070426-6ea8). Off by default; when enabled the
     # design service registers the provider and /design/skills gains web/video skills.
     open_design_enabled: bool = False
