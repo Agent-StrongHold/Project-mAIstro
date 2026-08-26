@@ -110,7 +110,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
 | External integrations | exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from product route | #34 |
 | Delivery gateway | none | `5/5` | CONNECT | ADR-047 | delivery effect recorded as Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `10/56` | MIGRATE — core/server enforcement exists; Hive product-path coverage still incomplete | ADR-073, ADR-072, ADR-072726-0d6b | durable strikes on PostgreSQL are proven (#217); real Hive chat must prove Warden/Sentinel traversal | #66, #67, #74 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `10/57` | MIGRATE — core/server enforcement exists; Hive product-path coverage still incomplete | ADR-073, ADR-072, ADR-072726-0d6b | durable strikes on PostgreSQL are proven (#217); real Hive chat must prove Warden/Sentinel traversal | #66, #67, #74 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id registration + bcrypt upgrade | #32 |
 | Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — approver matrix partly unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | beyond-authority action resolves approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
