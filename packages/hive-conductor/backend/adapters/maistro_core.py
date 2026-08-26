@@ -126,7 +126,7 @@ class MaistroCoreBridge:
         from maistro.container import create_container
         from maistro.types.config import AgentConfig
 
-        llm_base = (settings.maistro_llm_base_url or "").strip()
+        llm_base = (settings.litellm_api_base or "").strip()
         llm_key = maistro_llm_api_key(settings) or ""
         model = settings.maistro_model
 
