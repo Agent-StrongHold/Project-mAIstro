@@ -1,13 +1,14 @@
 ---
 inventory-delta:
-  tests/: +65
+  tests/: +68
 ---
 # claude-issue-367-committed-default-credentials
 
-Sixty-five new node IDs, all in `tests/test_check_compose_secrets.py`. Nothing
+Sixty-eight new node IDs, all in `tests/test_check_compose_secrets.py`. Nothing
 removed or reparametrised. Thirty-two of them landed with the first version of
-this gate; the remaining thirty-three pin the seven defects review found in it,
-which are described under "What review found" below.
+this gate; the remaining thirty-six pin the seven defects review found in it and
+one the coverage measurement surfaced, described under "What review found"
+below.
 
 ## One file departed from a convention the rest already followed
 
@@ -121,6 +122,17 @@ password never matched what the server would send. Nothing was relying on it.
   `_DSN` names are now read for a userinfo password, and a parameterised one
   (`postgresql://mcp:${DB_PASSWORD:?...}@db`, what the base profile already
   does) still passes.
+
+### One more, found by measuring rather than by reading
+
+Diff coverage put `scripts/check-compose-secrets.py` at 96%, and the branch it
+could not reach was the one that recognises a *parameterised* URL password. The
+userinfo pattern excluded whitespace, so
+`postgresql://u:${DB_PASSWORD:?Set DB_PASSWORD in .env}@host` — the exact
+spelling this gate asks people to write — parsed as having no userinfo at all.
+It passed, for the wrong reason, and the same exclusion hid a literal password
+that merely contained a space. The uncovered line was the symptom; the gate
+agreeing with itself was the defect.
 
 ### Two false positives that would have taught people to route around the gate
 

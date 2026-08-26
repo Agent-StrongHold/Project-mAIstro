@@ -129,8 +129,16 @@ def is_url_name(name: str) -> bool:
 
 
 def _userinfo_password(value: str) -> str:
-    """The literal password inside a connection URL, or "" if there is none."""
-    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/@\s]+)@", value)
+    """The literal password inside a connection URL, or "" if there is none.
+
+    The userinfo run is greedy up to the last `@` before the path, and it
+    admits spaces. Both matter: `postgresql://u:${DB_PASSWORD:?set it}@host`
+    has a space inside its own required-variable message, and excluding
+    whitespace made that URL parse as having no userinfo at all -- the right
+    answer for the wrong reason, and the same exclusion hid a literal password
+    that simply contained a space.
+    """
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]*)@", value)
     if not match:
         return ""
     userinfo = match.group(1)

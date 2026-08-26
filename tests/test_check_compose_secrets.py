@@ -347,3 +347,28 @@ class TestTheTwoProfilesThisPrFixed:
         had; the two must agree on which variable carries the token."""
         base = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         assert "MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN" in base
+
+    def test_a_parameterised_password_whose_message_has_spaces_passes(self, check) -> None:
+        """`${DB_PASSWORD:?Set DB_PASSWORD in .env}` is the exact spelling this
+        gate asks for, and its message contains spaces. A userinfo pattern that
+        excluded whitespace read this URL as having no userinfo at all — the
+        right verdict reached without ever looking at the password."""
+        assert (
+            _scan(
+                check,
+                "      - DATABASE_URL=postgresql://mcp:${DB_PASSWORD:?Set DB_PASSWORD"
+                " in .env}@db:5432/app",
+            )
+            == []
+        )
+
+    def test_a_literal_password_containing_a_space_is_still_reported(self, check) -> None:
+        """The other half of the same exclusion: a space is legal in a Compose
+        value and does not stop a password from working."""
+        assert len(_scan(check, "      - DATABASE_URL=postgresql://mcp:hunter 2@db:5432/app")) == 1
+
+    def test_a_partly_parameterised_value_is_left_alone(self, check) -> None:
+        """`${PREFIX}-suffix` is neither a committed credential nor a shape this
+        gate knows how to judge. Documented as left alone rather than guessed
+        at, so the behaviour is a decision instead of a fall-through."""
+        assert _scan(check, "      - API_KEYS=${PREFIX}-suffix") == []
