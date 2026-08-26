@@ -21,7 +21,6 @@ import {
   Bot,
   Network,
   Zap,
-  FlaskConical,
   Repeat,
 } from "lucide-react";
 
@@ -40,7 +39,6 @@ const fullNav = [
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   { to: "/decks", icon: Presentation, label: "Decks" },
-  { to: "/tools-lab", icon: FlaskConical, label: "Tools Lab" },
   { to: "/rsi", icon: Repeat, label: "RSI" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
   { to: "/credentials", icon: KeyRound, label: "Credentials" },

@@ -72,6 +72,15 @@ jobs:
       # with an import-time side effect runs here.
       - name: Cross-package imports name modules and attributes that exist
         run: python3 scripts/check-cross-package-imports.py
+      # The same question one seam further out. That one asks whether an import
+      # names something that exists; this asks whether the path the frontend
+      # fetches reaches a route the backend registers. `fetch` does not reject
+      # on a 404, so a control wired to nothing renders, responds to clicks,
+      # and reports a state that never happened -- Tools Lab did exactly that
+      # for four tools across three endpoints (#295). Judged against the app's
+      # own route table, not a list of prefixes someone maintains by hand.
+      - name: Frontend calls reach registered backend routes
+        run: uv run python3 scripts/check-frontend-api-routes.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
