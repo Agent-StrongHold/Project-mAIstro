@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  tests/: +40
+  tests/: +43
 ---
 # claude-issue-360-mnemonic-file-exposure
 
-Forty new node IDs. Twenty in `tests/test_secret_env.py` (`reserve` and
-`purge`, and their CLI), twenty in a new
+Forty-three new node IDs. Twenty-three in `tests/test_secret_env.py`
+(`reserve` and `purge`, their two refusal paths, and the CLI), twenty in a new
 `tests/test_install_mnemonic_handling.py`. Nothing removed or reparametrised.
 
 ## What the phrase is
@@ -97,6 +97,27 @@ the opposite case. An exposed file is the one most worth removing, and refusing
 it because it is exposed would leave it exactly where it is. Every other
 refusal is retained, because they are all about writing to the wrong inode
 rather than about how wide this one is.
+
+## The two refusal paths, added because coverage asked
+
+At 97% the uncovered lines were `purge`'s `except OSError` and its foreign-uid
+refusal — both behaviours this change claims in its own comments, neither
+exercised. Following the #367 lesson that an uncovered line is a question
+rather than a rounding error, both are now pinned:
+
+* A write failure (a full disk, a read-only remount) must still reach the
+  unlink. Keeping the file because the zeroing failed would preserve exactly
+  what the caller asked to destroy.
+* A file owned by someone else is unlinked, not written through — the same
+  mistake as following a symlink, arrived at without one.
+
+`test_the_refusal_path_reports_it_removed_something` states what the return
+value means: `True`/`False` is "was there"/"was not", never "overwrote"/"did
+not". A caller that read the refusal path as "nothing here" would skip its own
+cleanup.
+
+`scripts/secret_env.py` is at 98% after these; the two remaining lines are the
+`__main__` guard and a branch that predates this change.
 
 ## Discrimination, measured
 

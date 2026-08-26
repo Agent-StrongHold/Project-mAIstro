@@ -787,6 +787,61 @@ class TestPurgeIsHonestAboutWhatItDoes:
         assert not target.exists()
 
 
+class TestPurgeWhenTheOverwriteCannotHappen:
+    """The overwrite is the part that carries no guarantee anyway. When it
+    cannot run at all, removing the name is still strictly better than leaving
+    the secret in place — so none of these may abort before the unlink."""
+
+    def test_a_write_failure_still_removes_the_file(
+        self, secret_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full disk or a read-only remount. Keeping the file because the
+        zeroing failed would preserve exactly what the caller asked to
+        destroy."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text('{"mnemonic": ["word"]}', encoding="utf-8")
+
+        def failing_write(fd: int, data: bytes) -> int:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(secret_env.os, "write", failing_write)
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+    def test_a_file_owned_by_someone_else_is_unlinked_not_written_through(
+        self, secret_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Zeroing another user's file is the same mistake as following a
+        symlink. Dropping the name we were handed removes this reference
+        without touching what it refers to.
+
+        `secret_env.os` *is* `os`, so the replacement has to close over the
+        value rather than call `os.getuid()` again — otherwise it calls
+        itself."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text("not mine", encoding="utf-8")
+        someone_else = os.getuid() + 1
+        monkeypatch.setattr(secret_env.os, "getuid", lambda: someone_else)
+
+        assert secret_env.purge(target) is True
+        assert not target.exists()
+
+    def test_the_refusal_path_reports_it_removed_something(
+        self, secret_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """True and False mean "was there" and "was not", not "overwrote" and
+        "did not" — a caller that treated the refusal path as "nothing here"
+        would skip its own cleanup."""
+        target = tmp_path / ".setup-response.json"
+        target.write_text("not mine", encoding="utf-8")
+        someone_else = os.getuid() + 1
+        monkeypatch.setattr(secret_env.os, "getuid", lambda: someone_else)
+
+        assert secret_env.purge(target) is True
+        assert secret_env.purge(target) is False
+
+
 class TestThePurgeAndReserveCommandLine:
     """The installer reaches this module only through the CLI, so an
     unreachable subcommand is an unreachable feature."""
