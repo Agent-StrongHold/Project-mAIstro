@@ -23,6 +23,7 @@ general path or is dropped, and there was nothing here to retire onto.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -32,6 +33,7 @@ from models.schemas import Agent
 from pydantic import BaseModel, ConfigDict
 from services.agent_materialization import workspace_agents
 
+from maistro.security.warden.detector import Warden
 from routes.audit import log_audit
 
 logger = logging.getLogger("hive.agents")
@@ -169,11 +171,120 @@ def delete_agent(agent_id: str, request: Request) -> None:
     log_audit("agent_delete", "system", target=agent_id)
 
 
+# A proposed configuration is caller-supplied and arbitrarily shaped, so the
+# walk below is what bounds it. Without a bound, a body nested a few thousand
+# levels deep is a stack overflow and a body of a hundred thousand short
+# strings is a hundred thousand Warden scans -- both reachable by anyone who
+# can reach this route. The limits are deliberately far above any real agent
+# config; exceeding one is a rejection, never a truncation, because a scan
+# that silently stopped early and reported no findings is the green-on-failure
+# this endpoint exists to remove (#418).
+MAX_SCAN_DEPTH = 32
+MAX_SCAN_NODES = 4096
+MAX_SCAN_TEXT = 64 * 1024
+
+
+class ScanBudgetExceeded(Exception):
+    """The config is larger or deeper than the scanner will walk."""
+
+
+def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[tuple[str, str]]:
+    """Yield every (dotted path, string) pair in a config, in a bounded walk.
+
+    Non-string scalars are not yielded: an int or a bool carries no prompt.
+    They still count against the node budget, because the cost being bounded
+    is the traversal, not the scanning.
+    """
+    if depth > MAX_SCAN_DEPTH:
+        raise ScanBudgetExceeded(f"config nests deeper than {MAX_SCAN_DEPTH} levels")
+    if isinstance(value, str):
+        yield path or "<root>", value
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else str(key)
+            yield from _text_leaves(item, path=child, depth=depth + 1)
+        return
+    if isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            yield from _text_leaves(item, path=f"{path}[{index}]", depth=depth + 1)
+
+
+def _warden() -> Warden:
+    """One detector for the process.
+
+    Layers 1-2.5 are stateless and free; no LLM client is passed, so no
+    outbound call happens on this path.
+    """
+    global _warden_instance
+    if _warden_instance is None:
+        _warden_instance = Warden()
+    return _warden_instance
+
+
+_warden_instance: Warden | None = None
+
+
+async def scan_config(config: object) -> dict:
+    """Scan every string in a configuration at the `user_input` boundary.
+
+    This is the same detector the harness runs caller input through
+    (`routes/harness.py`), reached the same way, so a config the Builder
+    proposes is held to the boundary production agents are held to rather
+    than to a second, weaker check written for this screen.
+
+    The findings are per-field: a flag on `system_prompt` and the same flag on
+    `description` are two findings, because "which field" is the only thing
+    that makes a finding actionable.
+    """
+    warden = _warden()
+    findings: list[str] = []
+    for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
+        if scanned > MAX_SCAN_NODES:
+            raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
+        if len(text) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
+        verdict = await warden.scan(text, "user_input")
+        if not verdict.clean:
+            findings.extend(f"{path}: {flag}" for flag in verdict.flags)
+    return {"findings": findings, "status": "clean" if not findings else "flagged"}
+
+
+# Declared ahead of the `/{agent_id}` family so the literal wins the match.
+# `/v1/agents/scan` and `/v1/agents/{agent_id}` are both one segment, and a
+# path parameter accepts any single segment -- which is exactly how #418 hid:
+# the first version of the frontend route gate compared paths only and read
+# `/v1/agents/scan` as a match for `/v1/agents/{agent_id}`.
+@router.post("/scan")
+async def scan_proposed_config(body: dict) -> dict:
+    """Scan a *proposed* configuration -- one that has not been saved.
+
+    A different operation from `/{agent_id}/scan`, which scans a config this
+    deployment already holds. The Agent Builder needs this one: its whole
+    point is to check a config before committing it.
+    """
+    try:
+        return await scan_config(body)
+    except ScanBudgetExceeded as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+
 @router.post("/{agent_id}/scan")
-def scan_agent(agent_id: str) -> dict:
-    if agent_id not in stores.agents:
+async def scan_agent(agent_id: str) -> dict:
+    """Scan a saved agent's configuration.
+
+    Was `return {"findings": [], "status": "clean"}` -- a security control
+    that reported clean without looking, which is worse than one that errors:
+    it renders green. It now runs the same walk as the proposed-config route,
+    so the two cannot report differently on the same config.
+    """
+    agent = stores.agents.get(agent_id)
+    if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
-    return {"findings": [], "status": "clean"}
+    try:
+        return await scan_config(agent.model_dump(mode="json"))
+    except ScanBudgetExceeded as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
 
 
 class ForgeAgentBody(BaseModel):
