@@ -69,6 +69,13 @@ STATIC_DIR = ROOT / "frontend" / "dist"
 _log = logging.getLogger("hive.lifespan")
 
 
+def _seed_outbound_policy(settings: object) -> None:
+    """Allow exactly the configured Conductor gateway origin."""
+    from maistro.security.outbound import configure_outbound_policy, configured_endpoints
+
+    configure_outbound_policy(*configured_endpoints(settings))
+
+
 def _include_optional_router(
     app: FastAPI,
     module_name: str,
@@ -170,6 +177,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # A warning would not do. A warning about a cookie is read once, by whoever
     # ran the container, in a log nobody keeps.
     _settings = get_settings()
+    # Seed before any startup service can make an HTTP request. This path also
+    # runs when the embedded core bridge is disabled or degrades to its stub,
+    # so a configured private gateway never depends on Container construction
+    # to become reachable (#285).
+    _seed_outbound_policy(_settings)
     assert_session_transport_is_safe(
         cookie_secure=_settings.session_cookie_secure,
         allow_insecure_transport=_settings.allow_insecure_transport,
