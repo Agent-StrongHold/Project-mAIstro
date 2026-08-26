@@ -101,10 +101,38 @@ _BLOCKED_HOSTNAME_SUFFIXES = (
 )
 
 
+#: Why a URL was refused, as a value a caller can branch on (#368).
+#:
+#: The message alone cannot be branched on, and the difference matters to
+#: anyone reporting the outcome: `UNRESOLVABLE` means the host is not there --
+#: an operational fault, indistinguishable from a server being down -- while
+#: every other reason is an authorization refusal that will recur until the
+#: origin is configured or the URL is changed. Reporting those two the same way
+#: is how a standing policy decision hides behind a transient-looking status.
+BLOCK_SCHEME = "scheme"
+BLOCK_NO_HOST = "no_host"
+BLOCK_INTERNAL_HOSTNAME = "internal_hostname"
+BLOCK_INTERNAL_ADDRESS = "internal_address"
+BLOCK_NO_ADDRESSES = "no_addresses"
+BLOCK_UNRESOLVABLE = "unresolvable"
+
+#: The reasons that mean "this host is not reachable", as opposed to "this
+#: deployment refuses to reach it".
+OPERATIONAL_BLOCKS = frozenset({BLOCK_UNRESOLVABLE, BLOCK_NO_ADDRESSES})
+
+
 class SSRFBlockedError(ToolError):
     """Raised when an outbound URL targets (or resolves to) a private,
     loopback, link-local, reserved, multicast, or metadata-endpoint
-    network location, or cannot be shown to target anything else."""
+    network location, or cannot be shown to target anything else.
+
+    `reason` carries one of the `BLOCK_*` constants above. It defaults to the
+    empty string so existing raisers and handlers are unaffected.
+    """
+
+    def __init__(self, detail: str = "", *, reason: str = "") -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -172,13 +200,17 @@ def _check_shape(url: str) -> str:
         raise SSRFBlockedError(f"Outbound URL blocked (unparseable): {url!r}") from exc
     if parsed.scheme.lower() not in ALLOWED_SCHEMES:
         raise SSRFBlockedError(
-            f"Outbound URL blocked (scheme {parsed.scheme!r} is not http or https): {url!r}"
+            f"Outbound URL blocked (scheme {parsed.scheme!r} is not http or https): {url!r}",
+            reason=BLOCK_SCHEME,
         )
     hostname = parsed.hostname
     if not hostname:
-        raise SSRFBlockedError(f"Outbound URL blocked (no host): {url!r}")
+        raise SSRFBlockedError(f"Outbound URL blocked (no host): {url!r}", reason=BLOCK_NO_HOST)
     if _blocked_hostname(hostname):
-        raise SSRFBlockedError(f"Outbound URL blocked (internal target): {url!r}")
+        raise SSRFBlockedError(
+            f"Outbound URL blocked (internal target): {url!r}",
+            reason=BLOCK_INTERNAL_HOSTNAME,
+        )
     return hostname
 
 
@@ -186,11 +218,13 @@ def _check_addresses(url: str, hostname: str, addresses: list[str]) -> None:
     offending = _offending_address(addresses)
     if offending is not None:
         raise SSRFBlockedError(
-            f"Outbound URL blocked (resolves to internal address {offending}): {url!r}"
+            f"Outbound URL blocked (resolves to internal address {offending}): {url!r}",
+            reason=BLOCK_INTERNAL_ADDRESS,
         )
     if not addresses:
         raise SSRFBlockedError(
-            f"Outbound URL blocked (host {hostname!r} resolved to no addresses): {url!r}"
+            f"Outbound URL blocked (host {hostname!r} resolved to no addresses): {url!r}",
+            reason=BLOCK_NO_ADDRESSES,
         )
 
 
@@ -208,7 +242,8 @@ def validate_outbound_url(url: str) -> None:
     except socket.gaierror as exc:
         raise SSRFBlockedError(
             f"Outbound URL blocked (host {hostname!r} could not be resolved, so it "
-            f"cannot be shown to be external): {url!r}"
+            f"cannot be shown to be external): {url!r}",
+            reason=BLOCK_UNRESOLVABLE,
         ) from exc
     _check_addresses(url, hostname, addresses)
 
@@ -228,7 +263,8 @@ async def avalidate_outbound_url(url: str) -> None:
     except socket.gaierror as exc:
         raise SSRFBlockedError(
             f"Outbound URL blocked (host {hostname!r} could not be resolved, so it "
-            f"cannot be shown to be external): {url!r}"
+            f"cannot be shown to be external): {url!r}",
+            reason=BLOCK_UNRESOLVABLE,
         ) from exc
     _check_addresses(url, hostname, addresses)
 

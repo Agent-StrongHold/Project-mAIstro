@@ -172,6 +172,15 @@ class MCPServer(BaseModel):
     description: str
     url: str
     status: Literal["connected", "disconnected", "error", "connecting"]
+    #: Why the last health check ended the way it did, when the answer is not
+    #: obvious from `status` alone (#368).
+    #:
+    #: A server blocked by the outbound SSRF policy and a server that is simply
+    #: down both fail the health check, and both used to report `disconnected`.
+    #: They need opposite responses -- start the server, versus authorize the
+    #: origin or correct the URL -- so the operator has to be able to tell them
+    #: apart. A block is now `error` and carries the reason here.
+    last_error: str | None = None
     tools_count: int = 0
     last_ping: datetime | None = None
     version: str | None = None
