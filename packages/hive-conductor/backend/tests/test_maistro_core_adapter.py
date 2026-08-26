@@ -43,7 +43,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     await bridge.start(
         Settings(
             maistro_agents_dir="agents",
-            maistro_llm_base_url="http://localhost:4000/v1",
+            litellm_api_base="http://localhost:4000/v1",
         )
     )
 
