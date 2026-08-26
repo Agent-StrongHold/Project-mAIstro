@@ -122,8 +122,10 @@ class OutboundBlockedError(SSRFBlockedError, httpx.TransportError):
     `httpx.RequestError.__init__`, which takes exactly that positional message.
     """
 
-    def __init__(self, detail: str = "", *, request: httpx.Request | None = None) -> None:
-        super().__init__(detail)
+    def __init__(
+        self, detail: str = "", *, request: httpx.Request | None = None, reason: str = ""
+    ) -> None:
+        super().__init__(detail, reason=reason)
         if request is not None:
             # httpx's own property setter rather than the private attribute
             # behind it, so `.request` stays exactly the accessor httpx
@@ -263,7 +265,7 @@ class GuardedTransport(httpx.AsyncBaseTransport):
             # translation belongs here rather than in `enforce_outbound_policy`,
             # which is also called directly by code that is not inside a client
             # and has no reason to see an httpx type.
-            raise OutboundBlockedError(exc.detail, request=request) from exc
+            raise OutboundBlockedError(exc.detail, request=request, reason=exc.reason) from exc
         return await self._inner.handle_async_request(request)
 
     async def aclose(self) -> None:

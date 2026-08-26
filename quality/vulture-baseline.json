@@ -1215,6 +1215,7 @@
         "packages/maistro-core/src/maistro/security/sentinel/rlphd.py::unused class 'InMemoryRlphdThresholdStore'",
         "packages/maistro-core/src/maistro/security/sentinel/rlphd.py::unused method 'set_theta'",
         "packages/maistro-core/src/maistro/security/sentinel/rlphd.py::unused method 'set_theta'",
+        "packages/maistro-core/src/maistro/security/ssrf.py::unused variable 'OPERATIONAL_BLOCKS'",
         "packages/maistro-core/src/maistro/security/strikes.py::unused method 'enable'",
         "packages/maistro-core/src/maistro/security/strikes.py::unused method 'remove_strikes'",
         "packages/maistro-core/src/maistro/security/strikes.py::unused method 'submit_appeal'",
