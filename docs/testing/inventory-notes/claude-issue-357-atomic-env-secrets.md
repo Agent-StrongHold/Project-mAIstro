@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +32
+  tests/: +53
 ---
 # claude-issue-357-atomic-env-secrets
 
-Thirty-two new node IDs, all in `tests/test_secret_env.py`. Nothing removed or
+Fifty-three new node IDs, all in `tests/test_secret_env.py`. Nothing removed or
 reparametrised.
 
 ## The window, measured
@@ -89,3 +89,61 @@ it, so the POSIX path above *is* the Windows path, and there is no second
 implementation to keep in step. Stated here because "define equivalent Windows
 behavior" is in the DoD and the honest answer is that the behaviour is shared
 rather than mirrored.
+
+
+## The last eighteen came from the diff-coverage gate
+
+The first thirty-two covered the security property and left the CLI dispatch,
+several refusal branches and the JSON edge cases untested — 87.2% against a 90%
+floor. Worth recording *which* code that was, because it is not incidental:
+
+`install.sh` and `get.sh` reach this module **only** through its command line, so
+the dispatch in `main()` is production code on the installer's critical path, not
+a convenience wrapper. `TestTheCommandLine` drives every subcommand, and
+`test_it_runs_as_a_subprocess_the_way_the_installer_calls_it` runs the file as a
+script — the only case that proves the `__main__` guard and the executable bit
+actually work, which is exactly how the installer invokes it.
+
+`test_create_on_an_existing_file_exits_3` pins the distinct exit code, so `get.sh`
+can tell "already there" from "unsafe" and report accurately instead of
+collapsing both into one failure.
+
+`test_a_directory_that_cannot_be_fsynced_is_not_fatal` records a deliberate
+tolerance: some filesystems refuse `fsync` on a directory handle, the replace is
+still atomic, and only durability across a power loss is weaker — not worth
+failing an install over.
+
+`test_a_file_owned_by_someone_else_is_refused` moves the *caller* rather than the
+file, because the suite does not run as root and cannot `chown`. The comment in it
+records why the obvious `lambda: os.getuid() + 1` recurses: `secret_env.os` is the
+same module object as `os`, so the patch would call itself.
+
+
+## No PR check runs a line of the installer
+
+`.github/workflows/release-installer.yml` does run `./install.sh --answers-file
+docs/install/examples/answers-v1-smoke.yaml`, which is what makes
+`scripts/secret_env.py` reachable in principle. But its triggers are:
+
+    on:
+      workflow_dispatch:
+      push:
+        tags: ["v*"]
+
+So a change to `install.sh` or `get.sh` is not executed by anything on a pull
+request. Every other test in this file drives the Python helper, which proves
+the helper and not the shell that calls it — a rewiring mistake in `install.sh`
+would have reached a release before anything noticed.
+
+`TestTheRealShellPath` closes that. It `sed`s the eight env-writing functions out
+of the real `install.sh`, sources them, and runs them in a temp directory under
+`umask 0000` — asserting the mode after every one of `create`, `append_env_once`,
+`set_env_value`, `fill_env_value` and `ensure_api_keys_contains`, and that the
+three functions which used to be Python heredocs kept their replace / append /
+fill-if-blank semantics.
+
+Discrimination, measured: with `install.sh` and `get.sh` restored from
+`origin/develop` and everything else left in place, **all seven** of
+`TestTheRealShellPath` and `TestTheInstallersUseIt` fail — the mode assertion on
+0600, and `verify_env_file: command not found` for the function that does not
+exist there yet. With the fix, all seven pass.

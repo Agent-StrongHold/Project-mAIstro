@@ -16,8 +16,10 @@ that **no observer ever sees anything wider**.
 from __future__ import annotations
 
 import importlib.util
+import io
 import os
 import stat
+import subprocess
 import sys
 import threading
 from contextlib import suppress
@@ -346,3 +348,240 @@ class TestTheInstallersUseIt:
         body = (ROOT / "get.sh").read_text(encoding="utf-8")
         assert "secret_env.py" in body
         assert 'cp "$LEGACY_DIR/.env"' not in body
+
+
+class TestTheCommandLine:
+    """`install.sh` and `get.sh` reach this module only through its CLI, so the
+    dispatch is production code, not a convenience wrapper."""
+
+    def test_create_writes_stdin_at_0600(self, secret_env, env_path, monkeypatch) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(TOKEN))
+        assert secret_env.main(["create", str(env_path)]) == 0
+        assert env_path.read_text(encoding="utf-8") == TOKEN
+        assert _mode(env_path) == 0o600
+
+    def test_create_on_an_existing_file_exits_3(self, secret_env, env_path, monkeypatch) -> None:
+        """A distinct exit code, so `get.sh` can tell "already there" from
+        "unsafe" and say something accurate."""
+        env_path.write_text("mine\n", encoding="utf-8")
+        monkeypatch.setattr("sys.stdin", io.StringIO(TOKEN))
+        assert secret_env.main(["create", str(env_path)]) == 3
+        assert env_path.read_text(encoding="utf-8") == "mine\n"
+
+    def test_write_creates_when_absent(self, secret_env, env_path, monkeypatch) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(TOKEN))
+        assert secret_env.main(["write", str(env_path)]) == 0
+        assert _mode(env_path) == 0o600
+
+    def test_write_replaces_when_present(self, secret_env, env_path, monkeypatch) -> None:
+        secret_env.create_exclusive(env_path, "OLD=1\n")
+        monkeypatch.setattr("sys.stdin", io.StringIO(TOKEN))
+        assert secret_env.main(["write", str(env_path)]) == 0
+        assert env_path.read_text(encoding="utf-8") == TOKEN
+
+    def test_set_key(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, "A=1\n")
+        assert secret_env.main(["set-key", str(env_path), "A", "2"]) == 0
+        assert env_path.read_text(encoding="utf-8") == "A=2\n"
+
+    def test_set_key_only_if_blank(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, "A=keep\n")
+        assert secret_env.main(["set-key", str(env_path), "A", "no", "--only-if-blank"]) == 0
+        assert env_path.read_text(encoding="utf-8") == "A=keep\n"
+
+    def test_append_once(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, "A=1\n")
+        assert secret_env.main(["append-once", str(env_path), "B", "2"]) == 0
+        assert "B=2" in env_path.read_text(encoding="utf-8")
+
+    def test_ensure_api_keys(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, "A=1\n")
+        assert secret_env.main(["ensure-api-keys", str(env_path), "tok"]) == 0
+        assert 'API_KEYS=["tok"]' in env_path.read_text(encoding="utf-8")
+
+    def test_check_passes_on_a_safe_file(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, TOKEN)
+        assert secret_env.main(["check", str(env_path)]) == 0
+
+    def test_it_runs_as_a_subprocess_the_way_the_installer_calls_it(self, tmp_path: Path) -> None:
+        """The installer shells out; nothing above proves the file is
+        executable as a script with a working `__main__` guard."""
+        target = tmp_path / ".env"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "create", str(target)],
+            input=TOKEN,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text(encoding="utf-8") == TOKEN
+        assert _mode(target) == 0o600
+
+
+class TestTheRemainingRefusals:
+    def test_a_directory_at_the_path_is_refused(self, secret_env, tmp_path) -> None:
+        """`mkdir .env` is a plausible accident, and O_WRONLY on a directory
+        raises something far less clear than this."""
+        directory = tmp_path / ".env"
+        directory.mkdir()
+        with pytest.raises(secret_env.UnsafeEnvFile, match="not a regular file"):
+            secret_env.validate_target(directory)
+
+    def test_a_file_owned_by_someone_else_is_refused(
+        self, secret_env, env_path, monkeypatch
+    ) -> None:
+        """Simulated by moving the caller rather than the file: the test suite
+        does not run as root and cannot chown."""
+        env_path.write_text("", encoding="utf-8")
+        env_path.chmod(0o600)
+        # Read the real uid first: `secret_env.os` is the same module object as
+        # `os`, so a lambda calling os.getuid() after the patch calls itself.
+        someone_else = os.getuid() + 1
+        monkeypatch.setattr(secret_env.os, "getuid", lambda: someone_else)
+        with pytest.raises(secret_env.UnsafeEnvFile, match="owned by uid"):
+            secret_env.validate_target(env_path)
+
+    def test_a_directory_that_cannot_be_fsynced_is_not_fatal(
+        self, secret_env, env_path, monkeypatch
+    ) -> None:
+        """Some filesystems refuse fsync on a directory handle. The replace is
+        still atomic; only durability across a power loss is weaker, and that
+        is not worth failing an install over."""
+        real_fsync = secret_env.os.fsync
+
+        def picky(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("fsync not supported here")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(secret_env.os, "fsync", picky)
+        secret_env.create_exclusive(env_path, TOKEN)
+        assert env_path.read_text(encoding="utf-8") == TOKEN
+
+
+class TestTheRemainingKeyOperations:
+    def test_append_once_adds_an_absent_key(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, "A=1\n")
+        secret_env.append_once(env_path, "B", "2")
+        assert env_path.read_text(encoding="utf-8") == "A=1\nB=2\n"
+
+    def test_ensure_api_keys_creates_the_line_when_absent(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, "OTHER=1\n")
+        secret_env.ensure_api_keys(env_path, "tok")
+        assert 'API_KEYS=["tok"]' in env_path.read_text(encoding="utf-8")
+
+    def test_a_non_list_api_keys_value_is_replaced(self, secret_env, env_path) -> None:
+        """Valid JSON, wrong shape — `{}` parses but cannot be appended to."""
+        secret_env.create_exclusive(env_path, "API_KEYS={}\n")
+        secret_env.ensure_api_keys(env_path, "tok")
+        assert 'API_KEYS=["tok"]' in env_path.read_text(encoding="utf-8")
+
+    def test_writing_to_an_absent_path_creates_it(self, secret_env, env_path) -> None:
+        secret_env.write(env_path, TOKEN)
+        assert _mode(env_path) == 0o600
+
+    def test_set_key_on_an_absent_file_creates_it(self, secret_env, env_path) -> None:
+        secret_env.set_key(env_path, "A", "1")
+        assert env_path.read_text(encoding="utf-8") == "A=1\n"
+        assert _mode(env_path) == 0o600
+
+
+class TestTheRealShellPath:
+    """`release-installer.yml` runs `./install.sh`, but it triggers only on tags
+    and `workflow_dispatch` — so no PR check executes a line of the installer.
+
+    Every other test here drives the Python helper directly, which proves the
+    helper and not the shell that calls it. These source the real functions out
+    of `install.sh` and run them, so a rewiring mistake in the shell fails a PR
+    check rather than a release.
+    """
+
+    #: The env-writing functions, lifted verbatim from install.sh.
+    _FUNCTIONS = (
+        "ensure_python",
+        "secret_env_run",
+        "env_has",
+        "append_env_once",
+        "fill_env_value",
+        "set_env_value",
+        "ensure_api_keys_contains",
+        "verify_env_file",
+    )
+
+    def _harness(self) -> str:
+        extract = ";".join(f"/^{name}()/,/^}}/p" for name in self._FUNCTIONS)
+        return f"""
+set -euo pipefail
+SCRIPT_DIR={str(ROOT)!r}
+ENV_FILE=".env"
+PYTHON_CMD=()
+warn() {{ echo "WARN: $*" >&2; }}
+ok() {{ :; }}
+info() {{ :; }}
+source <(sed -n {extract!r} "$SCRIPT_DIR/install.sh")
+"""
+
+    def _run(self, workdir: Path, script: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-c", self._harness() + script],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_every_shell_write_path_lands_at_0600(self, tmp_path: Path) -> None:
+        """`umask 0000` is what makes this an assertion rather than a
+        coincidence: the pre-#357 shell produced 666 here."""
+        result = self._run(
+            tmp_path,
+            """
+umask 0000
+printf 'MAISTRO_ACCESS_TOKEN=tok\\nAPI_KEYS=["tok"]\\n' | secret_env_run create
+stat -c '%a create' .env
+append_env_once NEWKEY hello;   stat -c '%a append_env_once' .env
+set_env_value NEWKEY replaced;  stat -c '%a set_env_value' .env
+fill_env_value BLANKY filled;   stat -c '%a fill_env_value' .env
+ensure_api_keys_contains tok2;  stat -c '%a ensure_api_keys' .env
+verify_env_file
+""",
+        )
+        assert result.returncode == 0, result.stderr
+        modes = [line.split()[0] for line in result.stdout.strip().splitlines()]
+        assert modes, f"the harness produced no output: {result.stderr}"
+        assert set(modes) == {"600"}, f"a shell write path widened the mode: {result.stdout}"
+
+    def test_the_shell_writes_the_values_it_was_given(self, tmp_path: Path) -> None:
+        """Mode is not the only thing that has to survive the rewiring: the
+        three functions that used to be Python heredocs have to keep their
+        replace / append / fill-if-blank semantics."""
+        result = self._run(
+            tmp_path,
+            """
+printf 'A=1\\nSECRET=\\n' | secret_env_run create
+append_env_once A 999
+append_env_once B 2
+fill_env_value SECRET generated
+set_env_value A replaced
+ensure_api_keys_contains tok
+cat .env
+""",
+        )
+        assert result.returncode == 0, result.stderr
+        body = result.stdout
+        assert "A=replaced" in body, "set_env_value did not replace in place"
+        assert "B=2" in body, "append_env_once did not add the absent key"
+        assert "999" not in body, "append_env_once overwrote an existing value"
+        assert "SECRET=generated" in body, "fill_env_value did not fill the blank"
+        assert '["tok"]' in body
+
+    def test_the_shell_refuses_an_unsafe_existing_file(self, tmp_path: Path) -> None:
+        """`verify_env_file` warns rather than silently chmod-ing, so a file
+        that may already have leaked is reported instead of quietly narrowed."""
+        env = tmp_path / ".env"
+        env.write_text(TOKEN, encoding="utf-8")
+        env.chmod(0o644)
+        result = self._run(tmp_path, "verify_env_file")
+        assert "did not pass the credential-file safety check" in result.stderr
+        assert "s3cr3t-do-not-leak" not in result.stdout + result.stderr
