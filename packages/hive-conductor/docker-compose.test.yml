@@ -16,6 +16,22 @@ services:
       - PYTHONUNBUFFERED=1
       - HARDWARE_PRESET=beast
       - CONDUCTOR_DATA_DIR=/tmp/conductor
+      # This harness serves the app over plain HTTP at http://hive:8101, so it
+      # is a local-development context in the sense #369 defines one, and says
+      # so with the same two settings a developer running locally sets.
+      #
+      # Not a formality. Flipping SESSION_COOKIE_SECURE on by default made a
+      # real Chromium refuse to send the session cookie back over `http://`,
+      # and seven of these e2e tests failed with 401 immediately after a
+      # successful login. That is the browser-level confirmation the attribute
+      # took effect — the strongest evidence in this change that it is real —
+      # and it is also why the harness has to declare itself.
+      #
+      # ALLOW_INSECURE_TRANSPORT alone would not be enough: startup would come
+      # up, but the cookie would still be Secure and the browser would still
+      # drop it. Both are needed, which is the point of them being separate.
+      - SESSION_COOKIE_SECURE=false
+      - ALLOW_INSECURE_TRANSPORT=true
     # No curl/shell in the `hive` runtime image (Chainguard/Wolfi, near-zero
     # CVEs — see Dockerfile). Its own HEALTHCHECK already uses Python's
     # urllib for exactly this reason; mirror that here rather than `curl`,

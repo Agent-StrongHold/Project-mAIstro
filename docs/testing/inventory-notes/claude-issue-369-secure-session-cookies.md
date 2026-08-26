@@ -149,11 +149,38 @@ sends the header.
 `test_the_session_cookie_is_secure_by_default` asserts the exact opposite of
 what `develop` produces.
 
-## Not covered here
+## What a real browser said
 
-- **Browser E2E verifying effective cookie attributes.** The DoD asks for it.
-  What is here proves the attributes the server *sets*; proving what a browser
-  *stores* needs the Playwright lane, which is a different job from this one.
+`hive-conductor-e2e-ui` went red on the first push, and the failure was the
+change working. Seven Playwright tests failed with **401 immediately after a
+successful login**: Chromium accepted the login, refused to send the now-`Secure`
+cookie back over `http://hive:8101`, and every authenticated request after it
+was unauthenticated.
+
+That is the browser-level confirmation the attribute took effect — better
+evidence than any assertion, because nothing about it was arranged.
+
+`docker-compose.test.yml` now declares itself the same way the two conftests do.
+`ALLOW_INSECURE_TRANSPORT` alone would not have been enough: startup would come
+up and the cookie would still be `Secure`, so the browser would still drop it.
+Both settings are needed, which is the point of them being separate.
+
+Two Playwright tests were added on the back of it (they do not appear in the
+delta above — that suite is counted by pytest collection, and these are
+TypeScript):
+
+* **13** asserts what Chromium actually *stored* — `HttpOnly`, `Path=/`,
+  `SameSite=Lax`, and a bounded expiry. A `Set-Cookie` a browser rejects or
+  rewrites looks identical in a unit test.
+* **14** asserts the property `HttpOnly` exists for, from inside the page:
+  `document.cookie` does not contain the session. The flag being set and the
+  value being unreachable are different claims, and only the second matters.
+
+`Secure` is deliberately not asserted there. The harness serves plain HTTP and
+waives it, so asserting `secure === false` would pin the harness's waiver rather
+than the product's default — the wrong thing to hold still.
+
+## Not covered here
 - **CSRF and session fixation.** Named in the AC. Session rotation on login and
   revocation on logout already exist and are tested; CSRF is a token scheme
   this change neither adds nor removes, and adding one alongside a cookie-policy
