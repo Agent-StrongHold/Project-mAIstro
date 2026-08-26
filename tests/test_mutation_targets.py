@@ -325,3 +325,44 @@ def test_the_motivating_pr_now_produces_a_target(module):
     assert any(s.endswith("durable_runs/executor.py") and t is not None for s, t in resolved), (
         "a test-only change still resolves to no mutatable target"
     )
+
+
+class TestGateScriptsAreTargetable:
+    """#419. `mutation_targets.py` resolved only paths under `packages/`, so
+    every gate in `scripts/` — the code that decides whether anything else may
+    merge — was the one body of Python mutation could not reach. The same blind
+    spot #257 closed for diff coverage, one instrument later."""
+
+    def test_a_gate_script_resolves_to_its_mirror_test(self, module):
+        assert module.resolve_script_tests("scripts/check-ac-state.py") == Path(
+            "tests/test_check_ac_state.py"
+        )
+
+    def test_a_dashed_name_maps_to_an_underscored_test(self, module):
+        """Every gate here is `check-thing.py` tested by `test_check_thing.py`;
+        a resolver that did not translate the separator would resolve none."""
+        assert module.resolve_script_tests("scripts/check-cross-package-imports.py") == Path(
+            "tests/test_check_cross_package_imports.py"
+        )
+
+    def test_a_script_without_a_mirror_test_is_skipped_not_widened(self, module):
+        """There is no ancestor to widen to — `tests/` is the whole root suite,
+        and mutating one script against all of it is exactly the unbounded
+        scope that produced the original 30-minute timeout."""
+        assert module.resolve_script_tests("scripts/mutation_packet.py") is None
+
+    def test_a_nested_path_is_not_treated_as_a_gate_script(self, module):
+        """Only `scripts/<name>.py` directly. A nested file has no mirror
+        convention, so inventing one resolves to a test that is not its."""
+        assert module.resolve_script_tests("scripts/sub/thing.py") is None
+
+    def test_a_package_source_is_left_to_the_package_resolver(self, module):
+        source = "packages/maistro-core/src/maistro/router/scorer.py"
+        assert module.resolve_script_tests(source) is None
+
+    def test_the_dispatch_tries_scripts_before_packages(self, module):
+        """`resolve_package_tests` returns None for everything in `scripts/`,
+        so a gate script resolves only if the dispatch tries scripts first."""
+        targets, unresolved = module._resolve_targets(["scripts/check-ac-state.py"])
+        assert unresolved == []
+        assert targets == [("scripts/check-ac-state.py", Path("tests/test_check_ac_state.py"))]
