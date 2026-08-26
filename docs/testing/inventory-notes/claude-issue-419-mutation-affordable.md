@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +28
+  tests/: +44
 ---
 # claude-issue-419-mutation-affordable
 
-Twenty-eight new node IDs: 16 in `test_mutation_filter_annotations.py`, 6 in
+Forty-four new node IDs: 27 in `test_mutation_filter_annotations.py`, 11 in
 `test_mutation_packet_safety.py`, 6 appended to `test_mutation_targets.py`.
 Nothing removed or reparametrised.
 
@@ -16,7 +16,7 @@ actually costs: 206 mutants, ~5.9 s each at 4 workers, ~20 min for the file —
 inside `DEFAULT_PACKET_SECONDS`. The budget was never the problem. What the
 budget was being *spent on* was.
 
-## `test_mutation_filter_annotations.py` (16)
+## `test_mutation_filter_annotations.py` (27)
 
 Under `from __future__ import annotations` an annotation is a string. Python
 never evaluates it, so `-> Path | None` yields six mutants — Add, Mul, Mod,
@@ -38,6 +38,12 @@ not a regex over operator names, the only thing cosmic-ray ships.
 `TestAgainstTheRealTree` asserts both directions on one real file, because a
 filter that gets one right and the other wrong is worse than none.
 
+`TestTheFilterLoop` and `TestTheCommandLine` cover the `FilterApp` subclass
+itself against a fake work-db — which mutants it marks SKIPPED, that it
+leaves every other one pending, and that it reads the session argument
+cosmic-ray hands it. Until these existed that loop was proven only by my
+own manual run against a real session, which CI cannot repeat.
+
 `test_a_mutation_straddling_an_annotation_edge_is_not_skipped` records a
 deliberate strictness: wholly inside, not partly. No straddling mutant has been
 observed; the rule exists so an unobserved shape fails toward *running* the
@@ -54,7 +60,7 @@ module was built on: there is no ancestor to widen to, `tests/` is the whole
 root suite, and mutating one script against all of it is exactly the unbounded
 scope that produced the original 30-minute timeout.
 
-## `test_mutation_packet_safety.py` (6)
+## `test_mutation_packet_safety.py` (11)
 
 Cosmic-ray mutates in place and restores between mutants. Interrupt it and the
 mutation stays on disk. This happened **three times** while measuring #419:
@@ -74,6 +80,12 @@ original to question it.
 
 `test_it_restores_bytes_not_git_state` pins the mechanism. Restoring from git
 would work here and silently revert whatever else the developer had uncommitted.
+
+`TestTheGuardsAreWiredIntoTheRun` drives `execute_source` with `run` replaced
+by a recorder, because both guards in this change are call sites and nothing
+else asserts they are called. Deleting the `with _restored(...)` wrapper, or
+moving the filter after `exec` where it saves nothing, leaves every other
+test in this file passing.
 
 ## What is not in this change
 
