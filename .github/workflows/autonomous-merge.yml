@@ -1,0 +1,128 @@
+name: Autonomous Merge Safety
+
+# This gate intentionally runs from the protected base branch. On
+# pull_request_target GitHub loads this workflow from the base, and the checkout
+# below pins the judge script to the exact base SHA. Candidate git objects are
+# fetched only for diff inspection; no candidate Python, shell, action, or test
+# code is executed here.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: autonomous-merge-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admissibility:
+    name: autonomous-merge-admissibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref || '' }}
+      PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+      LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+    steps:
+      - name: Checkout the trusted judge from the exact base SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_SHA }}
+          fetch-depth: 0
+          path: trusted
+          persist-credentials: false
+
+      - name: Fetch candidate objects without executing candidate code
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+            git -C trusted fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          else
+            git -C trusted fetch --no-tags origin "$HEAD_SHA"
+          fi
+          git -C trusted cat-file -e "${BASE_SHA}^{commit}"
+          git -C trusted cat-file -e "${HEAD_SHA}^{commit}"
+
+      - name: Classify autonomous merge risk
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --repo trusted
+            --base "$BASE_SHA"
+            --head "$HEAD_SHA"
+            --head-ref "$HEAD_REF"
+            --labels-json "$LABELS_JSON"
+            --check risk
+          )
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            args+=(--merge-group)
+          fi
+          python3 trusted/scripts/check-autonomous-merge.py "${args[@]}" | tee risk.txt
+          {
+            echo '## Autonomous merge risk'
+            echo '```text'
+            cat risk.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trusted CI surface cannot be self-modified by an autonomous change
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --repo trusted
+            --base "$BASE_SHA"
+            --head "$HEAD_SHA"
+            --head-ref "$HEAD_REF"
+            --labels-json "$LABELS_JSON"
+            --check trusted
+          )
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            args+=(--merge-group)
+          fi
+          python3 trusted/scripts/check-autonomous-merge.py "${args[@]}"
+
+      - name: Test-integrity ratchet
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --repo trusted
+            --base "$BASE_SHA"
+            --head "$HEAD_SHA"
+            --head-ref "$HEAD_REF"
+            --labels-json "$LABELS_JSON"
+            --check integrity
+          )
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            args+=(--merge-group)
+          fi
+          python3 trusted/scripts/check-autonomous-merge.py "${args[@]}"
+
+      - name: Final autonomous-merge admissibility decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --repo trusted
+            --base "$BASE_SHA"
+            --head "$HEAD_SHA"
+            --head-ref "$HEAD_REF"
+            --labels-json "$LABELS_JSON"
+            --check admissibility
+            --json-output autonomous-merge-report.json
+          )
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            args+=(--merge-group)
+          fi
+          python3 trusted/scripts/check-autonomous-merge.py "${args[@]}"
