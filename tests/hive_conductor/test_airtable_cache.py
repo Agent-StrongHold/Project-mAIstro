@@ -7,8 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pytest import MonkeyPatch
-
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[2] / "packages" / "hive-conductor" / "backend")
 )
@@ -47,7 +45,7 @@ class _Client:
         return _Response({"records": [{"id": "rec1", "fields": {"Name": "Roadmap"}}]})
 
 
-def test_airtable_records_reuse_cached_response_until_refresh(monkeypatch: MonkeyPatch) -> None:
+def test_airtable_records_reuse_cached_response_until_refresh() -> None:
     calls: list[dict[str, Any]] = []
 
     def handler(request: Any) -> Any:
@@ -66,14 +64,15 @@ def test_airtable_records_reuse_cached_response_until_refresh(monkeypatch: Monke
 
     # The shared client is real; only the transport is swapped, so this asserts
     # on the request httpx actually built rather than on what the call site passed.
+    #
+    # `override_transport`, not a bare `set_test_transport` (#414). The bare
+    # setter has no scope: this test left a MockTransport answering 200 to every
+    # request for the rest of the process, and two Conductor tests asserting
+    # that an unreachable URL reports "disconnected" saw it as reachable.
     import httpx as _httpx
 
-    from maistro.http import set_test_transport
+    from maistro.http import override_transport
 
-    set_test_transport(_httpx.MockTransport(handler))
-    monkeypatch.setattr(
-        "maistro.http._test_transport", _httpx.MockTransport(handler), raising=False
-    )
     airtable_cache.clear_airtable_cache()
 
     async def run() -> None:
@@ -105,4 +104,5 @@ def test_airtable_records_reuse_cached_response_until_refresh(monkeypatch: Monke
         assert calls[0]["url"] == "https://api.airtable.com/v0/base/Roadmap"
         assert calls[0]["params"] == {"maxRecords": "20"}
 
-    asyncio.run(run())
+    with override_transport(_httpx.MockTransport(handler)):
+        asyncio.run(run())

@@ -267,6 +267,22 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: uv pip install --system -r packages/hive-conductor/backend/requirements.txt
       - run: python -m pytest packages/hive-conductor/backend/tests -v --tb=short
+      # Every step above runs one tree in its own process, which is what let a
+      # leaked HTTP transport couple two of them for as long as it did: the
+      # root suite left a MockTransport answering 200 to every request, two
+      # Conductor tests read an unreachable URL as reachable, and no job ever
+      # put those trees in the same process to notice (#414).
+      #
+      # So one step does. Not a substitute for the per-tree steps -- those give
+      # the readable failure and the coverage split -- but the only place a
+      # suite's dependence on which sibling shared its interpreter can show up
+      # at all. A suite that passes because of how the jobs happen to be
+      # partitioned is one refactor from a red that reads as a flake.
+      - name: The trees pass in one process too (no cross-suite leakage)
+        run: uv run pytest tests/ packages/hive-conductor/backend/tests packages/maistro-design/tests -q --timeout=60
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
