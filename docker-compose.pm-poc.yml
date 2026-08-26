@@ -6,7 +6,11 @@ services:
   maistro-engine:
     environment:
       - MAISTRO_POC_MODE=pm
-      - API_KEYS=alice:changeme-alice,bob:changeme-bob
+      # Required, with no default. This overlay sets REQUIRE_AUTH=true, so a
+      # baked-in value would be an authenticated deployment whose keys are
+      # published in this repository (#367). `:?` makes compose refuse to
+      # start rather than start insecurely.
+      - API_KEYS=${API_KEYS:?Run ./install.sh to generate API_KEYS, or set it in .env}
       - CORS_ORIGINS=http://localhost:8101,http://localhost:5173,http://127.0.0.1:8101
       - REQUIRE_AUTH=true
     profiles:
@@ -23,7 +27,7 @@ services:
     environment:
       - MAISTRO_POC_MODE=pm
       - HIVE_POC_MODE=pm
-      - MAISTRO_ROUTER_API_KEY=${API_KEYS:-alice:changeme-alice}
+      - MAISTRO_ROUTER_API_KEY=${API_KEYS:?Run ./install.sh to generate API_KEYS, or set it in .env}
       # Atlassian (container runtime — not Cursor): set site + token for headless MCP/Jira REST
       - ATLASSIAN_ROVO_MCP_URL=https://mcp.atlassian.com/v1/mcp/authv2
       # - ATLASSIAN_SITE_URL=https://your-org.atlassian.net

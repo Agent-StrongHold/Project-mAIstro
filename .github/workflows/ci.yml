@@ -94,6 +94,16 @@ jobs:
       # against it, and the fix must never be to delete the history.
       - name: Retired guidance does not still direct implementation
         run: python3 scripts/check-retired-guidance.py
+      # A tracked Compose overlay shipped `API_KEYS=alice:changeme-alice`
+      # alongside `REQUIRE_AUTH=true`, so it read as a ready-to-run
+      # authenticated deployment whose keys are published here (#367).
+      # gitleaks and detect-secrets both stayed quiet: `changeme-alice` is
+      # shaped like a placeholder, which is what makes it usable and what makes
+      # a secret scanner the wrong instrument. This asks the other question --
+      # can this file hand someone a working credential -- and holds every
+      # profile to the `${VAR:?message}` shape the rest already use.
+      - name: No deployment profile hands out a credential
+        run: python3 scripts/check-compose-secrets.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
