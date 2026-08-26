@@ -69,13 +69,21 @@ def parse_trusted_proxies(spec: str | Iterable[str] | None) -> tuple[Any, ...]:
     return tuple(networks)
 
 
-def is_trusted_proxy(client_host: str | None, trusted: Iterable[Any]) -> bool:
+def is_trusted_proxy(client_host: str | None, trusted_networks: Iterable[Any]) -> bool:
     """Whether `client_host` is one of the addresses allowed to forward.
 
     An absent or unparseable peer is not trusted. That case is real rather
     than theoretical: a request over a Unix socket has no peer address, and
     a deployment behind such a socket has to name it some other way than by
     IP — so the honest answer here is "no", not "probably fine".
+
+    The parameter is `trusted_networks`, not `trusted`: vulture matches
+    identities by *name* rather than by owner, so naming it `trusted` retired
+    an unrelated `trusted` in `maistro/code_registry/types.py` from the
+    dead-code ledger the moment this one was read — marking a symbol that is
+    still dead as alive. `OutboundPolicy.origins` carries the same note for
+    the same reason; this is the second time the trap has been sprung, which
+    is why it is written down again here rather than only there.
     """
     if not client_host:
         return False
@@ -83,7 +91,7 @@ def is_trusted_proxy(client_host: str | None, trusted: Iterable[Any]) -> bool:
         address = ip_address(client_host)
     except ValueError:
         return False
-    return any(address in network for network in trusted)
+    return any(address in network for network in trusted_networks)
 
 
 def request_is_https(
