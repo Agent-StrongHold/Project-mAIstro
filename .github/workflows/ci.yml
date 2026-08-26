@@ -104,6 +104,14 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # Four chat handlers read `stores.chat_sessions` as a global dictionary,
+      # so any authenticated user could list, read, append to or delete any
+      # other user's chat by id (#312). Nothing about the text of those
+      # handlers looked wrong -- they did the right thing to the wrong
+      # person's rows. The scoped view fixes those four; this fixes the fifth,
+      # by refusing a route module that names an owned store directly.
+      - name: An owned store is only reached through its scoped view
+        run: python3 scripts/check-owned-store-access.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
