@@ -250,3 +250,151 @@ class TestTheReport:
         monkeypatch.setattr(check, "source_files", list)
         assert check.main() == 1
         assert "no first-party Python files" in capsys.readouterr().err
+
+
+class TestOnlyModuleScopeCounts:
+    """#413. `_names_in` walked the whole tree, so a local variable inside a
+    function counted as a module attribute and `from target import local_name`
+    resolved against something no importer can reach — the exact
+    missing-attribute case this gate exists to catch, passing it."""
+
+    def test_a_function_local_is_not_a_module_attribute(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "local.py").write_text(
+            "def build():\n    helper = 1\n    return helper\n", encoding="utf-8"
+        )
+        (finding,) = _scan(check, workspace, "from thing.local import helper\n")
+        assert finding.target == "thing.local.helper"
+
+    def test_a_name_imported_only_inside_a_function_is_not_either(self, check, workspace):
+        """The shape that made the old behaviour plausible: the name *is* in the
+        file, just not reachable from outside."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "lazy.py").write_text(
+            "def go():\n    from json import dumps\n    return dumps\n", encoding="utf-8"
+        )
+        assert [f.target for f in _scan(check, workspace, "from thing.lazy import dumps\n")] == [
+            "thing.lazy.dumps"
+        ]
+
+    def test_a_class_attribute_is_not_a_module_attribute(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "cls.py").write_text("class Holder:\n    VALUE = 1\n", encoding="utf-8")
+        assert [f.target for f in _scan(check, workspace, "from thing.cls import VALUE\n")] == [
+            "thing.cls.VALUE"
+        ]
+        assert _scan(check, workspace, "from thing.cls import Holder\n") == []
+
+    def test_a_name_bound_in_a_module_level_try_still_counts(self, check, workspace):
+        """`try: import x except ImportError: x = None` is how these packages
+        do optional dependencies. Still module scope, so still an attribute."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "opt.py").write_text(
+            "try:\n    from json import dumps\nexcept ImportError:\n    dumps = None\n",
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.opt import dumps\n") == []
+
+    def test_a_name_bound_under_type_checking_is_not_a_runtime_name(self, check, workspace):
+        """#413 review. The block never executes, so a runtime import of that
+        name fails — and an earlier version of this test asserted the opposite,
+        which was a false green written into the suite.
+
+        `maistro.archive` is the live instance: it declares `S3ArchiveStore`
+        under TYPE_CHECKING and serves it from a `__getattr__`. Accepting the
+        type-only binding would pass a runtime import with that `__getattr__`
+        deleted."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "tc.py").write_text(
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Alias = int\n",
+            encoding="utf-8",
+        )
+        (finding,) = _scan(check, workspace, "from thing.tc import Alias\n")
+        assert "only under TYPE_CHECKING" in finding.reason
+
+    def test_a_type_checking_import_may_use_a_type_only_name(self, check, workspace):
+        """The other half of the rule: an importer that is itself under
+        TYPE_CHECKING only has to satisfy a type checker."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "tc.py").write_text(
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Alias = int\n",
+            encoding="utf-8",
+        )
+        body = (
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    from thing.tc import Alias\n"
+        )
+        assert _scan(check, workspace, body) == []
+
+    def test_an_else_branch_of_type_checking_is_runtime(self, check, workspace):
+        """`if TYPE_CHECKING: ... else: ...` — the else runs."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "both.py").write_text(
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    Only = int\nelse:\n    Real = 1\n",
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.both import Real\n") == []
+
+    def test_a_getattr_export_is_trusted_as_far_as_dunder_all(self, check, workspace):
+        """A module-level `__getattr__` can produce names no static read finds,
+        so what it publishes in `__all__` counts as runtime-present."""
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "lazy.py").write_text(
+            '__all__ = ["Widget"]\n\n\ndef __getattr__(name):\n    raise AttributeError(name)\n',
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.lazy import Widget\n") == []
+
+    def test_a_getattr_without_dunder_all_publishes_nothing_verifiable(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "opaque.py").write_text(
+            "def __getattr__(name):\n    raise AttributeError(name)\n", encoding="utf-8"
+        )
+        assert [f.target for f in _scan(check, workspace, "from thing.opaque import X\n")] == [
+            "thing.opaque.X"
+        ]
+
+    def test_a_tuple_unpack_at_module_scope_counts(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "tup.py").write_text("LEFT, RIGHT = 1, 2\n", encoding="utf-8")
+        assert _scan(check, workspace, "from thing.tup import LEFT\n") == []
+
+    def test_an_annotated_assignment_counts(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "ann.py").write_text("COUNT: int = 3\n", encoding="utf-8")
+        assert _scan(check, workspace, "from thing.ann import COUNT\n") == []
+
+
+class TestTheScanCoversWhatItClaims:
+    """#413. The docstring promised "every first-party Python file, tests
+    included" and gave the reason — a missing *name* can sit inside a
+    `pytest.raises` and never say so — while the glob covered `packages/`
+    only. The repository's own root trees, including the ones that reason
+    names, were outside a check advertised as covering them."""
+
+    def test_the_root_test_tree_is_scanned(self, check):
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert "tests/test_check_cross_package_imports.py" in files
+
+    def test_the_tools_tree_is_scanned(self, check):
+        """#413 review. `tools/` holds first-party importers too — one of its
+        scripts is run by a workflow — so leaving it out kept the same
+        overclaim alive one directory over."""
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert any(f.startswith("tools/") for f in files)
+
+    def test_the_scripts_tree_is_scanned(self, check):
+        """A gate that cannot import what it names is a gate that does not run,
+        and #262 is the record of what an absent check looks like."""
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert "scripts/check-ac-state.py" in files
+
+    def test_the_packages_tree_is_still_scanned(self, check):
+        files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
+        assert "packages/hive-conductor/backend/services/design_service.py" in files
+
+    def test_widening_did_not_cost_coverage_elsewhere(self, check):
+        """Measured when the roots were added: 207 further files, zero new
+        findings. If this ever drops, a tree stopped being scanned."""
+        assert len(check.source_files()) > 2000

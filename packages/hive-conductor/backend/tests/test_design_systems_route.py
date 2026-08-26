@@ -129,3 +129,64 @@ class TestWhenTheServiceDidNotStart:
         assert body["catalog"]["available"] is False
         assert body["catalog"]["count"] == 0
         assert "catalog.json" in body["catalog"]["cause"]
+
+
+class TestEveryEngineRouteReportsTheCause:
+    """#413. #293 gave startup an answerable status; only one route asked.
+
+    The rest called `get_design_engine()`, caught its generic
+    `RuntimeError("DesignEngine not initialized ...")` in a blanket handler and
+    returned 500 -- discarding both the recorded cause and the
+    service-unavailable semantics the status exists to express. A broken
+    install answered "internal server error" on three routes out of four,
+    which is the shape of #293 with a smaller blast radius.
+    """
+
+    CAUSE = "FileNotFoundError: systems/bundled/default/manifest.json"
+
+    @pytest.fixture
+    def broken(self, monkeypatch, client):
+        monkeypatch.setattr(
+            design_service,
+            "_status",
+            design_service.DesignServiceStatus(cause=self.CAUSE),
+        )
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        return client
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("get", "/v1/design/systems"),
+            ("get", "/v1/design/skills"),
+            ("get", "/v1/design/skills/login-flow/discovery"),
+            ("get", "/v1/design/projects"),
+            ("get", "/v1/design/projects/some-id"),
+            ("post", "/v1/design/projects"),
+        ],
+    )
+    def test_it_answers_503_not_500(self, broken, method, path):
+        # A valid body: FastAPI validates before the handler runs, so an
+        # invalid one would 422 without ever reaching the readiness check.
+        body = (
+            {"skill_slug": "login-flow", "responses": {"auth_methods": "email"}}
+            if method == "post"
+            else None
+        )
+        response = getattr(broken, method)(path, **({"json": body} if body else {}))
+        assert response.status_code == 503, f"{path} returned {response.status_code}"
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/v1/design/systems", "/v1/design/skills", "/v1/design/projects"],
+    )
+    def test_the_recorded_cause_reaches_the_caller(self, broken, path):
+        """A 503 saying only "unavailable" is the log line again. The cause is
+        the thing #293 added and the thing these routes were dropping."""
+        assert "manifest.json" in broken.get(path).json()["detail"]
+
+    def test_a_ready_service_is_not_affected(self, client):
+        """The guard must not have made working routes fail."""
+        assert client.get("/v1/design/skills").status_code == 200
+        assert client.get("/v1/design/systems").status_code == 200

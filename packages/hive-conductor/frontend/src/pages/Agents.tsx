@@ -297,6 +297,7 @@ export default function Agents() {
     setBBusy(true);
     try {
       const config = JSON.parse(bConfig);
+      // frontend-api-routes: allow no such route, Builder scans unsaved config, see #418
       const res = await apiPost<{ findings: string[] }>("/v1/agents/scan", config);
       setBScan(res.findings);
     } catch {

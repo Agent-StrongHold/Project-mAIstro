@@ -169,7 +169,6 @@ tested modules with no call path, so "the code is there" is not the bar.
 | Deck builder | **Partial** | AI generation is real; the slide library is hardcoded demo content. |
 | Topology | **Partial** | Agent/MCP/skill graph. Does not use the `/v1/topology` compare API. |
 | **Schedules — execution** | **TODO** | Schedules can be created, the cron matcher ticks, and `last_run` advances — but **nothing is ever executed**. "Run now" only stamps a timestamp. |
-| **Tools Lab** | **TODO** | Launch/Stop buttons for Promptfoo, Langflow, Flowise, Opik. The backend endpoints **do not exist**; nothing ever starts. |
 | **Design Studio** | **TODO** | The six-node pipeline is a `setTimeout` animation with template-string output. No image is produced. |
 | **Forge (agents, skills)** | **TODO** | Fabricates a record with a generated name. No LLM is called. |
 | **Scan (agents, skills, MCP)** | **TODO** | Returns `{"findings": [], "status": "clean"}` unconditionally. Nothing is scanned. |
