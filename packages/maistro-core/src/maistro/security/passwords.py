@@ -54,6 +54,56 @@ def verify_password(plain: str, stored: str) -> bool:
     return False
 
 
+#: A real Argon2id hash of a value nothing can supply, built once on first use.
+#:
+#: Lazily, not at import: hashing costs ~90 ms and 64 MiB, and paying that in
+#: every process that merely imports this module — including every test
+#: collection — would be a self-inflicted version of the problem this exists to
+#: solve.
+_DECOY_HASH: str | None = None
+
+
+def _decoy_hash() -> str:
+    global _DECOY_HASH
+    if _DECOY_HASH is None:
+        from secrets import token_urlsafe
+
+        # A fresh random secret per process. Nobody, including this process,
+        # can produce the input that verifies against it — so `equal_cost_verify`
+        # against it always fails, and always costs what a real check costs.
+        _DECOY_HASH = hash_password(token_urlsafe(32))
+    return _DECOY_HASH
+
+
+def equal_cost_verify(plain: str, stored: str | None) -> bool:
+    """Verify `plain`, spending the same work whether or not the account exists.
+
+    `login` used to read::
+
+        if user.username == body.username and user.verify_password(...)
+
+    and `and` short-circuits, so an unknown username never reached Argon2 at
+    all. Measured on the machine this was written on: **87.6 ms for a known
+    username with the wrong password, ~0 ms for an unknown one** — not a
+    statistical side channel, a different order of magnitude readable from a
+    single request (#366).
+
+    Passing `stored=None` for "no such account" makes the caller spend one
+    verification against a decoy instead. The answer is always `False`; the
+    point is entirely what it cost to get there.
+
+    This does not make the two paths *identical* — a dictionary lookup that
+    misses still differs from one that hits by microseconds, and an attacker on
+    the same host with a clean signal could still find that. It removes the
+    difference that mattered, which was four orders of magnitude wide and
+    measurable across a network.
+    """
+    if stored is None:
+        verify_password(plain, _decoy_hash())
+        return False
+    return verify_password(plain, stored)
+
+
 def needs_rehash(stored: str) -> bool:
     """True when the stored hash should be upgraded to current Argon2id parameters."""
     if not stored.startswith(_ARGON2_PREFIX):
