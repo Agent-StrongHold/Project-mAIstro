@@ -882,15 +882,43 @@ start_engine() {
     ok "Conductor healthy."
 }
 
-# Best-effort secure delete for the staged credentials file: overwrite with
-# zeros, then unlink. Not a guarantee on journaling/COW filesystems, but it
-# beats leaving plaintext passwords recoverable after a plain rm.
-shred_file() {
-    local f="$1" size
-    [[ -f "$f" ]] || return 0
-    size="$(wc -c < "$f" | tr -d ' ')"
-    head -c "$size" /dev/zero > "$f" 2>/dev/null || true
-    rm -f "$f"
+# Overwrite a secret-bearing file in place, then unlink it.
+#
+# NOT secure erasure, and nothing here says it is (#360). On a journaling,
+# copy-on-write or compressing filesystem, and on any SSD with wear levelling,
+# the original blocks can survive untouched however many zeros are written over
+# the logical file. It is worth doing anyway on the plain-file case; it is not
+# worth claiming.
+#
+# It replaces a shell version that was strictly worse than `rm`:
+#
+#     size="$(wc -c < "$f")"; head -c "$size" /dev/zero > "$f"
+#
+# The `>` truncates to zero *before* `head` writes anything, so the original
+# blocks go back to the allocator first and the zeros land wherever the
+# filesystem picks. If that write then failed, the file was left truncated and
+# never overwritten — while still printing "shredded". scripts/secret_env.py
+# opens the descriptor without O_TRUNC so the zeros reach the blocks the secret
+# is actually in, and refuses a symlink or a file it does not own rather than
+# zeroing whatever is on the other end.
+purge_file() {
+    local f="$1"
+    [[ -e "$f" ]] || return 0
+    if ! secret_file_run purge "$f"; then
+        # Python unavailable or the helper refused. Removing the name is the
+        # part that always works, and leaving the file would be worse.
+        rm -f "$f"
+    fi
+}
+
+# scripts/secret_env.py against a path that is not $ENV_FILE. secret_env_run
+# hardcodes $ENV_FILE, which is right for every caller it has and wrong for the
+# two secret-bearing files this section handles.
+secret_file_run() {
+    local command="$1" path="$2"
+    shift 2
+    ensure_python
+    "${PYTHON_CMD[@]}" "$SCRIPT_DIR/scripts/secret_env.py" "$command" "$path" "$@"
 }
 
 # First-run provisioning from the terminal (SPEC-072726-3439 Phase 3): POST
@@ -914,13 +942,37 @@ bootstrap_first_run() {
     ensure_python
 
     if curl -sf "$base/v1/setup/status" 2>/dev/null | grep -q '"setup_complete"[[:space:]]*:[[:space:]]*true'; then
-        info "Setup already complete — shredding staged credentials (consumed)."
-        shred_file "$creds"
+        info "Setup already complete — removing staged credentials (consumed)."
+        purge_file "$creds"
         return
     fi
 
     info "Creating first-run accounts from staged credentials..."
     local resp_file="$PLAN_DIR/.setup-response.json" http_code
+
+    # The response carries the 24-word recovery phrase. `curl -o` supplies a
+    # mode only when it *creates* the file, and then under the caller's umask
+    # — 0644 on a typical system — so the phrase was landing world-readable and
+    # stayed that way until the purge (#360). Reserving the path at 0600 first
+    # means curl opens an existing file and reuses its mode: there is no
+    # instant at which the phrase exists at a wider one.
+    #
+    # `reserve` purges anything already at the path rather than failing on it.
+    # A leftover from an interrupted run is itself secret-bearing, so refusing
+    # to proceed would preserve exactly the file we want gone.
+    secret_file_run reserve "$resp_file"
+
+    # Until this function returns, an interrupt must not leave the phrase on
+    # disk. There was no trap at all before, and the most likely interruption
+    # point is the "type yes" prompt below — which blocks indefinitely, by
+    # design, with the file at its most interesting.
+    #
+    # $creds is deliberately NOT purged here: on a pre-commit failure it is
+    # kept for retry, which is the existing contract and is stated to the
+    # operator on that path.
+    trap 'purge_file "$resp_file"; trap - INT TERM EXIT; exit 130' INT TERM
+    trap 'purge_file "$resp_file"' EXIT
+
     http_code="$(curl -sS -o "$resp_file" -w '%{http_code}' \
         -H 'Content-Type: application/json' \
         --data-binary "@$creds" \
@@ -963,14 +1015,15 @@ PY
                     fi
                 done
             fi
-            shred_file "$resp_file"
-            shred_file "$creds"
-            ok "Staged credentials shredded. Log in to the UI with your admin or daily-driver account."
+            purge_file "$resp_file"
+            purge_file "$creds"
+            ok "Staged credentials removed. Log in to the UI with your admin or daily-driver account."
+            note_residual_risk
             ;;
         409)
-            info "Setup already complete (409) — shredding staged credentials (consumed)."
-            shred_file "$resp_file"
-            shred_file "$creds"
+            info "Setup already complete (409) — removing staged credentials (consumed)."
+            purge_file "$resp_file"
+            purge_file "$creds"
             ;;
         *)
             warn "Bootstrap failed (HTTP $http_code). Credentials kept at $creds for retry."
@@ -980,6 +1033,26 @@ PY
             warn "Retry with: curl -sS -H 'Content-Type: application/json' --data-binary @$creds $base/v1/setup/complete"
             ;;
     esac
+
+    # Every branch above falls through to here, so one reset covers all three.
+    # Leaving the INT trap installed would hijack Ctrl-C for the rest of the
+    # install, and leaving the EXIT trap would run a purge of a path this
+    # function no longer owns.
+    purge_file "$resp_file"
+    trap - INT TERM EXIT
+}
+
+# Say what the removal above does and does not promise (#360). The installer
+# used to print "shredded", which reads as "the bytes are gone"; on a
+# journaling or copy-on-write filesystem, or any SSD with wear levelling, they
+# may not be. An operator who needs that guarantee has to know to act, and the
+# only place they will read this is here.
+note_residual_risk() {
+    info "The file was overwritten in place before being unlinked. That is not"
+    info "secure erasure: on journaling/copy-on-write filesystems and on SSDs,"
+    info "the original blocks may persist. If your threat model includes"
+    info "recovery from this disk, rely on full-disk encryption and key"
+    info "destruction rather than on this step."
 }
 
 # Write operator recovery commands next to the plan artifacts and echo the
