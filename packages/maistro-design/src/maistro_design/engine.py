@@ -185,6 +185,16 @@ class DesignEngine:
     def context_trust_tier(self) -> TrustTier:
         return self._context_trust_tier
 
+    @property
+    def systems(self) -> DesignSystemRegistry:
+        """The registry this engine resolves `design_system_slug` against.
+
+        Public because the Conductor's `GET /design/systems` has to report what
+        is actually registered (#293), and a route in another package reaching
+        into `_systems` is a coupling that breaks without a word.
+        """
+        return self._systems
+
     def _contaminate(self, tier: TrustTier) -> None:
         self._context_trust_tier = self._context_trust_tier.min(tier)
 

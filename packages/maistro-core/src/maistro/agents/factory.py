@@ -330,6 +330,7 @@ async def _persist_agent_record(
     """Upsert a built-in agent identity into the Postgres registry (best-effort)."""
     try:
         # maistro.models lives in the hive-conductor app (no py.typed); owned elsewhere.
+        # cross-package-imports: allow no such module anywhere in the workspace; tracked by #297
         from maistro.models.agent import AgentRecord
 
         record = AgentRecord(

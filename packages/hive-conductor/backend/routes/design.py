@@ -5,6 +5,7 @@ GET /design/projects/{id} — fetch project + outputs
 GET /design/projects — list org projects
 GET /design/skills — list available skills
 GET /design/skills/{slug}/discovery — get skill discovery form
+GET /design/systems — list registered design systems + catalog state
 """
 
 from __future__ import annotations
@@ -14,10 +15,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from services.design_service import (
     get_design_engine,
+    get_design_status,
     get_design_store,
     get_renderer_registry,
 )
 
+from maistro_design.systems.importer import ORIGIN_EXTERNAL
 from maistro_design.types import (
     DesignError,
     DesignSystemNotFoundError,
@@ -167,6 +170,58 @@ async def list_design_skills() -> list[dict[str, Any]]:
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from None
+
+
+@router.get("/systems")
+async def list_design_systems() -> dict[str, Any]:
+    """List the registered design systems, each traceable to where it came from.
+
+    #293. The Conductor used to register one fabricated `DesignSystem` under a
+    real system's slug when the bundled set failed to import, so this list --
+    had it existed -- would have shown a complete-looking catalogue of one
+    entry indistinguishable from the packaged article. Two things follow, and
+    they are the shape of this response:
+
+    - **Every system says its origin.** `bundled` and `catalog` are the two
+      packaged sets; `external` is anything a caller registered itself. The
+      value is recorded by the loader that read the files, not inferred here
+      from `trust_tier`, which cannot tell a vendored Tier-2 system from one
+      handed over at runtime.
+    - **A service that did not start says so, with the cause.** 503 rather
+      than an empty list: "no systems" and "we could not load the systems" are
+      different facts, and the second is the one #293 spent months rendering
+      as the first.
+
+    The `catalog` block is the optional Tier-2 half -- 144 importable systems,
+    none registered until asked for. Unavailable is reported as degraded with
+    its cause, for the same reason.
+
+    Returns:
+      {systems: [{slug, name, description, origin, trust_tier, color_count,
+       spacing_count}], catalog: {available, cause, count}, ready, cause,
+       bundled_count}
+    """
+    status = get_design_status()
+    if not status.ready:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Design service unavailable: {status.cause or 'cause not recorded'}",
+        )
+
+    engine = get_design_engine()
+    systems = [
+        {
+            "slug": s.slug,
+            "name": s.name,
+            "description": s.description,
+            "origin": s.metadata.get("origin", ORIGIN_EXTERNAL),
+            "trust_tier": s.trust_tier.value,
+            "color_count": len(s.colors),
+            "spacing_count": len(s.spacing),
+        }
+        for s in sorted(engine.systems.list_all(), key=lambda s: s.slug)
+    ]
+    return {"systems": systems, **status.to_dict()}
 
 
 @router.get("/skills/{skill_slug}/discovery")

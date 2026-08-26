@@ -61,6 +61,17 @@ jobs:
           packages/maistro-evolve/src
           packages/maistro-rsi/src
           packages/maistro-design/src
+      # Neither of the two above resolves an import into a package that is not
+      # installed in the checking environment, and hive-conductor never is: it
+      # is a flat-layout app with no wheel. So `from
+      # maistro_design.systems.builtins import ...` -- a module that has never
+      # existed -- passed ruff, passed mypy, and passed the tests, because a
+      # bare `except Exception` turned it into a fabricated design system
+      # carrying a real one's slug (#293). Static, against the source trees in
+      # the workspace, so an uninstalled package is still checked and no module
+      # with an import-time side effect runs here.
+      - name: Cross-package imports name modules and attributes that exist
+        run: python3 scripts/check-cross-package-imports.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
