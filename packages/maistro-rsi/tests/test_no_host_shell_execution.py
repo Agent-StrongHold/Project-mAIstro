@@ -137,3 +137,79 @@ class TestTheSandboxHandedToTheApplyFunction:
         asyncio.run(sandbox.write_file("note.txt", "hello"))
 
         assert asyncio.run(sandbox.read_file("note.txt")) == "hello"
+
+
+class TestTheFitnessScorecardsOwnTestGate:
+    """`candidate_fitness._run` is the second host shell on the same command,
+    and `fitness=True` is the Conductor route's default -- so closing only
+    `LocalRsiLoop._run_tests` would have left the default path on a shell.
+    """
+
+    @pytest.fixture
+    def recorded(self, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+        from maistro_rsi import candidate_fitness
+
+        calls: list[dict[str, Any]] = []
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def _fake_run(command: Any, **kwargs: Any) -> _Completed:
+            calls.append({"command": command, **kwargs})
+            return _Completed()
+
+        monkeypatch.setattr(candidate_fitness.subprocess, "run", _fake_run)
+        return calls
+
+    def test_an_argv_runs_without_a_shell(
+        self, tmp_path: Path, recorded: list[dict[str, Any]]
+    ) -> None:
+        from maistro_rsi.candidate_fitness import _run
+
+        passed, _reason = _run("ignored", tmp_path, argv=("python", "-m", "pytest"))
+
+        assert passed
+        assert recorded[0]["command"] == ["python", "-m", "pytest"]
+        assert recorded[0].get("shell") is not True
+
+    def test_the_argv_wins_over_the_string(
+        self, tmp_path: Path, recorded: list[dict[str, Any]]
+    ) -> None:
+        """Both are populated on the HTTP path: `test_command` is kept so
+        reports can name what ran. If the string won, the change would be
+        cosmetic."""
+        from maistro_rsi.candidate_fitness import _run
+
+        _run("touch /tmp/pwned; pytest", tmp_path, argv=("python", "-m", "pytest"))
+
+        assert recorded[0]["command"] == ["python", "-m", "pytest"]
+
+    def test_the_cli_string_path_is_unchanged(
+        self, tmp_path: Path, recorded: list[dict[str, Any]]
+    ) -> None:
+        from maistro_rsi.candidate_fitness import _run
+
+        _run("pytest -q && ruff check", tmp_path)
+
+        assert recorded[0]["command"] == "pytest -q && ruff check"
+        assert recorded[0]["shell"] is True
+
+    def test_a_failing_command_reports_its_exit_code_either_way(self, tmp_path: Path) -> None:
+        """The argv branch has to produce the same (passed, reason) shape the
+        shell branch does, or a real failure would read as a pass."""
+        from maistro_rsi.candidate_fitness import _run
+
+        passed, reason = _run("", tmp_path, argv=("python", "-c", "import sys; sys.exit(3)"))
+
+        assert not passed
+        assert "exit 3" in reason
+
+    def test_an_argv_that_cannot_start_is_reported_not_raised(self, tmp_path: Path) -> None:
+        from maistro_rsi.candidate_fitness import _run
+
+        passed, reason = _run("", tmp_path, argv=("definitely-not-a-real-binary-305",))
+
+        assert not passed
+        assert "test command errored" in reason

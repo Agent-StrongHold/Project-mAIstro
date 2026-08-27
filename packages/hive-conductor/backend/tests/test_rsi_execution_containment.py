@@ -14,6 +14,7 @@ test then proves was never created.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -219,3 +220,272 @@ class TestIsolationFailsClosed:
 
         with pytest.raises(policy.RsiPolicyError, match="isolation"):
             policy.require_isolation()
+
+
+class TestTheProfileListingIsTheHonestAnswer:
+    """`GET /v1/rsi/test-profiles` is not a convenience for the UI. It is the
+    complete list of what an RSI run can execute on this host, so it is also
+    the answer to that question for anyone auditing the deployment.
+    """
+
+    def test_it_lists_every_profile_with_its_argv(self, admin_client) -> None:
+        response = admin_client.get("/v1/rsi/test-profiles")
+
+        assert response.status_code == 200
+        profiles = response.json()["profiles"]
+        assert profiles
+        assert all(isinstance(p["argv"], list) and p["argv"] for p in profiles)
+
+    def test_the_names_it_lists_are_the_names_a_run_accepts(
+        self, admin_client, authorized_repo: Path
+    ) -> None:
+        """A listing that named something the route would refuse would be worse
+        than no listing: it would send an operator to a request that 400s."""
+        listed = {p["name"] for p in admin_client.get("/v1/rsi/test-profiles").json()["profiles"]}
+
+        from services import rsi_execution_policy as policy
+
+        for name in listed:
+            assert policy.resolve_test_profile(name).name == name
+
+    def test_a_broken_policy_file_is_a_server_error_not_an_empty_list(
+        self, admin_client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty list reads as "this deployment runs nothing", which is a
+        different and more reassuring claim than "the policy could not be
+        read"."""
+        from services import rsi_execution_policy as policy
+
+        def _broken() -> None:
+            raise policy.RsiPolicyError("profile file is malformed")
+
+        monkeypatch.setattr(policy, "test_profiles", _broken)
+
+        response = admin_client.get("/v1/rsi/test-profiles")
+
+        assert response.status_code == 500
+        assert "malformed" in response.json()["detail"]
+
+
+class TestTheServiceRefusesWhatTheRouteWouldNotSend:
+    """The route resolves policy before the service sees it. The service still
+    checks, because an in-process caller that skipped the route would otherwise
+    get a quieter version of the door the route just closed.
+    """
+
+    def _drive(self, config: dict) -> None:
+        import asyncio
+
+        from services.rsi import RunState, _RsiService
+
+        run = RunState(run_id="t", mode="cleanup", config=config)
+        asyncio.run(_RsiService()._drive_cleanup(run))
+
+    def test_a_config_without_a_policy_resolved_argv_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="policy-resolved test_argv"):
+            self._drive({"repo_path": str(tmp_path), "isolation": "container"})
+
+    def test_a_config_that_is_not_container_isolated_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="container isolation"):
+            self._drive(
+                {
+                    "repo_path": str(tmp_path),
+                    "test_argv": ["python", "-m", "pytest"],
+                    "isolation": "local",
+                }
+            )
+
+    def test_absent_isolation_is_refused_rather_than_defaulted(self, tmp_path: Path) -> None:
+        """The dangerous default. An absent value must not read as the
+        permissive one."""
+        with pytest.raises(ValueError, match="container isolation"):
+            self._drive({"repo_path": str(tmp_path), "test_argv": ["python"]})
+
+
+class TestTheAuthorizedRootsComeFromConfiguration:
+    def test_roots_are_read_from_the_setting_and_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from services import rsi_execution_policy as policy
+
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.mkdir()
+        second.mkdir()
+        monkeypatch.setattr(
+            policy,
+            "_settings",
+            lambda: SimpleNamespace(rsi_repo_roots=os.pathsep.join([str(first), str(second)])),
+        )
+
+        assert policy._authorized_roots() == (first.resolve(), second.resolve())
+
+    def test_a_blank_entry_is_skipped_rather_than_becoming_the_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`Path("")` resolves to the working directory, which would authorize
+        wherever the process happens to have been started."""
+        from types import SimpleNamespace
+
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(
+            policy,
+            "_settings",
+            lambda: SimpleNamespace(rsi_repo_roots=f"{os.pathsep}  {os.pathsep}{tmp_path}"),
+        )
+
+        assert policy._authorized_roots() == (tmp_path.resolve(),)
+
+    def test_a_configured_root_that_does_not_exist_is_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(
+            policy,
+            "_settings",
+            lambda: SimpleNamespace(rsi_repo_roots=str(tmp_path / "gone")),
+        )
+
+        assert policy._authorized_roots() == ()
+
+    def test_an_empty_repo_path_is_refused_before_anything_is_resolved(self) -> None:
+        from services import rsi_execution_policy as policy
+
+        with pytest.raises(policy.RsiPolicyError, match="required"):
+            policy.resolve_repo("   ")
+
+
+class TestTheProfileOverlay:
+    """Deployments test different things, so the built-ins cannot be the whole
+    story -- but the extension point is a file on the server's disk, never a
+    field in the request.
+    """
+
+    def _overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str) -> None:
+        from types import SimpleNamespace
+
+        from services import rsi_execution_policy as policy
+
+        source = tmp_path / "profiles.json"
+        source.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(
+            policy,
+            "_settings",
+            lambda: SimpleNamespace(rsi_test_profiles_file=str(source)),
+        )
+
+    def test_an_operator_profile_joins_the_built_ins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        self._overlay(tmp_path, monkeypatch, '{"house": ["python", "-m", "pytest", "house"]}')
+
+        names = {p.name for p in policy.test_profiles()}
+        assert "house" in names and "pytest" in names
+
+    def test_an_unreadable_file_is_an_error_not_an_empty_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Falling back to the built-ins would present a smaller, differently
+        named policy as if it were the configured one."""
+        from types import SimpleNamespace
+
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(
+            policy,
+            "_settings",
+            lambda: SimpleNamespace(rsi_test_profiles_file=str(tmp_path / "absent.json")),
+        )
+
+        with pytest.raises(policy.RsiPolicyError, match="could not be read"):
+            policy.test_profiles()
+
+    def test_malformed_json_is_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        self._overlay(tmp_path, monkeypatch, "{not json")
+
+        with pytest.raises(policy.RsiPolicyError, match="could not be read"):
+            policy.test_profiles()
+
+    def test_a_file_that_is_not_an_object_is_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        self._overlay(tmp_path, monkeypatch, '["python"]')
+
+        with pytest.raises(policy.RsiPolicyError, match="name -> argv"):
+            policy.test_profiles()
+
+    @pytest.mark.parametrize("argv", ['"pytest -q"', "[]", "[1, 2]"])
+    def test_a_profile_that_is_not_a_non_empty_list_of_strings_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: str
+    ) -> None:
+        """A string is the shape this whole change exists to remove; an empty
+        list would run nothing and report it as a passing gate."""
+        from services import rsi_execution_policy as policy
+
+        self._overlay(tmp_path, monkeypatch, f'{{"bad": {argv}}}')
+
+        with pytest.raises(policy.RsiPolicyError, match="non-empty list of strings"):
+            policy.test_profiles()
+
+    @pytest.mark.parametrize(
+        "argv",
+        ['["bash", "pytest"]', '["/bin/sh", "x"]', '["cmd.exe", "x"]', '["python", "-c", "x"]'],
+    )
+    def test_a_profile_that_smuggles_a_shell_back_in_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: str
+    ) -> None:
+        """`["bash", "-c", "..."]` is a well-formed argument vector that
+        restores every property this module removed, behind a name that reads
+        like policy."""
+        from services import rsi_execution_policy as policy
+
+        self._overlay(tmp_path, monkeypatch, f'{{"sneaky": {argv}}}')
+
+        with pytest.raises(policy.RsiPolicyError):
+            policy.test_profiles()
+
+    def test_no_overlay_configured_leaves_the_built_ins_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(policy, "_settings", lambda: SimpleNamespace(rsi_test_profiles_file=""))
+
+        assert policy._overlay_profiles() == {}
+
+
+class TestIsolationAttestation:
+    def test_both_halves_are_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An importable class with no daemon behind it runs nothing, and a
+        daemon with no adapter is not reachable. Either alone attests something
+        that is not the claim."""
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(policy.shutil, "which", lambda _name: None)
+
+        assert policy._isolation_available() is False
+
+    def test_an_available_backend_yields_the_required_isolation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(policy, "_isolation_available", lambda: True)
+
+        assert policy.require_isolation() == policy.REQUIRED_ISOLATION
