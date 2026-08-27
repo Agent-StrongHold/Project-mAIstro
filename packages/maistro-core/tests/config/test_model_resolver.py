@@ -18,11 +18,13 @@ def _fake_settings(
 
 
 class TestResolveModel:
-    def test_custom_litellm_base_url_strips_prefix(self) -> None:
+    def test_custom_litellm_base_url_preserves_the_complete_alias(self) -> None:
         settings = _fake_settings(litellm_base_url="https://litellm.example.com")
         with patch("maistro.config.model_resolver.get_settings", return_value=settings):
-            model_name, base_url, use_json_mode = resolve_model("anthropic/claude-3")
-        assert model_name == "openai:claude-3"
+            model_name, base_url, use_json_mode = resolve_model(
+                "openrouter/google/gemini-2.5-flash"
+            )
+        assert model_name == "openai:openrouter/google/gemini-2.5-flash"
         assert base_url == "https://litellm.example.com"
         assert use_json_mode is False
 
@@ -52,10 +54,10 @@ class TestResolveModel:
         assert base_url is None
         assert use_json_mode is False
 
-    def test_direct_provider_no_overrides(self) -> None:
+    def test_default_litellm_url_remains_the_gateway_for_remote_models(self) -> None:
         settings = _fake_settings(litellm_base_url="http://localhost:4000")
         with patch("maistro.config.model_resolver.get_settings", return_value=settings):
             model_name, base_url, use_json_mode = resolve_model("anthropic/claude-3")
-        assert model_name == "anthropic/claude-3"
-        assert base_url is None
+        assert model_name == "openai:anthropic/claude-3"
+        assert base_url == "http://localhost:4000"
         assert use_json_mode is False

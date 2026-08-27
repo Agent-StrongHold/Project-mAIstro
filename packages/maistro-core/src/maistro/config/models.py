@@ -29,20 +29,14 @@ class TierConfig(BaseModel):
     initial_backoff: float = 1.0  # base delay for exponential backoff
 
 
-# Hard-coded defaults used when no env override is set
-_DEFAULT_TIER_MODELS = {
-    Tier.QUICK: "ollama/qwen2.5-coder:7b",
-    Tier.STANDARD: "ollama/qwen2.5-coder:32b",
-    Tier.THOROUGH: "ollama/qwen3-coder-next:latest",
-    Tier.ULTRA: "ollama/qwen3-coder-next:latest",
-}
-
-
 def get_default_tiers() -> dict[Tier, TierConfig]:
-    """Build tier configs, reading model overrides from Settings.
+    """Build tier configs from the effective deployment model settings.
 
     This is a function (not a module-level constant) so it picks up
-    settings that may be loaded after import time.
+    settings that may be loaded after import time.  An unset tier inherits
+    ``DEFAULT_MODEL``.  Local Ollama models are therefore selected only when
+    an operator names one explicitly, rather than being a hidden fallback in
+    an otherwise remote-gateway deployment.
     """
     from maistro.config.settings import get_settings
 
@@ -57,26 +51,26 @@ def get_default_tiers() -> dict[Tier, TierConfig]:
     return {
         Tier.QUICK: TierConfig(
             tier=Tier.QUICK,
-            model=overrides[Tier.QUICK] or _DEFAULT_TIER_MODELS[Tier.QUICK],
+            model=overrides[Tier.QUICK] or settings.default_model,
             max_retries=1,
             temperature=0.0,
         ),
         Tier.STANDARD: TierConfig(
             tier=Tier.STANDARD,
-            model=overrides[Tier.STANDARD] or _DEFAULT_TIER_MODELS[Tier.STANDARD],
+            model=overrides[Tier.STANDARD] or settings.default_model,
             max_retries=3,
             temperature=0.0,
         ),
         Tier.THOROUGH: TierConfig(
             tier=Tier.THOROUGH,
-            model=overrides[Tier.THOROUGH] or _DEFAULT_TIER_MODELS[Tier.THOROUGH],
+            model=overrides[Tier.THOROUGH] or settings.default_model,
             max_retries=5,
             temperature=0.3,
             parallel_generations=1,
         ),
         Tier.ULTRA: TierConfig(
             tier=Tier.ULTRA,
-            model=overrides[Tier.ULTRA] or _DEFAULT_TIER_MODELS[Tier.ULTRA],
+            model=overrides[Tier.ULTRA] or settings.default_model,
             max_retries=5,
             temperature=0.5,
             parallel_generations=1,
