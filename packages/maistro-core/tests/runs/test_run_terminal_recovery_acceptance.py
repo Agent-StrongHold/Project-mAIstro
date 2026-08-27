@@ -12,7 +12,9 @@ from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
 
 @pytest.mark.ac("ADR-082526-237d/AC-5")
-async def test_replay_repairs_parent_without_false_cyclic_settlement(memory_spine: Any) -> None:
+async def test_replay_repairs_parent_without_false_cyclic_settlement(
+    memory_spine: Any,
+) -> None:
     store, workspace, project_id = memory_spine
 
     direct = Graph(
@@ -54,8 +56,14 @@ async def test_replay_repairs_parent_without_false_cyclic_settlement(memory_spin
         workspace_id=workspace,
         project_id=project_id,
         name="Cycle safety",
-        nodes=[Node(node_id="a", node_type="agent"), Node(node_id="b", node_type="agent")],
-        edges=[Edge(from_node="a", to_node="b"), Edge(from_node="b", to_node="a")],
+        nodes=[
+            Node(node_id="a", node_type="agent"),
+            Node(node_id="b", node_type="agent"),
+        ],
+        edges=[
+            Edge(from_node="a", to_node="b"),
+            Edge(from_node="b", to_node="a"),
+        ],
     )
     cyclic_run = await store.create_run(cyclic)
     await store.transition_run(cyclic_run.run_id, RunStatus.QUEUED)
