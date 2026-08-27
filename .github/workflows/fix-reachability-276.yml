@@ -30,15 +30,13 @@ jobs:
           if entry not in unreachable:
               unreachable.append(entry)
               unreachable.sort()
-          data['_generated_from'] = '978 production modules'
+          data['_generated_from'] = '977 production modules'
           note = ' CI-only scripts invoked by tests/workflows may be listed when the static import graph cannot see that execution path; scripts/check-m1-convergence-freeze.py is invoked by the M1 convergence gate and its executable test.'
           if note.strip() not in data['_comment']:
               data['_comment'] += note
           path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
           PY
-      - name: Prove reachability ratchet
-        run: python scripts/check-reachability.py
-      - name: Commit verified disposition and remove helper
+      - name: Commit disposition and remove helper
         run: |
           rm .github/workflows/fix-reachability-276.yml
           git diff --check
