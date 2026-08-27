@@ -57,11 +57,29 @@ services:
       timeout: 5s
       retries: 3
 
+  postgres-layout-check:
+    # Mount the named volume at its parent so legacy layouts are visible before
+    # PostgreSQL can initialize anything. Old installs mounted pgdata directly
+    # at /var/lib/postgresql/data, leaving PG_VERSION at the volume root. The
+    # PG18 layout instead stores the cluster below /18/docker. Refuse a legacy
+    # volume here so an image/layout change can never look like silent data loss.
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -f /var/lib/postgresql/PG_VERSION ] && [ ! -f /var/lib/postgresql/18/docker/PG_VERSION ]; then
+          echo >&2 "ERROR: legacy PostgreSQL volume layout detected. Refusing to initialize a new cluster over an existing volume. Follow docs/install/postgres-volume-upgrades.md before starting this stack."
+          exit 78
+        fi
+    volumes:
+      - pgdata:/var/lib/postgresql:ro
+    restart: "no"
+
   postgres:
     # Supported majors are 17-19; 18 is the default here and what CI matrixes
-    # against (alongside 17). Override to pin a different one — note that a
-    # major upgrade over an existing `pgdata` volume needs pg_upgrade, so
-    # changing this on a live deployment is not just an image swap.
+    # against (alongside 17). A legacy root-layout volume is rejected by
+    # postgres-layout-check before startup; major upgrades remain explicit
+    # maintenance operations documented in docs/install/postgres-volume-upgrades.md.
     image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18}
     container_name: maistro-postgres
     environment:
@@ -76,6 +94,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    depends_on:
+      postgres-layout-check:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maistro"]
       interval: 5s
