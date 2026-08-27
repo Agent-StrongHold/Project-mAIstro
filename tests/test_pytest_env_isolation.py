@@ -1,10 +1,5 @@
 """Regression coverage for repository-root dotenv isolation (#300)."""
 
-from pathlib import Path
-
-from maistro.config.settings import Settings
-
-
 _AMBIENT_SETTING_VARS = (
     "API_KEYS",
     "DEFAULT_MODEL",
@@ -13,8 +8,10 @@ _AMBIENT_SETTING_VARS = (
 )
 
 
-def test_general_test_settings_ignore_repository_root_dotenv(tmp_path: Path, monkeypatch) -> None:
+def test_general_test_settings_ignore_repository_root_dotenv(tmp_path, monkeypatch) -> None:
     """A hostile cwd .env must not change ordinary test configuration."""
+    from maistro.config.settings import Settings
+
     for name in _AMBIENT_SETTING_VARS:
         monkeypatch.delenv(name, raising=False)
 
@@ -34,8 +31,10 @@ def test_general_test_settings_ignore_repository_root_dotenv(tmp_path: Path, mon
     assert settings.db.host == "localhost"
 
 
-def test_explicit_dotenv_fixture_still_works(tmp_path: Path, monkeypatch) -> None:
+def test_explicit_dotenv_fixture_still_works(tmp_path, monkeypatch) -> None:
     """Tests that intentionally exercise dotenv can opt in with an isolated file."""
+    from maistro.config.settings import Settings
+
     monkeypatch.delenv("DEFAULT_MODEL", raising=False)
     env_file = tmp_path / "fixture.env"
     env_file.write_text("DEFAULT_MODEL=fixture/model\n", encoding="utf-8")
