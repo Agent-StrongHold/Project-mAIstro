@@ -5,10 +5,9 @@ from typing import Literal
 from uuid import uuid4
 
 import stores
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
-from services.chat_completion import run_chat_completion
 from services.owned_records import chat_sessions_for
 
 router = APIRouter(tags=["chat"])
@@ -89,34 +88,23 @@ def append_message(session_id: str, body: AppendMessageBody, request: Request) -
     return msg
 
 
+def _model_effects_disabled() -> None:
+    """Fail closed until the canonical Warden boundary is on this path (#484)."""
+    raise HTTPException(
+        status_code=503,
+        detail="Conductor model-driven chat is disabled until Warden safety boundaries are active.",
+    )
+
+
 @router.post("/complete")
 async def complete(req: ChatCompletionRequest, request: Request) -> dict:
-    """Non-streaming completion — PM agent with real tools."""
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id", ""))
-    return await run_chat_completion(req, user_id=user_id)
+    """Contain the model/tool loop until #315 installs the canonical boundary."""
+    del req, request
+    _model_effects_disabled()
 
 
 @router.post("/stream")
-async def stream_complete(req: ChatCompletionRequest, request: Request):
-    """SSE streaming — sends real status updates as tools execute."""
-    import json
-
-    from fastapi.responses import StreamingResponse
-    from services.chat_completion import run_chat_completion_streaming
-
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id", ""))
-
-    async def event_gen():
-        try:
-            async for event in run_chat_completion_streaming(req, user_id=user_id):
-                yield f"data: {json.dumps(event)}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'done', 'content': f'Error: {e}'})}\n\n"
-
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+async def stream_complete(req: ChatCompletionRequest, request: Request) -> dict:
+    """Contain streaming model/tool execution until #315 lands."""
+    del req, request
+    _model_effects_disabled()
