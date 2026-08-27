@@ -17,6 +17,10 @@ router = APIRouter(tags=["chat"])
 # until the canonical Warden input/tool-result/output boundaries land in #315.
 # The tool-capable agent loop remains implemented behind services.chat_completion
 # for trusted/internal callers, but this public route must not invoke it.
+_DASHBOARD_EDIT_SCOPE = "dashboard_edit"
+_DASHBOARD_EDIT_DISABLED = (
+    "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
+)
 
 
 def _now() -> datetime:
@@ -90,6 +94,15 @@ def append_message(session_id: str, body: AppendMessageBody, request: Request) -
     return msg
 
 
+def _dashboard_edit_requested(req: ChatCompletionRequest) -> bool:
+    extra = req.model_extra or {}
+    return extra.get("tools_scope") == _DASHBOARD_EDIT_SCOPE
+
+
+def _disabled_dashboard_response() -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
+
+
 def _conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
     """Return a request that cannot advertise or carry tool capabilities.
 
@@ -113,6 +126,11 @@ def _conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
 async def complete(req: ChatCompletionRequest, request: Request) -> dict:
     """Non-streaming conversational completion; model-driven tools are M0-disabled."""
     del request  # authentication/ownership is enforced by middleware before this route
+    if _dashboard_edit_requested(req):
+        # Do not send the dashboard builder prompt to a model at all. The SPA
+        # interprets textual ```widget_update``` blocks, so tool disabling alone
+        # would not contain model-authored widget mutations (#483).
+        return _disabled_dashboard_response()
     llm = build_llm_port()
     return await llm.complete(_conversation_only(req))
 
@@ -130,10 +148,13 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
     from fastapi.responses import StreamingResponse
 
     del request
-    llm = build_llm_port()
 
     async def event_gen():
+        if _dashboard_edit_requested(req):
+            yield f"data: {json.dumps({'type': 'done', 'content': _DASHBOARD_EDIT_DISABLED})}\n\n"
+            return
         try:
+            llm = build_llm_port()
             result = await llm.complete(_conversation_only(req))
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
