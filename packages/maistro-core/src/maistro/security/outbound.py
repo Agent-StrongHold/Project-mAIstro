@@ -237,6 +237,10 @@ def configured_endpoints(settings: object) -> list[str]:
     return [
         str(getattr(settings, "litellm_url", "") or ""),
         str(getattr(litellm, "base_url", "") or ""),
+        # Hive Conductor's canonical OpenAI-compatible gateway field. Its
+        # Settings model folds LITELLM_API_BASE and the supported legacy env
+        # aliases into this value before the policy is seeded.
+        str(getattr(settings, "litellm_api_base", "") or ""),
         str(getattr(settings, "ollama_base_url", "") or ""),
         str(getattr(ntfy_settings, "base_url", "") or ""),
         str(getattr(settings, "maistro_base_url", "") or ""),

@@ -17,14 +17,17 @@ def resolve_model(tier_model: str) -> tuple[str, str | None, bool]:
     """
     settings = get_settings()
 
-    if settings.litellm.base_url and settings.litellm.base_url != "http://localhost:4000":
-        model_name = tier_model.split("/")[-1]
-        return f"openai:{model_name}", settings.litellm.base_url, False
-
     # Ollama: strip ollama/ prefix, use OpenAI-compat endpoint, enable JSON mode
     if tier_model.startswith("ollama/"):
         model_name = tier_model.removeprefix("ollama/")
         return f"openai:{model_name}", settings.ollama_base_url, True
+
+    # A configured LiteLLM URL is a gateway even when it is the local default.
+    # Preserve the complete model alias: proxy routes such as
+    # `openrouter/google/gemini-2.5-flash` are names, not provider prefixes that
+    # can be discarded safely.
+    if settings.litellm.base_url:
+        return f"openai:{tier_model}", settings.litellm.base_url, False
 
     # Direct provider access — no base_url override
     return tier_model, None, False

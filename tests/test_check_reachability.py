@@ -45,10 +45,12 @@ def test_baseline_matches_the_tree(check):
 
 def test_entry_points_are_reachable(check):
     """A graph that roots at nothing reports everything as dead and looks like a
-    catastrophic finding. Assert the roots resolved."""
+    catastrophic finding. Assert the roots resolved, including externally
+    launched package modules such as the shipped Docker entrypoint."""
     unreachable, total = check.unreachable_modules()
     assert total > 500
     assert "main" not in unreachable
+    assert "maistro_server.entrypoint" not in unreachable
     assert "maistro.container" not in unreachable
     assert "maistro.conduit" not in unreachable
 

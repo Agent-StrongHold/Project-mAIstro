@@ -14,7 +14,10 @@
 # self-contained venv; the thin runtime copies only the venv + app sources.
 
 # ─── fat Wolfi builder: self-contained venv (has shell/pip/apk, glibc) ───
-FROM cgr.dev/chainguard/python:latest-dev AS builder
+# Pin the interpreter major/minor.  The identity stack includes native crypto
+# dependencies (notably coincurve), so following `latest` across a Python major
+# can turn an otherwise reproducible image into a source-build failure.
+FROM python:3.13.15-slim-bookworm AS builder
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH"
 RUN python -m venv /app/venv
@@ -31,7 +34,7 @@ COPY packages/maistro-server packages/maistro-server
 # by path — so without naming it here `alembic upgrade head` in the shipped
 # container stops at ModuleNotFoundError before it reaches the schema.
 RUN pip install --no-cache-dir \
-      "./packages/maistro-core[llm,sandbox,observability]" \
+      "./packages/maistro-core[identity,llm,sandbox,observability]" \
       "./packages/maistro-server" \
       "alembic>=1.14" \
       "psycopg[binary]>=3.2" \
@@ -45,10 +48,11 @@ RUN pip install --no-cache-dir \
 # stays Wolfi (low-CVE) while providing the `git` binary the orchestrator's git
 # tools (maistro.tools.git — used by orchestrator/waves/fan_in.py) exec directly;
 # the previous distroless runtime shed git and broke those tools.
-FROM cgr.dev/chainguard/python:latest-dev
+FROM python:3.13.15-slim-bookworm
 WORKDIR /app
-USER root
-RUN apk add --no-cache git
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 # /usr/local/bin is on PATH so the static docker CLI (copied below) is found when
 # the sandbox tool shells out to `docker run`.
 ENV PATH="/app/venv/bin:/usr/local/bin:$PATH" \
@@ -66,10 +70,12 @@ COPY pyproject.toml uv.lock README.md ./
 COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 EXPOSE 8000
 STOPSIGNAL SIGTERM
-# Drop back to the base image's nonroot uid for runtime (apk install needed root).
+# Drop to an unprivileged numeric uid for runtime.
 USER 65532
 # exec-form, stdlib healthcheck — no curl in the image.
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=4).status==200 else 1)"]
-# Base image's ENTRYPOINT is `python`, so invoke uvicorn via `python -m`.
-ENTRYPOINT ["python", "-m", "uvicorn", "maistro_server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The entrypoint owns schema migration under a PostgreSQL advisory lock, then
+# execs uvicorn. Readiness is therefore impossible until the current schema is
+# installed, including on an empty volume.
+ENTRYPOINT ["python", "-m", "maistro_server.entrypoint"]

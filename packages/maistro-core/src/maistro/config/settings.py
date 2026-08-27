@@ -168,6 +168,7 @@ class SandboxSettings(BaseSettings):
     cpu_count: int = 2
     timeout: int = 300
     network_disabled: bool = True
+    readiness_required: bool = False
     # microVM backend (SPEC-190): Firecracker / Cloud-Hypervisor boot a kernel +
     # ext4 rootfs, NOT an OCI image, so these are separate from `image` (the
     # Docker ref). Using `image` as a VM rootfs would fail to boot.

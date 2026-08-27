@@ -1,0 +1,45 @@
+# Security-critical ownership map for Project-mAIstro.
+#
+# Enforcement belongs to the live GitHub ruleset (#162/#270/#317): changes
+# matching these paths must require a CODEOWNER review, stale approval must be
+# dismissed after a push, and the last author/pusher must not self-approve.
+# This file names the accountable human authority; it is not, by itself, the
+# merge-boundary enforcement mechanism.
+
+# Repository governance and CI oracles
+/.github/ @BlakeMatthews-dev
+/quality/ @BlakeMatthews-dev
+/scripts/check-branch-protection.py @BlakeMatthews-dev
+/scripts/check-required-checks.py @BlakeMatthews-dev
+/scripts/check-autonomous-merge.py @BlakeMatthews-dev
+
+# Release, packaging, and shipped deployment surface
+/Dockerfile @BlakeMatthews-dev
+/docker-compose*.yml @BlakeMatthews-dev
+/install.sh @BlakeMatthews-dev
+/uv.lock @BlakeMatthews-dev
+/**/pyproject.toml @BlakeMatthews-dev
+
+# Security, identity, authorization, credentials, and vault boundaries
+/packages/maistro-core/src/maistro/security/ @BlakeMatthews-dev
+/packages/maistro-core/src/maistro/identity/ @BlakeMatthews-dev
+/packages/maistro-core/src/maistro/credentials/ @BlakeMatthews-dev
+/packages/maistro-core/src/maistro/vault.py @BlakeMatthews-dev
+/packages/maistro-core/src/maistro/privilege.py @BlakeMatthews-dev
+/packages/hive-conductor/backend/middleware/auth.py @BlakeMatthews-dev
+/packages/hive-conductor/backend/routes/auth.py @BlakeMatthews-dev
+/packages/hive-conductor/backend/routes/setup.py @BlakeMatthews-dev
+
+# Autonomous execution, containment, and self-modification boundaries
+/packages/maistro-core/src/maistro/tools/ @BlakeMatthews-dev
+/packages/maistro-core/src/maistro/sandbox/ @BlakeMatthews-dev
+/packages/maistro-rsi/ @BlakeMatthews-dev
+/packages/maistro-bootstrap/ @BlakeMatthews-dev
+/cage/ @BlakeMatthews-dev
+/eval/ @BlakeMatthews-dev
+
+# Persistence schemas and migrations
+/alembic/ @BlakeMatthews-dev
+/migrations/ @BlakeMatthews-dev
+/**/alembic/ @BlakeMatthews-dev
+/**/migrations/ @BlakeMatthews-dev

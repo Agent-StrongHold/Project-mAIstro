@@ -249,7 +249,7 @@ def test_endpoints_are_read_off_the_settings_not_listed_here() -> None:
 
 
 def test_seeding_tolerates_a_settings_object_missing_every_field() -> None:
-    assert configured_endpoints(object()) == ["", "", "", "", "", ""]
+    assert configured_endpoints(object()) == ["", "", "", "", "", "", ""]
 
 
 # --- what is and is not wrapped -------------------------------------------

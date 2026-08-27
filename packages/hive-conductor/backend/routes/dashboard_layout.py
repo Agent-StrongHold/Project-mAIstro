@@ -13,6 +13,7 @@ from typing import ClassVar
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
+from services.dashboard_safety import sanitize_dashboard_layout
 
 router = APIRouter(prefix="/v1/dashboard", tags=["dashboard"])
 logger = logging.getLogger("hive.dashboard")
@@ -26,7 +27,11 @@ def _load_from_disk() -> None:
     """Load persisted layouts on startup."""
     if _DB_PATH.is_file():
         try:
-            _LAYOUTS.update(json.loads(_DB_PATH.read_text()))
+            raw = json.loads(_DB_PATH.read_text())
+            if isinstance(raw, dict):
+                _LAYOUTS.update(
+                    {str(uid): sanitize_dashboard_layout(layout) for uid, layout in raw.items()}
+                )
         except Exception as e:
             logger.warning("Failed to load dashboard layouts: %s", e)
 
@@ -92,7 +97,7 @@ async def get_layout(request: Request) -> dict:  # noqa: C901  layered preset/PG
                         val = rows[0].get("value")
                         layout = json.loads(val) if isinstance(val, str) else val
                         if layout:
-                            _LAYOUTS[uid] = layout
+                            _LAYOUTS[uid] = sanitize_dashboard_layout(layout)
         except Exception:
             pass
     if uid not in _LAYOUTS:
@@ -101,11 +106,13 @@ async def get_layout(request: Request) -> dict:  # noqa: C901  layered preset/PG
             demo_path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{preset}.json"
             if demo_path.is_file():
                 try:
-                    _LAYOUTS[uid] = json.loads(demo_path.read_text())
+                    _LAYOUTS[uid] = sanitize_dashboard_layout(json.loads(demo_path.read_text()))
                     _save_to_disk()
                 except Exception:
                     pass
-    return _LAYOUTS.get(uid, {"widgets": []})
+    safe = sanitize_dashboard_layout(_LAYOUTS.get(uid, {"widgets": []}))
+    _LAYOUTS[uid] = safe
+    return safe
 
 
 # Users with pre-configured dashboard templates (loaded on first access)
@@ -116,9 +123,10 @@ _PRESETS: dict[str, str] = {
 
 @router.put("/layout")
 async def save_layout(request: Request, body: DashboardLayout) -> dict:
-    """Save the current user's dashboard layout."""
+    """Save the current user's dashboard layout after M0 request-field sanitization."""
     uid = _user_id(request)
-    _LAYOUTS[uid] = body.model_dump()
+    safe_layout = sanitize_dashboard_layout(body.model_dump())
+    _LAYOUTS[uid] = safe_layout
     _save_to_disk()
     # Persist to PostgREST
     try:
@@ -134,7 +142,7 @@ async def save_layout(request: Request, body: DashboardLayout) -> dict:
                         "user_id": uid,
                         "service": "fantasia",
                         "key": "dashboard_layout",
-                        "value": json.dumps(body.model_dump()),
+                        "value": json.dumps(safe_layout),
                     },
                 )
             )
@@ -212,7 +220,7 @@ async def get_demo_dashboard(demo_id: str) -> dict:
     path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{demo_id}.json"
     if not path.exists():
         return {"error": "not found"}
-    return json.loads(path.read_text())
+    return sanitize_dashboard_layout(json.loads(path.read_text()))
 
 
 @router.get("/deck-templates")

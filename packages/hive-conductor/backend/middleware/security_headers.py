@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import JSONResponse
 
 from maistro.security.content_security_policy import ContentSecurityPolicy
 from maistro.security.transport import parse_trusted_proxies, request_is_https
@@ -101,8 +102,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
-        """Add security headers to the response."""
-        response: Response = await call_next(request)
+        """Add security headers to the response and enforce M0 route containment."""
+        # M0 containment for #482/#313. First-run account creation belongs to
+        # /v1/setup/complete, which is explicitly one-shot. The legacy register
+        # route is intentionally unreachable until the M2 invitation/admin
+        # registration policy lands. Keep this outside AuthMiddleware's public
+        # route table so a stale or accidentally re-added exemption cannot
+        # silently reopen anonymous account creation.
+        if request.url.path == "/v1/auth/register":
+            response: Response = JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        "Public registration is disabled. Use initial setup or "
+                        "administrator-managed provisioning."
+                    )
+                },
+            )
+        else:
+            response = await call_next(request)
 
         if _is_https(request):
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"

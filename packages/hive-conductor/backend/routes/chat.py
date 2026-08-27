@@ -8,14 +8,17 @@ import stores
 from fastapi import APIRouter, Request
 from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
-from services.chat_completion import run_chat_completion
+from services.chat_completion import build_llm_port
 from services.owned_records import chat_sessions_for
 
 router = APIRouter(tags=["chat"])
 
-# Handlers take `chat_sessions_for(request)` and never `stores.chat_sessions`,
-# so a route cannot reach another user's session even by mistake (#312).
-# `scripts/check-owned-store-access.py` enforces that this is the only door.
+# M0 containment (#483/#484): external Conductor chat is conversational-only
+# until the canonical Warden input/tool-result/output boundaries land in #315.
+# The tool-capable agent loop remains implemented behind services.chat_completion
+# for trusted/internal callers, but this public route must not invoke it.
+_DASHBOARD_EDIT_SCOPE = "dashboard_edit"
+_DASHBOARD_EDIT_DISABLED = "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
 
 
 def _now() -> datetime:
@@ -89,31 +92,76 @@ def append_message(session_id: str, body: AppendMessageBody, request: Request) -
     return msg
 
 
+def _dashboard_edit_requested(req: ChatCompletionRequest) -> bool:
+    extra = req.model_extra or {}
+    return extra.get("tools_scope") == _DASHBOARD_EDIT_SCOPE
+
+
+def _disabled_dashboard_response() -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
+
+
+def _conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
+    """Return a request that cannot advertise or carry tool capabilities.
+
+    `ChatCompletionRequest` allows extra fields because several UIs attach
+    presentation metadata such as `tools_scope`. Those extras are intentionally
+    discarded at this trust boundary so a caller cannot smuggle a tool-enabled
+    mode into the raw LLM request. The user's messages/sampling controls remain
+    intact, and an omitted model resolves through the configured deployment
+    default just as it did before containment.
+    """
+    from config import get_settings
+
+    return ChatCompletionRequest(
+        messages=req.messages,
+        model=req.model or get_settings().chat_default_model,
+        stream=False,
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+        tools=None,
+    )
+
+
 @router.post("/complete")
 async def complete(req: ChatCompletionRequest, request: Request) -> dict:
-    """Non-streaming completion — PM agent with real tools."""
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id", ""))
-    return await run_chat_completion(req, user_id=user_id)
+    """Non-streaming conversational completion; model-driven tools are M0-disabled."""
+    del request  # authentication/ownership is enforced by middleware before this route
+    if _dashboard_edit_requested(req):
+        # Do not send the dashboard builder prompt to a model at all. The SPA
+        # interprets textual ```widget_update``` blocks, so tool disabling alone
+        # would not contain model-authored widget mutations (#483).
+        return _disabled_dashboard_response()
+    llm = build_llm_port()
+    return await llm.complete(_conversation_only(req))
 
 
 @router.post("/stream")
 async def stream_complete(req: ChatCompletionRequest, request: Request):
-    """SSE streaming — sends real status updates as tools execute."""
+    """SSE-compatible conversational completion with tool execution disabled.
+
+    M0 containment deliberately prefers one final `done` event over preserving
+    token streaming through the tool-capable agent loop. Full streaming parity
+    returns with the canonical Warden boundary in #315.
+    """
     import json
 
     from fastapi.responses import StreamingResponse
-    from services.chat_completion import run_chat_completion_streaming
 
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id", ""))
+    del request
 
     async def event_gen():
+        if _dashboard_edit_requested(req):
+            yield f"data: {json.dumps({'type': 'done', 'content': _DASHBOARD_EDIT_DISABLED})}\n\n"
+            return
         try:
-            async for event in run_chat_completion_streaming(req, user_id=user_id):
-                yield f"data: {json.dumps(event)}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'done', 'content': f'Error: {e}'})}\n\n"
+            llm = build_llm_port()
+            result = await llm.complete(_conversation_only(req))
+            choice = (result.get("choices") or [{}])[0]
+            content = (choice.get("message") or {}).get("content") or ""
+            yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'done', 'content': f'Error: {type(exc).__name__}'})}\n\n"
 
     return StreamingResponse(
         event_gen(),

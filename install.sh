@@ -330,8 +330,9 @@ verify_env_file() {
 }
 
 write_new_env() {
-    local token db_pass litellm_key langfuse_secret langfuse_salt
+    local token router_key db_pass litellm_key langfuse_secret langfuse_salt
     token="$(random_secret "" 32)"
+    router_key="$(random_secret "" 32)"
     db_pass="$(random_secret "" 24)"
     litellm_key="$(random_secret "sk-" 32)"
     langfuse_secret="$(random_secret "" 32)"
@@ -348,6 +349,7 @@ write_new_env() {
 # API access
 MAISTRO_ACCESS_TOKEN=${token}
 API_KEYS=["${token}"]
+ROUTER_API_KEY=${router_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
 MAISTRO_PORT=${PORT}
@@ -403,7 +405,7 @@ EOF
 }
 
 repair_existing_env() {
-    local token db_pass litellm_key
+    local token router_key db_pass litellm_key
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
@@ -411,6 +413,12 @@ repair_existing_env() {
     if [[ -z "$token" ]]; then
         token="$(random_secret "" 32)"
         fill_env_value MAISTRO_ACCESS_TOKEN "$token"
+    fi
+
+    router_key="$(env_get ROUTER_API_KEY)"
+    if [[ -z "$router_key" ]]; then
+        router_key="$(random_secret "" 32)"
+        fill_env_value ROUTER_API_KEY "$router_key"
     fi
 
     db_pass="$(env_get DB_PASSWORD)"
@@ -453,6 +461,40 @@ repair_existing_env() {
     append_provider_placeholders
     verify_env_file
     ok "Repaired missing/blank installer keys in $ENV_FILE."
+}
+
+validate_env_contract() {
+    ensure_python
+    "${PYTHON_CMD[@]}" - "$ENV_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values: dict[str, str] = {}
+for line in path.read_text(encoding="utf-8").splitlines():
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    values[key] = value
+
+try:
+    api_keys = json.loads(values.get("API_KEYS", ""))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid API_KEYS: expected a JSON array ({exc.msg}).") from exc
+if not isinstance(api_keys, list) or not api_keys or not all(
+    isinstance(item, str) and item for item in api_keys
+):
+    raise SystemExit("Invalid API_KEYS: expected a non-empty JSON array of strings.")
+
+access_token = values.get("MAISTRO_ACCESS_TOKEN", "")
+if not access_token or access_token not in api_keys:
+    raise SystemExit("MAISTRO_ACCESS_TOKEN must be present in API_KEYS.")
+router_key = values.get("ROUTER_API_KEY", "")
+if len(router_key) < 32:
+    raise SystemExit("ROUTER_API_KEY must contain at least 32 characters.")
+PY
+    ok "Validated the generated authentication configuration."
 }
 
 sync_env_file() {
@@ -1168,14 +1210,11 @@ persist_repo_root() {
 }
 
 print_success() {
-    local token
-    token="$(env_get MAISTRO_ACCESS_TOKEN)"
-
     echo ""
     echo "maistro-engine is ready"
     echo "  Engine API:  http://${BIND_HOST}:${PORT}"
     echo "  Conductor:   http://${BIND_HOST}:${HIVE_PORT:-8101}  (chat, DAGs, deck builder)"
-    echo "  Token:       ${token}"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""
@@ -1229,6 +1268,7 @@ main() {
     [[ -f "$COMPOSE_FILE" ]] || fail "Missing $COMPOSE_FILE. Run this from the maistro-engine repo root."
     run_feature_wizard
     sync_env_file
+    validate_env_contract
     start_engine
     bootstrap_first_run
     write_recovery_md
