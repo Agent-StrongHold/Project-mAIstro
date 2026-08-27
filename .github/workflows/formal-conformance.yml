@@ -49,6 +49,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # #460's checker was previously exercised only through a test wrapper.
+      # Reachability correctly reported the script itself as never rooted by a
+      # production/CI entry point. Run it directly in this already-required
+      # architecture/conformance job so the freeze is operative and its own
+      # reachability claim is true rather than baselined away.
+      #
+      # The comparison is pinned to the immutable base SHA from the PR event,
+      # not a moving branch ref. The exception decision is reduced by Actions to
+      # a boolean environment value before Bash runs, so neither a branch name
+      # nor a label is interpolated into shell source.
+      - name: Enforce M1 convergence freeze
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HAS_M1_CONVERGENCE_EXCEPTION: ${{ contains(github.event.pull_request.labels.*.name, 'm1-convergence-exception') }}
+        run: |
+          set -euo pipefail
+          args=(--base "$BASE_SHA")
+          if [[ "$HAS_M1_CONVERGENCE_EXCEPTION" == "true" ]]; then
+            args+=(--exception)
+          fi
+          python scripts/check-m1-convergence-freeze.py "${args[@]}"
 
       - name: Setup Python
         uses: actions/setup-python@v5

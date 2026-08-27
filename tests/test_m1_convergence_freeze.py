@@ -68,54 +68,25 @@ def test_shrinking_the_island_set_is_always_allowed() -> None:
 
 def test_live_pull_request_does_not_add_unapproved_subsystem() -> None:
     """Make the freeze a real PR gate, not merely a unit-tested policy helper."""
+    base_ref = os.environ.get("GITHUB_BASE_REF")
     event_path = os.environ.get("GITHUB_EVENT_PATH")
-    if not event_path:
+    if not base_ref or not event_path:
         # Local/push runs still execute the three policy tests above. The live
         # comparison is meaningful only when Actions has checked out a PR and
-        # the event payload names an immutable base SHA.
+        # fetched its base ref.
         return
 
     event = json.loads(Path(event_path).read_text(encoding="utf-8"))
-    pull_request = event.get("pull_request")
-    if not isinstance(pull_request, dict):
-        return
-    base = pull_request.get("base")
-    if not isinstance(base, dict) or not base.get("sha"):
-        return
-
     labels = {
         item.get("name", "")
-        for item in pull_request.get("labels", [])
+        for item in event.get("pull_request", {}).get("labels", [])
         if isinstance(item, dict)
     }
-    # Prefer the immutable base SHA from the event. Falling back to a branch
-    # ref requires a fetch the default shallow checkout does not perform.
-    base_spec = str(base["sha"])
-    probe = subprocess.run(
-        ["git", "cat-file", "-e", f"{base_spec}^{{commit}}"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-    )
-    if probe.returncode != 0:
-        base_ref = os.environ.get("GITHUB_BASE_REF") or str(base.get("ref") or "")
-        if not base_ref:
-            return
-        fetch = subprocess.run(
-            ["git", "fetch", "--depth", "1", "origin", base_ref],
-            cwd=ROOT,
-            capture_output=True,
-            check=False,
-        )
-        if fetch.returncode != 0:
-            return
-        base_spec = f"origin/{base_ref}"
-
     command = [
         sys.executable,
         str(CHECKER),
         "--base",
-        base_spec,
+        f"origin/{base_ref}",
     ]
     if "m1-convergence-exception" in labels:
         command.append("--exception")
