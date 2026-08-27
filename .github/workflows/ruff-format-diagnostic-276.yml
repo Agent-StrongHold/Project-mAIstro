@@ -1,0 +1,25 @@
+name: Ruff format diagnostic 276
+
+on:
+  push:
+    branches: [chatgpt/m1-237-run-derivation]
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - run: >-
+          uv run ruff format --diff
+          packages/maistro-core/src/maistro/runs/reconciliation.py
+          packages/maistro-core/src/maistro/runs/service.py
+          packages/maistro-core/src/maistro/tasks/execution.py
+          packages/maistro-core/tests/runs/test_run_terminal_derivation.py
