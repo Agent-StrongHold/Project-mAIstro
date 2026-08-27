@@ -49,27 +49,21 @@ def test_new_subsystem_is_rejected_without_exception() -> None:
 def test_explicit_exception_allows_reviewed_new_subsystem() -> None:
     checker = _module()
 
-    assert (
-        checker.check(
-            _matrix("Canonical", "Reviewed extension"),
-            _matrix("Canonical"),
-            exception=True,
-        )
-        == []
-    )
+    assert checker.check(
+        _matrix("Canonical", "Reviewed extension"),
+        _matrix("Canonical"),
+        exception=True,
+    ) == []
 
 
 def test_shrinking_the_island_set_is_always_allowed() -> None:
     checker = _module()
 
-    assert (
-        checker.check(
-            _matrix("Canonical"),
-            _matrix("Canonical", "Legacy island"),
-            exception=False,
-        )
-        == []
-    )
+    assert checker.check(
+        _matrix("Canonical"),
+        _matrix("Canonical", "Legacy island"),
+        exception=False,
+    ) == []
 
 
 def test_live_pull_request_does_not_add_unapproved_subsystem() -> None:
