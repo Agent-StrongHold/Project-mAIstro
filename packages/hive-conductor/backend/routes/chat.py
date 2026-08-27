@@ -107,12 +107,15 @@ def _conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
     `ChatCompletionRequest` allows extra fields because several UIs attach
     presentation metadata such as `tools_scope`. Those extras are intentionally
     discarded at this trust boundary so a caller cannot smuggle a tool-enabled
-    mode into the raw LLM request. The user's messages/model/sampling controls
-    remain intact.
+    mode into the raw LLM request. The user's messages/sampling controls remain
+    intact, and an omitted model resolves through the configured deployment
+    default just as it did before containment.
     """
+    from config import get_settings
+
     return ChatCompletionRequest(
         messages=req.messages,
-        model=req.model,
+        model=req.model or get_settings().chat_default_model,
         stream=False,
         temperature=req.temperature,
         max_tokens=req.max_tokens,
