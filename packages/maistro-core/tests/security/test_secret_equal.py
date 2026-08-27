@@ -64,7 +64,7 @@ class TestSecretEqual:
         assert len(left) == len(right) == 32
 
     def test_string_inputs_are_hmac_normalized_before_comparison(self, monkeypatch) -> None:
-        """Both inputs must flow through HMAC before the comparison boundary."""
+        """The HMAC digests themselves must drive the comparator and return value."""
 
         @dataclass
         class _Digest:
@@ -73,29 +73,34 @@ class TestSecretEqual:
             def digest(self) -> bytes:
                 return self.value
 
+        alpha_digest = b"A" * 32
+        beta_digest = b"B" * 32
         calls: list[tuple[bytes, bytes, object]] = []
 
         def fake_new(key: bytes, message: bytes, digestmod: object) -> _Digest:
             calls.append((key, message, digestmod))
-            return _Digest((message + b"\0" * 32)[:32])
+            if message == b"alpha":
+                return _Digest(alpha_digest)
+            if message == b"beta":
+                return _Digest(beta_digest)
+            raise AssertionError(f"unexpected HMAC input: {message!r}")
 
         compared: list[tuple[bytes, bytes]] = []
 
         def fake_compare(left: bytes, right: bytes) -> bool:
             compared.append((left, right))
-            return left == right
+            return True
 
         monkeypatch.setattr(secret_equal_module.hmac, "new", fake_new)
         monkeypatch.setattr(secret_equal_module.hmac, "compare_digest", fake_compare)
 
-        assert secret_equal("alpha", "beta") is False
+        assert secret_equal("alpha", "beta") is True
         assert [entry[1] for entry in calls] == [b"alpha", b"beta"]
         assert all(entry[0] == secret_equal_module._HMAC_KEY for entry in calls)
-        assert len(compared) == 1
-        assert all(len(value) == 32 for value in compared[0])
+        assert compared == [(alpha_digest, beta_digest)]
 
     def test_nonstring_path_still_consumes_compare_digest(self, monkeypatch) -> None:
-        """Type-confusion rejection must retain the dummy constant-cost comparison."""
+        """Type-confusion rejection must retain dummy comparison symmetrically."""
         seen: list[tuple[bytes, bytes]] = []
 
         def fake_compare(left: bytes, right: bytes) -> bool:
@@ -105,4 +110,5 @@ class TestSecretEqual:
         monkeypatch.setattr(secret_equal_module.hmac, "compare_digest", fake_compare)
 
         assert secret_equal(1, "1") is False  # type: ignore[arg-type]
-        assert seen == [(b"dummy-a", b"dummy-b")]
+        assert secret_equal("1", 1) is False  # type: ignore[arg-type]
+        assert seen == [(b"dummy-a", b"dummy-b"), (b"dummy-a", b"dummy-b")]
