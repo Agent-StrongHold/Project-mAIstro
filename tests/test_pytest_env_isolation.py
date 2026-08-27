@@ -7,8 +7,19 @@ from pathlib import Path
 from maistro.config.settings import Settings
 
 
+_AMBIENT_SETTING_VARS = (
+    "API_KEYS",
+    "DEFAULT_MODEL",
+    "DB_HOST",
+    "REQUIRE_AUTH",
+)
+
+
 def test_general_test_settings_ignore_repository_root_dotenv(tmp_path: Path, monkeypatch) -> None:
     """A hostile cwd .env must not change ordinary test configuration."""
+    for name in _AMBIENT_SETTING_VARS:
+        monkeypatch.delenv(name, raising=False)
+
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(
         "REQUIRE_AUTH=true\n"
@@ -25,8 +36,9 @@ def test_general_test_settings_ignore_repository_root_dotenv(tmp_path: Path, mon
     assert settings.db.host == "localhost"
 
 
-def test_explicit_dotenv_fixture_still_works(tmp_path: Path) -> None:
+def test_explicit_dotenv_fixture_still_works(tmp_path: Path, monkeypatch) -> None:
     """Tests that intentionally exercise dotenv can opt in with an isolated file."""
+    monkeypatch.delenv("DEFAULT_MODEL", raising=False)
     env_file = tmp_path / "fixture.env"
     env_file.write_text("DEFAULT_MODEL=fixture/model\n", encoding="utf-8")
 
