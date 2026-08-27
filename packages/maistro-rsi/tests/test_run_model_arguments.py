@@ -130,6 +130,54 @@ class TestTheExpandedRosterIsRevalidated:
         ]
 
 
+class TestTheValidatedValuesAreTheOnesUsed:
+    def test_the_config_carries_the_canonical_roster_not_the_raw_argument(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Validating and then building the config out of `args` would pass
+        every test above and change nothing about what runs. This is the
+        assertion that the parsed values are what the loop is handed."""
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        captured: list[Any] = []
+
+        class _Loop:
+            def __init__(self, config: Any) -> None:
+                captured.append(config)
+
+            def run(self) -> Any:
+                raise AssertionError("the loop must not start in this test")
+
+        monkeypatch.setattr(entry, "LocalRsiLoop", _Loop)
+
+        with pytest.raises(AssertionError, match="must not start"):
+            entry.main(
+                [
+                    "run",
+                    "--repo",
+                    str(repo),
+                    "--test-cmd",
+                    "true",
+                    "--work-root",
+                    str(tmp_path / "work"),
+                    "--genome-models",
+                    " code , gemini/flash ",
+                    "--emergency-models",
+                    " openrouter/x/y:free ",
+                    "--scout-fallback-models",
+                    " code ",
+                    "--local-fallback-model",
+                    " qwen2.5-coder:7b ",
+                ]
+            )
+
+        config = captured[0]
+        assert config.genome_models == ["code", "gemini/flash"]
+        assert config.emergency_models == ["openrouter/x/y:free"]
+        assert config.scout_fallback_models == ["code"]
+        assert config.local_fallback_model == "qwen2.5-coder:7b"
+
+
 class TestTheRefusalReachesTheCaller:
     def test_run_exits_non_zero_without_starting_a_loop(
         self, tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
