@@ -1,5 +1,7 @@
 """Regression coverage for repository-root dotenv isolation (#300)."""
 
+from __future__ import annotations
+
 from maistro.config.settings import Settings
 
 
