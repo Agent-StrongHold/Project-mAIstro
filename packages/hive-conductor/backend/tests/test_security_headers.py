@@ -59,6 +59,22 @@ class TestSecurityHeadersPresence:
         assert r.headers["X-Frame-Options"] == "DENY"
         assert r.headers["X-Content-Type-Options"] == "nosniff"
 
+    def test_public_registration_is_fail_closed(self) -> None:
+        """Setup is the only anonymous account creator while #313 is deferred."""
+        c = _client()
+        r = c.post(
+            "/v1/auth/register",
+            json={
+                "username": "stranger",
+                "password": "securepass1",
+                "confirm_password": "securepass1",
+            },
+        )
+        assert r.status_code == 403
+        assert r.json()["detail"].startswith("Public registration is disabled")
+        assert r.headers["X-Frame-Options"] == "DENY"
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+
     def test_hsts_absent_over_plain_http(self) -> None:
         """TestClient issues plain-HTTP requests, so HSTS must not be sent."""
         c = _client()
