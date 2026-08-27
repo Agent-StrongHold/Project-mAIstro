@@ -26,7 +26,9 @@ and the receipt's own failure branch still writes exactly what it wrote before.
 *What is persisted.* A `ConductorOutput` carries generated plans, code and
 reviews. The Attempt's `result` is durable evidence, not a transcript, so the
 adapter persists a small JSON-safe summary and hands the full output back to the
-caller in-process.
+caller in-process. Successful physical evidence is then accepted as the task's
+logical projection, whose Run result remains the product contract rather than
+the larger Attempt evidence shape.
 """
 
 from __future__ import annotations
@@ -34,7 +36,13 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, NodeRun
+from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
+    AcceptedNodeOutcome,
+    AttemptResult,
+    NodeRun,
+    RunStatus,
+)
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
@@ -79,6 +87,12 @@ def attempt_result(output: ConductorOutput) -> dict[str, Any]:
         "final_answer": output.final_answer,
         "files_changed": list(output.code.files_changed) if output.code else [],
     }
+
+
+def _logical_result(output: ConductorOutput) -> dict[str, Any]:
+    """The product-owned logical result projected onto NodeRun and Run."""
+
+    return {"files_changed": list(output.code.files_changed) if output.code else []}
 
 
 class TaskAttemptExecutor:
@@ -132,7 +146,9 @@ class TaskAttemptExecutor:
         """Execute one task, returning its output and leaving a NodeRun + Attempt.
 
         Raises :class:`TaskExecutionFailed` when the executor reports failure,
-        after the Attempt has been recorded as failed.
+        after the Attempt has been recorded as failed. Successful physical
+        evidence is accepted explicitly so the canonical Run derives from the
+        NodeRun while keeping the task's product result shape.
         """
         node_id = await self._node_id(run_id)
         existing = await self._node_run_for(run_id, node_id)
@@ -147,7 +163,7 @@ class TaskAttemptExecutor:
 
         context = {"run_id": run_id, "node_id": node_id}
         if existing is None:
-            await self._service.execute_node(
+            node_run, attempt = await self._service.execute_node(
                 run_id,
                 node_id,
                 request,
@@ -155,23 +171,35 @@ class TaskAttemptExecutor:
                 executor=_run,
                 executor_id=TASK_EXECUTOR_ID,
                 timeout_s=self._timeout_s,
+                reconcile_logical=False,
             )
         else:
             # A second execution of the same task is a second Attempt under the
             # same logical NodeRun, not a second NodeRun. Creating another
             # NodeRun would say the Run grew a node, which is false: the Graph
             # has one, and it was tried twice.
-            await self._service.retry_node(
+            attempt = await self._service.retry_node(
                 existing.node_run_id,
                 request,
                 context,
                 executor=_run,
                 executor_id=TASK_EXECUTOR_ID,
                 timeout_s=self._timeout_s,
+                reconcile_logical=False,
             )
+            node_run = existing
         if not captured:  # pragma: no cover - unreachable: _run always fills it
             raise RunIntegrityError("task Attempt completed without capturing its output")
-        return captured[0]
+        output = captured[0]
+        await self._service.accept_outcome(
+            AcceptedNodeOutcome(
+                node_run_id=node_run.node_run_id,
+                attempt_result=AttemptResult.from_attempt(attempt),
+                logical_status=RunStatus.COMPLETED,
+                result=_logical_result(output),
+            )
+        )
+        return output
 
     async def cancel(self, run_id: str) -> bool:
         """Cancel a task's in-flight Attempt by canonical physical identity.

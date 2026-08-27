@@ -7,7 +7,7 @@ from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
-from maistro.runs.model import Attempt, NodeRun, Run
+from maistro.runs.model import AcceptedNodeOutcome, Attempt, NodeRun, Run
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionCallable, ExecutionRuntime
 
@@ -20,7 +20,10 @@ class RunExecutionService:
     and delegates one physical try to :class:`AttemptExecutionService`.
 
     It deliberately does not decide graph readiness/traversal, retry policy,
-    authorization, provider selection, scheduling, or Run completion.
+    authorization, provider selection, scheduling, or product-specific logical
+    outcomes. Ordinary successful Attempts reconcile automatically; richer
+    domains may defer that successful reconciliation and accept one explicit
+    logical projection after the physical evidence is durable.
     """
 
     def __init__(
@@ -81,6 +84,7 @@ class RunExecutionService:
         runtime_id: str | None = None,
         timeout_s: float | None = None,
         resume_checkpoint_id: str | None = None,
+        reconcile_logical: bool = True,
     ) -> tuple[NodeRun, Attempt]:
         """Create a logical NodeRun and execute its first physical Attempt."""
 
@@ -94,6 +98,7 @@ class RunExecutionService:
             runtime_id=runtime_id,
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
+            reconcile_logical=reconcile_logical,
         )
         reconciled = await self._store.get_node_run(node_run.node_run_id)
         if reconciled is None:
@@ -111,6 +116,7 @@ class RunExecutionService:
         runtime_id: str | None = None,
         timeout_s: float | None = None,
         resume_checkpoint_id: str | None = None,
+        reconcile_logical: bool = True,
     ) -> Attempt:
         """Execute a new physical Attempt under an existing logical NodeRun."""
 
@@ -123,7 +129,13 @@ class RunExecutionService:
             runtime_id=runtime_id,
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
+            reconcile_logical=reconcile_logical,
         )
+
+    async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
+        """Accept a domain projection of already-durable physical Attempt evidence."""
+
+        return await self._attempts.accept_outcome(outcome)
 
     async def cancel_attempt(self, attempt_id: str) -> bool:
         """Request cancellation using canonical physical Attempt identity."""
