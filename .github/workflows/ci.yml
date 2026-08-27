@@ -543,6 +543,88 @@ jobs:
         run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
 
       - run: docker build -t maistro-engine:test .
+      - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          network=maistro-engine-smoke
+          volume=maistro-engine-smoke-pgdata
+          postgres=maistro-engine-smoke-postgres
+          engine=maistro-engine-smoke-api
+
+          cleanup() {
+            status=$?
+            if [[ $status -ne 0 ]]; then
+              docker logs "$engine" 2>&1 || true
+              docker logs "$postgres" 2>&1 || true
+              docker ps -a || true
+            fi
+            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker network create "$network"
+          docker volume create "$volume"
+          docker run -d --name "$postgres" --network "$network" \
+            -e POSTGRES_USER=maistro \
+            -e POSTGRES_PASSWORD=maistro-smoke-password \
+            -e POSTGRES_DB=maistro \
+            -e PGDATA=/var/lib/postgresql/18/docker \
+            -v "$volume:/var/lib/postgresql" \
+            pgvector/pgvector:pg18
+          for _ in $(seq 1 40); do
+            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec "$postgres" pg_isready -U maistro
+
+          docker run -d --name "$engine" --network "$network" -p 8000:8000 \
+            -e DB_HOST="$postgres" \
+            -e DB_PORT=5432 \
+            -e DB_NAME=maistro \
+            -e DB_USER=maistro \
+            -e DB_PASSWORD=maistro-smoke-password \
+            -e ROUTER_API_KEY=0123456789abcdef0123456789abcdef \
+            -e 'API_KEYS=["smoke-access-token"]' \
+            -e REQUIRE_AUTH=true \
+            -e LITELLM_BASE_URL=http://unused-gateway:4000 \
+            -e LITELLM_MASTER_KEY=smoke-gateway-key \
+            maistro-engine:test
+
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health/live >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/health/live
+          curl -fsS http://127.0.0.1:8000/health/ready
+          docker exec "$postgres" psql -U maistro -d maistro -Atc \
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+
+          # Recreate PostgreSQL against the same 18-style parent volume and
+          # prove the migrated cluster, not an anonymous volume, comes back.
+          docker rm -f "$engine" "$postgres"
+          docker run -d --name "$postgres" --network "$network" \
+            -e POSTGRES_USER=maistro \
+            -e POSTGRES_PASSWORD=maistro-smoke-password \
+            -e POSTGRES_DB=maistro \
+            -e PGDATA=/var/lib/postgresql/18/docker \
+            -v "$volume:/var/lib/postgresql" \
+            pgvector/pgvector:pg18
+          for _ in $(seq 1 40); do
+            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec "$postgres" psql -U maistro -d maistro -Atc \
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
 
   workflow-lint:
@@ -606,4 +688,3 @@ jobs:
       # hand, not here.
       - name: Branch-protection ruleset matches the check names
         run: python3 scripts/check-branch-protection.py
-

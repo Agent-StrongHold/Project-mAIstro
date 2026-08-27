@@ -57,32 +57,24 @@ The line between shared runtime and product-specific code is defined in [`ADR-01
 ## Quick start
 
 ```bash
-# Requires Python 3.12+ (CI tests 3.12; the container image runs 3.14) and uv — https://github.com/astral-sh/uv
+# Requires Python 3.12+ (CI tests 3.12; the container image pins 3.13) and uv — https://github.com/astral-sh/uv
 uv sync                               # install every package in the workspace
 uv sync --extra bootstrap             # optional: maistro-install TUI / answers-file planner
 uv run pytest                         # run the test suite
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
 
-Then apply the migrations. They need a server to connect to, which is why this
-comes *after* `docker compose up` rather than before it:
-
-```bash
-set -a; . ./.env; set +a              # compose reads .env itself; your shell does not
-DATABASE_URL=postgresql://maistro:$DB_PASSWORD@127.0.0.1:5433/maistro \
-  uv run alembic upgrade head
-```
-
-`docker-compose.yml` publishes Postgres on **host port 5433**
-(`127.0.0.1:5433:5432`) while the defaults assume 5432, so a bare
-`alembic upgrade head` either fails to connect or — if some other PostgreSQL is
-listening on 5432 — migrates the wrong database. `DB_PASSWORD` comes from
-`.env`, which Compose interpolates for the container but does not export to
-your shell.
+The engine image applies migrations automatically before it starts the API.
+Migration runners serialize through a PostgreSQL advisory lock, so multiple
+replicas cannot race the schema. A migration failure keeps readiness down and
+terminates the container with a non-zero status. Do not shell-source `.env`:
+Compose reads it directly, preserving the JSON representation of `API_KEYS`.
 
 Alembic and the application resolve that URL through the same function
 (`require_database_url`, [#187](https://github.com/Agent-StrongHold/Project-mAIstro/issues/187)),
 so `DATABASE_URL` and the `DB_*` variables both work and mean the same thing.
+PostgreSQL 18 volume and major-upgrade guidance is in
+[`docs/install/postgres-volume-upgrades.md`](docs/install/postgres-volume-upgrades.md).
 
 The repo is a `uv` workspace: **nine Python packages**, plus the **`packages/hive-conductor`** reference app (frontend + backend + Docker).
 

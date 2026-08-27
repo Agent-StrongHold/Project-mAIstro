@@ -84,6 +84,7 @@ STATIC_ROOTS = (
 
 # Package modules reached only through runtime strings or external launchers.
 DYNAMIC_ROOTS = (
+    "maistro_server.entrypoint",  # Docker ENTRYPOINT: python -m maistro_server.entrypoint
     "maistro_rsi.__main__",
     "maistro_turing.runtime",
     "maistro_canvas.canvas.routes",
@@ -520,7 +521,6 @@ def main() -> int:
             )
         return 1
 
-    print("\nReachability baseline matches the current unreachable set.")
     return 0
 
 

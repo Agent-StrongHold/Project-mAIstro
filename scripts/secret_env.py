@@ -228,10 +228,16 @@ def ensure_api_keys(path: Path, token: str) -> None:
         if line.startswith(prefix):
             try:
                 current = json.loads(line[len(prefix) :]) or []
-                if not isinstance(current, list):
-                    current = []
-            except json.JSONDecodeError:
-                current = []
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid API_KEYS in {path}: expected a JSON array ({exc.msg})."
+                ) from exc
+            if not isinstance(current, list) or not all(
+                isinstance(item, str) and item for item in current
+            ):
+                raise ValueError(
+                    f"Invalid API_KEYS in {path}: expected a JSON array of non-empty strings."
+                )
             if token not in current:
                 current.append(token)
             lines[index] = prefix + json.dumps(current)

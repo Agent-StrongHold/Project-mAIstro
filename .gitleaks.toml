@@ -84,3 +84,17 @@ commits = ["de04b4494c19ff334c9b43804edd90d9298da5b4"]
 paths = [
   '''packages/maistro-core/tests/archive/test_wiring\.py$'''
 ]
+
+[[allowlists]]
+# PR #444's container smoke test deliberately injects a deterministic throwaway
+# router key into an isolated CI-only network. The literal is not deployable
+# configuration and cannot authenticate to any external service; gitleaks sees
+# only its secret-like shape in the commit that introduced the smoke harness.
+# Keep the exemption pinned to that one commit, one workflow path, and the
+# generic-api-key rule so any other credential-shaped value still fails closed.
+description = "Deterministic CI-only router key in the PR #444 container smoke harness."
+targetRules = ["generic-api-key"]
+commits = ["4806d9673fab7d7dd6ec6944724990f0129d9d81"]
+paths = [
+  '''\.github/workflows/ci\.yml$'''
+]

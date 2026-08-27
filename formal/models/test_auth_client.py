@@ -5,7 +5,6 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
-
 from maistro.auth._types import Scope, ServiceIdentity
 from maistro.auth.client import ServiceKeyClient
 

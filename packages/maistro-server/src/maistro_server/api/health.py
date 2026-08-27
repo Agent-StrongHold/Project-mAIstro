@@ -111,7 +111,11 @@ async def readiness(
     from maistro_server.main import APP_VERSION
 
     uptime = time.monotonic() - _start_time
-    docker_result = await _check_docker()
+    docker_result = (
+        await _check_docker()
+        if settings.sandbox.readiness_required
+        else ProbeResult(status="ok", detail="Docker sandbox is not required by this deployment")
+    )
     postgres_result = await _check_postgres(settings)
 
     circuit_state = llm_circuit.state
