@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from models.schemas import ChatCompletionRequest
 from pydantic import BaseModel, ConfigDict
+from services.chat_completion import build_llm_port
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,6 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
         llm = HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant="chat_completions")
         req.model = settings.chat_default_model or "cerebras-qwen-3-235b-a22b-2507"
     else:
-        from services.chat_completion import build_llm_port
-
         llm = build_llm_port()
         req.model = req.model or settings.chat_default_model or "cerebras-qwen-3-235b-a22b-2507"
 
