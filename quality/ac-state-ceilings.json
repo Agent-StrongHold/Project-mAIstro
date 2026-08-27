@@ -12,6 +12,6 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 18.2656
+    "design_coverage": 18.2655
   }
 }
