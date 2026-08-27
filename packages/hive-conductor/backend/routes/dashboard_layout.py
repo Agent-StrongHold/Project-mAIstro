@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from pathlib import Path
 from typing import ClassVar
 
@@ -21,12 +22,46 @@ logger = logging.getLogger("hive.dashboard")
 _DB_PATH = Path(__file__).resolve().parent.parent / "data" / "dashboard_layouts.json"
 _LAYOUTS: dict[str, dict] = {}
 
+# M0 #483 containment. The current frontend still contains a legacy generic
+# request renderer. Until #314 replaces it with named server-side capabilities,
+# no layout/template crossing this persistence boundary may carry request
+# primitives that can turn model-authored config into an authenticated fetch.
+_FORBIDDEN_WIDGET_CONFIG = frozenset({"endpoint", "method", "params", "headers", "body"})
+
+
+def _sanitize_widget(widget: dict) -> dict:
+    clean = deepcopy(widget)
+    config = clean.get("config")
+    if isinstance(config, dict):
+        for key in _FORBIDDEN_WIDGET_CONFIG:
+            config.pop(key, None)
+    return clean
+
+
+def _sanitize_layout(layout: dict) -> dict:
+    clean = deepcopy(layout)
+    widgets = clean.get("widgets")
+    if isinstance(widgets, list):
+        clean["widgets"] = [_sanitize_widget(w) if isinstance(w, dict) else w for w in widgets]
+    tabs = clean.get("tabs")
+    if isinstance(tabs, list):
+        for tab in tabs:
+            if not isinstance(tab, dict) or not isinstance(tab.get("widgets"), list):
+                continue
+            tab["widgets"] = [
+                _sanitize_widget(w) if isinstance(w, dict) else w for w in tab["widgets"]
+            ]
+    return clean
+
 
 def _load_from_disk() -> None:
     """Load persisted layouts on startup."""
     if _DB_PATH.is_file():
         try:
-            _LAYOUTS.update(json.loads(_DB_PATH.read_text()))
+            raw = json.loads(_DB_PATH.read_text())
+            _LAYOUTS.update(
+                {str(uid): _sanitize_layout(layout) for uid, layout in raw.items() if isinstance(layout, dict)}
+            )
         except Exception as e:
             logger.warning("Failed to load dashboard layouts: %s", e)
 
@@ -91,8 +126,8 @@ async def get_layout(request: Request) -> dict:  # noqa: C901  layered preset/PG
                     if rows:
                         val = rows[0].get("value")
                         layout = json.loads(val) if isinstance(val, str) else val
-                        if layout:
-                            _LAYOUTS[uid] = layout
+                        if isinstance(layout, dict) and layout:
+                            _LAYOUTS[uid] = _sanitize_layout(layout)
         except Exception:
             pass
     if uid not in _LAYOUTS:
@@ -101,11 +136,11 @@ async def get_layout(request: Request) -> dict:  # noqa: C901  layered preset/PG
             demo_path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{preset}.json"
             if demo_path.is_file():
                 try:
-                    _LAYOUTS[uid] = json.loads(demo_path.read_text())
+                    _LAYOUTS[uid] = _sanitize_layout(json.loads(demo_path.read_text()))
                     _save_to_disk()
                 except Exception:
                     pass
-    return _LAYOUTS.get(uid, {"widgets": []})
+    return _sanitize_layout(_LAYOUTS.get(uid, {"widgets": []}))
 
 
 # Users with pre-configured dashboard templates (loaded on first access)
@@ -116,9 +151,10 @@ _PRESETS: dict[str, str] = {
 
 @router.put("/layout")
 async def save_layout(request: Request, body: DashboardLayout) -> dict:
-    """Save the current user's dashboard layout."""
+    """Save the current user's dashboard layout after stripping generic request fields."""
     uid = _user_id(request)
-    _LAYOUTS[uid] = body.model_dump()
+    clean = _sanitize_layout(body.model_dump())
+    _LAYOUTS[uid] = clean
     _save_to_disk()
     # Persist to PostgREST
     try:
@@ -134,7 +170,7 @@ async def save_layout(request: Request, body: DashboardLayout) -> dict:
                         "user_id": uid,
                         "service": "fantasia",
                         "key": "dashboard_layout",
-                        "value": json.dumps(body.model_dump()),
+                        "value": json.dumps(clean),
                     },
                 )
             )
@@ -166,7 +202,7 @@ async def get_metrics() -> dict:
 
 @router.get("/widget-examples")
 async def get_widget_examples(category: str | None = None) -> list[dict]:
-    """Return curated widget example templates."""
+    """Return curated widget example templates without generic request primitives."""
     from pathlib import Path
 
     path = Path(__file__).parent.parent / "data" / "widget_examples.json"
@@ -176,7 +212,7 @@ async def get_widget_examples(category: str | None = None) -> list[dict]:
         return []
     if category:
         examples = [e for e in examples if category.lower() in e.get("category", "").lower()]
-    return examples
+    return [_sanitize_widget(e) if isinstance(e, dict) else e for e in examples]
 
 
 @router.get("/demos")
@@ -206,13 +242,13 @@ async def list_demo_dashboards() -> list[dict]:
 
 @router.get("/demos/{demo_id}")
 async def get_demo_dashboard(demo_id: str) -> dict:
-    """Load a demo dashboard template."""
+    """Load a demo dashboard template without generic request primitives."""
     from pathlib import Path
 
     path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{demo_id}.json"
     if not path.exists():
         return {"error": "not found"}
-    return json.loads(path.read_text())
+    return _sanitize_layout(json.loads(path.read_text()))
 
 
 @router.get("/deck-templates")
