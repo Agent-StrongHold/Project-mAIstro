@@ -99,9 +99,10 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, mo
     M0 containment deliberately blocks the shipped route in
     SecurityHeadersMiddleware. A few older password/credential tests are about
     the *registration implementation* rather than anonymous route exposure.
-    Bypass only that middleware for those named test modules. The containment
-    regressions live elsewhere and therefore still exercise the real 403 path.
-    This is test-only wiring; production code has no bypass flag or backdoor.
+    For only those named modules, rebuild Starlette's middleware stack around a
+    test-scoped dispatch override, then discard that stack before the next test.
+    This avoids caching either the bypass or the production 403 across tests.
+    Production code has no bypass flag or backdoor.
     """
     legacy_modules = {
         "test_api.py",
@@ -113,6 +114,7 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, mo
         yield
         return
 
+    from main import app
     from middleware.security_headers import SecurityHeadersMiddleware
 
     original_dispatch = SecurityHeadersMiddleware.dispatch
@@ -123,7 +125,17 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, mo
         return await original_dispatch(self, http_request, call_next)
 
     monkeypatch.setattr(SecurityHeadersMiddleware, "dispatch", dispatch)
-    yield
+    # Starlette binds dispatch when middleware_stack is built. Force this test
+    # to build a stack from the patched method instead of reusing an earlier
+    # test's cached production stack.
+    app.middleware_stack = None
+    try:
+        yield
+    finally:
+        # Do not let a stack whose dispatch bound the test override survive the
+        # fixture. monkeypatch restores the class method after fixture teardown;
+        # the next request will then build the real production stack again.
+        app.middleware_stack = None
 
 
 @pytest.fixture(autouse=True)
