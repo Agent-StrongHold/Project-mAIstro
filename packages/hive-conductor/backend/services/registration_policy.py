@@ -64,14 +64,48 @@ def create_invitation(*, ttl_seconds: int = 3600) -> dict[str, Any]:
     return {"token": token, "expires_at": expires_at.isoformat()}
 
 
-def invitation_is_valid(token: str | None) -> bool:
-    """Validate an invitation without consuming it. Malformed state fails closed."""
+def _valid_record(token: str | None) -> dict[str, Any] | None:
     if not token:
-        return False
+        return None
     raw = _kv().get(_token_key(token))
     if not isinstance(raw, dict):
-        return False
+        return None
     expires_raw = raw.get("expires_at")
+    if not isinstance(expires_raw, str):
+        return None
+    try:
+        expires_at = datetime.fromisoformat(expires_raw)
+    except ValueError:
+        return None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= _now():
+        return None
+    return raw
+
+
+def invitation_is_valid(token: str | None) -> bool:
+    """Validate an invitation without consuming it. Malformed state fails closed."""
+    return _valid_record(token) is not None
+
+
+def claim_invitation(token: str | None) -> dict[str, Any] | None:
+    """Remove and return a valid invitation before account creation begins."""
+    record = _valid_record(token)
+    if record is None or token is None:
+        return None
+    claimed = _kv().pop(_token_key(token), None)
+    return claimed if isinstance(claimed, dict) else None
+
+
+def restore_invitation(token: str | None, record: dict[str, Any] | None) -> None:
+    """Restore a claimed invitation when downstream registration did not commit."""
+    if token and record and _valid_record_from_value(record):
+        _kv()[_token_key(token)] = record
+
+
+def _valid_record_from_value(record: dict[str, Any]) -> bool:
+    expires_raw = record.get("expires_at")
     if not isinstance(expires_raw, str):
         return False
     try:
@@ -81,14 +115,6 @@ def invitation_is_valid(token: str | None) -> bool:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return expires_at > _now()
-
-
-def consume_invitation(token: str | None) -> bool:
-    """Consume a valid invitation exactly once within this store instance."""
-    if not invitation_is_valid(token):
-        return False
-    assert token is not None
-    return _kv().pop(_token_key(token), None) is not None
 
 
 def registration_allowed(invite_token: str | None = None) -> bool:
