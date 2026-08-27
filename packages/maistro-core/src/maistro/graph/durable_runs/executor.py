@@ -25,6 +25,7 @@ from maistro.graph.execution_state import (
     thaw_json_value,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext, NodeResult
+from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
     transition_node_run,
@@ -1134,15 +1135,14 @@ async def _mark_completed(
     store: DurableRunStore,
 ) -> DurableRunRecord:
     """Terminalize a successful NodeRun and persist its normalized output."""
-    result = next(
-        (
-            node_run.result
-            for node_run in reversed(record.node_runs)
-            if node_run.status is RunStatus.COMPLETED
-        ),
-        None,
+    work_owed = bool(
+        record.graph_state.active_node_ids or _deferred_frontier(record) or _deferred_fanins(record)
     )
-    run = transition_run(record.run, RunStatus.COMPLETED, result=result)
+    target = derive_run_terminal_status(record.node_runs, work_owed=work_owed)
+    if target is None:
+        raise ValueError("cannot terminalize a Graph Run while logical frontier work is owed")
+    result, error = terminal_run_payload(record.node_runs, target)
+    run = transition_run(record.run, target, result=result, error=error)
     state = _replace_state(record.graph_state, active_node_ids=())
     return await _checkpoint(
         record,
