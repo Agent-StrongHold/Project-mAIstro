@@ -13,10 +13,10 @@ from starlette.responses import JSONResponse, Response
 
 from routes.audit import log_audit
 from services.registration_policy import (
-    consume_invitation,
+    claim_invitation,
     create_invitation,
     get_policy,
-    invitation_is_valid,
+    restore_invitation,
     set_policy,
 )
 
@@ -60,6 +60,17 @@ def issue_registration_invitation(body: InvitationBody) -> dict[str, str]:
     return result
 
 
+def _invite_token_from_request_body(raw_body: bytes) -> str | None:
+    try:
+        raw = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    candidate = raw.get("invite_token")
+    return candidate if isinstance(candidate, str) else None
+
+
 class RegistrationPolicyMiddleware(BaseHTTPMiddleware):
     """Fail closed on public signup unless policy or one-time invite permits it."""
 
@@ -69,32 +80,20 @@ class RegistrationPolicyMiddleware(BaseHTTPMiddleware):
 
         policy = get_policy()
         invite_token: str | None = None
-        invite_valid = False
+        claimed: dict | None = None
         if policy["mode"] != "open":
-            try:
-                raw = json.loads((await request.body()).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                raw = {}
-            if isinstance(raw, dict):
-                candidate = raw.get("invite_token")
-                if isinstance(candidate, str):
-                    invite_token = candidate
-            invite_valid = invitation_is_valid(invite_token)
-            if not invite_valid:
+            invite_token = _invite_token_from_request_body(await request.body())
+            claimed = claim_invitation(invite_token)
+            if claimed is None:
                 return JSONResponse(
                     status_code=403,
                     content={"detail": "Registration is closed."},
                 )
 
         response = await call_next(request)
-        # A rejected username/password must not burn a valid invitation. Only a
-        # successful account creation consumes it, and a token is never logged.
-        if invite_valid and 200 <= response.status_code < 300:
-            if not consume_invitation(invite_token):
-                # Another request won the one-time token between validation and
-                # commit. Do not claim the second registration was authorized.
-                return JSONResponse(
-                    status_code=409,
-                    content={"detail": "Registration invitation was already used."},
-                )
+        # Claim before account creation, restore only when the account creator
+        # rejects the request. This prevents two concurrent requests from both
+        # committing users with one invitation inside a process/store instance.
+        if claimed is not None and not (200 <= response.status_code < 300):
+            restore_invitation(invite_token, claimed)
         return response
