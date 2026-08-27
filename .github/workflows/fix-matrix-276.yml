@@ -29,17 +29,13 @@ jobs:
               '| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/21` |',
               '| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `18/55` |':
               '| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `19/56` |',
-              '| Agent Conductor services |': '| Agent Conductor services |',
+              '| Agent Conductor services | route registration + background loops | `15/63` |':
+              '| Agent Conductor services | route registration + background loops | `15/64` |',
           }
-          for old, new in list(replacements.items())[:2]:
+          for old, new in replacements.items():
               if text.count(old) != 1:
                   raise SystemExit(f'expected exactly one matrix target: {old}')
               text = text.replace(old, new)
-          old = '| Agent Conductor services | `services` | `15/63` |'
-          new = '| Agent Conductor services | `services` | `15/64` |'
-          if text.count(old) != 1:
-              raise SystemExit('expected exactly one Agent Conductor services disposition row')
-          text = text.replace(old, new)
           path.write_text(text, encoding='utf-8')
           PY
       - name: Prove matrix matches code
