@@ -146,6 +146,7 @@ let it be silently neither.
 | CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
 | CodeQL Advanced | `Analyze (python)` | base `main` |
 | Formal Conformance | `formal-conformance` | every PR |
+| Gate C | `Gate C — canonical clean install` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
