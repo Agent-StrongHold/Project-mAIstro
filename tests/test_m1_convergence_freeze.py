@@ -24,7 +24,9 @@ def _module() -> ModuleType:
 
 
 def _matrix(*subsystems: str) -> str:
-    rows = "\n".join(f"| {name} | `example.{index}` |" for index, name in enumerate(subsystems))
+    rows = "\n".join(
+        f"| {name} | `example.{index}` |" for index, name in enumerate(subsystems)
+    )
     return (
         "# matrix\n\n"
         "<!-- matrix:ownership -->\n"
