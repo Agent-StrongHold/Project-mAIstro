@@ -9,9 +9,7 @@ import pytest
 
 from maistro.security import resource_policy as policy
 
-_DECLARATION = (
-    Path(__file__).resolve().parents[4] / "quality" / "security-resource-floors.json"
-)
+_DECLARATION = Path(__file__).resolve().parents[4] / "quality" / "security-resource-floors.json"
 
 
 def _declared() -> dict[str, dict[str, int | float | str]]:
