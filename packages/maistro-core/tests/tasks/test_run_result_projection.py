@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.agents.types import CodeOutput, ConductorOutput
 from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -11,6 +13,7 @@ from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.models import TaskCreate
 
 
+@pytest.mark.ac("ADR-082526-237d/AC-6")
 async def test_task_success_projects_product_result_without_rewriting_attempt_evidence() -> None:
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
