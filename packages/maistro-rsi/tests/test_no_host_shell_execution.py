@@ -213,3 +213,52 @@ class TestTheFitnessScorecardsOwnTestGate:
 
         assert not passed
         assert "test command errored" in reason
+
+    def test_evaluate_candidate_threads_the_argv_through_to_the_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The seam between the loop's config and the shell. `_run` taking an
+        argv is worth nothing if `evaluate_candidate` keeps calling it with
+        only the string -- which is precisely the kind of omission that leaves
+        a second door open while the first looks shut."""
+        from maistro_rsi import candidate_fitness
+
+        seen: list[dict[str, Any]] = []
+
+        def _fake_run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple = ()) -> tuple:
+            seen.append({"cmd": cmd, "argv": argv})
+            return True, "exit 0"
+
+        monkeypatch.setattr(candidate_fitness, "_run", _fake_run)
+        monkeypatch.setattr(
+            candidate_fitness, "measure_coverage_detailed", lambda *_a, **_kw: (0.0, {})
+        )
+
+        candidate_fitness.evaluate_candidate(
+            str(tmp_path),
+            [],
+            test_command="python -m pytest -q",
+            test_argv=("python", "-m", "pytest", "-q"),
+        )
+
+        assert seen[0]["argv"] == ("python", "-m", "pytest", "-q")
+
+    def test_evaluate_candidate_defaults_to_no_argv_for_the_cli(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from maistro_rsi import candidate_fitness
+
+        seen: list[dict[str, Any]] = []
+
+        def _fake_run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple = ()) -> tuple:
+            seen.append({"cmd": cmd, "argv": argv})
+            return True, "exit 0"
+
+        monkeypatch.setattr(candidate_fitness, "_run", _fake_run)
+        monkeypatch.setattr(
+            candidate_fitness, "measure_coverage_detailed", lambda *_a, **_kw: (0.0, {})
+        )
+
+        candidate_fitness.evaluate_candidate(str(tmp_path), [], test_command="pytest -q")
+
+        assert seen[0] == {"cmd": "pytest -q", "argv": ()}

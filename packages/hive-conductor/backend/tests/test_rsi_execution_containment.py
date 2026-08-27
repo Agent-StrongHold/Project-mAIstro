@@ -301,6 +301,41 @@ class TestTheServiceRefusesWhatTheRouteWouldNotSend:
         with pytest.raises(ValueError, match="container isolation"):
             self._drive({"repo_path": str(tmp_path), "test_argv": ["python"]})
 
+    def test_a_policy_resolved_config_reaches_the_loop_with_its_argv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The success branch of both checks. Without it, a service that
+        refused every config would satisfy the three refusals above."""
+        import maistro_rsi.local_loop as local_loop
+
+        seen: list[object] = []
+
+        class _Loop:
+            def __init__(self, config: object, **_kw: object) -> None:
+                seen.append(config)
+
+            def run(self) -> object:
+                raise AssertionError("the loop must not start in this test")
+
+        monkeypatch.setattr(local_loop, "LocalRsiLoop", _Loop)
+        monkeypatch.setattr(local_loop, "make_builders_apply_patch", lambda **_kw: None)
+
+        with pytest.raises(AssertionError, match="must not start"):
+            self._drive(
+                {
+                    "repo_path": str(tmp_path),
+                    "test_argv": ["python", "-m", "pytest", "-q"],
+                    "isolation": "container",
+                    "work_root": str(tmp_path / "work"),
+                }
+            )
+
+        config = seen[0]
+        assert config.test_argv == ("python", "-m", "pytest", "-q")
+        assert config.isolation == "container"
+        # Kept only so reports can name what ran; nothing executes it.
+        assert config.test_command == "python -m pytest -q"
+
 
 class TestTheAuthorizedRootsComeFromConfiguration:
     def test_roots_are_read_from_the_setting_and_resolved(
@@ -489,3 +524,101 @@ class TestIsolationAttestation:
         monkeypatch.setattr(policy, "_isolation_available", lambda: True)
 
         assert policy.require_isolation() == policy.REQUIRED_ISOLATION
+
+
+class TestAValidRequestStartsARunWithTheResolvedPolicy:
+    """The success path. Every test above asserts a refusal, and a route that
+    refused *everything* would satisfy all of them -- so this is the one that
+    proves the door still opens for a legitimate request, and that what goes
+    through it is the policy's values rather than the caller's.
+    """
+
+    @pytest.fixture
+    def started(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+        from services import rsi_execution_policy as policy
+        from services.rsi import RunState, get_rsi_service
+
+        monkeypatch.setattr(policy, "_isolation_available", lambda: True)
+
+        configs: list[dict] = []
+
+        def _start(mode: str, config: dict) -> RunState:
+            configs.append(config)
+            return RunState(run_id="started", mode=mode, config=config)
+
+        monkeypatch.setattr(get_rsi_service(), "start_run", _start)
+        monkeypatch.setattr(type(get_rsi_service()), "available", property(lambda _self: True))
+        return configs
+
+    def test_the_run_starts(self, admin_client, authorized_repo: Path, started: list[dict]) -> None:
+        response = admin_client.post(
+            "/v1/rsi/runs",
+            json={
+                "mode": "cleanup",
+                "repo_path": str(authorized_repo),
+                "test_profile": "pytest",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["run_id"] == "started"
+
+    def test_the_service_receives_the_argv_and_never_a_command(
+        self, admin_client, authorized_repo: Path, started: list[dict]
+    ) -> None:
+        admin_client.post(
+            "/v1/rsi/runs",
+            json={
+                "mode": "cleanup",
+                "repo_path": str(authorized_repo),
+                "test_profile": "pytest",
+            },
+        )
+
+        config = started[0]
+        assert config["test_argv"] == ["python", "-m", "pytest", "-q"]
+        assert "test_command" not in config
+
+    def test_the_resolved_path_is_forwarded_not_the_requested_string(
+        self, admin_client, authorized_repo: Path, started: list[dict]
+    ) -> None:
+        """`resolve_repo` returns the realpath. Forwarding the raw string would
+        hand the loop a path the containment check never actually approved."""
+        admin_client.post(
+            "/v1/rsi/runs",
+            json={
+                "mode": "cleanup",
+                "repo_path": f"{authorized_repo}/.",
+                "test_profile": "pytest",
+            },
+        )
+
+        assert started[0]["repo_path"] == str(authorized_repo.resolve())
+
+    def test_the_isolation_the_policy_attested_is_forwarded(
+        self, admin_client, authorized_repo: Path, started: list[dict]
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        admin_client.post(
+            "/v1/rsi/runs",
+            json={
+                "mode": "cleanup",
+                "repo_path": str(authorized_repo),
+                "test_profile": "pytest",
+            },
+        )
+
+        assert started[0]["isolation"] == policy.REQUIRED_ISOLATION
+
+    def test_a_missing_repo_path_is_refused_before_any_policy_lookup(
+        self, admin_client, started: list[dict]
+    ) -> None:
+        response = admin_client.post(
+            "/v1/rsi/runs",
+            json={"mode": "cleanup", "repo_path": "", "test_profile": "pytest"},
+        )
+
+        assert response.status_code == 400
+        assert "requires repo_path" in response.json()["detail"]
+        assert started == []
