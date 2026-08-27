@@ -8,7 +8,6 @@ rather than searching source text, so comments or dead code cannot satisfy them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import call
 
 import maistro.security.secret_equal as secret_equal_module
 from maistro.security.secret_equal import secret_equal
