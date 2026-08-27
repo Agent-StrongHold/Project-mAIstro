@@ -13,9 +13,9 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 AUTO_PREFIXES = (
     "claude/",
@@ -97,7 +97,7 @@ class Assessment:
     yellow_reasons: list[str] = field(default_factory=list)
     integrity_reasons: list[str] = field(default_factory=list)
 
-    def finish(self) -> "Assessment":
+    def finish(self) -> Assessment:
         if self.red_reasons:
             self.risk = "red"
         elif self.yellow_reasons or self.integrity_reasons:
@@ -210,8 +210,7 @@ def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", "-C", str(repo), *args],
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if proc.returncode:
