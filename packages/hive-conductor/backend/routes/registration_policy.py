@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Literal
 
@@ -22,6 +23,7 @@ from services.registration_policy import (
 
 public_router = APIRouter(tags=["setup"])
 admin_router = APIRouter(tags=["settings"])
+_SETUP_COMPLETE_LOCK = asyncio.Lock()
 
 
 class RegistrationPolicyBody(BaseModel):
@@ -72,9 +74,16 @@ def _invite_token_from_request_body(raw_body: bytes) -> str | None:
 
 
 class RegistrationPolicyMiddleware(BaseHTTPMiddleware):
-    """Fail closed on public signup unless policy or one-time invite permits it."""
+    """Enforce one-shot setup and fail-closed post-setup registration."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.method == "POST" and request.url.path == "/v1/setup/complete":
+            # The route itself re-checks durable setup state. Serializing the
+            # check+commit window means concurrent first-run requests cannot
+            # both pass that check and overwrite the owner credentials.
+            async with _SETUP_COMPLETE_LOCK:
+                return await call_next(request)
+
         if request.method != "POST" or request.url.path != "/v1/auth/register":
             return await call_next(request)
 
