@@ -722,6 +722,21 @@ def make_builders_apply_patch(
     return apply
 
 
+class _NoHostExecSandbox(LocalSandbox):
+    """A `LocalSandbox` with host execution removed.
+
+    Reads and writes still work -- an apply function legitimately inspects and
+    edits the worktree, and under container isolation those edits are synced
+    back to it. Only `exec` is gone, because that is the one operation that
+    would put candidate-influenced work on the host shell (#305).
+    """
+
+    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
+        raise PermissionError(
+            "this run uses container isolation; commands do not execute on the host"
+        )
+
+
 # ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
@@ -732,8 +747,16 @@ class LocalRsiConfig:
     """Inputs for one capped local self-improvement run."""
 
     repo_path: str
+    #: The test command as a shell string. Kept for the CLI, where an operator
+    #: at a terminal types one and a shell is the thing they expect.
     test_command: str
     work_root: str
+    #: The same command as an argument vector. When set it WINS over
+    #: `test_command` and runs with no shell at all — which is what any caller
+    #: that did not come from a terminal must supply (#305). The Conductor's
+    #: HTTP route resolves it from server-side policy; nothing a request
+    #: carries reaches a command line.
+    test_argv: tuple[str, ...] = ()
     max_cycles: int = 3
     objective: str = _DEFAULT_OBJECTIVE
     # Explicit files to improve, one per cycle (rotated). When set, each cycle
@@ -1616,7 +1639,7 @@ class LocalRsiLoop:
         r = _VariantResult(branch=branch, cycle_dir=cdir, label=competitor.label, kind=kind)
         try:
             apply_fn = self._apply_for_competitor(competitor, objective, budget)
-            asyncio.run(apply_fn(LocalSandbox(cdir), str(cdir), None))
+            asyncio.run(apply_fn(self._sandbox_for(cdir), str(cdir), None))
             _git(cdir, "add", "-A")
             r.changed_files = self._changed_files(cdir)
             if not r.changed_files:
@@ -2205,16 +2228,47 @@ class LocalRsiLoop:
         )
         write_trace_note(self._baseline, sha, trace_note)
 
+    def _sandbox_for(self, cycle_dir: Path) -> MicroVmSandbox:
+        """The sandbox handed to the apply function for one cycle.
+
+        Under `isolation="container"` the builders factory opens its own
+        `ContainerBuilderSandbox` and never touches this object -- but "never
+        touches it" is a property of today's factory, not a guarantee, and the
+        thing being passed is a host-backed sandbox whose `exec` runs a string
+        through a shell. An apply function that used it would silently move
+        candidate execution back onto the host.
+
+        So under container isolation the argument is one that refuses (#305).
+        Nothing legitimate loses a capability; anything that reaches for host
+        execution gets an exception naming why instead of a shell.
+        """
+        if self._config.isolation == "container":
+            return _NoHostExecSandbox(cycle_dir)
+        return LocalSandbox(cycle_dir)
+
     def _run_tests(self, cycle_dir: Path) -> bool:
-        # shell=True: the test command is operator-supplied config, not agent input.
-        proc = subprocess.run(  # nosemgrep
-            self._config.test_command,
-            shell=True,  # nosemgrep
-            cwd=str(cycle_dir),
-            capture_output=True,
-            text=True,
-            timeout=self._config.test_timeout,
-        )
+        if self._config.test_argv:
+            # No shell: the vector was chosen from server-side policy, and a
+            # metacharacter in any token stays a character in an argument.
+            proc = subprocess.run(
+                list(self._config.test_argv),
+                cwd=str(cycle_dir),
+                capture_output=True,
+                text=True,
+                timeout=self._config.test_timeout,
+            )
+        else:
+            # shell=True: the CLI path, where `test_command` is what an operator
+            # typed at a terminal. Every non-terminal caller supplies test_argv
+            # above instead -- see #305 for why that distinction is load-bearing.
+            proc = subprocess.run(  # nosemgrep
+                self._config.test_command,
+                shell=True,  # nosemgrep
+                cwd=str(cycle_dir),
+                capture_output=True,
+                text=True,
+                timeout=self._config.test_timeout,
+            )
         if proc.returncode != 0:
             logger.info("rsi_local_tests_failed", tail=(proc.stdout + proc.stderr)[-500:])
         return proc.returncode == 0

@@ -15,6 +15,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
+from services import rsi_execution_policy
 
 router = APIRouter(tags=["rsi"])
 
@@ -24,7 +25,14 @@ class StartRunBody(BaseModel):
 
     mode: str = "cleanup"
     repo_path: str
-    test_command: str
+    #: The NAME of a server-held test profile, not a command (#305). A profile
+    #: resolves to an argument vector, so nothing the caller sends is ever
+    #: interpreted by a shell.
+    test_profile: str = "pytest"
+    #: Accepted only so the route can refuse it out loud. `extra="ignore"`
+    #: would drop an old client's command silently and run a different one,
+    #: which is the failure mode most likely to be mistaken for success.
+    test_command: str | None = None
     cycles: int = 10
     agent_turns: int = 2
     model: str | None = None
@@ -75,6 +83,21 @@ def available_models() -> dict:
     }
 
 
+@router.get("/test-profiles")
+def rsi_test_profiles() -> dict:
+    """The test commands this deployment will run, for the UI to choose from.
+
+    The list is the policy: a caller can only start a run with a name that
+    appears here, so this endpoint is also the honest answer to "what can an
+    RSI run execute on this host?" (#305).
+    """
+    try:
+        profiles = rsi_execution_policy.test_profiles()
+    except rsi_execution_policy.RsiPolicyError as refusal:
+        raise HTTPException(status_code=500, detail=str(refusal)) from refusal
+    return {"profiles": [{"name": p.name, "argv": list(p.argv)} for p in profiles]}
+
+
 # ─── run lifecycle ─────────────────────────────────────────────────────
 
 
@@ -104,13 +127,32 @@ async def start_run(body: StartRunBody) -> dict:
         raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
     if body.mode not in ("cleanup", "greenfield"):
         raise HTTPException(status_code=400, detail="mode must be 'cleanup' or 'greenfield'")
-    if body.mode == "cleanup" and not (body.repo_path and body.test_command):
+    if body.test_command is not None:
         raise HTTPException(
-            status_code=400, detail="cleanup mode requires repo_path + test_command"
+            status_code=400,
+            detail=(
+                "test_command is no longer accepted — it was executed with a shell on "
+                "this host. Pick a test_profile; GET /v1/rsi/test-profiles lists them."
+            ),
         )
+    if body.mode == "cleanup" and not body.repo_path:
+        raise HTTPException(status_code=400, detail="cleanup mode requires repo_path")
+
+    # Resolve every execution decision HERE, at the trust boundary, so what the
+    # service receives is already the operator's policy rather than the
+    # caller's description of it (#305).
+    try:
+        repo = rsi_execution_policy.resolve_repo(body.repo_path)
+        profile = rsi_execution_policy.resolve_test_profile(body.test_profile)
+        isolation = rsi_execution_policy.require_isolation()
+    except rsi_execution_policy.RsiPolicyError as refusal:
+        raise HTTPException(status_code=400, detail=str(refusal)) from refusal
+
     config = {
-        "repo_path": body.repo_path,
-        "test_command": body.test_command,
+        "repo_path": str(repo),
+        "test_profile": profile.name,
+        "test_argv": list(profile.argv),
+        "isolation": isolation,
         "cycles": body.cycles,
         "agent_turns": body.agent_turns,
         "model": body.model,

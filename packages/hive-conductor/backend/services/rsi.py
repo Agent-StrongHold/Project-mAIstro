@@ -151,9 +151,28 @@ class _RsiService:
         genome_models = [
             m.strip() for m in (cfg.get("genome_models") or "").split(",") if m.strip()
         ]
+        # `test_argv` and `isolation` are resolved by routes/rsi.py against
+        # services.rsi_execution_policy before they reach here, and both are
+        # required (#305). Defaulting either would give an in-process caller a
+        # quieter version of the door the route just closed: an absent argv
+        # falls back to a shell command, an absent isolation falls back to the
+        # host. Refuse instead.
+        test_argv = tuple(cfg.get("test_argv") or ())
+        if not test_argv:
+            raise ValueError("an RSI run requires a policy-resolved test_argv")
+        isolation = cfg.get("isolation") or ""
+        if isolation != "container":
+            raise ValueError(
+                f"an RSI run requires container isolation, not {isolation!r} — "
+                "candidate code does not execute on the host"
+            )
         lc = LocalRsiConfig(
             repo_path=cfg["repo_path"],
-            test_command=cfg["test_command"],
+            # Kept only so logs and reports can name what ran; nothing executes
+            # it. `test_argv` is what the loop runs, without a shell.
+            test_command=" ".join(test_argv),
+            test_argv=test_argv,
+            isolation=isolation,
             work_root=work_root,
             max_cycles=int(cfg.get("cycles", 3)),
             model=cfg.get("model"),

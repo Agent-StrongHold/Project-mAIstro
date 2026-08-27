@@ -173,6 +173,17 @@ class Settings(BaseSettings):
     host_health_url: str | None = None
     host_health_token: SecretStr | None = None
     infra_autonomy: Literal["approve_all", "auto_safe", "detect_only"] = "auto_safe"
+    # Directories an HTTP-initiated RSI run may target, os.pathsep-separated
+    # (#305). Empty means no repository is authorized -- POST /v1/rsi/runs
+    # refuses every path until an operator names one. The unset state has to be
+    # the refusing one: this is the difference between "run the loop on our
+    # checkout" and "run a command against any directory on the box".
+    rsi_repo_roots: str = ""
+    # Optional JSON file of extra RSI test profiles (name -> argv list). The
+    # request names a profile; it never carries a command. A missing or
+    # malformed file is an error rather than an empty overlay.
+    rsi_test_profiles_file: str = ""
+
     # self_repair (SPEC-188) cadence; <=0 disables the periodic loop (API still works).
     self_repair_interval_s: int = 90
 
