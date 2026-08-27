@@ -232,9 +232,7 @@ async def test_generic_reconciliation_does_not_settle_a_cyclic_graph(spine: Any)
     for node_id in ("a", "b"):
         node_run = await store.create_node_run(run.run_id, node_id=node_id)
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
-        node_runs.append(
-            await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
-        )
+        node_runs.append(await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING))
 
     reconciler = AttemptLifecycleReconciler(store)
     for index, node_run in enumerate(node_runs):

@@ -152,6 +152,44 @@ async def test_a_node_run_under_a_terminal_run_is_refused(spine: Any) -> None:
         await store.create_node_run(run.run_id, node_id="node-1")
 
 
+async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_run(
+    spine: Any,
+) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+    completed = await store.transition_node_run(
+        node_run.node_run_id, RunStatus.COMPLETED, result=terminal.result
+    )
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=completed.result)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run.node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=completed.result,
+    )
+
+    migrated = await store.transition_node_run(
+        node_run.node_run_id,
+        RunStatus.COMPLETED,
+        result=completed.result,
+        error=completed.error,
+        accepted_outcome=outcome,
+    )
+
+    assert migrated.status is RunStatus.COMPLETED
+    assert migrated.accepted_outcome == outcome
+    assert migrated.finished_at == completed.finished_at
+
+
 async def test_a_child_run_cannot_cross_workspaces(spine: Any) -> None:
     store, _workspace, project_id = spine
     parent = await _run(spine)
