@@ -54,9 +54,9 @@ with `--update-doc`; do not hand-edit between the markers.
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **24** |
-| `integration` | yes | **0** | yes | no | no | **24** |
-| `main` | yes | **1** | yes | no | no | **28** |
+| `develop` | yes | **0** | yes | no | no | **25** |
+| `integration` | yes | **0** | yes | no | no | **25** |
+| `main` | yes | **1** | yes | no | no | **29** |
 
 | Check | `develop` | `integration` | `main` |
 |---|:--:|:--:|:--:|
@@ -65,6 +65,7 @@ with `--update-doc`; do not hand-edit between the markers.
 | `Analyze (python)` | ○ | ○ | ● |
 | `Container scan + SBOM + cosign` | ○ | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● | ● |
+| `Gate C — canonical clean install` | ● | ● | ● |
 | `Quality gate (Pillars 1–4, 7, 8)` | ● | ● | ● |
 | `SAST (bandit + semgrep + gitleaks)` | ● | ● | ● |
 | `Supply chain (pip-audit)` | ● | ● | ● |
