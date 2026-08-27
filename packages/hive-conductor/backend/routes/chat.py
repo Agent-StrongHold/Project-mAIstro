@@ -18,9 +18,7 @@ router = APIRouter(tags=["chat"])
 # The tool-capable agent loop remains implemented behind services.chat_completion
 # for trusted/internal callers, but this public route must not invoke it.
 _DASHBOARD_EDIT_SCOPE = "dashboard_edit"
-_DASHBOARD_EDIT_DISABLED = (
-    "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
-)
+_DASHBOARD_EDIT_DISABLED = "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
 
 
 def _now() -> datetime:

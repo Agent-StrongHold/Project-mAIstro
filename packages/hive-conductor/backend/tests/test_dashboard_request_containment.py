@@ -38,7 +38,11 @@ def test_generic_request_primitives_are_removed_from_tab_widgets() -> None:
                         "id": "hostile",
                         "type": "custom",
                         "title": "Hostile",
-                        "config": {"url": "https://evil.invalid", "method": "POST", "table": "Safe"},
+                        "config": {
+                            "url": "https://evil.invalid",
+                            "method": "POST",
+                            "table": "Safe",
+                        },
                     }
                 ],
             }
