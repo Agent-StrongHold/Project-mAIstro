@@ -180,6 +180,7 @@ async def test_concurrent_last_two_node_runs_converge_in_memory(memory_spine: An
     await _assert_concurrent_last_two_converge(memory_spine)
 
 
+@pytest.mark.ac("ADR-082526-237d/AC-5")
 async def test_replay_settles_run_after_crash_between_node_acceptance_and_parent_fold(
     spine: Any,
 ) -> None:
@@ -209,6 +210,7 @@ async def test_replay_settles_run_after_crash_between_node_acceptance_and_parent
     assert settled.result == {"ok": True}
 
 
+@pytest.mark.ac("ADR-082526-237d/AC-5")
 async def test_generic_reconciliation_does_not_settle_a_cyclic_graph(spine: Any) -> None:
     """Observed node ids are not frontier completion when a topology can revisit them."""
     store, workspace, project_id = spine
