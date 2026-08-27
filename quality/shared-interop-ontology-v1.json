@@ -1,0 +1,46 @@
+{
+  "version": "1.0.0",
+  "status": "m1-freeze-candidate",
+  "issue": 458,
+  "principles": [
+    "one canonical identity per shared concept",
+    "product-local DTOs may project but may not redefine shared semantics",
+    "cross-product references use canonical IDs",
+    "ownership and execution lineage survive product boundaries",
+    "contract evolution is explicit and versioned"
+  ],
+  "concepts": {
+    "Workspace": {"owner": "maistro.workspaces", "identity": "workspace_id"},
+    "Project": {"owner": "maistro.projects", "identity": "project_id", "parent": "Workspace"},
+    "Persona": {"owner": "maistro.personas", "identity": "persona_id"},
+    "Template": {"owner": "maistro.prompts", "identity": "template_id"},
+    "Graph": {"owner": "maistro.graph", "identity": "graph_id", "scope": "Project"},
+    "Run": {"owner": "maistro.runs", "identity": "run_id", "scope": "Project", "parent": "Graph"},
+    "GraphExecutionState": {"owner": "maistro.graph", "identity": "run_id", "parent": "Run"},
+    "NodeRun": {"owner": "maistro.runs", "identity": "node_run_id", "parent": "Run"},
+    "Attempt": {"owner": "maistro.runs", "identity": "attempt_id", "parent": "NodeRun"},
+    "ExecutionRuntime": {"owner": "maistro.runtime", "identity": "execution_id", "parent": "Attempt"},
+    "Capability": {"owner": "maistro.capabilities", "identity": "capability_id"},
+    "Provider": {"owner": "maistro.capabilities", "identity": "provider_id"},
+    "Binding": {"owner": "maistro.capabilities", "identity": "binding_id", "parent": "Provider"},
+    "Invocation": {"owner": "maistro.capabilities", "identity": "invocation_id", "parent": "Binding"}
+  },
+  "required_lineage": [
+    ["Workspace", "Project"],
+    ["Project", "Graph"],
+    ["Graph", "Run"],
+    ["Run", "NodeRun"],
+    ["NodeRun", "Attempt"],
+    ["Attempt", "ExecutionRuntime"],
+    ["Capability", "Provider"],
+    ["Provider", "Binding"],
+    ["Binding", "Invocation"]
+  ],
+  "consumers": {
+    "builders": "M1",
+    "conductor": "M1",
+    "evolve": "M1",
+    "canvas_design": "M1",
+    "rsi": "M5"
+  }
+}
