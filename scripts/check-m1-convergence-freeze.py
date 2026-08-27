@@ -49,8 +49,7 @@ def _git_show(base: str, path: str) -> str:
     proc = subprocess.run(
         ["git", "-C", str(ROOT), "show", f"{base}:{path}"],
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if proc.returncode:
