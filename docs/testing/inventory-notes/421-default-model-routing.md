@@ -6,3 +6,5 @@ inventory-delta:
 # PR #421 default-model routing coverage
 
 PR #421 adds three collected maistro-core tests covering DEFAULT_MODEL fallback across unset tiers, explicit tier precedence, and explicit-only Ollama selection.
+
+CI refresh after the shared suite-inventory baseline repair in #466.
