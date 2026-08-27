@@ -23,8 +23,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register the asyncio marker for fallback async execution."""
+    """Register markers and isolate ordinary tests from operator dotenv state."""
     config.addinivalue_line("markers", "asyncio: run an async test function")
+
+    # The production Settings class intentionally loads `.env`, but the general
+    # test suite must not inherit untracked operator configuration from the
+    # repository root. Tests that exercise dotenv loading can still opt in with
+    # Settings(_env_file=<isolated fixture path>), which overrides this class
+    # default explicitly.
+    from maistro.config.settings import Settings
+
+    Settings.model_config["env_file"] = None
 
 
 @pytest.hookimpl(tryfirst=True)
