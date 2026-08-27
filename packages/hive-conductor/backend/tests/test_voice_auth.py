@@ -76,15 +76,16 @@ def configured(account: str, monkeypatch: pytest.MonkeyPatch) -> str:
 
 @pytest.fixture
 def no_llm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Answer the utterance without a model. Records what it was given."""
+    """Answer the utterance without a real model. Records the contained request."""
     captured: dict[str, Any] = {}
 
-    async def fake_run(req, user_id="", _llm=None):
-        captured["user_id"] = user_id
-        captured["messages"] = req.messages
-        return {"choices": [{"message": {"role": "assistant", "content": "on it"}}]}
+    class FakeLLM:
+        async def complete(self, req):
+            captured["messages"] = req.messages
+            captured["tools"] = req.tools
+            return {"choices": [{"message": {"role": "assistant", "content": "on it"}}]}
 
-    monkeypatch.setattr("routes.voice.run_chat_completion", fake_run)
+    monkeypatch.setattr("routes.voice.build_llm_port", lambda: FakeLLM(), raising=False)
     return captured
 
 
@@ -174,7 +175,8 @@ class TestTheCredentialResolvesToARealAccount:
         )
 
         assert response.status_code == 200
-        assert no_llm["user_id"] == SATELLITE_ID
+        assert response.json()["actions_taken"] == []
+        assert no_llm["tools"] is None
 
     def test_the_utterance_and_its_room_reach_the_model(
         self, configured: str, no_llm: dict[str, Any]
