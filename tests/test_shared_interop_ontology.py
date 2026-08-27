@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +81,7 @@ def test_execution_lineage_is_one_canonical_chain() -> None:
     lineage = _ontology()["required_lineage"]
     assert isinstance(lineage, list)
 
-    expected_pairs = [list(pair) for pair in zip(EXPECTED_EXECUTION, EXPECTED_EXECUTION[1:])]
+    expected_pairs = [list(pair) for pair in pairwise(EXPECTED_EXECUTION)]
     assert all(pair in lineage for pair in expected_pairs)
 
 
@@ -88,7 +89,7 @@ def test_effect_lineage_is_one_canonical_chain() -> None:
     lineage = _ontology()["required_lineage"]
     assert isinstance(lineage, list)
 
-    expected_pairs = [list(pair) for pair in zip(EXPECTED_EFFECT, EXPECTED_EFFECT[1:])]
+    expected_pairs = [list(pair) for pair in pairwise(EXPECTED_EFFECT)]
     assert all(pair in lineage for pair in expected_pairs)
 
 
