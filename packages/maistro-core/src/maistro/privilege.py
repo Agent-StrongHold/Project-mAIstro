@@ -354,7 +354,7 @@ class PrivilegeGuard:
         return list(self._audit)
 
     def can_perform(self, public_key: str, action: str) -> bool:
-        if public_key == self._admin_key:
+        if secret_equal(public_key, self._admin_key):
             return True
         return action not in _ADMIN_TOOLS
 
