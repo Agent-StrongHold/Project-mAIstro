@@ -9,7 +9,6 @@ import pytest
 
 from maistro.security import resource_policy as policy
 
-
 _DECLARATION = (
     Path(__file__).resolve().parents[4] / "quality" / "security-resource-floors.json"
 )
@@ -33,7 +32,13 @@ def test_production_baselines_match_independent_declared_policy() -> None:
     assert actual == {name: spec["value"] for name, spec in declared.items()}
 
 
-@pytest.mark.parametrize("name,factor", [("rate_limit_per_minute", 100), ("max_request_body_bytes", 1024)])
+@pytest.mark.parametrize(
+    ("name", "factor"),
+    [
+        ("rate_limit_per_minute", 100),
+        ("max_request_body_bytes", 1024),
+    ],
+)
 def test_known_weakening_mutants_are_rejected(name: str, factor: int) -> None:
     declared = _declared()
     values = {field: spec["value"] for field, spec in declared.items()}
@@ -48,8 +53,6 @@ def test_known_weakening_mutants_are_rejected(name: str, factor: int) -> None:
 def test_every_declared_floor_has_the_expected_safety_direction() -> None:
     declared = _declared()
     implementation = {floor.name: floor.smaller_is_tighter for floor in policy._FLOORS}
-    expected = {
-        name: spec["safer_direction"] == "lower" for name, spec in declared.items()
-    }
+    expected = {name: spec["safer_direction"] == "lower" for name, spec in declared.items()}
 
     assert implementation == expected
