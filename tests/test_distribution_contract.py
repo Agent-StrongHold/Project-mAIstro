@@ -19,18 +19,37 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_postgres_18_mount_and_pgdata_move_together() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     postgres = compose["services"]["postgres"]
+    layout_check = compose["services"]["postgres-layout-check"]
 
     assert postgres["environment"]["PGDATA"] == "/var/lib/postgresql/18/docker"
     assert "pgdata:/var/lib/postgresql" in postgres["volumes"]
     assert all(not mount.endswith(":/var/lib/postgresql/data") for mount in postgres["volumes"])
 
+    # An old install mounted the named volume directly at /var/lib/postgresql/data,
+    # so its PG_VERSION lives at the volume root once mounted at the PG18 parent.
+    # Startup must stop before PostgreSQL can initialize a second, empty cluster.
+    command = "\n".join(layout_check["command"])
+    assert "pgdata:/var/lib/postgresql:ro" in layout_check["volumes"]
+    assert "/var/lib/postgresql/PG_VERSION" in command
+    assert "/var/lib/postgresql/18/docker/PG_VERSION" in command
+    assert "exit 78" in command
+    assert postgres["depends_on"]["postgres-layout-check"]["condition"] == (
+        "service_completed_successfully"
+    )
+
 
 def test_engine_compose_passes_every_required_auth_value() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     environment = compose["services"]["maistro-engine"]["environment"]
+    socket_override = yaml.safe_load(
+        (ROOT / "docker-compose.docker-sock.override.example.yml").read_text(encoding="utf-8")
+    )
+    override_environment = socket_override["services"]["maistro-engine"]["environment"]
 
     assert any(item.startswith("API_KEYS=") for item in environment)
     assert any(item.startswith("ROUTER_API_KEY=") for item in environment)
+    assert "SANDBOX_READINESS_REQUIRED=false" in environment
+    assert "SANDBOX_READINESS_REQUIRED=true" in override_environment
 
 
 def test_installer_example_uses_the_settings_json_representation() -> None:
