@@ -1,4 +1,9 @@
-"""Regression coverage for repository-root dotenv isolation (#300)."""
+"""Regression coverage for repository-root dotenv isolation (#300).
+
+Settings is imported inside each test on purpose: configuration construction is
+part of the boundary under test, and keeping the module import-free prevents
+collection-time state from becoming another ambient input to these assertions.
+"""
 
 _AMBIENT_SETTING_VARS = (
     "API_KEYS",
