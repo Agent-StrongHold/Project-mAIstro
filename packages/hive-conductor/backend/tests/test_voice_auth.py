@@ -76,7 +76,13 @@ def configured(account: str, monkeypatch: pytest.MonkeyPatch) -> str:
 
 @pytest.fixture
 def no_llm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Answer the utterance without a real model. Records the contained request."""
+    """Answer the utterance without a real model. Records the contained request.
+
+    Voice has two construction paths: the normal build_llm_port path and a
+    direct HTTP adapter when LiteLLM base/key settings are present. Stub both so
+    developer environment or .env credentials can never turn this test into a
+    network call.
+    """
     captured: dict[str, Any] = {}
 
     class FakeLLM:
@@ -86,6 +92,10 @@ def no_llm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return {"choices": [{"message": {"role": "assistant", "content": "on it"}}]}
 
     monkeypatch.setattr("routes.voice.build_llm_port", lambda: FakeLLM(), raising=False)
+    monkeypatch.setattr(
+        "adapters.llm_http.HttpOpenAIProtocolLLM",
+        lambda **_kwargs: FakeLLM(),
+    )
     return captured
 
 
