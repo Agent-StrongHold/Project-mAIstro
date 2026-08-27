@@ -30,9 +30,7 @@
       "forever. If a check gains a base_ref condition and is not listed here,",
       "the audit refuses to let any branch require it."
     ],
-    "Container scan + SBOM + cosign": [
-      "main"
-    ]
+    "Container scan + SBOM + cosign": ["main"]
   },
   "branches": {
     "develop": {
@@ -72,188 +70,28 @@
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "docker-build",
-          "hive-conductor-e2e",
-          "hive-conductor-e2e-ui",
-          "lint-and-type-check",
-          "security",
-          "test",
-          "wheel-imports",
-          "workflow-lint",
-          "block",
-          "formal-conformance",
-          "Validate ADR/spec front-matter",
-          "exact-debt-ledger",
-          "Quality gate (Pillars 1–4, 7, 8)",
-          "SAST (bandit + semgrep + gitleaks)",
-          "Supply chain (pip-audit)",
-          "coverage (no services)",
-          "coverage (MinIO)",
-          "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder",
-          "durable-events",
-          "coverage (PostgreSQL)",
-          "object storage (MinIO)",
-          "postgres (pg17)",
-          "postgres (pg18)"
+          "docker-build","hive-conductor-e2e","hive-conductor-e2e-ui","lint-and-type-check","security","test","wheel-imports","workflow-lint","block","formal-conformance","Gate C — canonical clean install","Validate ADR/spec front-matter","exact-debt-ledger","Quality gate (Pillars 1–4, 7, 8)","SAST (bandit + semgrep + gitleaks)","Supply chain (pip-audit)","coverage (no services)","coverage (MinIO)","Coverage gate (publish-set floor + diff coverage)","strike-ladder","durable-events","coverage (PostgreSQL)","object storage (MinIO)","postgres (pg17)","postgres (pg18)"
         ]
       },
       "enforce_admins": false,
-      "required_pull_request_reviews": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews": true,
-        "require_code_owner_reviews": false,
-        "require_last_push_approval": false
-      },
-      "restrictions": null,
-      "required_linear_history": true,
-      "allow_force_pushes": false,
-      "allow_deletions": false,
-      "required_conversation_resolution": true,
-      "block_creations": false,
-      "lock_branch": false,
-      "allow_fork_syncing": false
+      "required_pull_request_reviews": {"required_approving_review_count":0,"dismiss_stale_reviews":true,"require_code_owner_reviews":false,"require_last_push_approval":false},
+      "restrictions": null,"required_linear_history": true,"allow_force_pushes": false,"allow_deletions": false,"required_conversation_resolution": true,"block_creations": false,"lock_branch": false,"allow_fork_syncing": false
     },
     "integration": {
-      "$comment": [
-        "ADR-095's stabilization tier: develop -> integration -> main. Same",
-        "protection as develop, and the same 15 checks for the same reason.",
-        "",
-        "Omitting it left the promotion path open — a change could reach",
-        "integration directly, or red, and then be promoted to main through a",
-        "gate that only ever inspected the integration->main hop."
-      ],
-      "required_status_checks": {
-        "strict": true,
-        "contexts": [
-          "docker-build",
-          "hive-conductor-e2e",
-          "hive-conductor-e2e-ui",
-          "lint-and-type-check",
-          "security",
-          "test",
-          "wheel-imports",
-          "workflow-lint",
-          "block",
-          "formal-conformance",
-          "Validate ADR/spec front-matter",
-          "exact-debt-ledger",
-          "Quality gate (Pillars 1–4, 7, 8)",
-          "SAST (bandit + semgrep + gitleaks)",
-          "Supply chain (pip-audit)",
-          "coverage (no services)",
-          "coverage (MinIO)",
-          "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder",
-          "durable-events",
-          "coverage (PostgreSQL)",
-          "object storage (MinIO)",
-          "postgres (pg17)",
-          "postgres (pg18)"
-        ]
-      },
+      "$comment": ["ADR-095's stabilization tier: develop -> integration -> main. Same","protection as develop, and the same required checks for the same reason.","","Omitting it left the promotion path open — a change could reach","integration directly, or red, and then be promoted to main through a","gate that only ever inspected the integration->main hop."],
+      "required_status_checks": {"strict": true,"contexts": ["docker-build","hive-conductor-e2e","hive-conductor-e2e-ui","lint-and-type-check","security","test","wheel-imports","workflow-lint","block","formal-conformance","Gate C — canonical clean install","Validate ADR/spec front-matter","exact-debt-ledger","Quality gate (Pillars 1–4, 7, 8)","SAST (bandit + semgrep + gitleaks)","Supply chain (pip-audit)","coverage (no services)","coverage (MinIO)","Coverage gate (publish-set floor + diff coverage)","strike-ladder","durable-events","coverage (PostgreSQL)","object storage (MinIO)","postgres (pg17)","postgres (pg18)"]},
       "enforce_admins": false,
-      "required_pull_request_reviews": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews": true,
-        "require_code_owner_reviews": false,
-        "require_last_push_approval": false
-      },
-      "restrictions": null,
-      "required_linear_history": true,
-      "allow_force_pushes": false,
-      "allow_deletions": false,
-      "required_conversation_resolution": true,
-      "block_creations": false,
-      "lock_branch": false,
-      "allow_fork_syncing": false
+      "required_pull_request_reviews": {"required_approving_review_count":0,"dismiss_stale_reviews":true,"require_code_owner_reviews":false,"require_last_push_approval":false},
+      "restrictions": null,"required_linear_history": true,"allow_force_pushes": false,"allow_deletions": false,"required_conversation_resolution": true,"block_creations": false,"lock_branch": false,"allow_fork_syncing": false
     },
     "main": {
-      "$comment": [
-        "ADR-095: 1 required approval on the release tier, and only here.",
-        "CI cannot tell whether a test proves its criterion or merely restates",
-        "it, and a tautological test passes every gate in the chain.",
-        "",
-        "Nineteen checks: the fifteen above plus the four that only run on a",
-        "main-based PR — CodeQL's three matrix legs, and the container scan",
-        "whose job `if:` tests base_ref == 'main'. On main they report, so on",
-        "main they are required.",
-        "",
-        "enforce_admins stays false here, per ADR-095: 'a solo maintainer/agent",
-        "isn't deadlocked'. It is also load-bearing for the cage guard, whose",
-        "own failure message says an admin may merge a legitimate cage/eval",
-        "change manually — true only while admins can bypass a required check."
-      ],
-      "required_status_checks": {
-        "strict": true,
-        "contexts": [
-          "docker-build",
-          "hive-conductor-e2e",
-          "hive-conductor-e2e-ui",
-          "lint-and-type-check",
-          "security",
-          "test",
-          "wheel-imports",
-          "workflow-lint",
-          "block",
-          "formal-conformance",
-          "Validate ADR/spec front-matter",
-          "exact-debt-ledger",
-          "Quality gate (Pillars 1–4, 7, 8)",
-          "SAST (bandit + semgrep + gitleaks)",
-          "Supply chain (pip-audit)",
-          "Container scan + SBOM + cosign",
-          "Analyze (actions)",
-          "Analyze (javascript-typescript)",
-          "Analyze (python)",
-          "coverage (no services)",
-          "coverage (MinIO)",
-          "Coverage gate (publish-set floor + diff coverage)",
-          "strike-ladder",
-          "durable-events",
-          "coverage (PostgreSQL)",
-          "object storage (MinIO)",
-          "postgres (pg17)",
-          "postgres (pg18)"
-        ]
-      },
+      "$comment": ["ADR-095: 1 required approval on the release tier, and only here.","CI cannot tell whether a test proves its criterion or merely restates","it, and a tautological test passes every gate in the chain.","","The develop/integration checks apply here too, plus the checks that only","run on main-based PRs — CodeQL's three matrix legs and the container scan","whose job `if:` tests base_ref == 'main'. On main they report, so on","main they are required.","","enforce_admins stays false here, per ADR-095: 'a solo maintainer/agent","isn't deadlocked'. It is also load-bearing for the cage guard, whose","own failure message says an admin may merge a legitimate cage/eval","change manually — true only while admins can bypass a required check."],
+      "required_status_checks": {"strict": true,"contexts": ["docker-build","hive-conductor-e2e","hive-conductor-e2e-ui","lint-and-type-check","security","test","wheel-imports","workflow-lint","block","formal-conformance","Gate C — canonical clean install","Validate ADR/spec front-matter","exact-debt-ledger","Quality gate (Pillars 1–4, 7, 8)","SAST (bandit + semgrep + gitleaks)","Supply chain (pip-audit)","Container scan + SBOM + cosign","Analyze (actions)","Analyze (javascript-typescript)","Analyze (python)","coverage (no services)","coverage (MinIO)","Coverage gate (publish-set floor + diff coverage)","strike-ladder","durable-events","coverage (PostgreSQL)","object storage (MinIO)","postgres (pg17)","postgres (pg18)"]},
       "enforce_admins": false,
-      "required_pull_request_reviews": {
-        "required_approving_review_count": 1,
-        "dismiss_stale_reviews": true,
-        "require_code_owner_reviews": false,
-        "require_last_push_approval": false
-      },
-      "restrictions": null,
-      "required_linear_history": true,
-      "allow_force_pushes": false,
-      "allow_deletions": false,
-      "required_conversation_resolution": true,
-      "block_creations": false,
-      "lock_branch": false,
-      "allow_fork_syncing": false
+      "required_pull_request_reviews": {"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_code_owner_reviews":false,"require_last_push_approval":false},
+      "restrictions": null,"required_linear_history": true,"allow_force_pushes": false,"allow_deletions": false,"required_conversation_resolution": true,"block_creations": false,"lock_branch": false,"allow_fork_syncing": false
     }
   },
-  "advisory": {
-    "$comment": [
-      "Checks that run on PRs and are deliberately NOT required, each with the",
-      "reason. check-branch-protection.py fails when a PR check is in neither",
-      "this map nor a branch's contexts — so adding a gate to CI forces a",
-      "decision about whether it is part of the merge contract, rather than",
-      "letting it default to advisory by being forgotten."
-    ]
-  },
-  "repository": {
-    "allow_auto_merge": true,
-    "delete_branch_on_merge": true,
-    "$comment": [
-      "Auto-merge is safe only once the contexts above are required: GitHub's",
-      "auto-merge waits for *required* checks, so arming it with none configured",
-      "merges immediately. That ordering is the whole reason #162 is blocked by",
-      "#161 — the names have to exist and be stable first.",
-      "",
-      "Linear history is required on all three branches (ADR-095), so merges are",
-      "squash or rebase, never merge commits."
-    ]
-  }
+  "advisory": {"$comment": ["Checks that run on PRs and are deliberately NOT required, each with the","reason. check-branch-protection.py fails when a PR check is in neither","this map nor a branch's contexts — so adding a gate to CI forces a","decision about whether it is part of the merge contract, rather than","letting it default to advisory by being forgotten."]},
+  "repository": {"allow_auto_merge": true,"delete_branch_on_merge": true,"$comment": ["Auto-merge is safe only once the contexts above are required: GitHub's","auto-merge waits for *required* checks, so arming it with none configured","merges immediately. That ordering is the whole reason #162 is blocked by","#161 — the names have to exist and be stable first.","","Linear history is required on all three branches (ADR-095), so merges are","squash or rebase, never merge commits."]}
 }
