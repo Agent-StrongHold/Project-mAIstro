@@ -15,7 +15,6 @@ import {
   Plug,
   KeyRound,
   Settings,
-  Presentation,
   Workflow,
   PlayCircle,
   Bot,
@@ -38,7 +37,8 @@ const fullNav = [
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
-  { to: "/decks", icon: Presentation, label: "Decks" },
+  // M0 containment for #311: Deck Builder is intentionally absent until
+  // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
   { to: "/rsi", icon: Repeat, label: "RSI" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
   { to: "/credentials", icon: KeyRound, label: "Credentials" },
