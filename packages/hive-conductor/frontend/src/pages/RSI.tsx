@@ -7,6 +7,10 @@ const API = "/v1/rsi";
 
 type RsiStatus = { available: boolean; active_runs: number; total_runs: number };
 type ModelOption = { id: string; label: string; tier: string };
+// A test command the SERVER holds, as its argument vector (#305). The page
+// shows the argv so an operator can see exactly what a profile runs; it
+// sends only the name, and the backend never accepts a command.
+type TestProfile = { name: string; argv: string[] };
 
 type Run = {
   run_id: string;
@@ -48,6 +52,7 @@ export default function RSI() {
   const [status, setStatus] = useState<RsiStatus | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [profiles, setProfiles] = useState<TestProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
@@ -59,7 +64,7 @@ export default function RSI() {
 
   // start-run form
   const [repoPath, setRepoPath] = useState("");
-  const [testCmd, setTestCmd] = useState("");
+  const [testProfile, setTestProfile] = useState("");
   const [model, setModel] = useState("glm-4.7");
   const [cycles, setCycles] = useState(10);
   const [agentTurns, setAgentTurns] = useState(2);
@@ -71,10 +76,11 @@ export default function RSI() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, r, m] = await Promise.all([
+      const [s, r, m, p] = await Promise.all([
         fetch(`${API}/status`),
         fetch(`${API}/runs`),
         fetch(`${API}/models`),
+        fetch(`${API}/test-profiles`),
       ]);
       if (s.ok) setStatus(await s.json());
       if (r.ok) {
@@ -84,6 +90,15 @@ export default function RSI() {
       if (m.ok) {
         const data = await m.json();
         setModels(data.models || []);
+      }
+      if (p.ok) {
+        const data = await p.json();
+        const list = (data.profiles || []) as TestProfile[];
+        setProfiles(list);
+        // Only default to a profile that exists. Pre-selecting a name the
+        // deployment does not offer would make the form look ready and the
+        // request fail.
+        setTestProfile((current) => (list.some((x) => x.name === current) ? current : list[0]?.name ?? ""));
       }
     } finally {
       setLoading(false);
@@ -113,7 +128,7 @@ export default function RSI() {
   }, [selectedRun]);
 
   const startRun = async () => {
-    if (!repoPath || !testCmd) return;
+    if (!repoPath || !testProfile) return;
     setBusy(true);
     try {
       const resp = await fetch(`${API}/runs`, {
@@ -122,7 +137,7 @@ export default function RSI() {
         body: JSON.stringify({
           mode: "cleanup",
           repo_path: repoPath,
-          test_command: testCmd,
+          test_profile: testProfile,
           cycles,
           agent_turns: agentTurns,
           model,
@@ -218,8 +233,14 @@ export default function RSI() {
             </select>
           </label>
           <label className="text-xs text-slate-400 md:col-span-3">
-            Test command (exit 0 ⇔ healthy)
-            <input className="mt-1 w-full rounded border border-white/10 bg-slate-950 px-2 py-1 text-sm font-mono" value={testCmd} onChange={(e) => setTestCmd(e.target.value)} placeholder="python -m pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -q" />
+            Test profile (exit 0 ⇔ healthy)
+            <select className="mt-1 w-full rounded border border-white/10 bg-slate-950 px-2 py-1 text-sm" value={testProfile} onChange={(e) => setTestProfile(e.target.value)}>
+              {profiles.length === 0 && <option value="">no test profiles configured</option>}
+              {profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+            </select>
+            <span className="mt-1 block font-mono text-[11px] text-slate-500">
+              {profiles.find((p) => p.name === testProfile)?.argv.join(" ") ?? "—"}
+            </span>
           </label>
           <label className="text-xs text-slate-400">
             Cycles
@@ -242,7 +263,7 @@ export default function RSI() {
             <label className="flex items-center gap-2"><input type="checkbox" checked={scout} onChange={(e) => setScout(e.target.checked)} /> Scout</label>
           </div>
         </div>
-        <button onClick={startRun} disabled={busy || !repoPath || !testCmd} className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+        <button onClick={startRun} disabled={busy || !repoPath || !testProfile} className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           <Play className="h-4 w-4" />{busy ? "Starting…" : "Start run"}
         </button>
       </section>

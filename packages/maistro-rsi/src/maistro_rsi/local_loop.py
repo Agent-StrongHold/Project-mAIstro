@@ -2151,6 +2151,7 @@ class LocalRsiLoop:
             cycle_dir,
             changed_files,
             test_command=self._config.test_command,
+            test_argv=self._config.test_argv,
             coverage_source=self._config.coverage_source,
             coverage_pytest_args=self._config.coverage_pytest_args,
             baseline_coverage=self._baseline_coverage(),
