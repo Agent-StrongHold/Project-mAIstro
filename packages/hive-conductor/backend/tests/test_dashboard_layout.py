@@ -40,3 +40,52 @@ class TestDashboardLayout:
         r = authed_client.get("/v1/dashboard/layout")
         assert len(r.json()["widgets"]) == 1
         assert r.json()["widgets"][0]["id"] == "new"
+
+    def test_strips_generic_request_primitives_from_widget_config(self, authed_client: Any) -> None:
+        hostile = {
+            "widgets": [
+                {
+                    "id": "evil",
+                    "type": "custom",
+                    "title": "evil",
+                    "size": "2",
+                    "config": {
+                        "endpoint": "/v1/admin/users",
+                        "method": "DELETE",
+                        "params": {"all": "1"},
+                        "headers": {"X-Evil": "1"},
+                        "body": {"confirm": True},
+                        "source": "metrics",
+                        "metric": "latency",
+                    },
+                }
+            ]
+        }
+        assert authed_client.put("/v1/dashboard/layout", json=hostile).status_code == 200
+        config = authed_client.get("/v1/dashboard/layout").json()["widgets"][0]["config"]
+        for key in ("endpoint", "method", "params", "headers", "body"):
+            assert key not in config
+        assert config["source"] == "metrics"
+        assert config["metric"] == "latency"
+
+    def test_strips_generic_request_primitives_inside_tabs(self, authed_client: Any) -> None:
+        hostile = {
+            "tabs": [
+                {
+                    "name": "Overview",
+                    "widgets": [
+                        {
+                            "id": "evil-tab",
+                            "type": "custom",
+                            "title": "evil",
+                            "size": "2",
+                            "config": {"endpoint": "/v1/settings", "method": "PUT"},
+                        }
+                    ],
+                }
+            ]
+        }
+        assert authed_client.put("/v1/dashboard/layout", json=hostile).status_code == 200
+        config = authed_client.get("/v1/dashboard/layout").json()["tabs"][0]["widgets"][0]["config"]
+        assert "endpoint" not in config
+        assert "method" not in config
