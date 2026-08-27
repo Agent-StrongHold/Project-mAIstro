@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
 type Mode = "login" | "signup";
@@ -46,14 +46,44 @@ type LoginProps = {
 
 export default function Login({ onAuthenticated }: LoginProps) {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<Mode>("login");
+  const [inviteToken] = useState(
+    () => new URLSearchParams(window.location.search).get("invite") ?? "",
+  );
+  const [mode, setMode] = useState<Mode>(inviteToken ? "signup" : "login");
+  const [registrationAvailable, setRegistrationAvailable] = useState(Boolean(inviteToken));
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+    void fetch("/v1/setup/registration-policy", { credentials: "same-origin" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error("registration policy unavailable");
+        return (await res.json()) as { mode?: string };
+      })
+      .then((policy) => {
+        if (!active) return;
+        const available = policy.mode === "open" || Boolean(inviteToken);
+        setRegistrationAvailable(available);
+        if (!available) setMode("login");
+      })
+      .catch(() => {
+        if (!active) return;
+        // Fail closed in the UI too. A valid invitation still gets a form; the
+        // backend remains the authority and validates/claims it on submit.
+        setRegistrationAvailable(Boolean(inviteToken));
+        if (!inviteToken) setMode("login");
+      });
+    return () => {
+      active = false;
+    };
+  }, [inviteToken]);
+
   function switchMode(next: Mode) {
+    if (next === "signup" && !registrationAvailable) return;
     setMode(next);
     setError(null);
     setConfirmPassword("");
@@ -111,6 +141,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
           username: username.trim(),
           password,
           confirm_password: confirmPassword,
+          ...(inviteToken ? { invite_token: inviteToken } : {}),
         }),
       });
       if (!res.ok) {
@@ -189,22 +220,24 @@ export default function Login({ onAuthenticated }: LoginProps) {
           >
             Sign in
           </button>
-          <button
-            type="button"
-            className="btn"
-            style={{
-              flex: 1,
-              borderRadius: 0,
-              border: "none",
-              background: mode === "signup" ? "var(--accent)" : "transparent",
-              color: mode === "signup" ? "var(--paper)" : "var(--ink)",
-              fontFamily: "var(--mono)",
-              fontSize: 10,
-            }}
-            onClick={() => switchMode("signup")}
-          >
-            Sign up
-          </button>
+          {registrationAvailable && (
+            <button
+              type="button"
+              className="btn"
+              style={{
+                flex: 1,
+                borderRadius: 0,
+                border: "none",
+                background: mode === "signup" ? "var(--accent)" : "transparent",
+                color: mode === "signup" ? "var(--paper)" : "var(--ink)",
+                fontFamily: "var(--mono)",
+                fontSize: 10,
+              }}
+              onClick={() => switchMode("signup")}
+            >
+              Sign up
+            </button>
+          )}
         </div>
 
         {error && (
