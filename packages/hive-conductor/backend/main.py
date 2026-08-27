@@ -59,6 +59,7 @@ from routes import (
 from routes import (
     optimizer as optimizer_r,
 )
+from routes import registration_policy as registration_policy_r
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
@@ -259,6 +260,10 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestLogMiddleware)
     app.add_middleware(AuthMiddleware)
+    # Registration is a public route for invitation/open-policy operation, so
+    # its fail-closed decision must wrap AuthMiddleware rather than live behind
+    # the public-route bypass. SecurityHeaders stays outermost below.
+    app.add_middleware(registration_policy_r.RegistrationPolicyMiddleware)
 
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
@@ -284,11 +289,13 @@ def create_app() -> FastAPI:
     app.include_router(memory.router, prefix="/v1/memory")
     app.include_router(profile.router, prefix="/v1/profile")
     app.include_router(settings_r.router, prefix="/v1/settings")
+    app.include_router(registration_policy_r.admin_router, prefix="/v1/settings")
     app.include_router(capabilities.router, prefix="/v1/capabilities")
     app.include_router(harness.router, prefix="/v1/harness")
     app.include_router(voice.router, prefix="/v1/voice")
     app.include_router(ws.router, prefix="/v1/ws")
     app.include_router(setup.router, prefix="/v1/setup")
+    app.include_router(registration_policy_r.public_router, prefix="/v1/setup")
     app.include_router(setup_checklist.router, prefix="/v1/setup-checklist")
     app.include_router(widgets.router, prefix="/v1/widgets")
     app.include_router(dags.router, prefix="/v1/dags")
