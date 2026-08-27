@@ -18,5 +18,7 @@
 
 services:
   maistro-engine:
+    environment:
+      - SANDBOX_READINESS_REQUIRED=true
     volumes:
       - ${MAISTRO_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
