@@ -140,6 +140,7 @@ async def run_durable_graph(
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    blackboard_metadata: Mapping[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start and execute a durable graph from its canonical entry frontier.
 
@@ -166,7 +167,7 @@ async def run_durable_graph(
         active_node_ids=(_entry_node(graph),),
         blackboard_snapshot={
             "task_objective": graph.name,
-            "metadata": {},
+            "metadata": dict(blackboard_metadata or {}),
             "node_annotations": {},
         },
         metadata={"initial_inputs": dict(inputs or {}), "hitl_answers": {}},
@@ -1091,6 +1092,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         dag_id=record.run.graph.graph_id,
         node_id=node_id,
         user_id=record.run.actor_principal_id,
+        workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         blackboard=blackboard,
         metadata={
