@@ -35,7 +35,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 #: The only isolation backend an HTTP-initiated run may use. `LocalSandbox`
 #: (both copies of it — `maistro_rsi.sandbox.local` and the shadow in
@@ -71,7 +71,18 @@ class TestProfile:
     argv: tuple[str, ...]
 
 
-def _settings():  # type: ignore[no-untyped-def]
+def _settings() -> Any:
+    """The Conductor's settings, imported at call time.
+
+    Annotated rather than suppressed. The blanket per-line waiver that used to
+    stand here was flagged by the autonomous-merge integrity check, and it was
+    the wrong instrument regardless: the import is deferred because
+    `backend/` is a flat layout resolved by `sys.path` and importing `config`
+    at module scope makes this module unimportable from anywhere else, which
+    is a fact about the layout rather than about the type. Every read of the
+    result already goes through `getattr(..., default)`, so `Any` is what the
+    callers actually rely on.
+    """
     from config import get_settings
 
     return get_settings()
