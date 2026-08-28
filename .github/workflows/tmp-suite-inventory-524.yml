@@ -1,4 +1,4 @@
-name: Temporary #524 Suite Inventory Generator
+name: "Temporary #524 Suite Inventory Generator"
 
 on:
   push:
@@ -23,14 +23,14 @@ jobs:
         run: |
           uv sync --locked --extra dev --extra bootstrap
           uv pip install --system -r packages/hive-conductor/backend/requirements.txt
-      - name: Generate #524 inventory delta
+      - name: "Generate #524 inventory delta"
         run: python scripts/check-suite-inventory.py --update --note 524-persona-template-provenance
       - name: Explain the inventory movement
         run: |
           cat >> docs/testing/inventory-notes/524-persona-template-provenance.md <<'EOF'
 
-The Persona template source-provenance slice adds focused maistro-core tests for native and legacy YAML source classification, loader-attested provenance, spoof resistance, and serialization behavior. This note records only the resulting collected-node-ID movement; no suite was removed or skipped.
-EOF
+          The Persona template source-provenance slice adds focused maistro-core tests for native and legacy YAML source classification, loader-attested provenance, spoof resistance, and serialization behavior. This note records only the resulting collected-node-ID movement; no suite was removed or skipped.
+          EOF
       - name: Commit generated note on temporary branch
         run: |
           git config user.name "github-actions[bot]"
