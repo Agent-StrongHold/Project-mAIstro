@@ -36,11 +36,11 @@ Runner cost for the check set is measured in
 
 `.github/workflows/gates-ran.yml` produces a check named **`gates-ran`** that
 must be marked required alongside the table below, and it is **absent from the
-table by construction**. The generator walks workflows reachable from a
-`pull_request:` trigger; this one triggers on `workflow_run:`, because the
-question it asks — did every required check actually run on this head? — cannot
-be answered from inside any of the workflows being asked about. A job in
-`ci.yml` cannot see whether `quality.yml` ran.
+table by construction**. The generator walks workflows reachable from either a
+`pull_request:` or base-trusted `pull_request_target:` trigger; this one triggers
+on `workflow_run:`, because the question it asks — did every required check
+actually run on this head? — cannot be answered from inside any of the workflows
+being asked about. A job in `ci.yml` cannot see whether `quality.yml` ran.
 
 It exists because a check that never reports is not red, it is *absent*, and
 absence renders as an empty space where a tick would go. On
@@ -68,14 +68,17 @@ recorded here rather than left to be discovered.
 Three values appear in the `Runs on` column, and the distinction is the whole
 point of [#161](https://github.com/Agent-StrongHold/Project-mAIstro/issues/161):
 
-- **every PR** — no trigger filter. The check is a function of the change.
+- **every PR** — no trigger filter. The check is a function of the change. This
+  includes base-trusted `pull_request_target` judges; the trigger changes where
+  the workflow definition is loaded from, not whether the check reports on the
+  PR.
 - **paths** — a `paths:` filter. Still a function of the change, so still
   legitimate. See the caveat below before making one of these required.
-- **base `<branch>`** — a `branches:` filter on `pull_request`, which matches the
-  PR's **base**. A check scoped this way means something different depending on
-  what the PR is stacked on. Every one of these was removed in #161 except the
-  deliberate exclusions named below; do not add another without recording why
-  here.
+- **base `<branch>`** — a `branches:` filter on `pull_request` or
+  `pull_request_target`, which matches the PR's **base**. A check scoped this way
+  means something different depending on what the PR is stacked on. Every one
+  of these was removed in #161 except the deliberate exclusions named below; do
+  not add another without recording why here.
 - **`job if:` on base_ref** — the same coupling one level down. The workflow
   triggers on every PR, and the *job* declines to run unless the base matches:
 
@@ -128,6 +131,7 @@ let it be silently neither.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
+| Autonomous Merge Safety | `autonomous-merge-admissibility` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
