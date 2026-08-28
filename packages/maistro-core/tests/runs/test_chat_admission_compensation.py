@@ -215,7 +215,9 @@ class TestTheOrdinaryPathIsUnchanged:
         assert run.status is RunStatus.RUNNING
         assert run.error is None
 
-    async def test_no_run_is_created_when_the_admitter_itself_fails(self) -> None:
+    async def test_no_run_is_created_when_the_admitter_itself_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Nothing to compensate, and nothing stranded: the failure happened
         before any Run existed. Compensation must not invent one."""
         container = await _container()
@@ -227,18 +229,20 @@ class TestTheOrdinaryPathIsUnchanged:
             raise RuntimeError("admission is down")
 
         assert container.chat_admitter is not None
-        container.chat_admitter.admit = refuse  # type: ignore[method-assign]
+        monkeypatch.setattr(container.chat_admitter, "admit", refuse)
 
         assert await container._admit_chat_turn(MESSAGES) is None
         # Nothing reached a transition, so nothing was ever QUEUED and
         # there is no row for compensation to have missed.
         assert container.run_store.touched == []
 
-    async def test_an_unwired_admitter_is_still_not_an_error(self) -> None:
+    async def test_an_unwired_admitter_is_still_not_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A turn is never refused for want of a Run -- the rule this path had
         before #338 and still has."""
         container = await _container()
-        container.chat_admitter = None  # type: ignore[assignment]
+        monkeypatch.setattr(container, "chat_admitter", None)
 
         assert await container._admit_chat_turn(MESSAGES) is None
 
