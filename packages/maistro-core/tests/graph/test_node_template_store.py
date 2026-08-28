@@ -195,9 +195,7 @@ async def test_registering_identical_content_again_is_a_no_op(store: Any, reques
     assert await store.versions(template_id) == [1]
 
 
-async def test_redefining_a_version_with_other_content_is_refused(
-    store: Any, request: Any
-) -> None:
+async def test_redefining_a_version_with_other_content_is_refused(store: Any, request: Any) -> None:
     """The rule AC-7 rests on. A Node's `source_template` records the version
     and the hash, so silently redefining a version would make every object that
     already cites it cite something it never came from."""
@@ -208,9 +206,7 @@ async def test_redefining_a_version_with_other_content_is_refused(
         await store.put(_template(template_id=template_id, parameters={"model": "opus"}))
 
 
-async def test_the_refused_write_leaves_the_stored_version_intact(
-    store: Any, request: Any
-) -> None:
+async def test_the_refused_write_leaves_the_stored_version_intact(store: Any, request: Any) -> None:
     """A refusal that had already written half of itself would be worse than
     no refusal: the caller sees an error and the row is changed anyway."""
     template_id = _ids(request)
