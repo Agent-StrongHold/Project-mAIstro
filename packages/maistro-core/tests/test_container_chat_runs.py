@@ -107,6 +107,19 @@ async def test_cancelled_turn_observes_cancelled_run_without_false_terminalizati
     assert "could not be terminalized" not in caplog.text
 
 
+async def test_cancelled_close_rejects_error_payload() -> None:
+    """Cancellation is a terminal cause, not a second failure payload."""
+    container = await _container()
+    run = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+
+    with pytest.raises(ValueError, match="cannot carry error or result"):
+        await container._close_chat_run(run, cancelled=True, error="provider_error")
+
+    unchanged = await container.run_store.get_run(run.run_id)
+    assert unchanged is not None
+    assert unchanged.status is RunStatus.CREATED
+
+
 async def test_the_turn_is_answered_even_when_admission_fails() -> None:
     """The chat path has no receipt to fall back on, so it must not refuse."""
     container = await _container()
