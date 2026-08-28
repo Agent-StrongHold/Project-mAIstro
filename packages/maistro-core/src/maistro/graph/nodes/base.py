@@ -14,6 +14,7 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
@@ -21,6 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
+
+# An override may handle one synthesized node and return None to delegate back
+# to the parent durable executor's production resolver. The runner itself is an
+# ephemeral execution capability: it is deliberately excluded from NodeContext
+# serialization so stores never receive runtime/service objects.
+ChildNodeOverride = Callable[[str, Any], Any | None]
+ChildGraphRunner = Callable[[Any, dict[str, Any], ChildNodeOverride | None], Awaitable[Any]]
 
 # Categorical taxonomy. The optimizer + UI reason about category, not just
 # kind. e.g. "wait" + "hitl" categories trigger durable run-state checkpoints;
@@ -53,10 +61,15 @@ class NodeContext(BaseModel):
     node_run_id: str = ""
     attempt_id: str = ""
     user_id: str | None = None
+    workspace_id: str | None = None
     project_id: str | None = None
     # blackboard kept as Any so we don't force a circular import on
     # maistro.graph.types; in practice this is GraphBlackboard.
     blackboard: Any = None
+    # Durable execution injects this only while the physical Attempt is
+    # running. Composite nodes use it to launch canonical child Runs without
+    # importing or owning the durable store/runtime themselves.
+    child_graph_runner: ChildGraphRunner | None = Field(default=None, exclude=True, repr=False)
     # Caller-provided budget hint; nodes may decline to run if exceeded.
     deadline_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
