@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -387,17 +388,29 @@ class TestGeneratedTables:
         assert gate.doc_problems(gate.load_ruleset(), contract.collect(), update=False) == []
 
     def test_a_changed_count_fails(self, gate, tmp_path, monkeypatch) -> None:
-        """Acceptance for #268, half one: mutate a count, see it caught."""
+        """Acceptance for #268, half one: mutate a count, see it caught.
+
+        The count is found in the rendered table rather than written here as a
+        literal. A literal made this test fail the moment the required-check
+        set grew: the replace stopped matching, the document went unmutated,
+        and the gate correctly reported nothing — which is the one outcome a
+        mutation test cannot tell apart from a broken gate.
+        """
         doc = tmp_path / "BRANCH-PROTECTION.md"
         ruleset = gate.load_ruleset()
         contract = gate._contract()
         rows = contract.collect()
+        rendered = gate.render_doc_tables(ruleset, rows)
         doc.write_text(
-            f"{gate.DOC_BEGIN}\n\n{gate.render_doc_tables(ruleset, rows)}\n\n{gate.DOC_END}\n",
+            f"{gate.DOC_BEGIN}\n\n{rendered}\n\n{gate.DOC_END}\n",
             encoding="utf-8",
         )
+
+        counted = re.search(r"\| \*\*(\d+)\*\* \|", rendered)
+        assert counted, "the branch table renders no bolded count to mutate"
+        wrong = f"| **{int(counted.group(1)) + 1}** |"
         doc.write_text(
-            doc.read_text(encoding="utf-8").replace("| **24** |", "| **15** |", 1), encoding="utf-8"
+            doc.read_text(encoding="utf-8").replace(counted.group(0), wrong, 1), encoding="utf-8"
         )
         monkeypatch.setattr(gate, "DOC", doc)
         problems = gate.doc_problems(ruleset, rows, update=False)
