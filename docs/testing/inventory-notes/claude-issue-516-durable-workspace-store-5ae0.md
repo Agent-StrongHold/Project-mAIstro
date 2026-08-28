@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +72
+  packages/maistro-core/tests: +76
 ---
 # claude-issue-516-durable-workspace-store-5ae0
 
@@ -87,3 +87,27 @@ Project still present, and passes `[memory]`. That split is the defect in one
 line -- the only backend that worked was the only one the old test could
 distinguish.
 
+## Revised again after CI's diff-coverage gate (+4, 76 total)
+
+Two tests in `tests/projects/test_scope_store_conformance.py`, each running on
+both durable backends. The gate could not see the gap until the branch had a
+merge base with `develop` again; once it did, it named `purge_workspace`'s
+overflow path in both stores -- `pg_scope_store.py` 87/91 and
+`sqlite_scope_store.py` 130/131/135, the `ProjectIntegrityError` raise and, on
+SQLite, the rollback before it.
+
+- `test_a_tree_deeper_than_the_purge_bound_fails_rather_than_spinning` -- the
+  delete runs leaf-first and repeats until a pass removes nothing, so its
+  termination rests on there being no cycle, an invariant `move_project`
+  enforces somewhere else entirely. If that ever breaks the request has to
+  FAIL; an unbounded loop would hang it, and a hung delete is the harder
+  failure to diagnose. `_MAX_PURGE_PASSES` is patched down rather than met:
+  building a sixty-five-deep tree would prove something about the number
+  sixty-five, not about the branch.
+- `test_a_tree_within_the_bound_is_purged_whole` -- the loop's normal exit and
+  what it leaves behind, so the pair covers both ways out of it.
+
+The second test first asserted `pytest.raises(ProjectNotFound)` on the purged
+descendant and failed. `get` answers absence with `None`; the assertion was
+wrong, not the store. It now asks the question directly, of the deepest
+descendant and of the Root.
