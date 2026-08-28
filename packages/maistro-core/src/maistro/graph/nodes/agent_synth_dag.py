@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 
 from maistro.graph.depth import can_spawn, get_role
 from maistro.graph.synth import DagSynthesizer, RuleDagSynthesizer, SynthRequest, SynthResult
-from maistro.runs.model import RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.security.dag_shape import (
     DEFAULT_PRINCIPAL,
     DagShapeVerdict,
@@ -63,6 +63,7 @@ from .base import BaseNode, NodeContext
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
     from maistro.graph.definitions import Graph
+    from maistro.graph.durable_runs.attempt_executor import NodeResolver
     from maistro.graph.durable_runs.protocol import DurableRunStore
     from maistro.graph.types import GraphConfig
     from maistro.runtime import ExecutionRuntime
@@ -147,7 +148,24 @@ def _registered(kind: str) -> bool:
     return True
 
 
-def _undispatchable_reason(config: GraphConfig, ctx: NodeContext) -> str | None:
+def _requires_inputs(kind: str) -> bool:
+    """Whether this kind's entry schema demands a field nothing here can supply.
+
+    A synthesized `GraphConfig` carries no per-node inputs — `NodeConfig` has
+    no such field — so a child whose entry node requires one is a Run created
+    to fail validation. Declining is the honest answer; inventing a value
+    would be worse.
+    """
+    try:
+        schema = get_node(kind).input_schema
+    except KeyError:  # pragma: no cover - callers check `_registered` first
+        return False
+    return any(field.is_required() for field in schema.model_fields.values())
+
+
+def _undispatchable_reason(
+    config: GraphConfig, ctx: NodeContext, available_kinds: list[str]
+) -> str | None:
     """Why an approved config cannot execute canonically, or None when it can.
 
     Node ids in the child graph are the kinds themselves, so a config the
@@ -160,10 +178,24 @@ def _undispatchable_reason(config: GraphConfig, ctx: NodeContext) -> str | None:
     unregistered = sorted({name for name in names if not _registered(name)})
     if unregistered:
         return f"synthesized kinds are not registered nodes: {', '.join(unregistered)}"
+    # The caller's allowlist is a boundary, not a hint. `available_kinds` is
+    # only ever *described* to the synthesizer — `LLMDagSynthesizer` puts it in
+    # a prompt — so a malformed or prompt-injected response can name any
+    # registered kind, including external-I/O and delegation nodes, and the
+    # shape review upstream judges width and cost rather than identity. An
+    # empty list means the caller named no restriction and the registry is the
+    # only bound.
+    if available_kinds:
+        allowed = set(available_kinds)
+        outside = sorted({name for name in names if name not in allowed})
+        if outside:
+            return f"synthesized kinds outside the requested allowlist: {', '.join(outside)}"
     if len(set(names)) != len(names):
         return "duplicate node kinds cannot be addressed unambiguously by edges"
     if str(config.entry) not in names:
         return f"entry node {config.entry!s} is not among the synthesized nodes"
+    if _requires_inputs(str(config.entry)):
+        return f"entry node {config.entry!s} requires inputs a synthesized config cannot supply"
     if not ctx.workspace_id or not ctx.project_id:
         return "execution context carries no Workspace/Project scope"
     return None
@@ -232,11 +264,13 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         max_depth: int = _DEFAULT_MAX_DEPTH,
         run_store: DurableRunStore | None = None,
         runtime: ExecutionRuntime | None = None,
+        node_resolver: NodeResolver | None = None,
     ) -> None:
         self._synthesizer: DagSynthesizer = synthesizer or RuleDagSynthesizer()
         self._llm_call = llm_call
         self._run_store = run_store
         self._runtime = runtime
+        self._node_resolver = node_resolver
         self._warden = warden or Warden()
         self._sentinel = sentinel or Sentinel(warden=self._warden, permission_table={})
         self._principal = principal or DEFAULT_PRINCIPAL
@@ -244,6 +278,20 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             proportionality_judge or RuleProportionalityJudge()
         )
         self._max_depth = max_depth
+
+    def _child_resolver(self) -> NodeResolver:
+        """The resolver the child graph builds its nodes with.
+
+        The caller's wired one when there is one. `build_node_resolver` is
+        where `agent.spawn_harness` gets its adapters, `agent.delegate_remote`
+        its delegator and RunStore, and `rsi.quota_pace_trigger` the real usage
+        log; constructing those from the bare registry passes `_registered`
+        and then fails or computes against empty state inside the child. The
+        bare fallback keeps a node built with no wiring behaving as it did.
+        """
+        if self._node_resolver is not None:
+            return self._node_resolver
+        return lambda node_id, graph: get_node(_node_kind(graph, node_id))()
 
     async def _judge(self, objective: str, synth: SynthResult) -> DagShapeVerdict:
         node_kinds = [str(n) for n in synth.graph_config.nodes]
@@ -339,7 +387,9 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
                 ),
             )
 
-        undispatchable = _undispatchable_reason(synth.graph_config, ctx)
+        undispatchable = _undispatchable_reason(
+            synth.graph_config, ctx, inputs.available_kinds
+        )
         if undispatchable is not None:
             return SynthDagOut(
                 success=True,
@@ -353,9 +403,17 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         child = await run_durable_graph(
             _child_graph(synth.graph_config, inputs.objective, ctx),
             store=self._run_store,
-            node_resolver=lambda node_id, graph: get_node(_node_kind(graph, node_id))(),
+            node_resolver=self._child_resolver(),
             actor_principal_id=ctx.user_id,
-            runtime=self._runtime,
+            # Deliberately NOT `self._runtime`. `ExecutionRuntime.execute`
+            # holds a semaphore slot for the whole executor call, so the
+            # parent Attempt is holding one while this awaits the child. On a
+            # runtime with `max_concurrency=1` that is a guaranteed deadlock,
+            # and on any bound a frontier of synth nodes can occupy every slot
+            # while each waits for a child that cannot get one. The child gets
+            # its own runtime and its own budget; sharing one would make
+            # dispatch depend on capacity its own caller is consuming.
+            runtime=None,
             parent_run_id=ctx.run_id,
             parent_node_run_id=ctx.node_run_id or None,
             provenance={
@@ -366,7 +424,13 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             # so a nested agent.synth_dag inside it hits the same hard cap.
             blackboard_metadata={"synth_depth": depth + 1},
         )
-        succeeded = child.status is RunStatus.COMPLETED
+        # A child parked WAITING or PAUSED has not failed — it is a wait or a
+        # HITL pause the subgraph is entitled to, and calling it a failure
+        # would put `sub-graph execution failed` on a Run that is still live.
+        # Dispatch is what this node is responsible for; the child's outcome
+        # is observable through `child_run_id` on the canonical spine.
+        settled = child.status in TERMINAL_RUN_STATUSES
+        succeeded = child.status is RunStatus.COMPLETED or not settled
         return SynthDagOut(
             success=succeeded,
             dispatched=True,

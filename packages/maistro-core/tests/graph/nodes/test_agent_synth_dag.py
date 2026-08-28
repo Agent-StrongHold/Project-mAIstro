@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import Any, ClassVar
 
@@ -374,3 +375,129 @@ def test_node_kind_resolves_later_nodes_and_refuses_unknown_ids() -> None:
     assert _node_kind(graph, "b") == "kind.b"
     with pytest.raises(KeyError):
         _node_kind(graph, "missing")
+
+
+# --- review findings: what dispatch must refuse, and what it must not call failure ---
+
+
+async def test_kinds_outside_the_requested_allowlist_are_refused() -> None:
+    """`available_kinds` is a boundary, not a prompt hint.
+
+    The synthesizer only ever *describes* the list to an LLM, so a malformed or
+    prompt-injected response can name any registered kind — including external
+    I/O and delegation — and the shape review upstream judges width and cost,
+    never identity. Dispatch is where identity gets checked.
+    """
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
+    node = AgentSynthDagNode(
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run(
+        {"objective": "x", "available_kinds": ["test.synthchild.other"]}, _scoped_ctx()
+    )
+
+    assert result.output.dispatched is False
+    assert "outside the requested allowlist" in result.output.run_output
+    assert _ChildStep.kind in result.output.run_output
+
+
+async def test_an_empty_allowlist_leaves_the_registry_as_the_only_bound() -> None:
+    """No allowlist means the caller named no restriction — not that none pass."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
+    node = AgentSynthDagNode(
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x", "available_kinds": []}, _scoped_ctx())
+
+    assert result.output.dispatched is True
+
+
+async def test_an_entry_node_needing_inputs_is_declined_not_dispatched() -> None:
+    """A synthesized config carries no per-node inputs — `NodeConfig` has no
+    such field — so a child whose entry requires one is a Run created to fail
+    validation. Declining beats dispatching something guaranteed to break."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    class _NeedsIn(BaseModel):
+        required_field: str
+
+    class _NeedsNode(BaseNode[_NeedsIn, _ChildOut]):
+        kind: ClassVar[str] = "test.synthchild.needs_inputs"
+        kind_category: ClassVar = "sync.transform"
+        input_schema: ClassVar[type[BaseModel]] = _NeedsIn
+        output_schema: ClassVar[type[BaseModel]] = _ChildOut
+
+        async def _execute(self, inputs: _NeedsIn, ctx: NodeContext) -> _ChildOut:
+            raise AssertionError("never dispatched")
+
+    with contextlib.suppress(ValueError):
+        register_node(_NeedsNode)
+
+    node = AgentSynthDagNode(
+        synthesizer=_CountingSynthesizer([_result([_NeedsNode.kind])]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    assert result.output.dispatched is False
+    assert "requires inputs" in result.output.run_output
+
+
+async def test_the_child_is_built_with_the_callers_wired_resolver() -> None:
+    """`build_node_resolver` is where delegation and harness nodes get their
+    dependencies; constructing them bare passes registration and then fails
+    inside the child."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    seen: list[str] = []
+
+    def _resolver(node_id: str, graph: Any) -> Any:
+        seen.append(node_id)
+        return _ChildStep()
+
+    node = AgentSynthDagNode(
+        synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+        node_resolver=_resolver,
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    assert result.output.dispatched is True
+    assert seen == [_ChildStep.kind]
+
+
+async def test_the_child_does_not_share_the_parents_bounded_runtime() -> None:
+    """The parent Attempt holds a runtime slot while awaiting the child, so a
+    child dispatched on the same runtime waits for capacity its own caller is
+    holding — a deadlock at max_concurrency=1."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+    from maistro.runtime import PythonExecutionRuntime
+
+    runtime = PythonExecutionRuntime(max_concurrency=1)
+    node = AgentSynthDagNode(
+        synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+        runtime=runtime,
+    )
+
+    # Occupy the runtime's only slot, exactly as an executing parent would.
+    await runtime.acquire_slot("parent-attempt")
+
+    result = await asyncio.wait_for(node.run({"objective": "x"}, _scoped_ctx()), timeout=5)
+
+    assert result.output.dispatched is True

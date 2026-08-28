@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +11
 ---
 # claude-m1-520-synth-dag-child-runs-ad7a
 
-Six new tests in `tests/graph/nodes/test_agent_synth_dag.py` for #520's
+Eleven new tests in `tests/graph/nodes/test_agent_synth_dag.py` for #520's
 canonical child-Run dispatch: a registered-kind config runs as a child Run with
 parent linkage, canonical NodeRun/Attempt records and threaded `synth_depth`;
 a role-shaped config with a store declines with the reason; an unscoped context
@@ -16,3 +16,11 @@ whose entry is outside the synthesized nodes both decline with the reason; and
 failed-subgraph depth test in `test_durable_runs.py` now fails its child Run
 canonically instead of monkeypatching the retired `run_graph` path. Purely
 additive in count; no test was removed.
+
+Five more were added answering the Codex review of this PR, one per finding:
+kinds outside a non-empty `available_kinds` are refused before the child Run
+exists (an empty list still means "the registry is the only bound"); an entry
+node whose schema has required fields is declined rather than dispatched to
+fail validation; the child is built with the caller's wired resolver when one
+is injected; and a child dispatched while the parent holds the only slot of a
+`max_concurrency=1` runtime completes instead of deadlocking.
