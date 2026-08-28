@@ -19,7 +19,8 @@
         "resilience_policies": "InMemoryResiliencePolicyStore is constructed with the default policy set and only stored. No production reader; ADR-038's circuit-breaking reads its policies through maistro.resilience.",
         "spawn_harness_node": "AgentSpawnHarnessNode is constructed from the wired adapters and only stored. No production reader.",
         "template_store": "Bound from wire_execution_spine's `graph_template_store` and only stored. The scheduler admission path takes its GraphTemplateStore by constructor injection instead (maistro.scheduling.admission), so this field is a second reference nothing follows.",
-        "usage_log": "Defaults from get_default_usage_log(). Production reads that module-level singleton directly (maistro.quota.usage_log); the container field is a parallel handle nothing follows."
+        "usage_log": "Defaults from get_default_usage_log(). Production reads that module-level singleton directly (maistro.quota.usage_log); the container field is a parallel handle nothing follows.",
+        "workspace_store": "The canonical Workspace store, selected by backend and handed the same ProjectScopeStore the spine chose (#516). Nothing in maistro-core reads it back yet: core has no Workspace-facing route, and the reader is the importing product. The named one is the Conductor, in the second half of #37 -- its routes/workspaces.py owns identity and membership today through its own duplicate store, and retiring that authority onto this field is what #37 asks for. Banked rather than deferred because the alternative is a durable store no deployment can reach: #516's own DoD is that the container exposes it."
       }
     }
   }

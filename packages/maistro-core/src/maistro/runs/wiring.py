@@ -78,7 +78,7 @@ async def _pg_node_template_store(pg_pool: Any) -> NodeTemplateStore:
 
     Probed separately from `SPINE_PG_TABLES`, for the reason `_pg_schedule_store`
     records: a Run does not need a NodeTemplate to exist, so a database migrated
-    to `018` but not `019` has a perfectly good durable spine. Folding
+    to `019` but not `020` has a perfectly good durable spine. Folding
     `node_templates` into that tuple would drop such a deployment's Runs to
     in-memory over a table it never asked for.
 

@@ -20,8 +20,8 @@ records: a Node's `source_template` carries the hash it was instantiated from,
 and an audit asking "was this Node built from what that version says today?" has
 to compare without materialising the model.
 
-Revision ID: 019
-Revises: 018
+Revision ID: 020
+Revises: 019
 Create Date: 2026-08-28
 """
 
@@ -31,8 +31,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "019"
-down_revision = "018"
+revision = "020"
+down_revision = "019"
 branch_labels = None
 depends_on = None
 
