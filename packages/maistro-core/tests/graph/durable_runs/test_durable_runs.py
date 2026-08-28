@@ -509,33 +509,93 @@ async def test_compliance_block_with_halt_run_marks_run_failed(
 # --- Executor: synth_depth propagation for agent.synth_dag / spawn_harness -
 
 
-class _ExplicitSynthDispatchIn(BaseModel):
-    objective: str = ""
+class _SynthDepthChildIn(BaseModel):
+    pass
 
 
-class _ExplicitSynthDispatchOut(BaseModel):
-    success: bool = True
-    dispatched: bool = True
+class _SynthDepthChildOut(BaseModel):
+    text: str
 
 
-class _ExplicitSynthDispatchNode(BaseNode):
-    """Test fixture that truthfully represents a completed synth dispatch."""
+class _SynthDepthChildNode(BaseNode):
+    """Concrete child work dispatched by the real synth node in depth tests."""
 
-    kind: ClassVar[str] = "agent.synth_dag"
-    kind_category: ClassVar = "composite"
-    input_schema: ClassVar[type[BaseModel]] = _ExplicitSynthDispatchIn
-    output_schema: ClassVar[type[BaseModel]] = _ExplicitSynthDispatchOut
+    kind: ClassVar[str] = "test.synth_depth_child"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _SynthDepthChildIn
+    output_schema: ClassVar[type[BaseModel]] = _SynthDepthChildOut
 
-    async def _execute(
-        self, inputs: _ExplicitSynthDispatchIn, ctx: NodeContext
-    ) -> _ExplicitSynthDispatchOut:
-        return _ExplicitSynthDispatchOut()
+    async def _execute(self, inputs: _SynthDepthChildIn, ctx: NodeContext) -> _SynthDepthChildOut:
+        return _SynthDepthChildOut(text="child work completed")
+
+
+with contextlib.suppress(ValueError):
+    register_node(_SynthDepthChildNode)
+
+
+class _SynthDepthChildSynthesizer:
+    async def synthesize(self, request: Any) -> Any:
+        from maistro.graph.synth import SynthResult
+        from maistro.graph.types import GraphConfig
+
+        config = GraphConfig(
+            nodes=[_SynthDepthChildNode.kind],
+            edges=[],
+            entry=_SynthDepthChildNode.kind,
+        )
+        return SynthResult(
+            graph_config=config,
+            rationale="dispatch one concrete child step",
+            synthesized_kinds=[_SynthDepthChildNode.kind],
+        )
+
+
+class _AlwaysJustifySynthDepthChild:
+    async def judge(self, shape: Any) -> Any:
+        from maistro.security.dag_shape.proportionality import ProportionalityVerdict
+
+        return ProportionalityVerdict(justified=True, reason="focused depth fixture")
+
+
+def _genuinely_dispatching_synth(
+    store: DurableRunStore,
+    *,
+    max_depth: int = 3,
+) -> BaseNode:
+    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
+
+    return AgentSynthDagNode(
+        synthesizer=_SynthDepthChildSynthesizer(),
+        proportionality_judge=_AlwaysJustifySynthDepthChild(),
+        max_depth=max_depth,
+        run_store=store,
+    )
+
+
+async def _assert_genuine_synth_child_run(
+    store: DurableRunStore,
+    result: DurableRunRecord,
+) -> None:
+    """Prove dispatch evidence came from persisted child Run work, not a flag proxy."""
+    parent_node_run = next(node_run for node_run in result.node_runs if node_run.node_id == "n1")
+    output = parent_node_run.result
+    assert output is not None
+    assert output["dispatched"] is True
+    assert output["child_run_id"]
+
+    child = await store.get(output["child_run_id"])
+    assert child is not None
+    assert child.run.parent_run_id == result.run_id
+    assert child.run.parent_node_run_id == parent_node_run.node_run_id
+    assert [node_run.node_id for node_run in child.node_runs] == [_SynthDepthChildNode.kind]
+    assert child.node_runs[0].result == {"text": "child work completed"}
+    assert len(child.attempts) == 1
 
 
 async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
     mem_store: DurableRunStore,
 ) -> None:
-    """Explicit dispatch evidence increments depth for the following node."""
+    """A persisted child Run increments depth for the following node."""
     captured_depths: list[int] = []
 
     class _CaptureDepthIn(BaseModel):
@@ -556,7 +616,7 @@ async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            return _ExplicitSynthDispatchNode()
+            return _genuinely_dispatching_synth(mem_store)
         return _CaptureDepthNode()
 
     dag = {
@@ -572,6 +632,7 @@ async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
 
     result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
     assert result.status == RunStatus.COMPLETED
+    await _assert_genuine_synth_child_run(mem_store, result)
     assert captured_depths == [1]
 
 
@@ -583,7 +644,7 @@ async def test_agent_synth_dag_refuses_to_spawn_once_depth_reaches_cap_via_durab
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            return _ExplicitSynthDispatchNode()
+            return _genuinely_dispatching_synth(mem_store)
         return AgentSynthDagNode(max_depth=1)
 
     dag = {
@@ -601,6 +662,7 @@ async def test_agent_synth_dag_refuses_to_spawn_once_depth_reaches_cap_via_durab
     # A business-level refusal isn't an executor-level failure — n2's own
     # output says so, but the walk still completes normally.
     assert result.status == RunStatus.COMPLETED
+    await _assert_genuine_synth_child_run(mem_store, result)
     n2_output = result.node_runs[-1].result
     assert n2_output is not None
     assert n2_output["success"] is False
@@ -634,7 +696,7 @@ async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            return _ExplicitSynthDispatchNode()
+            return _genuinely_dispatching_synth(mem_store)
         if node_id == "n2":
             return AgentSynthDagNode(max_depth=1)  # depth=1 here -> LEAF -> refuses
         return _CaptureDepthNode()
@@ -656,6 +718,7 @@ async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
 
     result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
     assert result.status == RunStatus.COMPLETED
+    await _assert_genuine_synth_child_run(mem_store, result)
     # n1 dispatched -> depth becomes 1 for n2. n2 refuses at the cap -> depth
     # must stay 1 for n3, not bump to 2.
     assert captured_depths == [1]
