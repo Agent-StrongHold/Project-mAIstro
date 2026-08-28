@@ -299,6 +299,7 @@ class _VetoStore:
         return await self._inner.transition_run(run_id, target, **kwargs)
 
 
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_a_failure_persisting_running_cancels_the_queued_run() -> None:
     """#338's exact reproduction: QUEUED persists, RUNNING raises.
 
@@ -334,6 +335,7 @@ async def test_a_failure_persisting_queued_cancels_the_created_run() -> None:
     assert run.error == ADMISSION_INCOMPLETE
 
 
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_repeated_compensation_is_idempotent_and_respects_settled_runs() -> None:
     """Compensating twice, or after the Run settled, changes nothing."""
     container = await _container()

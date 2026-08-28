@@ -111,6 +111,7 @@ def _crashed_record(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-1")
 async def test_resume_refuses_a_demonstrably_live_attempt() -> None:
     """Live-worker evidence prevents another process from stealing active work.
 
@@ -132,6 +133,7 @@ async def test_resume_refuses_a_demonstrably_live_attempt() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-2")
 async def test_resume_recovers_an_attempt_whose_lease_lapsed() -> None:
     """A lapsed lease is the proof of death the recovery disposition requires."""
     _Work.calls = 0
@@ -154,6 +156,7 @@ async def test_resume_recovers_an_attempt_whose_lease_lapsed() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-3")
 async def test_repeated_orphan_reconciliation_is_idempotent() -> None:
     """Recovery run twice reaches the same state and duplicates no Attempt."""
     store = InMemoryDurableRunStore()
@@ -173,6 +176,7 @@ async def test_repeated_orphan_reconciliation_is_idempotent() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-4")
 async def test_mid_attempt_restart_on_sqlite_produces_the_documented_disposition(
     tmp_path: Any,
 ) -> None:

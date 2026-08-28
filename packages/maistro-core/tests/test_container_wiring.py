@@ -522,6 +522,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
     assert "worker-A" in (settled.error or "")
 
 
+@pytest.mark.ac("ADR-082826-08f0/AC-5")
 async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
     """Reclaim completes through the lifecycle seam (#462).
 

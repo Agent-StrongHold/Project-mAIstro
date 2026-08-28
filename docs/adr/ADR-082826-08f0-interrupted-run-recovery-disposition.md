@@ -28,6 +28,13 @@ tests:
   - packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py
   - packages/maistro-core/tests/test_container_wiring.py
   - packages/maistro-core/tests/test_container_chat_runs.py
+ac-modules:
+  AC-1: maistro.graph.durable_runs.attempt_executor
+  AC-2: maistro.graph.durable_runs.attempt_executor
+  AC-3: maistro.graph.durable_runs.attempt_executor
+  AC-4: maistro.graph.durable_runs.attempt_executor
+  AC-5: maistro.container
+  AC-6: maistro.container
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -90,6 +97,30 @@ Three rules bind every row:
 3. **Producers consume this table; they do not vote.** Task, chat, Graph,
    scheduler, and product code map their interruption onto a row. A producer
    that needs a new disposition amends this table first.
+
+## Acceptance Criteria
+
+- **AC-1**: Resuming a durable Graph whose active Attempt holds a live
+  execution lease is refused; the Attempt, its NodeRun, and the Run are left
+  untouched and no duplicate physical execution is dispatched.
+- **AC-2**: Resuming past a lapsed lease settles the Attempt through the
+  lease seam (`reclaim`), parks and re-dispatches through the canonical
+  reconciler, and the Run completes on a fresh chronological Attempt.
+- **AC-3**: Running orphan reconciliation twice over the same interrupted
+  record reaches the same state: one cancelled Attempt, a parked NodeRun, a
+  parked Run — nothing duplicated, nothing rewritten.
+- **AC-4**: A restart mid-Attempt against a durable (SQLite) store, across a
+  real store reopen, produces the documented disposition: the interrupted
+  Attempt's history preserved as `CANCELLED`, a fresh Attempt with the next
+  ordinal, and a `COMPLETED` Run.
+- **AC-5**: The lease-recovery tick completes reclaim through the
+  `AttemptLifecycleReconciler` — the reclaimed Attempt's NodeRun parks
+  `WAITING` and its Run parks — and refreshes the non-terminal-Run count and
+  oldest-age gauges; a second tick reclaims nothing and rewrites nothing.
+- **AC-6**: A chat admission that fails after persisting a pre-`RUNNING`
+  state compensates the Run to `CANCELLED` with the sanitized
+  `admission_incomplete` category while still answering the turn, and
+  repeated compensation never rewrites a settled Run.
 
 ## Consequences
 
