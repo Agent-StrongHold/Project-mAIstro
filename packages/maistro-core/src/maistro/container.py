@@ -307,6 +307,13 @@ class Container:
 
         try:
             result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
+        except asyncio.CancelledError:
+            # Attempt reconciliation already owns cancellation and may have
+            # terminalized this Run as CANCELLED before control returns here.
+            # Observe the same outcome idempotently instead of translating a
+            # client disconnect into a second, contradictory FAILED decision.
+            await self._close_chat_run(run, cancelled=True)
+            raise
         except BaseException as exc:
             # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`
             # verbatim to anyone holding the run_id, and a provider error's
@@ -394,6 +401,7 @@ class Container:
         *,
         error: str | None = None,
         result: dict[str, Any] | None = None,
+        cancelled: bool = False,
     ) -> None:
         """Terminalize a chat turn's Run, whichever way the turn ended.
 
@@ -407,7 +415,13 @@ class Container:
         """
         if run is None:
             return
-        target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
+        if cancelled and (error is not None or result is not None):
+            raise ValueError("cancelled chat closure cannot carry error or result")
+        target = (
+            RunStatus.CANCELLED
+            if cancelled
+            else RunStatus.FAILED if error is not None else RunStatus.COMPLETED
+        )
         try:
             await asyncio.shield(self._terminalize(run.run_id, target, result, error))
         except Exception:

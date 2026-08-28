@@ -9,6 +9,9 @@ directly proves nothing about whether the container reaches for it.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import pytest
 
 from maistro.container import Container, create_container
@@ -25,7 +28,7 @@ async def _container() -> Container:
 class _Conduit:
     """Stands in for the real Conduit, which needs agents this test has not."""
 
-    def __init__(self, *, raises: Exception | None = None) -> None:
+    def __init__(self, *, raises: BaseException | None = None) -> None:
         self.calls: list[list[dict[str, str]]] = []
         self._raises = raises
 
@@ -84,6 +87,24 @@ async def test_a_raising_turn_still_closes_its_run() -> None:
     assert len(runs) == 1
     assert runs[0].status is RunStatus.FAILED
     assert runs[0].status in TERMINAL_RUN_STATUSES
+
+
+async def test_cancelled_turn_observes_cancelled_run_without_false_terminalization_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    container = await _container()
+    container.conduit = _Conduit(raises=asyncio.CancelledError())
+
+    with (
+        caplog.at_level(logging.WARNING, logger="maistro.container"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await container.route_request([{"role": "user", "content": "disconnect"}])
+
+    runs = [run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]
+    assert len(runs) == 1
+    assert runs[0].status is RunStatus.CANCELLED
+    assert "could not be terminalized" not in caplog.text
 
 
 async def test_the_turn_is_answered_even_when_admission_fails() -> None:
