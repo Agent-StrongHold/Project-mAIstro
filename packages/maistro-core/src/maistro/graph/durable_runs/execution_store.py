@@ -1,9 +1,9 @@
 """RunStore-compatible lifecycle view over durable Graph persistence.
 
-The durable Graph record already owns the canonical Run and NodeRuns. This
-adapter keeps physical Attempts in that same optimistic-concurrency envelope so
-AttemptExecutionService can operate without introducing a second lifecycle
-store or dual-writing execution identity.
+The durable Graph record carries projections of canonical Run/NodeRun/Attempt
+rows. When a canonical RunStore is wired, identity and physical lifecycle live
+there; this adapter keeps the graph checkpoint synchronized without minting a
+second execution universe.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
     lease_is_expired,
     reclaim_attempt,
     renew_attempt_lease,
@@ -22,6 +23,7 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -144,23 +146,34 @@ class DurableRunExecutionStore:
         lease_holder: str | None = None,
         lease_ttl: timedelta | None = None,
     ) -> Attempt:
-        """Obtain the Attempt, from the canonical store when there is one.
+        """Create or adopt exactly one Attempt under the requested NodeRun.
 
-        The third of #44's construction sites (ADR-082826-d9f5). The body this
-        replaces was a line-for-line copy of `InMemoryRunStore.create_attempt`
-        -- same terminal-NodeRun guard, same active-Attempt check, same
-        `max(ordinal) + 1`, same lease construction -- which is what a second
-        system of record looks like from the inside. With a `run_store` the
-        Attempt's identity is the store's and this record carries a projection
-        of it; without one the previous in-record mint is unchanged.
-
-        The record's own preconditions are still checked first even on the
-        canonical path. Until the write-back lands, a NodeRun terminalized in
-        the record can still read RUNNING canonically, and the aggregate is the
-        one that knows this Run is finished with that node.
+        A canonical create can commit before the graph checkpoint that mirrors
+        it. Retrying that boundary must adopt the store-owned identity rather
+        than ask the store to mint ordinal N+1 while ordinal N is still active.
         """
         if self._run_store is not None:
-            self._require_creatable(await self._get_record(), node_run_id)
+            record = await self._get_record()
+            existing = self._require_creatable(record, node_run_id)
+            expected_ordinal = max((attempt.ordinal for attempt in existing), default=0) + 1
+            adopted = await self._adoptable_canonical_attempt(
+                record,
+                node_run_id,
+                expected_ordinal=expected_ordinal,
+                runtime_id=runtime_id,
+                executor_id=executor_id,
+                deadline_at=deadline_at,
+                resume_checkpoint_id=resume_checkpoint_id,
+                lease_holder=lease_holder,
+            )
+            if adopted is not None:
+                await self._mutate(
+                    lambda current: current.model_copy(
+                        update={"attempts": (*current.attempts, adopted)}
+                    )
+                )
+                return adopted.model_copy(deep=True)
+
             created = await self._run_store.create_attempt(
                 node_run_id,
                 runtime_id=runtime_id,
@@ -171,7 +184,9 @@ class DurableRunExecutionStore:
                 lease_ttl=lease_ttl,
             )
             await self._mutate(
-                lambda record: record.model_copy(update={"attempts": (*record.attempts, created)})
+                lambda current: current.model_copy(
+                    update={"attempts": (*current.attempts, created)}
+                )
             )
             return created.model_copy(deep=True)
 
@@ -207,9 +222,54 @@ class DurableRunExecutionStore:
         assert minted is not None
         return minted.model_copy(deep=True)
 
+    async def _adoptable_canonical_attempt(
+        self,
+        record: DurableRunRecord,
+        node_run_id: str,
+        *,
+        expected_ordinal: int,
+        runtime_id: str,
+        executor_id: str,
+        deadline_at: datetime | None,
+        resume_checkpoint_id: str | None,
+        lease_holder: str | None,
+    ) -> Attempt | None:
+        """Return the one canonical Attempt a failed checkpoint omitted."""
+        assert self._run_store is not None
+        projected_ids = {attempt.attempt_id for attempt in record.attempts}
+        canonical = await self._run_store.list_attempts(node_run_id)
+        missing = [attempt for attempt in canonical if attempt.attempt_id not in projected_ids]
+        if not missing:
+            return None
+        missing.sort(key=lambda attempt: attempt.ordinal)
+        candidate = missing[0]
+        if candidate.ordinal != expected_ordinal or len(missing) != 1:
+            raise RunIntegrityError(
+                f"canonical Attempt history for NodeRun {node_run_id!r} is not a one-row "
+                f"continuation of durable ordinal {expected_ordinal - 1}"
+            )
+        if candidate.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+            raise RunIntegrityError(
+                f"unmirrored canonical Attempt {candidate.attempt_id!r} is already "
+                f"{candidate.status.value!r}"
+            )
+        lease = candidate.execution_lease
+        holder = lease.holder if lease is not None else None
+        if (
+            candidate.runtime_id != runtime_id
+            or candidate.executor_id != executor_id
+            or candidate.deadline_at != deadline_at
+            or candidate.resume_checkpoint_id != resume_checkpoint_id
+            or holder != lease_holder
+        ):
+            raise RunIntegrityError(
+                f"unmirrored canonical Attempt {candidate.attempt_id!r} does not match "
+                "the retried creation contract"
+            )
+        return candidate
+
     @staticmethod
     def _require_creatable(record: DurableRunRecord, node_run_id: str) -> list[Attempt]:
-        """Refuse an Attempt the record cannot carry, and return its siblings."""
         node_run = next(
             (item for item in record.node_runs if item.node_run_id == node_run_id),
             None,
@@ -233,13 +293,6 @@ class DurableRunExecutionStore:
         ttl: timedelta,
         at: datetime | None = None,
     ) -> Attempt:
-        """Prove the holder is still alive, and push its expiry out by ``ttl``.
-
-        The fourth store implementing this, and it needs it for the same reason
-        the other three do: `AttemptExecutionService` renews through whatever
-        store it was given, and a durable Graph node is executed by a process
-        that can die exactly like a task worker.
-        """
         if self._run_store is not None:
             canonical = await self._run_store.renew_lease(
                 attempt_id, fencing_token=fencing_token, ttl=ttl, at=at
@@ -270,33 +323,26 @@ class DurableRunExecutionStore:
         now: datetime | None = None,
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]:
-        """Settle this Run's Attempts whose holder stopped renewing.
-
-        Scoped to one Run, because this store is: it is a lifecycle view over a
-        single `DurableRunRecord`. A sweep across every durable Run is the
-        `DurableRunStore`'s question, not this view's, and answering it here
-        would quietly widen what a caller holding one Run can touch.
-
-        The one Attempt write still applied in-record on the canonical path,
-        for that reason: `RunStore.reclaim_expired_attempts` sweeps every Run,
-        so delegating here would settle other Runs' work as a side effect of
-        resuming this one. The canonical row keeps its lapsed lease until that
-        global sweep reaches it and settles it the same way -- reclaim is
-        idempotent, so the two converge rather than disagree.
-        """
+        """Settle only this Run's expired Attempts, canonically when wired."""
         moment = now if now is not None else datetime.now(UTC)
+        if self._run_store is not None:
+            return await self._reclaim_canonical_attempts(moment=moment, limit=limit)
+
         reclaimed: list[Attempt] = []
 
         def update(record: DurableRunRecord) -> DurableRunRecord:
             reclaimed.clear()
             attempts = list(record.attempts)
             doomed = sorted(
-                (a for a in attempts if lease_is_expired(a, moment)),
-                key=lambda a: (a.execution_lease.expires_at, a.attempt_id),  # type: ignore[union-attr]
+                (attempt for attempt in attempts if lease_is_expired(attempt, moment)),
+                key=lambda attempt: (
+                    attempt.execution_lease.expires_at,  # type: ignore[union-attr]
+                    attempt.attempt_id,
+                ),
             )[:limit]
             if not doomed:
                 return record
-            by_id = {a.attempt_id for a in doomed}
+            by_id = {attempt.attempt_id for attempt in doomed}
             for index, attempt in enumerate(attempts):
                 if attempt.attempt_id not in by_id:
                     continue
@@ -304,6 +350,79 @@ class DurableRunExecutionStore:
                 attempts[index] = settled
                 reclaimed.append(settled)
             return record.model_copy(update={"attempts": tuple(attempts)})
+
+        await self._mutate(update)
+        return [item.model_copy(deep=True) for item in reclaimed]
+
+    async def _reclaim_canonical_attempts(
+        self,
+        *,
+        moment: datetime,
+        limit: int,
+    ) -> list[Attempt]:
+        """Reclaim exact canonical identities without sweeping unrelated Runs.
+
+        Safety relies on the shared renewal rule refusing to resurrect an
+        already-expired lease. Once this view observes expiry at ``moment``, the
+        fencing token can therefore settle that exact Attempt without a global
+        RunStore sweep racing a late renewal.
+        """
+        assert self._run_store is not None
+        record = await self._get_record()
+        doomed = sorted(
+            (attempt for attempt in record.attempts if lease_is_expired(attempt, moment)),
+            key=lambda attempt: (
+                attempt.execution_lease.expires_at,  # type: ignore[union-attr]
+                attempt.attempt_id,
+            ),
+        )[:limit]
+        if not doomed:
+            return []
+
+        replacements: dict[str, Attempt] = {}
+        reclaimed: list[Attempt] = []
+        for projected in doomed:
+            canonical = await self._run_store.get_attempt(projected.attempt_id)
+            if canonical is None:
+                raise RunIntegrityError(
+                    f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
+                )
+            if canonical.status in TERMINAL_ATTEMPT_STATUSES:
+                replacements[projected.attempt_id] = canonical
+                if canonical.status is reclaim_attempt(projected, at=moment).status:
+                    reclaimed.append(canonical)
+                continue
+            if not lease_is_expired(canonical, moment):
+                # The canonical holder renewed before recovery observed it.
+                # Repair the stale projection instead of cancelling live work.
+                replacements[projected.attempt_id] = canonical
+                continue
+
+            lease = canonical.execution_lease
+            if lease is None:
+                raise RunIntegrityError(
+                    f"expired canonical Attempt {canonical.attempt_id!r} has no execution lease"
+                )
+            settled = reclaim_attempt(canonical, at=moment)
+            try:
+                canonical = await self._run_store.transition_attempt(
+                    canonical.attempt_id,
+                    settled.status,
+                    at=moment,
+                    error=settled.error,
+                    fencing_token=lease.fencing_token,
+                )
+            except (InvalidLifecycleTransition, StaleExecutionFence):
+                refreshed = await self._run_store.get_attempt(canonical.attempt_id)
+                if refreshed is None or refreshed.status not in TERMINAL_ATTEMPT_STATUSES:
+                    raise
+                canonical = refreshed
+            replacements[projected.attempt_id] = canonical
+            reclaimed.append(canonical)
+
+        def update(current: DurableRunRecord) -> DurableRunRecord:
+            attempts = [replacements.get(item.attempt_id, item) for item in current.attempts]
+            return current.model_copy(update={"attempts": tuple(attempts)})
 
         await self._mutate(update)
         return [item.model_copy(deep=True) for item in reclaimed]
@@ -373,7 +492,6 @@ class DurableRunExecutionStore:
 
     @staticmethod
     def _replace_attempt(record: DurableRunRecord, updated: Attempt) -> DurableRunRecord:
-        """Mirror a canonically-settled Attempt back into the aggregate."""
         attempts = list(record.attempts)
         for index, attempt in enumerate(attempts):
             if attempt.attempt_id == updated.attempt_id:
