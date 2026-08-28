@@ -1,0 +1,29 @@
+name: Temporary discover 55
+
+on:
+  push:
+    branches:
+      - feat/55-direct-effect-inventory
+
+permissions:
+  contents: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/55-direct-effect-inventory
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Materialize inventory and remove temporary workflow
+        run: |
+          python scripts/check_direct_effects.py --update
+          rm .github/workflows/tmp-discover-55.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add quality/direct-effect-call-sites.json .github/workflows/tmp-discover-55.yml
+          git commit -m "Materialize #55 direct-effect inventory"
+          git push origin HEAD:feat/55-direct-effect-inventory
