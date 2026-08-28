@@ -667,18 +667,23 @@ class TestTheCallerCannotAimTheLoopsWrites:
     ) -> None:
         """Silently substituting a different directory would mislead a caller
         who named one and then went looking for their reports there."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
         response = admin_client.post(
             "/v1/rsi/runs",
             json={
                 "mode": "cleanup",
                 "repo_path": str(authorized_repo),
                 "test_profile": "pytest",
-                "report_dir": "/tmp/somewhere-else",
+                # A real directory the test owns, not a `/tmp` literal: bandit
+                # flags the literal (B108) and the literal was never the point
+                # -- what matters is that a caller-named directory is refused.
+                "report_dir": str(elsewhere),
             },
         )
 
         assert response.status_code == 400
-        assert not (tmp_path / "anywhere").exists()
+        assert list(elsewhere.iterdir()) == []
 
     def test_the_service_derives_them_under_its_own_working_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
