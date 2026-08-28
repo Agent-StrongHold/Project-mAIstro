@@ -54,6 +54,21 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "maistro-evolve/tests/",
     # --- what the loop reaches into -----------------------------------------
     "maistro/security/",
+    # Package initializers on the promotion path. Python executes these before
+    # the module actually imported, so they are on the runtime import path even
+    # when they only re-export. They are re-export shims *today*, and a
+    # tolerance recording that would outlive the fact -- the next reader would
+    # inherit a reason that was checked once. Escalating them costs an
+    # adversarial review only when somebody edits a re-export shim, which is
+    # rare; the alternative costs nothing until it costs containment
+    # (Codex, #513).
+    "maistro/__init__.py",
+    "maistro/config/__init__.py",
+    "maistro/observability/__init__.py",
+    "maistro/quota/__init__.py",
+    "maistro/tools/__init__.py",
+    "maistro/types/__init__.py",
+    "maistro_bootstrap/__init__.py",
     # The shared client is where the outbound guard is *installed*:
     # `_guard_built_transports` wraps the real transports with
     # `maistro.security.outbound.guarded`. The policy living under

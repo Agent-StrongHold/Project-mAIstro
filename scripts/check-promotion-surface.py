@@ -91,6 +91,15 @@ PROMOTION_ROOTS: dict[str, str] = {
     "maistro_rsi.coordinator": "schedules and sequences cycles",
     "maistro_rsi.runner": "builds the command each cycle executes",
     "maistro_rsi.apply_agents": "applies agent definitions into the baseline",
+    # The executable command surfaces. An entry module is never *imported* by
+    # its own dependencies, so neither can be derived from the roots below it:
+    # the console script targets `maistro_rsi.cli:main`, and
+    # `.github/workflows/rsi-harvest.yml` runs `python -m maistro_rsi harvest`,
+    # whose `__main__` opens the harvest pull request. The broad `maistro_rsi/`
+    # pattern happens to cover them today, which is exactly why their absence
+    # here was invisible (Codex, #513).
+    "maistro_rsi.cli": "the installed command entry point",
+    "maistro_rsi.__main__": "the `python -m maistro_rsi` entry point",
     "maistro_evolve.fitness": "holds the breeding and promotion thresholds",
     "maistro_evolve.scorecard": "renders the score a promotion decision reads",
 }
@@ -147,7 +156,7 @@ def index_modules() -> dict[str, Path]:
         for root in sorted(REPO.glob(pattern)):
             if not root.is_dir():
                 continue
-            for path in sorted(root.rglob("*.py")):
+            for path in sorted(_walk_python(root)):
                 parts = list(path.relative_to(root).parts)
                 if parts[-1] == "__init__.py":
                     parts.pop()
@@ -158,7 +167,48 @@ def index_modules() -> dict[str, Path]:
     return modules
 
 
-def imported_names(path: Path) -> set[str]:
+class SymlinkedSourceDirectory(RuntimeError):
+    """A package directory under a source root is a symlink.
+
+    `Path.rglob` does not descend into directory symlinks, so every module
+    below one is absent from the index -- and a module absent from the index is
+    silently unreachable, which reads exactly like "not on the promotion path".
+    A candidate could therefore import a wrapper through a symlinked package
+    directory and keep this gate green, which is the evasion the symlink
+    handling was added to prevent (Codex, #513).
+
+    Refused rather than followed: following would need cycle detection and
+    would let a link out of the repository decide what this gate audits.
+    """
+
+
+def _walk_python(root: Path) -> list[Path]:
+    """Every `.py` file under `root`, refusing symlinked directories."""
+
+    found: list[Path] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        for entry in sorted(current.iterdir()):
+            if entry.is_dir():
+                if entry.is_symlink():
+                    raise SymlinkedSourceDirectory(
+                        f"{entry.relative_to(REPO)} is a symlinked directory under a "
+                        "source root; modules below it cannot be audited"
+                    )
+                stack.append(entry)
+            elif entry.suffix == ".py":
+                found.append(entry)
+    return found
+
+
+def _package_of(module: str, path: Path) -> str:
+    """The package a relative import inside `module` resolves against."""
+
+    return module if path.name == "__init__.py" else module.rpartition(".")[0]
+
+
+def imported_names(module: str, path: Path) -> set[str]:
     """Every absolute dotted name a module imports, aliases resolved away.
 
     Read from the AST rather than by importing: this runs in the lint job with
@@ -176,23 +226,44 @@ def imported_names(path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            # Relative imports resolve within a package already in the closure,
-            # so their targets are reached through the package's own file.
-            if node.level or not node.module:
+            # `from .wrapper import run` was discarded here, on the reasoning
+            # that a relative target "is reached through the package's own
+            # file". It is not: a package's `__init__.py` need not import its
+            # siblings, so the wrapper and everything reachable only through it
+            # left the audit entirely. `maistro_evolve` uses this form heavily
+            # (Codex, #513).
+            base = _package_of(module, path) if node.level else ""
+            for _ in range(max(node.level - 1, 0)):
+                base = base.rpartition(".")[0]
+            if node.level and not base:
+                # A relative import that climbs past the top-level package is
+                # not importable; nothing to resolve rather than a wrong guess.
                 continue
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+            absolute = f"{base}.{node.module}" if base and node.module else (base or node.module)
+            if not absolute:
+                continue
+            names.add(absolute)
+            names.update(f"{absolute}.{alias.name}" for alias in node.names)
     return names
 
 
-def _resolve(name: str, modules: dict[str, Path]) -> str | None:
-    """The longest prefix of ``name`` that is a first-party module."""
+def _resolve(name: str, modules: dict[str, Path]) -> list[str]:
+    """Every first-party module ``name`` puts on the import path.
+
+    The longest matching prefix is the module actually named, and each shorter
+    prefix is a package whose ``__init__.py`` Python executes *before* it. This
+    returned only the leaf, so `import helper.util` left `helper/__init__.py`
+    outside the audit even though it runs first -- and a package initializer
+    that later gains promotion-affecting behaviour would have escaped
+    escalation (Codex, #513).
+    """
+    found: list[str] = []
     candidate = name
     while candidate:
         if candidate in modules:
-            return candidate
+            found.append(candidate)
         candidate = candidate.rpartition(".")[0]
-    return None
+    return found
 
 
 def reachable(roots: Iterable[str], modules: dict[str, Path]) -> set[str]:
@@ -203,10 +274,10 @@ def reachable(roots: Iterable[str], modules: dict[str, Path]) -> set[str]:
         if module in seen:
             continue
         seen.add(module)
-        for name in imported_names(modules[module]):
-            target = _resolve(name, modules)
-            if target is not None and target not in seen:
-                stack.append(target)
+        for name in imported_names(module, modules[module]):
+            for target in _resolve(name, modules):
+                if target not in seen:
+                    stack.append(target)
     return seen
 
 
