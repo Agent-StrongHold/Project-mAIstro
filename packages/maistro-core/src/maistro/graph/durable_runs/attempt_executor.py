@@ -42,6 +42,7 @@ async def run_durable_graph(
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    blackboard_metadata: Mapping[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
@@ -52,6 +53,11 @@ async def run_durable_graph(
     ``provenance`` records what admitted the work, and is accepted here as
     well as in the traversal executor so the two entry points cannot disagree
     about whether a Run remembers where it came from (#145).
+
+    ``blackboard_metadata`` seeds the child's blackboard metadata. A parent
+    dispatching a sub-graph threads facts the child cannot derive — the
+    recursion depth its own `synth_depth` cap enforces (#520) — without the
+    parent's whole blackboard leaking across the Run boundary.
     """
     run = traversal._new_run(
         graph,
@@ -66,7 +72,7 @@ async def run_durable_graph(
         active_node_ids=(traversal._entry_node(graph),),
         blackboard_snapshot={
             "task_objective": graph.name,
-            "metadata": {},
+            "metadata": dict(blackboard_metadata or {}),
             "node_annotations": {},
         },
         metadata={"initial_inputs": dict(inputs or {}), "hitl_answers": {}},

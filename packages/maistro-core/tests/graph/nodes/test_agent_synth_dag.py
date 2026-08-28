@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+import contextlib
+from typing import Any, ClassVar
 
-from maistro.graph.nodes import NodeContext, get_node, list_kinds
+from pydantic import BaseModel
+
+from maistro.graph.nodes import BaseNode, NodeContext, get_node, list_kinds, register_node
 from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 from maistro.graph.synth import SynthRequest, SynthResult
 from maistro.graph.types import GraphConfig
@@ -175,7 +178,15 @@ async def test_revision_note_fed_back_as_constraint() -> None:
     assert any("drop" in c and "architect" in c for c in second_constraints)
 
 
-async def test_execution_runs_synthesized_graph_when_llm_call_provided() -> None:
+async def test_llm_call_without_a_store_declines_execution_honestly() -> None:
+    """The in-process GraphRun dispatch is retired (#520).
+
+    An llm_call used to route the approved config into `run_graph`, executing
+    the whole subtree with no canonical Run/NodeRun/Attempt records. Without a
+    durable store the node now reports the synthesis and truthfully does not
+    execute, naming why.
+    """
+
     async def fake_llm_call(messages: list[dict[str, str]], **kwargs: Any) -> str:
         return '{"summary": "ok", "subtasks": [], "estimated_files": []}'
 
@@ -183,7 +194,11 @@ async def test_execution_runs_synthesized_graph_when_llm_call_provided() -> None
     result = await node.run({"objective": "plan a small feature"}, _ctx())
     assert result.status == "completed"
     assert result.output.rationale
-    assert "no llm_call provided" not in result.output.run_output
+    assert result.output.success is True
+    assert result.output.dispatched is False
+    assert result.output.child_run_id == ""
+    assert "not executed" in result.output.run_output
+    assert "durable run store" in result.output.run_output
 
 
 def test_agent_role_nodes_use_unit_cost_estimate() -> None:
@@ -199,3 +214,103 @@ def test_registered_kind_uses_its_own_cost_hint() -> None:
 
     cost = _estimate_cost(["agent.spawn_harness"])
     assert cost == get_node("agent.spawn_harness").cost_hint
+
+
+# --- #520: canonical child-Run dispatch --------------------------------------
+
+
+class _ChildIn(BaseModel):
+    pass
+
+
+class _ChildOut(BaseModel):
+    text: str
+
+
+class _ChildStep(BaseNode[_ChildIn, _ChildOut]):
+    kind: ClassVar[str] = "test.synthchild.step"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _ChildIn
+    output_schema: ClassVar[type[BaseModel]] = _ChildOut
+
+    async def _execute(self, inputs: _ChildIn, ctx: NodeContext) -> _ChildOut:
+        return _ChildOut(text="done")
+
+
+with contextlib.suppress(ValueError):
+    register_node(_ChildStep)
+
+
+def _scoped_ctx() -> NodeContext:
+    return _ctx(
+        run_id="parent-run",
+        node_run_id="parent-node-run",
+        workspace_id="ws-synth",
+        project_id="project-synth",
+    )
+
+
+async def test_registered_kind_config_dispatches_a_canonical_child_run() -> None:
+    """The synthesized subgraph runs as a child Run of the Run that made it."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
+    node = AgentSynthDagNode(
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+        run_store=store,
+    )
+
+    result = await node.run({"objective": "do one canonical step"}, _scoped_ctx())
+
+    assert result.output.success is True
+    assert result.output.dispatched is True
+    assert result.output.child_run_id
+
+    child = await store.get(result.output.child_run_id)
+    assert child is not None
+    assert child.run.parent_run_id == "parent-run"
+    assert child.run.parent_node_run_id == "parent-node-run"
+    assert child.run.workspace_id == "ws-synth"
+    assert child.run.project_id == "project-synth"
+    assert child.run.provenance["admission_source"] == "agent.synth_dag"
+    # Every subgraph node left canonical records behind the Attempt firewall.
+    assert [nr.node_id for nr in child.node_runs] == [_ChildStep.kind]
+    assert len(child.attempts) == 1
+    # The child starts one level deeper, so nested synthesis hits the same cap.
+    assert child.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 1
+
+
+async def test_role_shaped_config_with_a_store_is_declined_with_the_reason() -> None:
+    """AgentRole placeholders are not registered kinds; nothing runs silently."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    node = AgentSynthDagNode(
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "add a caching layer"}, _scoped_ctx())
+
+    assert result.output.success is True
+    assert result.output.dispatched is False
+    assert result.output.child_run_id == ""
+    assert "not executed" in result.output.run_output
+    assert "not registered" in result.output.run_output
+
+
+async def test_unscoped_context_is_declined_rather_than_inventing_scope() -> None:
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
+    node = AgentSynthDagNode(
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x"}, _ctx())
+
+    assert result.output.dispatched is False
+    assert "Workspace/Project scope" in result.output.run_output
