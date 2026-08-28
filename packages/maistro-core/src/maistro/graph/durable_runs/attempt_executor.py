@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import NodeContext, NodeResult
 from maistro.runs.execution import AttemptExecutionService
-from maistro.runs.lifecycle import transition_run
+from maistro.runs.lifecycle import lease_is_expired, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
@@ -125,7 +126,19 @@ async def _reconcile_orphaned_attempts(
     *,
     store: DurableRunStore,
 ) -> DurableRunRecord:
-    """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
+    """Terminalize process-lost active Attempts and reconcile their NodeRuns.
+
+    "Process-lost" is checked, not assumed (#462, ADR-082526-b36a). An active
+    Attempt holding an execution lease that has not lapsed belongs to a
+    demonstrably live worker: resuming past it would cancel the Attempt out
+    from under its holder and dispatch a duplicate physical execution — the
+    fence stops the stale worker's *write*, not the double *execution*. Such a
+    resume is refused; retry after the lease lapses (when the reclaim sweep or
+    this reconcile may take it) or after the holder finishes. An active Attempt
+    with no lease cannot outlive its process, so under an explicit resume —
+    the caller's assertion that the owning process is gone — it is genuinely
+    orphaned and is recovered as before.
+    """
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
     lifecycle = AttemptLifecycleReconciler(execution_store)
     active = tuple(
@@ -133,7 +146,28 @@ async def _reconcile_orphaned_attempts(
         for attempt in record.attempts
         if attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
     )
+    now = datetime.now(UTC)
     for attempt in active:
+        lease = attempt.execution_lease
+        if lease is not None and not lease_is_expired(attempt, now):
+            raise ValueError(
+                f"cannot resume run {record.run_id!r}: Attempt "
+                f"{attempt.attempt_id!r} holds a live execution lease "
+                f"(holder {lease.holder!r}); a demonstrably live worker owns "
+                "this work"
+            )
+
+    # Leased Attempts settle through the lease seam: `transition_attempt`
+    # without the holder's token is refused by the execution fence — correctly,
+    # since recovery is exactly a non-holder — and `reclaim` is the one write
+    # the fence exempts because a lapsed lease is its own authority (b36a).
+    reclaimed = await execution_store.reclaim_expired_attempts(now=now)
+    for attempt in reclaimed:
+        await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+
+    for attempt in active:
+        if attempt.execution_lease is not None:
+            continue  # live ones were refused above; lapsed ones just reclaimed
         terminal = await execution_store.transition_attempt(
             attempt.attempt_id,
             AttemptStatus.CANCELLED,

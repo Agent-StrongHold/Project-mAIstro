@@ -520,3 +520,113 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
     assert settled is not None
     assert settled.status is AttemptStatus.CANCELLED
     assert "worker-A" in (settled.error or "")
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-5")
+async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
+    """Reclaim completes through the lifecycle seam (#462).
+
+    Before this, the sweep terminalized the Attempt and stopped: the NodeRun
+    stayed RUNNING and the Run stayed RUNNING forever — non-terminal, so never
+    purgeable either. ADR-082526-b36a promised the RECOVERED park; this proves
+    the code keeps the promise, and that a second sweep is a no-op.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.observability.metrics import registry as metrics_registry
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-park")).project_id
+    graph = Graph(
+        workspace_id="recovery-park",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-B", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after_lapse = lease.expires_at + timedelta(seconds=1)
+
+    assert await container.recover_abandoned_attempts(now=after_lapse) == 1
+
+    settled = await store.get_attempt(attempt.attempt_id)
+    assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    parked_node = await store.get_node_run(node_run.node_run_id)
+    assert parked_node is not None and parked_node.status is RunStatus.WAITING
+    parked_run = await store.get_run(run.run_id)
+    assert parked_run is not None and parked_run.status is RunStatus.WAITING
+
+    # Idempotent: the second tick reclaims nothing and rewrites nothing.
+    assert await container.recover_abandoned_attempts(now=after_lapse) == 0
+    again_node = await store.get_node_run(node_run.node_run_id)
+    assert again_node is not None and again_node.status is RunStatus.WAITING
+    again_run = await store.get_run(run.run_id)
+    assert again_run is not None and again_run.status is RunStatus.WAITING
+
+    # The tick refreshed the recovery-visibility gauges (#338): the parked Run
+    # is non-terminal and counted, with a real age.
+    collected = metrics_registry.collect_all()
+    (open_runs_sample,) = collected["maistro_non_terminal_runs"]
+    assert open_runs_sample["value"] >= 1
+
+
+async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An Attempt the lifecycle seam refuses is logged, not fatal to the tick.
+
+    The state is reachable: a worker claims an Attempt and dies before
+    `prepare_execution` moves the NodeRun to RUNNING, leaving a leased Attempt
+    under a QUEUED NodeRun. Reclaim settles the physical record; reconciliation
+    then refuses to park a NodeRun that never ran — and the sweep must record
+    that refusal and finish the tick rather than abort it.
+    """
+    import logging
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-skew")).project_id
+    graph = Graph(
+        workspace_id="recovery-skew",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-C", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    with caplog.at_level(logging.WARNING):
+        swept = await container.recover_abandoned_attempts(
+            now=lease.expires_at + timedelta(seconds=1)
+        )
+
+    assert swept == 1  # the physical Attempt is still reclaimed
+    settled = await store.get_attempt(attempt.attempt_id)
+    assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    stuck = await store.get_node_run(node_run.node_run_id)
+    assert stuck is not None and stuck.status is RunStatus.QUEUED
+    assert "could not be reconciled" in caplog.text
