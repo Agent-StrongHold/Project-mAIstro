@@ -252,11 +252,8 @@ def test_chat_complete_with_mock_llm_port() -> None:
     assert body["choices"][0]["message"]["content"] == "mock response"
     mock_llm.complete.assert_called_once()
     sent = mock_llm.complete.call_args.args[0]
-    # The user's messages reach the model EXACTLY as sent. `_conversation_only`
-    # builds the request from `req.messages` unchanged, and #483/#488 removed
-    # the PM system prompt this used to assert was prepended -- injecting
-    # nothing is now part of what containment guarantees, so the assertion is
-    # inverted rather than deleted (#500).
+    # M0 containment keeps the public chat boundary conversational-only and
+    # forwards caller messages without re-entering the agent/tool prompt path.
     assert sent.messages == expected_messages
     # And containment's other half, asserted here because this is the test that
     # holds the request object: no tool surface travels with a chat completion.
@@ -316,7 +313,6 @@ def test_mission_status_maps_correctly() -> None:
 
 
 def test_websocket_streams_task_events() -> None:
-
     c = _login()
 
     async def _fake_iter(task_id: str, *, user_id: str | None = None):

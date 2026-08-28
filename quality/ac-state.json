@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 571,
+    "criteria_declared": 577,
     "criteria_annotated": 214,
-    "markers_found": 280,
+    "markers_found": 286,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 17.5787
+    "design_coverage": 18.2655
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,8 +540,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 17.5787,
-    "decisions": 119,
+    "percent": 18.2655,
+    "decisions": 120,
     "decisions_scoring_zero": 97,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1212,6 +1212,13 @@
       },
       {
         "id": "ADR-082526-1899",
+        "declared_status": "Accepted",
+        "criteria": 6,
+        "reachable": 6,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082526-237d",
         "declared_status": "Accepted",
         "criteria": 6,
         "reachable": 6,
@@ -12841,6 +12848,75 @@
           "module": "scripts/check-wiring-reads.py",
           "covered_by": [
             "tests/test_check_wiring_reads.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
+    },
+    {
+      "id": "ADR-082526-237d",
+      "file": "docs/adr/ADR-082526-237d-run-terminal-state-derived-from-node-frontier.md",
+      "declared_status": "Accepted",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 6,
+      "own_detail": [
+        {
+          "id": "ADR-082526-237d/AC-1",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_run_terminal_derivation.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-237d/AC-2",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_run_terminal_derivation.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-237d/AC-3",
+          "claimed": true,
+          "module": "maistro.runs.aggregation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_run_terminal_derivation.py",
+            "packages/maistro-core/tests/runs/test_run_terminal_precedence.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-237d/AC-4",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_run_terminal_derivation.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-237d/AC-5",
+          "claimed": true,
+          "module": "maistro.runs.reconciliation",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_run_terminal_recovery_acceptance.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082526-237d/AC-6",
+          "claimed": true,
+          "module": "maistro.tasks.execution",
+          "covered_by": [
+            "packages/maistro-core/tests/tasks/test_run_result_projection.py"
           ],
           "rung": "reachable"
         }
