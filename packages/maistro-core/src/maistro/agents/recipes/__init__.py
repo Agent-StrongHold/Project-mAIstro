@@ -141,9 +141,9 @@ class RecipeRegistry:
 
 
 __all__ = [
-    "AgentRecipe",
     "LEGACY_RECIPE_SNAPSHOT",
-    "RecipeRegistry",
     "SOURCE_IMPORT_PROVENANCE",
+    "AgentRecipe",
+    "RecipeRegistry",
     "agent_recipe_to_node_template",
 ]
