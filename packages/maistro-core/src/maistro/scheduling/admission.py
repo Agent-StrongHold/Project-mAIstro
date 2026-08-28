@@ -57,6 +57,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from maistro.graph.templates import require_template
+from maistro.runs.model import RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
@@ -348,6 +349,12 @@ class ScheduleRunAdmitter:
             persona_id=schedule.persona_id,
             actor_principal_id=schedule.actor_principal_id,
             provenance=provenance,
+            # QUEUED in the same insert (#251). A schedule Run's admission IS
+            # its submission — there is no caller holding a receipt who will
+            # queue it later, so a Run left CREATED here was admitted work
+            # nobody would ever execute. `admit_in_state` exists precisely so
+            # this claim needs no second commit.
+            initial_status=RunStatus.QUEUED,
         )
         return run.run_id
 
