@@ -307,21 +307,14 @@ class Container:
 
         try:
             result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
-        except asyncio.CancelledError:
-            # Attempt reconciliation already owns cancellation and may have
-            # terminalized this Run as CANCELLED before control returns here.
-            # Observe the same outcome idempotently instead of translating a
-            # client disconnect into a second, contradictory FAILED decision.
-            await self._close_chat_run(run, cancelled=True)
-            raise
         except BaseException as exc:
-            # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`
-            # verbatim to anyone holding the run_id, and a provider error's
-            # message carries the endpoint it called and can carry the key it
-            # sent — so recording it here would leak by a slower route what
-            # every response path already refuses to echo. The detail is in
-            # the log, which a run_id does not open.
-            await self._close_chat_run(run, error=failure_category(exc))
+            # Attempt reconciliation already owns cancellation, so a client
+            # disconnect observes CANCELLED rather than being reinterpreted as
+            # FAILED by this outer product boundary. Other failures retain the
+            # existing sanitized failure category.
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            error = {True: None, False: failure_category(exc)}[cancelled]
+            await self._close_chat_run(run, error=error, cancelled=cancelled)
             raise
         await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
@@ -698,7 +691,6 @@ async def create_container(
     # connection the durable-event stores are written against; `pg_pool` is an
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
     # wiring below came to assume "a database is configured" means "SQLite".
-    db_pool: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
