@@ -356,6 +356,24 @@ class SqliteRunStore:
         )
         return row is not None
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338). A status filter plus one
+        payload timestamp — ISO-8601 strings in one format order the same way
+        the datetimes do, so MIN needs no materialization.
+        """
+        placeholders = _placeholders(len(_TERMINAL_STATUS_VALUES))
+        row = await self._fetchone(
+            "SELECT COUNT(*), MIN(json_extract(payload, '$.created_at')) "
+            f"FROM canonical_runs WHERE status NOT IN ({placeholders})",
+            tuple(_TERMINAL_STATUS_VALUES),
+        )
+        assert row is not None  # nosec B101 - COUNT(*) always yields a row
+        count = int(row[0])
+        oldest = datetime.fromisoformat(row[1]) if row[1] else None
+        return count, oldest
+
     async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
         """Terminal Runs carrying a deadline and descended from by nobody.
 
