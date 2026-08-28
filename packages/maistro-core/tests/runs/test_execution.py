@@ -96,7 +96,8 @@ async def test_attempt_id_is_runtime_execution_id_and_reconciles_after_terminal_
 
     stored_run = await store.get_run(run_id)
     assert stored_run is not None
-    assert stored_run.status is RunStatus.RUNNING
+    assert stored_run.status is RunStatus.COMPLETED
+    assert stored_run.result == terminal.result
 
 
 @pytest.mark.asyncio
@@ -231,4 +232,5 @@ async def test_failed_attempt_can_retry_same_logical_node_run() -> None:
     completed_node_run = await store.get_node_run(node_run_id)
     resumed_run = await store.get_run(run_id)
     assert completed_node_run is not None and completed_node_run.status is RunStatus.COMPLETED
-    assert resumed_run is not None and resumed_run.status is RunStatus.RUNNING
+    assert resumed_run is not None and resumed_run.status is RunStatus.COMPLETED
+    assert resumed_run.result == "ok"

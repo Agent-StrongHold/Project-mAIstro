@@ -785,6 +785,12 @@ class PgRunStore:
         same rule here a reconciliation that lands late rewrites the history of
         a closed Run, and can undo the very cascade that settled it.
         """
+        # A completed row without accepted evidence predates AcceptedNodeOutcome.
+        # Let it reach transition_node_run's migration validator even after the
+        # parent closed; that validator permits only a matching evidence install
+        # and preserves all lifecycle fields.
+        if node_run.status is RunStatus.COMPLETED and node_run.accepted_outcome is None:
+            return
         run = Run.model_validate(
             await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
         )

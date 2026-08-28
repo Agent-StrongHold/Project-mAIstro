@@ -13,6 +13,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
+from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
+from maistro.runs.lifecycle import InvalidLifecycleTransition, latest_node_runs
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -122,6 +124,26 @@ def _same_accepted_projection(
     )
 
 
+def _graph_has_cycle(run: Run) -> bool:
+    """Whether generic reconciliation lacks enough frontier truth to settle this Graph."""
+    graph = run.graph.materialize()
+    indegree = {node.node_id: 0 for node in graph.nodes}
+    outgoing: dict[str, list[str]] = {node_id: [] for node_id in indegree}
+    for edge in graph.edges:
+        outgoing[edge.from_node].append(edge.to_node)
+        indegree[edge.to_node] += 1
+    ready = [node_id for node_id, degree in indegree.items() if degree == 0]
+    visited = 0
+    while ready:
+        node_id = ready.pop()
+        visited += 1
+        for successor in outgoing[node_id]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                ready.append(successor)
+    return visited != len(indegree)
+
+
 class AttemptLifecycleReconciler:
     """Keep Run/NodeRun activity consistent with canonical physical Attempts."""
 
@@ -165,6 +187,10 @@ class AttemptLifecycleReconciler:
             accepted = node_run.accepted_outcome
             if accepted is not None:
                 if accepted.attempt_result == physical:
+                    # Acceptance and parent settlement are separate durable writes.
+                    # A crash between them must be repairable by replaying the
+                    # already-persisted Attempt rather than stranding the Run.
+                    await self._settle_run_if_fully_observed(node_run.run_id)
                     return node_run
                 raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
             outcome = AcceptedNodeOutcome(
@@ -173,7 +199,9 @@ class AttemptLifecycleReconciler:
                 logical_status=RunStatus.COMPLETED,
                 result=physical.result,
             )
-            return await self._accept_node_outcome(node_run, outcome)
+            settled = await self._accept_node_outcome(node_run, outcome)
+            await self._settle_run_if_fully_observed(settled.run_id)
+            return settled
 
         if (
             attempt.status is AttemptStatus.CANCELLED
@@ -203,7 +231,64 @@ class AttemptLifecycleReconciler:
         if physical != outcome.attempt_result:
             raise RunIntegrityError("accepted outcome differs from persisted Attempt evidence")
         await self._require_current_attempt(outcome.node_run_id, persisted.attempt_id)
-        return await self._accept_node_outcome(node_run, outcome)
+        settled = await self._accept_node_outcome(node_run, outcome)
+        await self._settle_run_if_fully_observed(settled.run_id)
+        return settled
+
+    async def _settle_run_if_fully_observed(self, run_id: str) -> Run:
+        """Conservative automatic derivation for direct/fully-materialized work.
+
+        Without graph traversal state, an absent NodeRun may mean an unselected branch
+        or work not created yet. Automatic settlement therefore requires every Graph
+        node to have been observed and the topology to be acyclic. A cycle can revisit
+        an already-observed node, so only a traversal substrate with persisted frontier
+        truth may settle it. Such substrates consume the shared aggregation fold once
+        their frontier is actually empty.
+        """
+        run = await self._require_run(run_id)
+        if _graph_has_cycle(run):
+            return run
+        return await self._settle_run_from_node_runs(
+            run_id,
+            work_owed=False,
+            require_all_graph_nodes=True,
+        )
+
+    async def _settle_run_from_node_runs(
+        self,
+        run_id: str,
+        *,
+        work_owed: bool,
+        require_all_graph_nodes: bool,
+    ) -> Run:
+        run = await self._require_run(run_id)
+        if run.status in TERMINAL_RUN_STATUSES or run.status is not RunStatus.RUNNING:
+            return run
+        node_runs = await self._store.list_node_runs(run_id)
+        if require_all_graph_nodes:
+            required = {node.node_id for node in run.graph.materialize().nodes}
+            observed = set(latest_node_runs(node_runs))
+            if not required.issubset(observed):
+                return run
+        target = derive_run_terminal_status(node_runs, work_owed=work_owed)
+        if target is None:
+            return run
+        result, error = terminal_run_payload(node_runs, target)
+        try:
+            return await self._store.transition_run(
+                run_id,
+                target,
+                result=result,
+                error=error,
+            )
+        except InvalidLifecycleTransition:
+            # Two final NodeRuns can reconcile together. Both may derive the same
+            # answer from a complete frontier; the loser observes the winner rather
+            # than turning a deterministic race into a failure.
+            current = await self._require_run(run_id)
+            if current.status in TERMINAL_RUN_STATUSES:
+                return current
+            raise
 
     async def _require_current_attempt(self, node_run_id: str, attempt_id: str) -> None:
         """Refuse a commit from any Attempt but the newest under this NodeRun.
