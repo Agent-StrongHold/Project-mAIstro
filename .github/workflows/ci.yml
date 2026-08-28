@@ -649,21 +649,49 @@ jobs:
           mkdir -p rsi-reports && printf '%s\n' "$CANARY" > rsi-reports/previous-run.json
           trap 'rm -f .env rsi-canary.pem; rm -rf rsi-reports' EXIT
 
+          # `-xdev` keeps the walk on the image's own filesystem, which is where
+          # every COPY lands. Without it the search descends into /proc and
+          # matches `/proc/self/cmdline` -- its own command line -- so the check
+          # reported a leak that was itself, and spent twenty minutes doing it.
+          #
+          # The needle crosses as an environment variable rather than inside the
+          # command for the same reason one level down: /proc/self/environ would
+          # carry it too, and the next person to drop `-xdev` should not get a
+          # second way to match nothing but themselves.
+          scan='find / -xdev -type f -exec grep -l "$NEEDLE" {} + 2>/dev/null | head -20'
+
           for builder in 1 0; do
             echo "::group::DOCKER_BUILDKIT=$builder"
-            DOCKER_BUILDKIT=$builder docker build -f Dockerfile.rsi-runner \
-              -t "maistro-rsi-runner:canary-$builder" .
+            image="maistro-rsi-runner:canary-$builder"
+            DOCKER_BUILDKIT=$builder docker build -f Dockerfile.rsi-runner -t "$image" .
+
+            # Positive control, first: the same search, in the same image, over
+            # a canary that IS there. An absence check that cannot find a
+            # present secret passes for the wrong reason -- which is exactly the
+            # failure mode this job exists to rule out one level up.
+            control=$(docker run --rm -e NEEDLE="$CANARY" --entrypoint sh "$image" \
+              -c "printf '%s' \"\$NEEDLE\" > /image-scan-control; $scan")
+            # Containment rather than equality: if the image also leaks, the
+            # control run returns two paths, and that is the absence check's
+            # finding to report -- not a false "the scan is broken".
+            case "$control" in
+              *"/image-scan-control"*) ;;
+              *)
+                echo "::error::the filesystem scan cannot find a secret it was handed (DOCKER_BUILDKIT=$builder)"
+                exit 1
+                ;;
+            esac
 
             # The filesystem the loop actually sees.
-            if docker run --rm --entrypoint sh "maistro-rsi-runner:canary-$builder" \
-                 -c "grep -rl '$CANARY' / 2>/dev/null | head -20" | grep -q .; then
-              echo "::error::the canary is in the image filesystem (DOCKER_BUILDKIT=$builder)"
+            found=$(docker run --rm -e NEEDLE="$CANARY" --entrypoint sh "$image" -c "$scan")
+            if [ -n "$found" ]; then
+              echo "::error::the canary is in the image filesystem (DOCKER_BUILDKIT=$builder): $found"
               exit 1
             fi
 
             # And the layers, because a file deleted in a later layer is still
             # in the earlier one and still `docker save`-able.
-            docker save "maistro-rsi-runner:canary-$builder" -o /tmp/canary.tar
+            docker save "$image" -o /tmp/canary.tar
             if tar -xOf /tmp/canary.tar | grep -qa "$CANARY"; then
               echo "::error::the canary is in an exported layer (DOCKER_BUILDKIT=$builder)"
               exit 1
@@ -671,7 +699,7 @@ jobs:
             rm -f /tmp/canary.tar
 
             # And the build history, where a bad ARG or ENV would show.
-            if docker history --no-trunc "maistro-rsi-runner:canary-$builder" | grep -qa "$CANARY"; then
+            if docker history --no-trunc "$image" | grep -qa "$CANARY"; then
               echo "::error::the canary is in the image history (DOCKER_BUILDKIT=$builder)"
               exit 1
             fi
