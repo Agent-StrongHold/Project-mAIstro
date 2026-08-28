@@ -57,12 +57,7 @@ on:
 # affects the concurrency key; the resolver below still refuses to publish a
 # pull_request_target result if GitHub did not associate the originating PR.
 concurrency:
-  group: >-
-    gates-ran-${{
-      github.event.workflow_run.event == 'pull_request_target'
-      && github.event.workflow_run.pull_requests[0].head.sha
-      || github.event.workflow_run.head_sha
-    }}
+  group: gates-ran-${{ github.event.workflow_run.event == 'pull_request_target' && github.event.workflow_run.pull_requests[0].head.sha || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 permissions:
