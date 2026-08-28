@@ -1,0 +1,58 @@
+name: Temporary verify 352 Conductor SBOM
+
+on:
+  push:
+    branches:
+      - feat/352-unused-direct-deps
+
+permissions:
+  contents: write
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/352-unused-direct-deps
+      - name: Build hive-conductor image
+        run: |
+          docker build -f packages/hive-conductor/Dockerfile \
+            --build-arg VITE_POC_MODE=pm \
+            --build-arg VITE_BASE_PATH=/pm/ \
+            -t hive-conductor:352 .
+      - name: Prove live environment has no httpx2 distribution
+        run: |
+          docker run --rm --entrypoint python hive-conductor:352 - <<'PY'
+          import importlib.metadata as metadata
+          try:
+              metadata.version("httpx2")
+          except metadata.PackageNotFoundError:
+              print("live runtime: httpx2 absent")
+          else:
+              raise SystemExit("httpx2 is still installed in the Conductor runtime")
+          PY
+      - name: Generate CycloneDX SBOM and assert httpx2 absent
+        run: |
+          curl -sSfL -o syft.tgz https://github.com/anchore/syft/releases/download/v1.49.0/syft_1.49.0_linux_amd64.tar.gz
+          echo "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe  syft.tgz" | sha256sum --check
+          tar -xzf syft.tgz syft && sudo mv syft /usr/local/bin/
+          syft hive-conductor:352 -o cyclonedx-json > sbom-hive-conductor.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("sbom-hive-conductor.json").read_text())
+          names = {str(component.get("name", "")).lower() for component in data.get("components", [])}
+          if "httpx2" in names:
+              raise SystemExit("httpx2 remains in generated Conductor SBOM")
+          print(f"CycloneDX components={len(data.get('components', []))}; httpx2 absent")
+          PY
+      - name: Remove temporary workflow
+        run: |
+          rm .github/workflows/tmp-352-sbom.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/tmp-352-sbom.yml
+          git commit -m "Remove temporary #352 SBOM verifier"
+          git push origin HEAD:feat/352-unused-direct-deps
