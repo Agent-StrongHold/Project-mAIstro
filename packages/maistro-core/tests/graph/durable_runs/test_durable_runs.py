@@ -509,15 +509,33 @@ async def test_compliance_block_with_halt_run_marks_run_failed(
 # --- Executor: synth_depth propagation for agent.synth_dag / spawn_harness -
 
 
+class _ExplicitSynthDispatchIn(BaseModel):
+    objective: str = ""
+
+
+class _ExplicitSynthDispatchOut(BaseModel):
+    success: bool = True
+    dispatched: bool = True
+
+
+class _ExplicitSynthDispatchNode(BaseNode):
+    """Test fixture that truthfully represents a completed synth dispatch."""
+
+    kind: ClassVar[str] = "agent.synth_dag"
+    kind_category: ClassVar = "composite"
+    input_schema: ClassVar[type[BaseModel]] = _ExplicitSynthDispatchIn
+    output_schema: ClassVar[type[BaseModel]] = _ExplicitSynthDispatchOut
+
+    async def _execute(
+        self, inputs: _ExplicitSynthDispatchIn, ctx: NodeContext
+    ) -> _ExplicitSynthDispatchOut:
+        return _ExplicitSynthDispatchOut()
+
+
 async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
     mem_store: DurableRunStore,
 ) -> None:
-    """A real `agent.synth_dag` node (default depth cap, no llm_call — dry-run
-    approve) is followed by a plain node that records what `synth_depth` it
-    saw. It must see 1, not 0 — the increment applies to whatever runs next,
-    not to the spawning node's own invocation."""
-    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
-
+    """Explicit dispatch evidence increments depth for the following node."""
     captured_depths: list[int] = []
 
     class _CaptureDepthIn(BaseModel):
@@ -538,7 +556,7 @@ async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            return AgentSynthDagNode()
+            return _ExplicitSynthDispatchNode()
         return _CaptureDepthNode()
 
     dag = {
@@ -560,16 +578,12 @@ async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
 async def test_agent_synth_dag_refuses_to_spawn_once_depth_reaches_cap_via_durable_walk(
     mem_store: DurableRunStore,
 ) -> None:
-    """Two chained `agent.synth_dag` nodes, second one capped at max_depth=1.
-    By the time it runs, synth_depth has been bumped to 1 by the first node's
-    completion — depth == max_depth makes it a LEAF (`depth.py`), so it must
-    refuse to spawn further, proving the cap is actually enforced end-to-end
-    through the durable executor, not just unit-tested against a hand-built ctx."""
+    """A real nested synth refuses once prior dispatch evidence reaches its cap."""
     from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            return AgentSynthDagNode()
+            return _ExplicitSynthDispatchNode()
         return AgentSynthDagNode(max_depth=1)
 
     dag = {
@@ -590,16 +604,14 @@ async def test_agent_synth_dag_refuses_to_spawn_once_depth_reaches_cap_via_durab
     n2_output = result.node_runs[-1].result
     assert n2_output is not None
     assert n2_output["success"] is False
+    assert n2_output["dispatched"] is False
     assert "recursion depth cap reached" in n2_output["error"]
 
 
 async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
     mem_store: DurableRunStore,
 ) -> None:
-    """A depth-cap refusal is encoded as SynthDagOut(success=False) inside an
-    otherwise-successful NodeResult -- it must not burn a depth level for
-    whatever runs next, or an alternate attempt after a blocked one would
-    hit the cap prematurely."""
+    """A depth-cap refusal does not consume another recursion level."""
     from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 
     captured_depths: list[int] = []
@@ -622,7 +634,7 @@ async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            return AgentSynthDagNode()
+            return _ExplicitSynthDispatchNode()
         if node_id == "n2":
             return AgentSynthDagNode(max_depth=1)  # depth=1 here -> LEAF -> refuses
         return _CaptureDepthNode()
@@ -644,7 +656,7 @@ async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
 
     result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
     assert result.status == RunStatus.COMPLETED
-    # n1 -> depth becomes 1 for n2. n2 refuses (depth==max_depth==1) -> depth
+    # n1 dispatched -> depth becomes 1 for n2. n2 refuses at the cap -> depth
     # must stay 1 for n3, not bump to 2.
     assert captured_depths == [1]
 
