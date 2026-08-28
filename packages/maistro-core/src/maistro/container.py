@@ -35,7 +35,12 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
-from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    ChatRunAdmitter,
+    chat_turn_outcome,
+    failure_category,
+)
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
@@ -370,6 +375,7 @@ class Container:
         """
         if self.chat_admitter is None:
             return None
+        run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -384,9 +390,52 @@ class Container:
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except asyncio.CancelledError:
+            # The client disconnected mid-admission. Without the shield the
+            # compensating write would be aborted by the same cancellation it
+            # exists to clean up after — the `_close_chat_run` shield's reason,
+            # one step earlier in the turn.
+            await asyncio.shield(self._cancel_incomplete_admission(run))
+            raise
         except Exception:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+            await self._cancel_incomplete_admission(run)
             return None
+
+    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
+        """Compensate a chat Run whose admission never reached RUNNING (#338).
+
+        Admission persists CREATED, then QUEUED, then RUNNING. An exception
+        between any two of those writes used to strand the Run at the state it
+        had reached: the caller got `None`, so `_close_chat_run` had nothing to
+        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
+        work is waiting to run that nothing will ever run.
+
+        CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
+        is the honest word: the turn was never dispatched, so nothing failed
+        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
+        returned from admission, making it `_close_chat_run`'s to settle — not
+        this method's. Idempotent by the terminal guard; a concurrent settle
+        loses the race harmlessly because the compensating write is logged,
+        never re-raised — compensation must not replace the turn's answer.
+        """
+        if run is None:
+            return
+        try:
+            current = await self.run_store.get_run(run.run_id)
+            if current is None or current.status in TERMINAL_RUN_STATUSES:
+                return
+            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+                return
+            await self.run_store.transition_run(
+                run.run_id,
+                RunStatus.CANCELLED,
+                error=ADMISSION_INCOMPLETE,
+            )
+        except Exception:
+            logger.warning(
+                "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
+            )
 
     async def _close_chat_run(
         self,

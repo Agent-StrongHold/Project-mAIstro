@@ -16,7 +16,7 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import CHAT_SOURCE, SESSION_ID_KEY
+from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, SESSION_ID_KEY
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.types.config import AgentConfig
 
@@ -277,3 +277,126 @@ async def test_an_adopted_run_is_still_terminalized_here() -> None:
     closed = await container.run_store.get_run(mine.run_id)
     assert closed is not None
     assert closed.status is RunStatus.COMPLETED
+
+
+# --- #338: admission failures are compensated, never stranded ---------------
+
+
+class _VetoStore:
+    """Refuses one chosen lifecycle transition once, then behaves normally."""
+
+    def __init__(self, inner, veto: RunStatus) -> None:
+        self._inner = inner
+        self._veto: RunStatus | None = veto
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def transition_run(self, run_id, target, **kwargs):
+        if target is self._veto:
+            self._veto = None
+            raise RuntimeError("store hiccup")
+        return await self._inner.transition_run(run_id, target, **kwargs)
+
+
+async def test_a_failure_persisting_running_cancels_the_queued_run() -> None:
+    """#338's exact reproduction: QUEUED persists, RUNNING raises.
+
+    The Run used to stay QUEUED forever — admission swallowed the exception and
+    returned None, so `_close_chat_run` had nothing to settle and no sweeper
+    owns a QUEUED chat Run. Compensation cancels it with a sanitized category.
+    """
+    container = await _container()
+    container.run_store = _VetoStore(container.run_store, RunStatus.RUNNING)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    # The turn is still answered — admission failing must not refuse the turn.
+    assert result["choices"][0]["message"]["content"] == "hi"
+    assert "run_id" not in result
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+
+
+async def test_a_failure_persisting_queued_cancels_the_created_run() -> None:
+    """The hop before: admit() persisted CREATED, QUEUED raises."""
+    container = await _container()
+    container.run_store = _VetoStore(container.run_store, RunStatus.QUEUED)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert "run_id" not in result
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+
+
+async def test_repeated_compensation_is_idempotent_and_respects_settled_runs() -> None:
+    """Compensating twice, or after the Run settled, changes nothing."""
+    container = await _container()
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+    settled = await container.run_store.get_run(result["run_id"])
+    assert settled is not None
+    assert settled.status is RunStatus.COMPLETED
+
+    await container._cancel_incomplete_admission(settled)
+    await container._cancel_incomplete_admission(settled)
+
+    current = await container.run_store.get_run(settled.run_id)
+    assert current is not None
+    assert current.status is RunStatus.COMPLETED
+    assert current.error is None
+
+
+async def test_cancellation_during_admission_compensates_and_propagates() -> None:
+    """A client disconnecting mid-admission must not strand the QUEUED Run.
+
+    `CancelledError` is not an `Exception`, so without its own handler the old
+    code path never even logged — the Run stayed QUEUED and the cancellation
+    escaped before the turn's own shielded terminalization could see a Run.
+    """
+    import asyncio
+
+    container = await _container()
+    started = asyncio.Event()
+
+    class _SlowRunning:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def transition_run(self, run_id, target, **kwargs):
+            if target is RunStatus.RUNNING:
+                started.set()
+                await asyncio.sleep(0.05)
+            return await self._inner.transition_run(run_id, target, **kwargs)
+
+    container.run_store = _SlowRunning(container.run_store)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+
+    turn = asyncio.create_task(container.route_request([{"role": "user", "content": "hi"}]))
+    await started.wait()
+    turn.cancel()
+    results = await asyncio.gather(turn, return_exceptions=True)
+    assert isinstance(results[0], asyncio.CancelledError)
+
+    async def _compensated() -> bool:
+        (run,) = _chat_runs(container)
+        return run.status is RunStatus.CANCELLED
+
+    # The shield detaches the compensating write from the cancelled request,
+    # so it lands just after the turn ends rather than being aborted with it.
+    for _ in range(100):
+        if await _compensated():
+            break
+        await asyncio.sleep(0.01)
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
