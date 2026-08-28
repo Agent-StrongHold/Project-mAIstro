@@ -600,12 +600,27 @@ class Container:
         node then fails is parked by the reconciler (the recovery
         disposition's WAITING row), never silently retried by the next tick.
         """
-        from maistro.runs.consumption import ScheduleAttemptExecutor, executable_by_consumer
+        from maistro.runs.consumption import (
+            ScheduleAttemptExecutor,
+            consumer_owns,
+            executable_by_consumer,
+            unresolvable_reason,
+        )
 
         queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
         executor = ScheduleAttemptExecutor(self.run_store)
         executed = 0
         for run in queued:
+            if not consumer_owns(run):
+                continue
+            # Owned and impossible: no later tick makes an unregistered kind
+            # appear, so this Run is disposed of rather than left QUEUED
+            # forever. A multi-node Run reaches neither branch — it is owed to
+            # the durable Graph traversal (#44/#34) and waits for it.
+            unresolvable = unresolvable_reason(run)
+            if unresolvable is not None:
+                await self._fail_unresolvable_run(run.run_id, unresolvable)
+                continue
             if not executable_by_consumer(run):
                 continue
             try:
@@ -622,6 +637,22 @@ class Container:
                 await self._settle_unstarted_consumption(run.run_id)
             executed += 1
         return executed
+
+    async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:
+        """Terminalize an owned Run this process can never execute (#251).
+
+        Through the claim, not around it: `QUEUED` has no edge to `FAILED`,
+        and the `QUEUED -> RUNNING` transition is also the mutex that stops
+        two consumers disposing of the same Run twice. A concurrent tick that
+        loses the claim finds the Run already terminal and does nothing.
+        """
+        try:
+            await self.run_store.transition_run(run_id, RunStatus.RUNNING)
+            await self.run_store.transition_run(run_id, RunStatus.FAILED, error=reason)
+        except Exception:
+            logger.warning("unresolvable Run %s could not be settled", run_id, exc_info=True)
+            return
+        logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
 
     async def _settle_unstarted_consumption(self, run_id: str) -> None:
         """Terminalize a claimed Run whose execution never left a record behind.
