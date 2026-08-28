@@ -104,6 +104,16 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # `SENSITIVE_PATH_PATTERNS` decides which self-modifications need
+      # adversarial review, and it was a hand-written list that kept falling
+      # one entry behind: `local_loop.py` fast-forwards the baseline,
+      # `merge.py` decides which candidates land, `code_fixer.py` runs
+      # candidate code, and none of the three escalated (#303). This derives
+      # the requirement from the import graph reachable out of the promotion
+      # and execution entry points instead of enumerating it, so a new module
+      # on that path fails the build rather than waiting to be noticed.
+      - name: Every module the promotion path reaches escalates
+        run: python3 scripts/check-promotion-surface.py
       # Four chat handlers read `stores.chat_sessions` as a global dictionary,
       # so any authenticated user could list, read, append to or delete any
       # other user's chat by id (#312). Nothing about the text of those
