@@ -47,6 +47,9 @@ on:
       - "Registry CI"
       - "Vulture Ratchet"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
+      # Same rule as Gate C: it produces a check the required-checks contract
+      # lists, so its completion is evidence about the head this job judges.
+      - "Autonomous Merge Safety"
     types: [completed]
 
 # Keyed by the head being judged rather than by the PR: the question is about a
