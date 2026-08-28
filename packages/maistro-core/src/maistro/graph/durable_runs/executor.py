@@ -41,7 +41,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunIntegrityError, RunStore
 
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
@@ -100,37 +100,73 @@ async def _checkpoint(
     return await store.update(_replace_record(record, version=record.version + 1, **updates))
 
 
-async def _new_run_canonically(
+def _require_admitted(run_id: str | None) -> str:
+    """Refuse to bootstrap a Run the caller did not admit.
+
+    `run_store` without a `run_id` used to mean "create one here". It cannot:
+    the create and the first traversal checkpoint are two writes to two stores,
+    and a crash between them leaves a canonical Run RUNNING that no durable
+    record can resume and no sweep will notice. Admission is where Run identity
+    is created, in one durable operation, and #251's consumer tick is what
+    picks up the QUEUED Run it leaves behind.
+    """
+    if run_id is None:
+        raise RunIntegrityError(
+            "durable graph execution against the canonical RunStore requires an "
+            "admitted run_id; admission owns Run identity"
+        )
+    return run_id
+
+
+async def _adopt_admitted_run(
     graph: Graph,
     *,
     run_store: RunStore,
-    actor_principal_id: str | None,
-    parent_run_id: str | None = None,
-    parent_node_run_id: str | None = None,
-    provenance: Mapping[str, Any] | None = None,
+    run_id: str,
 ) -> Run:
-    """Obtain the Run from the canonical store, rather than minting one here.
+    """Take the already-admitted Run as authority, and start it.
 
-    The first of the three construction sites #44 converges (ADR-082826-d9f5).
-    Identity is the reason it has to be this direction: `Run`, `NodeRun` and
-    `Attempt` each mint their own id via `Field(default_factory=_id)`, and the
-    canonical creates take no id parameter — so a store asked to persist a
-    record built here would have to accept identities its caller assigned
-    first, which inverts ownership in the system of record. Asking the store
-    for the Run settles that: the id is the store's, and the copy inside the
-    `DurableRunRecord` is a projection of a row that already exists.
+    The canonical path consumes a Run rather than creating one. Creating it
+    here and checkpointing afterwards is a cross-store bootstrap with no
+    recovery: a crash between the two leaves a canonical Run RUNNING with no
+    traversal state to resume it from, and nothing to notice. Admission is the
+    durable operation that owns Run identity, and a Run it left QUEUED is
+    recoverable by the canonical consumer tick precisely because it is still
+    QUEUED.
 
-    NodeRuns and Attempts still mint in-record; they are the next two sites.
+    A pinned `run_id` is an authority binding, not permission to reuse an
+    identity. The Graph, workspace and Project on the admitted Run are checked
+    against the ones supplied here, before any physical work: executing a
+    different Graph under someone else's Run would attach its NodeRuns and
+    Attempts to work nobody asked for, and the Run would then describe an
+    execution that never happened.
+
+    The Run is moved to RUNNING before the first frontier, because a node that
+    runs while its canonical parent still says QUEUED is physical work no
+    consumer of the spine can see is happening.
     """
-    run = await run_store.create_run(
-        graph,
-        actor_principal_id=actor_principal_id,
-        parent_run_id=parent_run_id,
-        parent_node_run_id=parent_node_run_id,
-        provenance={**dict(provenance or {}), "executor": "durable_graph"},
-    )
-    await run_store.transition_run(run.run_id, RunStatus.QUEUED)
-    return await run_store.transition_run(run.run_id, RunStatus.RUNNING)
+    admitted = await run_store.get_run(run_id)
+    if admitted is None:
+        raise RunIntegrityError(
+            f"pinned run_id {run_id!r} is not on the canonical spine; "
+            "durable graph execution consumes an admitted Run"
+        )
+    if admitted.graph.content_hash != graph.content_hash:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} was admitted for a different Graph; "
+            "the supplied Graph does not match the admitted snapshot"
+        )
+    if admitted.workspace_id != graph.workspace_id or admitted.project_id != graph.project_id:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} is scoped to "
+            f"{admitted.workspace_id!r}/{admitted.project_id!r}, not "
+            f"{graph.workspace_id!r}/{graph.project_id!r}"
+        )
+    if admitted.status is RunStatus.RUNNING:
+        return admitted
+    for step in transition_path(admitted.status, RunStatus.RUNNING):
+        admitted = await run_store.transition_run(run_id, step)
+    return admitted
 
 
 async def _canonical_spine(
@@ -150,12 +186,39 @@ async def _canonical_spine(
     return run_store if await run_store.get_run(record.run_id) is not None else None
 
 
+async def _adoptable_node_run(
+    known: frozenset[str],
+    node_id: str,
+    *,
+    record: DurableRunRecord,
+    run_store: RunStore,
+) -> NodeRun | None:
+    """Find a canonical NodeRun this record lost before it could checkpoint.
+
+    The canonical create and the traversal checkpoint are two writes to two
+    stores. A crash between them leaves a NodeRun the spine holds and the
+    aggregate does not, and minting a second one for the same visit would make
+    the Run describe physical work twice. Adoption is what makes the retry
+    idempotent: the identity already exists, so the record takes it rather than
+    replacing it.
+    """
+    orphans = [
+        node_run
+        for node_run in await run_store.list_node_runs(record.run_id)
+        if node_run.node_run_id not in known
+        and node_run.node_id == node_id
+        and node_run.status not in TERMINAL_RUN_STATUSES
+    ]
+    return orphans[-1] if orphans else None
+
+
 async def _new_node_run(
     record: DurableRunRecord,
     node_id: str,
     *,
     ordinal: int,
     run_store: RunStore | None,
+    known: frozenset[str] = frozenset(),
 ) -> NodeRun:
     """Obtain a frontier NodeRun, from the canonical store when there is one.
 
@@ -169,9 +232,15 @@ async def _new_node_run(
         node_run = NodeRun(run_id=record.run_id, node_id=node_id, ordinal=ordinal)
         node_run = transition_node_run(node_run, RunStatus.QUEUED)
         return transition_node_run(node_run, RunStatus.RUNNING)
-    node_run = await run_store.create_node_run(record.run_id, node_id=node_id)
-    await run_store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
-    return await run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    adopted = await _adoptable_node_run(known, node_id, record=record, run_store=run_store)
+    canonical = (
+        adopted
+        if adopted is not None
+        else await run_store.create_node_run(record.run_id, node_id=node_id)
+    )
+    for step in transition_path(canonical.status, RunStatus.RUNNING):
+        canonical = await run_store.transition_node_run(canonical.node_run_id, step)
+    return canonical
 
 
 async def _canonical_outcome(
@@ -327,18 +396,13 @@ async def run_durable_graph(
     linkage survives only in an audit line beside the Run rather than on it
     (#145).
     """
-    if run_store is not None and run_id is None:
-        # The converged path (#44): the store owns the identity. Skipped when
-        # the caller pinned a `run_id` — an already-admitted Run being executed
-        # is a different case, and creating a second one for it is the
-        # duplicate this convergence exists to remove.
-        run = await _new_run_canonically(
+    if run_store is not None:
+        # The converged path (#44): the store owns the identity, and this
+        # consumes it rather than creating a second one.
+        run = await _adopt_admitted_run(
             graph,
             run_store=run_store,
-            actor_principal_id=actor_principal_id,
-            parent_run_id=parent_run_id,
-            parent_node_run_id=parent_node_run_id,
-            provenance=provenance,
+            run_id=_require_admitted(run_id),
         )
     else:
         run = _new_run(
@@ -967,6 +1031,7 @@ async def _ensure_frontier_node_runs(
             node_id,
             ordinal=len(node_runs) + 1,
             run_store=run_store,
+            known=frozenset(item.node_run_id for item in node_runs),
         )
         node_runs.append(node_run)
         selected.append(node_run)

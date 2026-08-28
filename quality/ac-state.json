@@ -13598,6 +13598,19 @@
       "tier": "passing"
     },
     {
+      "id": "ADR-082826-d9f5",
+      "file": "docs/adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "unmeasured"
+    },
+    {
       "id": "ADR-083",
       "file": "docs/adr/ADR-083-skills-mcp-trust.md",
       "declared_status": "Proposed",

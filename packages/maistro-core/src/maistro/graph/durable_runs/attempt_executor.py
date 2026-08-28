@@ -63,18 +63,17 @@ async def run_durable_graph(
     parent's whole blackboard leaking across the Run boundary.
 
     ``run_store`` converges the Run's identity onto the canonical spine (#44,
-    ADR-082826-d9f5): with it, the Run is the store's and this record carries a
-    projection of a row that exists; without it, the pre-convergence in-memory
-    mint is unchanged, so a caller with no spine wired still runs.
+    ADR-082826-d9f5). With it, this consumes an already-admitted Run rather
+    than creating one -- admission owns Run identity, and a `run_id` is an
+    authority binding checked against the supplied Graph and scope before any
+    physical work. Without it, the pre-convergence in-memory mint is unchanged,
+    so a caller with no spine wired still runs.
     """
-    if run_store is not None and run_id is None:
-        run = await traversal._new_run_canonically(
+    if run_store is not None:
+        run = await traversal._adopt_admitted_run(
             graph,
             run_store=run_store,
-            actor_principal_id=actor_principal_id,
-            parent_run_id=parent_run_id,
-            parent_node_run_id=parent_node_run_id,
-            provenance=provenance,
+            run_id=traversal._require_admitted(run_id),
         )
     else:
         run = traversal._new_run(

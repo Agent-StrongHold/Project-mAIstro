@@ -46,6 +46,37 @@ from .protocol import DurableRunStore
 from .types import DurableRunRecord
 
 
+def _require_same_creation_contract(
+    candidate: Attempt,
+    *,
+    runtime_id: str,
+    executor_id: str,
+    deadline_at: datetime | None,
+    resume_checkpoint_id: str | None,
+    lease_holder: str | None,
+) -> None:
+    """Refuse to adopt an Attempt that was created for a different request.
+
+    Adoption is only safe while the unmirrored row is the one this call would
+    have made. An Attempt created with a different runtime, executor, deadline,
+    resume checkpoint or holder is somebody else's physical work, and taking it
+    would make this caller's retry report an execution it never asked for.
+    """
+    lease = candidate.execution_lease
+    holder = lease.holder if lease is not None else None
+    if (
+        candidate.runtime_id != runtime_id
+        or candidate.executor_id != executor_id
+        or candidate.deadline_at != deadline_at
+        or candidate.resume_checkpoint_id != resume_checkpoint_id
+        or holder != lease_holder
+    ):
+        raise RunIntegrityError(
+            f"unmirrored canonical Attempt {candidate.attempt_id!r} does not match "
+            "the retried creation contract"
+        )
+
+
 class DurableRunExecutionStore:
     """Expose canonical execution lifecycle operations for one durable Run."""
 
@@ -253,19 +284,14 @@ class DurableRunExecutionStore:
                 f"unmirrored canonical Attempt {candidate.attempt_id!r} is already "
                 f"{candidate.status.value!r}"
             )
-        lease = candidate.execution_lease
-        holder = lease.holder if lease is not None else None
-        if (
-            candidate.runtime_id != runtime_id
-            or candidate.executor_id != executor_id
-            or candidate.deadline_at != deadline_at
-            or candidate.resume_checkpoint_id != resume_checkpoint_id
-            or holder != lease_holder
-        ):
-            raise RunIntegrityError(
-                f"unmirrored canonical Attempt {candidate.attempt_id!r} does not match "
-                "the retried creation contract"
-            )
+        _require_same_creation_contract(
+            candidate,
+            runtime_id=runtime_id,
+            executor_id=executor_id,
+            deadline_at=deadline_at,
+            resume_checkpoint_id=resume_checkpoint_id,
+            lease_holder=lease_holder,
+        )
         return candidate
 
     @staticmethod
@@ -382,43 +408,10 @@ class DurableRunExecutionStore:
         replacements: dict[str, Attempt] = {}
         reclaimed: list[Attempt] = []
         for projected in doomed:
-            canonical = await self._run_store.get_attempt(projected.attempt_id)
-            if canonical is None:
-                raise RunIntegrityError(
-                    f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
-                )
-            if canonical.status in TERMINAL_ATTEMPT_STATUSES:
-                replacements[projected.attempt_id] = canonical
-                if canonical.status is reclaim_attempt(projected, at=moment).status:
-                    reclaimed.append(canonical)
-                continue
-            if not lease_is_expired(canonical, moment):
-                # The canonical holder renewed before recovery observed it.
-                # Repair the stale projection instead of cancelling live work.
-                replacements[projected.attempt_id] = canonical
-                continue
-
-            lease = canonical.execution_lease
-            if lease is None:
-                raise RunIntegrityError(
-                    f"expired canonical Attempt {canonical.attempt_id!r} has no execution lease"
-                )
-            settled = reclaim_attempt(canonical, at=moment)
-            try:
-                canonical = await self._run_store.transition_attempt(
-                    canonical.attempt_id,
-                    settled.status,
-                    at=moment,
-                    error=settled.error,
-                    fencing_token=lease.fencing_token,
-                )
-            except (InvalidLifecycleTransition, StaleExecutionFence):
-                refreshed = await self._run_store.get_attempt(canonical.attempt_id)
-                if refreshed is None or refreshed.status not in TERMINAL_ATTEMPT_STATUSES:
-                    raise
-                canonical = refreshed
+            canonical, settled = await self._settle_one_canonically(projected, moment=moment)
             replacements[projected.attempt_id] = canonical
-            reclaimed.append(canonical)
+            if settled:
+                reclaimed.append(canonical)
 
         def update(current: DurableRunRecord) -> DurableRunRecord:
             attempts = [replacements.get(item.attempt_id, item) for item in current.attempts]
@@ -426,6 +419,51 @@ class DurableRunExecutionStore:
 
         await self._mutate(update)
         return [item.model_copy(deep=True) for item in reclaimed]
+
+    async def _settle_one_canonically(
+        self,
+        projected: Attempt,
+        *,
+        moment: datetime,
+    ) -> tuple[Attempt, bool]:
+        """Settle one lapsed canonical Attempt, or report what it actually is.
+
+        Three answers, and only one of them is a reclaim. Already terminal: the
+        canonical row won a race, so the projection is repaired and it counts
+        as reclaimed only if it settled the way reclaim would have. Still live:
+        the holder renewed before recovery observed the expiry, so the stale
+        projection is repaired rather than the live work cancelled. Otherwise
+        it is genuinely lapsed and is settled here.
+        """
+        assert self._run_store is not None
+        canonical = await self._run_store.get_attempt(projected.attempt_id)
+        if canonical is None:
+            raise RunIntegrityError(
+                f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
+            )
+        if canonical.status in TERMINAL_ATTEMPT_STATUSES:
+            return canonical, canonical.status is reclaim_attempt(projected, at=moment).status
+        if not lease_is_expired(canonical, moment):
+            return canonical, False
+        lease = canonical.execution_lease
+        if lease is None:
+            raise RunIntegrityError(
+                f"expired canonical Attempt {canonical.attempt_id!r} has no execution lease"
+            )
+        settled = reclaim_attempt(canonical, at=moment)
+        try:
+            return await self._run_store.transition_attempt(
+                canonical.attempt_id,
+                settled.status,
+                at=moment,
+                error=settled.error,
+                fencing_token=lease.fencing_token,
+            ), True
+        except (InvalidLifecycleTransition, StaleExecutionFence):
+            refreshed = await self._run_store.get_attempt(canonical.attempt_id)
+            if refreshed is None or refreshed.status not in TERMINAL_ATTEMPT_STATUSES:
+                raise
+            return refreshed, True
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         record = await self._get_record()

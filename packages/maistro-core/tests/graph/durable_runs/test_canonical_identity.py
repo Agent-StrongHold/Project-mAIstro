@@ -45,6 +45,17 @@ class _Step(BaseNode[_StepIn, _StepOut]):
         return _StepOut()
 
 
+async def _admit(run_store: InMemoryRunStore, graph: Graph) -> str:
+    """Admit the Run the way a producer does, and hand back its id.
+
+    Traversal consumes an admitted Run rather than creating one: the create and
+    the first traversal checkpoint are writes to two stores, and a crash
+    between them would leave a canonical Run RUNNING with nothing to resume it.
+    """
+    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    return run.run_id
+
+
 async def _spine() -> tuple[InMemoryRunStore, str, str]:
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("ws-canonical")
@@ -71,10 +82,12 @@ async def test_a_graph_run_is_findable_in_the_canonical_store() -> None:
     """The symptom #44 exists to remove: graph Runs invisible to the spine."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -82,7 +95,7 @@ async def test_a_graph_run_is_findable_in_the_canonical_store() -> None:
     assert canonical is not None, "the Run the graph executed is in the canonical store"
     assert canonical.workspace_id == workspace_id
     assert canonical.project_id == project_id
-    assert canonical.provenance["executor"] == "durable_graph"
+    assert canonical.status is RunStatus.COMPLETED
 
 
 async def test_the_identity_is_the_stores_not_the_records() -> None:
@@ -90,10 +103,12 @@ async def test_the_identity_is_the_stores_not_the_records() -> None:
     than an id minted here and persisted afterwards."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -122,9 +137,36 @@ async def test_without_a_canonical_store_the_previous_behaviour_is_unchanged() -
     assert record.status is RunStatus.COMPLETED
 
 
-async def test_a_pinned_run_id_still_wins_over_canonical_creation() -> None:
-    """An already-admitted Run being executed must not get a second identity —
-    creating one is the duplicate this convergence removes."""
+async def test_the_adopted_run_keeps_what_admission_recorded_on_it() -> None:
+    """Adoption, not re-creation: the Run the graph executes is the admitted
+    row, so whatever admission put on it — scope, actor, provenance — is what
+    the execution reports rather than something synthesized here."""
+    run_store, workspace_id, project_id = await _spine()
+    graph = _graph(workspace_id, project_id)
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id="operator-1",
+        provenance={"admission_source": "schedule"},
+    )
+
+    record = await run_durable_graph(
+        graph,
+        store=InMemoryDurableRunStore(),
+        node_resolver=_resolver,
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+
+    assert record.run.run_id == admitted.run_id
+    assert record.run.actor_principal_id == "operator-1"
+    assert record.run.provenance["admission_source"] == "schedule"
+    assert len(await run_store.list_by_status(RunStatus.COMPLETED, limit=10)) == 1
+
+
+async def test_a_pinned_run_id_without_a_spine_stays_where_it_was() -> None:
+    """The pre-convergence path is untouched: a caller pinning an id with no
+    canonical store wired still runs, and nothing reaches the spine."""
     run_store, workspace_id, project_id = await _spine()
 
     record = await run_durable_graph(
@@ -132,7 +174,6 @@ async def test_a_pinned_run_id_still_wins_over_canonical_creation() -> None:
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
         run_id="pinned-run-1",
-        run_store=run_store,
     )
 
     assert record.run.run_id == "pinned-run-1"
@@ -144,10 +185,12 @@ async def test_frontier_node_runs_are_findable_in_the_canonical_store() -> None:
     node nothing outside this record can see — the same defect as the Run."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -162,10 +205,12 @@ async def test_attempts_are_findable_in_the_canonical_store() -> None:
     """The third site. Physical execution history is the canonical store's."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -182,10 +227,12 @@ async def test_a_settled_attempt_does_not_read_differently_per_store() -> None:
     divergence a global lease sweep would then act on."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -216,10 +263,12 @@ async def test_the_run_and_its_node_reach_their_terminal_status_canonically() ->
     missing, and a lease sweep would act on it."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -274,6 +323,7 @@ async def test_a_node_answered_out_of_a_pause_walks_the_statuses_it_must() -> No
         graph,
         store=store,
         node_resolver=lambda node_id, _graph: _Ask(),
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
     assert paused.status is RunStatus.PAUSED
@@ -352,6 +402,7 @@ async def test_a_failed_node_settles_canonically_too() -> None:
         graph,
         store=InMemoryDurableRunStore(),
         node_resolver=lambda node_id, _graph: _Boom(),
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 
@@ -373,10 +424,12 @@ async def test_the_traversal_executor_takes_the_same_path() -> None:
     decide whether its Run existed."""
     run_store, workspace_id, project_id = await _spine()
 
+    graph = _graph(workspace_id, project_id)
     record = await traversal.run_durable_graph(
-        _graph(workspace_id, project_id),
+        graph,
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        run_id=await _admit(run_store, graph),
         run_store=run_store,
     )
 

@@ -288,4 +288,7 @@ async def test_scoped_reclaim_settles_canonical_attempt_before_immediate_retry()
     assert retry.ordinal == attempt.ordinal + 1
     persisted = await store.get(record.run_id)
     assert persisted is not None
-    assert [item.attempt_id for item in persisted.attempts] == [attempt.attempt_id, retry.attempt_id]
+    assert [item.attempt_id for item in persisted.attempts] == [
+        attempt.attempt_id,
+        retry.attempt_id,
+    ]
