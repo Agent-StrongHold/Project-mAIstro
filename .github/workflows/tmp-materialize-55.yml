@@ -61,19 +61,20 @@ jobs:
               raise SystemExit(f"production scan replacement count={count}")
 
           binop = "    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):\n"
-          call_block = '''    if isinstance(node, ast.Call):
-              callee = _dotted(node.func)
-              if callee in {"os.environ.get", "os.getenv"}:
-                  default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
-                  if default is None:
-                      for keyword in node.keywords:
-                          if keyword.arg == "default":
-                              default = keyword.value
-                              break
-                  if default is not None:
-                      return _string_parts(default, bindings, seen)
-              return ()
-          '''
+          call_block = (
+              "    if isinstance(node, ast.Call):\n"
+              "        callee = _dotted(node.func)\n"
+              "        if callee in {\"os.environ.get\", \"os.getenv\"}:\n"
+              "            default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None\n"
+              "            if default is None:\n"
+              "                for keyword in node.keywords:\n"
+              "                    if keyword.arg == \"default\":\n"
+              "                        default = keyword.value\n"
+              "                        break\n"
+              "            if default is not None:\n"
+              "                return _string_parts(default, bindings, seen)\n"
+              "        return ()\n"
+          )
           if binop not in text:
               raise SystemExit("binop insertion point not found")
           text = text.replace(binop, call_block + binop, 1)
