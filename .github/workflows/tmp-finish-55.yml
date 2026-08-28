@@ -22,7 +22,6 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import json
 
           analyzer = Path("scripts/check_direct_effects.py")
           text = analyzer.read_text()
@@ -44,8 +43,8 @@ jobs:
           new_scan = '''_EXCLUDED_PRODUCTION_FILES = frozenset(
               {
                   # Standalone developer hill-climb driver, invoked manually rather than shipped
-                  # as an application/runtime path. Its model egress remains covered by the
-                  # legacy broad model-egress census and is called out explicitly in the PR.
+                  # as an application/runtime path. Its model egress is called out explicitly in
+                  # the checked-in inventory documentation and PR.
                   "packages/hive-conductor/run_hill_climb.py",
               }
           )
@@ -69,17 +68,10 @@ jobs:
           '''
           if old_scan not in text:
               raise SystemExit("scan block marker not found")
-          text = text.replace(old_scan, new_scan)
+          text = text.replace(old_scan, new_scan, 1)
 
-          call_marker = '''    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-              return _string_parts(node.left, bindings, seen) + _string_parts(
-                  node.right,
-                  bindings,
-                  seen,
-              )
-              return ()
-          '''
-          call_replacement = '''    if isinstance(node, ast.Call):
+          binop_marker = "    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):\n"
+          call_block = '''    if isinstance(node, ast.Call):
               callee = _dotted(node.func)
               if callee in {"os.environ.get", "os.getenv"}:
                   default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
@@ -91,39 +83,22 @@ jobs:
                   if default is not None:
                       return _string_parts(default, bindings, seen)
               return ()
-              if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-                  return _string_parts(node.left, bindings, seen) + _string_parts(
-                      node.right,
-                      bindings,
-                      seen,
-                  )
-              return ()
           '''
-          if call_marker not in text:
-              raise SystemExit("string-parts marker not found")
-          text = text.replace(call_marker, call_replacement)
+          if binop_marker not in text:
+              raise SystemExit("binop marker not found")
+          text = text.replace(binop_marker, call_block + binop_marker, 1)
 
-          path_marker = '''    (
+          stop_rule = '''    (
               "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
               "HarnessSessionManager.stop",
               "safe.stop",
           ): ("HARNESS_EFFECT", "harness.stop"),
-          }
-
-
-          @dataclass(frozen=True)
-          class Site:
           '''
-          path_replacement = '''    (
-              "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
-              "HarnessSessionManager.stop",
-              "safe.stop",
-          ): ("HARNESS_EFFECT", "harness.stop"),
-              (
-                  "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
-                  "_generate_cloudflare",
-                  "httpx.post",
-              ): ("MODEL_EFFECT", "cloudflare-image-http"),
+          image_rules = '''    (
+              "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+              "_generate_cloudflare",
+              "httpx.post",
+          ): ("MODEL_EFFECT", "cloudflare-image-http"),
               (
                   "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
                   "_generate_azure",
@@ -134,19 +109,14 @@ jobs:
                   "_generate_gemini",
                   "httpx.post",
               ): ("MODEL_EFFECT", "gemini-image-http"),
-          }
-
-
-          @dataclass(frozen=True)
-          class Site:
           '''
-          if path_marker not in text:
-              raise SystemExit("path-rule marker not found")
-          text = text.replace(path_marker, path_replacement)
+          if stop_rule not in text:
+              raise SystemExit("harness stop rule marker not found")
+          text = text.replace(stop_rule, stop_rule + image_rules, 1)
           analyzer.write_text(text)
 
           tests = Path("tests/test_check_direct_effects.py")
-          t = tests.read_text()
+          existing = tests.read_text()
           addition = '''
 
           def test_environment_default_model_endpoint_is_detected(gate) -> None:
@@ -165,15 +135,18 @@ jobs:
           def test_non_src_package_python_is_scanned_but_explicit_dev_utility_is_not(gate, tmp_path) -> None:
               shipped = tmp_path / "packages/demo/frontend/server/mcp/effect.py"
               shipped.parent.mkdir(parents=True)
-              shipped.write_text("pass\n")
+              shipped.write_text("pass\\n")
               test_file = tmp_path / "packages/demo/tests/test_effect.py"
               test_file.parent.mkdir(parents=True)
-              test_file.write_text("pass\n")
+              test_file.write_text("pass\\n")
               excluded = tmp_path / "packages/hive-conductor/run_hill_climb.py"
               excluded.parent.mkdir(parents=True)
-              excluded.write_text("pass\n")
+              excluded.write_text("pass\\n")
 
-              found = {path.relative_to(tmp_path).as_posix() for path in gate._production_python_files(tmp_path)}
+              found = {
+                  path.relative_to(tmp_path).as_posix()
+                  for path in gate._production_python_files(tmp_path)
+              }
               assert found == {"packages/demo/frontend/server/mcp/effect.py"}
 
 
@@ -191,9 +164,8 @@ jobs:
                   ("MODEL_EFFECT", "gemini-image-http"),
               ]
           '''
-          if "test_environment_default_model_endpoint_is_detected" not in t:
-              tests.write_text(t + addition)
-
+          if "test_environment_default_model_endpoint_is_detected" not in existing:
+              tests.write_text(existing + addition)
           PY
 
           python scripts/check_direct_effects.py --update
@@ -266,6 +238,7 @@ jobs:
           python scripts/check-model-egress.py
           python -m pip install -q pytest
           python -m pytest -q tests/test_check_direct_effects.py
+
           rm .github/workflows/tmp-finish-55.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
