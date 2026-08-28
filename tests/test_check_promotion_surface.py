@@ -313,6 +313,54 @@ class TestTheClassifierIsProtectedWithItsTests:
         assert checker._matcher()(path)
 
 
+class TestTheMatcherIsReachableWithoutTheWorkspace:
+    """This gate runs in the lint job, where the workspace is not installed.
+
+    It first shipped importing `maistro_rsi.sensitive_paths` by its dotted name,
+    which runs `maistro_rsi/__init__.py` -> `coordinator` -> `structlog`, and
+    the whole job died on `ModuleNotFoundError` while the gate's own tests
+    passed locally -- because locally `structlog` happens to be installed. So
+    the failure is reproduced here rather than left to CI.
+    """
+
+    def test_the_gate_loads_the_matcher_without_the_workspace_installed(
+        self, checker: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `maistro_rsi` package that raises on import, ahead on `sys.path`.
+
+        Stronger than skipping the import: it asserts the gate never reaches
+        the package at all, rather than that it survives one particular missing
+        dependency.
+        """
+        _write(
+            tmp_path / "maistro_rsi" / "__init__.py",
+            "raise ImportError('the workspace is not installed')\n",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, "maistro_rsi", raising=False)
+        monkeypatch.delitem(sys.modules, "maistro_rsi.sensitive_paths", raising=False)
+
+        matches = checker._matcher()
+
+        assert matches("packages/maistro-rsi/src/maistro_rsi/local_loop.py")
+        assert not matches("README.md")
+
+    def test_the_whole_audit_runs_under_that_condition(
+        self, checker: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not only `_matcher`: the audit is what the workflow step calls."""
+        _write(
+            tmp_path / "maistro_rsi" / "__init__.py",
+            "raise ImportError('the workspace is not installed')\n",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, "maistro_rsi", raising=False)
+
+        findings, _ = checker.audit()
+
+        assert findings == [], "\n".join(str(f) for f in findings)
+
+
 class TestTheCommandLine:
     def test_a_clean_tree_exits_zero(self, checker: ModuleType, capsys) -> None:
         assert checker.main([]) == 0

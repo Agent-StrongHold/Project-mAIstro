@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import sys
 from collections.abc import Iterable
@@ -59,6 +60,18 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BASELINE_PATH = REPO / "quality" / "promotion-surface-baseline.json"
+#: The containment-surface classifier. A fixed sibling of this script rather
+#: than a function of the tree being audited, so a test that redirects `REPO`
+#: at a fixture tree still consults the real matcher -- which is the whole
+#: point of loading it instead of reimplementing it.
+CLASSIFIER = (
+    Path(__file__).resolve().parent.parent
+    / "packages"
+    / "maistro-rsi"
+    / "src"
+    / "maistro_rsi"
+    / "sensitive_paths.py"
+)
 
 # The entry points of the promotion and execution path, each named with the
 # capability that puts it here. These are the roots of the walk, so an omission
@@ -101,15 +114,25 @@ class Finding:
 def _matcher():
     """The real classifier, not a local reimplementation of it.
 
-    `scripts/check_enumerations.py` learned this the hard way: it once
+    `scripts/check_enumerations.py` learned that lesson the hard way: it once
     replicated the substring logic, so the gate could pass while asserting
-    semantics the quarantine no longer used. `sensitive_paths` imports nothing,
-    so loading it by file path costs no dependencies.
-    """
-    sys.path.insert(0, str(REPO / "packages" / "maistro-rsi" / "src"))
-    from maistro_rsi.sensitive_paths import matches_sensitive_pattern
+    semantics the quarantine no longer used.
 
-    return matches_sensitive_pattern
+    Loaded **by file path**, not as `maistro_rsi.sensitive_paths`. The package
+    import runs `maistro_rsi/__init__.py`, which imports `coordinator`, which
+    imports `structlog` -- so the dotted form needs the workspace installed, and
+    this gate runs in the lint job where it is not. `sensitive_paths` itself
+    imports nothing outside the standard library, which is what makes loading it
+    on its own possible; `test_the_gate_loads_the_matcher_without_the_workspace
+    _installed` is what keeps that true.
+    """
+    spec = importlib.util.spec_from_file_location("_maistro_sensitive_paths", CLASSIFIER)
+    if spec is None or spec.loader is None:  # pragma: no cover - unreachable for a real file
+        msg = f"cannot load the containment-surface classifier from {CLASSIFIER}"
+        raise RuntimeError(msg)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.matches_sensitive_pattern
 
 
 def index_modules() -> dict[str, Path]:

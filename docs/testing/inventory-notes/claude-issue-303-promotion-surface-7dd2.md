@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-rsi/tests: +25
-  tests/: +34
+  tests/: +36
 ---
 # claude-issue-303-promotion-surface-7dd2
 
@@ -21,6 +21,14 @@ library and loads under `python -I` with nothing on the import path — the gate
 depends on that — that the directory patterns cover everything the per-file
 entries they replaced covered, and that ordinary application surface still does
 not escalate.
+
+Two of the 36 arrived after the first CI run, which died on
+`ModuleNotFoundError: No module named 'structlog'`: the gate loaded the
+classifier as `maistro_rsi.sensitive_paths`, and the dotted form runs
+`maistro_rsi/__init__.py` -> `coordinator` -> `structlog`, which the lint job
+does not have. It now loads the file by path, and
+`TestTheMatcherIsReachableWithoutTheWorkspace` puts a `maistro_rsi` package
+that raises on import ahead on `sys.path` so the failure cannot come back.
 
 `packages/maistro-rsi/tests/test_quarantine.py` is unchanged and still passes:
 `quarantine.py` re-exports `SENSITIVE_PATH_PATTERNS` and
