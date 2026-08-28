@@ -346,12 +346,11 @@ def renew_attempt_lease(
     ttl: timedelta,
     at: datetime | None = None,
 ) -> Attempt:
-    """One shared renewal rule, so three stores cannot grow three of them.
+    """Renew a still-live lease held by the presented fencing token.
 
-    Fenced, and for the same reason `transition_attempt` is: a renewal is a
-    worker-authored write. A stale worker that could renew would keep an
-    Attempt alive that recovery is trying to reclaim, which is exactly the
-    stuck state this mechanism exists to end.
+    Renewal proves the current holder remained alive continuously. Once the
+    expiry boundary has passed, the holder lost the lease and may not resurrect
+    it with the old token while recovery is reclaiming the Attempt.
     """
     lease = attempt.execution_lease
     if lease is None:
@@ -363,6 +362,10 @@ def renew_attempt_lease(
             f"cannot renew the lease of a {attempt.status.value} Attempt"
         )
     moment = _now(at)
+    if lease.expires_at is not None and lease.expires_at <= moment:
+        raise InvalidLifecycleTransition(
+            f"cannot renew expired lease for Attempt {attempt.attempt_id!r}"
+        )
     return attempt.model_copy(update={"execution_lease": renewed_lease(lease, at=moment, ttl=ttl)})
 
 
