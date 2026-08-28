@@ -894,6 +894,7 @@
         "packages/maistro-core/src/maistro/graph/dag_registry.py::unused function 'invoke_dag_agent'",
         "packages/maistro-core/src/maistro/graph/dag_registry.py::unused method 'as_agent_catalog'",
         "packages/maistro-core/src/maistro/graph/dag_registry.py::unused method 'deregister'",
+        "packages/maistro-core/src/maistro/graph/definitions.py::unused method '_reject_runtime_state'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused method '_validate_edges'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused method '_validate_graph'",
         "packages/maistro-core/src/maistro/graph/depth.py::unused function 'compute_subgraph_depths'",
