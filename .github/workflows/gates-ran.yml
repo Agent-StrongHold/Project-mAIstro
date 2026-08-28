@@ -2,7 +2,7 @@ name: Gates Ran
 
 # Did the gate set actually reach this commit? (#262 AC-2)
 #
-# Every other workflow here asks whether the code is good. None asked whether
+# Every other workflow here asks whether the code is good. None asks whether
 # the gates ran at all on the artefact about to merge, and those are different
 # questions: a check that never reports is not red, it is *absent*, and absence
 # renders as an empty space where a green tick would go.
@@ -13,24 +13,21 @@ name: Gates Ran
 # its own workflow's green job. The newest head either had actually run on was
 # two commits behind the tip.
 #
-# `workflow_run`, not `pull_request`, and that is the whole design. A job inside
-# ci.yml cannot see whether quality.yml ran; only something triggered *by* their
-# completion can. Each completion re-evaluates the same head, so an early firing
-# that finds a sibling still running goes red and the last one settles it.
+# `workflow_run`, not `pull_request`, is deliberate. A job inside ci.yml cannot
+# see whether quality.yml ran; only something triggered by their completion can.
+# Each completion re-evaluates the same candidate SHA. Early evaluations publish
+# `gates-ran` as in-progress while siblings are still running; the last required
+# completion settles it to success. A stalled/unmeasured state settles it red.
 #
-# It will not run on the pull request that adds it, and that is not a defect.
-# GitHub starts a `workflow_run` workflow from the **default branch** copy of
-# the file, so `gates-ran` begins reporting only once this is on `develop` —
-# its first real firing is on the *next* PR. Reviewers of the adding PR should
-# expect the check to be absent here; that absence is the very state the check
-# exists to make loud everywhere else, which is an irony worth writing down
-# rather than discovering.
+# The workflow-run job's *own* check is attached to the default-branch workflow
+# run, not to the PR or merge-group SHA being judged. That means merely naming
+# this job `gates-ran` cannot make it a valid required check. The final step
+# explicitly creates a check run named `gates-ran` on HEAD_SHA with `checks:
+# write`; that is the context branch protection waits for.
 #
-# A consequence worth stating: because this has no `pull_request:` trigger,
-# `scripts/check-required-checks.py` cannot see it, so `gates-ran` does not
-# appear in the generated table in docs/ci/REQUIRED-CHECKS.md. It still has to
-# be marked required in branch protection by hand (#162) — the doc says so in
-# prose beside the table.
+# This workflow is loaded from the default branch. Changes to this trusted
+# publisher therefore become effective only after landing on `develop`, just
+# like the base-trusted autonomous-merge judge.
 
 on:
   workflow_run:
@@ -40,36 +37,36 @@ on:
       - "security"
       - "CodeQL Advanced"
       - "Formal Conformance"
-      # Produces a required check (scripts/check-required-checks.py lists it),
-      # so its completion is evidence about the head this job judges. Absent
-      # from here, a Gate C result never woke the evaluator (#497).
       - "Gate C"
       - "Registry CI"
       - "Vulture Ratchet"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
+      - "Autonomous Merge Safety"
     types: [completed]
 
 # Keyed by the head being judged rather than by the PR: the question is about a
 # commit. `cancel-in-progress` stays false because each sibling's completion is
 # new evidence about the same head, and cancelling the earlier evaluation would
-# throw away the answer without replacing it.
+# throw away evidence without replacing it.
 concurrency:
   group: gates-ran-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 permissions:
-  checks: read
+  checks: write
   contents: read
 
 jobs:
-  gates-ran:
-    name: gates-ran
+  publish-gates-ran:
+    name: publish-gates-ran
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Only for pull requests. A push to a long-lived branch has no head under
-    # review, and failing this on every `develop` push would train people to
-    # ignore it.
-    if: github.event.workflow_run.event == 'pull_request'
+    # Only merge-boundary candidates. Pushes to long-lived branches have no
+    # candidate under review, and publishing a required-looking check there
+    # would confuse the evidence model.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' ||
+      github.event.workflow_run.event == 'merge_group'
     steps:
       - uses: actions/checkout@v4
 
@@ -80,11 +77,11 @@ jobs:
       - name: Install PyYAML
         run: pip install pyyaml
 
-      # Paginated deliberately: this repository already emits ~25 checks per
-      # head and GitHub's default page is 30. A truncated page would report
-      # real checks as "never ran", which is the exact false positive that
+      # Paginated deliberately: this repository already emits more than the
+      # API's default page size on a candidate head. A truncated page would
+      # report real checks as absent, which is the exact false positive that
       # would get this gate switched off.
-      - name: Collect check runs for the head under review
+      - name: Collect check runs for the candidate head
         uses: actions/github-script@v7
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -99,5 +96,61 @@ jobs:
             fs.writeFileSync('check-runs.json', JSON.stringify({ check_runs: runs }));
             core.info(`${runs.length} check run(s) on ${process.env.HEAD_SHA}`);
 
-      - name: Every required check ran on this head
-        run: python3 scripts/check-gates-ran.py --check-runs check-runs.json --require-complete
+      - name: Evaluate whether every required check reached this head
+        id: evaluate
+        continue-on-error: true
+        run: >-
+          python3 scripts/check-gates-ran.py
+          --check-runs check-runs.json
+          --require-complete
+          --json-output gates-ran-verdict.json
+
+      - name: Publish required gates-ran check on the candidate SHA
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            let verdict;
+            try {
+              verdict = JSON.parse(fs.readFileSync('gates-ran-verdict.json', 'utf8'));
+            } catch (error) {
+              verdict = {
+                ok: false,
+                error: `verdict unavailable: ${error.message}`,
+                absent: [], stalled: [], unfinished: [], ran: [],
+              };
+            }
+
+            const lines = [];
+            if (verdict.error) lines.push(`unmeasured: ${verdict.error}`);
+            if (verdict.absent?.length) lines.push(`absent: ${verdict.absent.join(', ')}`);
+            if (verdict.stalled?.length) lines.push(`stalled: ${verdict.stalled.join(', ')}`);
+            if (verdict.unfinished?.length) lines.push(`unfinished: ${verdict.unfinished.join(', ')}`);
+            if (!lines.length) lines.push(`all ${verdict.ran?.length || 0} required checks ran`);
+
+            const request = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'gates-ran',
+              head_sha: process.env.HEAD_SHA,
+              details_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              output: {
+                title: verdict.ok ? 'Required gate set reached this candidate' : 'Required gate set is not complete',
+                summary: lines.join('\n'),
+              },
+            };
+
+            if (verdict.error || verdict.stalled?.length) {
+              request.status = 'completed';
+              request.conclusion = 'failure';
+            } else if (verdict.absent?.length || verdict.unfinished?.length) {
+              request.status = 'in_progress';
+            } else {
+              request.status = 'completed';
+              request.conclusion = 'success';
+            }
+
+            await github.rest.checks.create(request);
