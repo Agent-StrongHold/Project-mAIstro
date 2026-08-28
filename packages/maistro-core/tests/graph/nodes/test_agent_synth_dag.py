@@ -314,3 +314,63 @@ async def test_unscoped_context_is_declined_rather_than_inventing_scope() -> Non
 
     assert result.output.dispatched is False
     assert "Workspace/Project scope" in result.output.run_output
+
+
+async def test_duplicate_kinds_are_declined_rather_than_dispatched() -> None:
+    """Edges address child nodes by kind, so two nodes of one kind are ambiguous."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    config = GraphConfig(nodes=[_ChildStep.kind, _ChildStep.kind], edges=[], entry=_ChildStep.kind)
+    synth = SynthResult(
+        graph_config=config,
+        rationale="fine",
+        synthesized_kinds=[_ChildStep.kind, _ChildStep.kind],
+    )
+    node = AgentSynthDagNode(
+        synthesizer=_CountingSynthesizer([synth]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    assert result.output.dispatched is False
+    assert "duplicate node kinds" in result.output.run_output
+
+
+async def test_an_entry_outside_the_synthesized_nodes_is_declined() -> None:
+    """GraphConfig does not force entry into nodes; a stray one must not dispatch."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    config = GraphConfig(nodes=[_ChildStep.kind], edges=[], entry="test.synthchild.elsewhere")
+    synth = SynthResult(graph_config=config, rationale="fine", synthesized_kinds=[_ChildStep.kind])
+    node = AgentSynthDagNode(
+        synthesizer=_CountingSynthesizer([synth]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    assert result.output.dispatched is False
+    assert "entry node" in result.output.run_output
+
+
+def test_node_kind_resolves_later_nodes_and_refuses_unknown_ids() -> None:
+    import pytest
+
+    from maistro.graph.definitions import Graph, Node
+    from maistro.graph.nodes.agent_synth_dag import _node_kind
+
+    graph = Graph(
+        workspace_id="ws",
+        project_id="p",
+        name="g",
+        nodes=[
+            Node(node_id="a", node_type="kind.a"),
+            Node(node_id="b", node_type="kind.b"),
+        ],
+    )
+    assert _node_kind(graph, "b") == "kind.b"
+    with pytest.raises(KeyError):
+        _node_kind(graph, "missing")
