@@ -1,0 +1,37 @@
+name: Temporary refresh 55 convergence matrix
+
+on:
+  push:
+    branches:
+      - feat/55-direct-effect-inventory
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/55-direct-effect-inventory
+      - name: Refresh derived repo-tooling row and remove workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("docs/architecture/CONVERGENCE-MATRIX.md")
+          text = path.read_text()
+          old = "`18/56` | KEEP — the 38 rooted scripts"
+          new = "`18/57` | KEEP — the 39 rooted scripts"
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one matrix marker, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python scripts/check-convergence-matrix.py
+          rm .github/workflows/tmp-refresh-55-matrix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/architecture/CONVERGENCE-MATRIX.md .github/workflows/tmp-refresh-55-matrix.yml
+          git commit -m "Refresh #55 repo tooling convergence count"
+          git push origin HEAD:feat/55-direct-effect-inventory
