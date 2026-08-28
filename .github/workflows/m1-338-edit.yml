@@ -1,0 +1,54 @@
+name: m1-338-edit
+
+on:
+  push:
+    branches:
+      - chatgpt/m1-338-chat-admission-compensation
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-338-chat-admission-compensation
+      - name: Apply narrow admission compensation patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          container = Path('packages/maistro-core/src/maistro/container.py')
+          text = container.read_text()
+          old = '''        if self.chat_admitter is None:\n            return None\n        try:\n            run = await self.chat_admitter.admit(\n                messages,\n                session_id=session_id,\n                intent_hint=intent_hint,\n                known_task_types=self.config.task_types,\n                actor_principal_id=getattr(auth, "user_id", None) or None,\n            )\n            # Two hops: a Run is born CREATED and the lifecycle has no edge\n            # from there to RUNNING. Queued is momentarily true here — the turn\n            # is admitted and about to be dispatched — rather than a fiction\n            # invented to satisfy the table.\n            await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)\n            return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)\n        except Exception:\n            logger.warning("chat turn could not be admitted as a Run", exc_info=True)\n            return None\n'''
+          new = '''        if self.chat_admitter is None:\n            return None\n        run: Run | None = None\n        try:\n            run = await self.chat_admitter.admit(\n                messages,\n                session_id=session_id,\n                intent_hint=intent_hint,\n                known_task_types=self.config.task_types,\n                actor_principal_id=getattr(auth, "user_id", None) or None,\n            )\n            # Two hops: a Run is born CREATED and the lifecycle has no edge\n            # from there to RUNNING. Queued is momentarily true here — the turn\n            # is admitted and about to be dispatched — rather than a fiction\n            # invented to satisfy the table.\n            await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)\n            return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)\n        except Exception as exc:\n            # Once durable admission succeeded, this function owns the gap up\n            # to RUNNING. A failed QUEUED/RUNNING write must not leave a Run in\n            # a non-terminal state that no worker or sweeper owns. CREATED and\n            # QUEUED both permit CANCELLED, so compensation is deterministic and\n            # carries only the same sanitized category chat failures expose.\n            if run is not None:\n                try:\n                    current = await self.run_store.get_run(run.run_id)\n                    if current is not None and current.status not in TERMINAL_RUN_STATUSES:\n                        await self.run_store.transition_run(\n                            run.run_id,\n                            RunStatus.CANCELLED,\n                            error=failure_category(exc),\n                        )\n                except Exception:\n                    logger.exception("chat Run %s admission compensation failed", run.run_id)\n            logger.warning("chat turn could not be admitted as a Run", exc_info=True)\n            return None\n'''
+          if old not in text:
+              raise SystemExit('_admit_chat_turn insertion point not found')
+          container.write_text(text.replace(old, new, 1))
+
+          tests = Path('packages/maistro-core/tests/test_container_chat_runs.py')
+          text = tests.read_text()
+          text = text.replace(
+              'from maistro.runs.chat_admission import CHAT_SOURCE, SESSION_ID_KEY',
+              'from maistro.runs.chat_admission import CHAT_SOURCE, INTERNAL_FAILURE, SESSION_ID_KEY',
+              1,
+          )
+          anchor = '''async def test_no_chat_admitter_means_no_run_id_and_no_failure() -> None:\n'''
+          addition = '''@pytest.mark.parametrize("failed_target", [RunStatus.QUEUED, RunStatus.RUNNING])\nasync def test_chat_admission_transition_failure_compensates_the_durable_run(\n    failed_target: RunStatus,\n) -> None:\n    container = await _container()\n    conduit = _Conduit()\n    container.conduit = conduit\n    original = container.run_store.transition_run\n\n    async def _fail_once(run_id, target, **kwargs):\n        if target is failed_target:\n            # Restore first so compensation uses the real transition path and\n            # this test models a one-write failure rather than a broken store.\n            container.run_store.transition_run = original  # type: ignore[method-assign]\n            raise RuntimeError(f"injected {target.value} write failure")\n        return await original(run_id, target, **kwargs)\n\n    container.run_store.transition_run = _fail_once  # type: ignore[method-assign]\n\n    result = await container.route_request([{"role": "user", "content": "hi"}])\n\n    assert len(conduit.calls) == 1\n    assert "run_id" not in result\n    runs = [run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]\n    assert len(runs) == 1\n    assert runs[0].status is RunStatus.CANCELLED\n    assert runs[0].error == INTERNAL_FAILURE\n\n\n'''
+          if anchor not in text:
+              raise SystemExit('test insertion point not found')
+          tests.write_text(text.replace(anchor, addition + anchor, 1))
+          PY
+      - name: Remove one-shot editor and commit patch
+        shell: bash
+        run: |
+          rm .github/workflows/m1-338-edit.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/test_container_chat_runs.py .github/workflows/m1-338-edit.yml
+          git commit -m "Compensate failed chat admission transitions (#338)"
+          git push origin HEAD:chatgpt/m1-338-chat-admission-compensation
