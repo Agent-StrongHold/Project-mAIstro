@@ -30,7 +30,7 @@ DISPOSITIONS = frozenset(
 )
 
 # Match model URLs at the HTTP call itself, never endpoint text elsewhere.
-_MODEL_ENDPOINTS = ("/chat/completions", "/completions", "/v1/responses")
+_MODEL_ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
 _HTTP_EFFECT_METHODS = frozenset({"post", "stream", "send", "request"})
 
 # Semantic helpers whose call itself is a model effect.
@@ -145,24 +145,24 @@ class _ScopeImportCollector(ast.NodeVisitor):
     def __init__(self) -> None:
         self.aliases: dict[str, str] = {}
 
-    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+    def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             self.aliases[alias.asname or alias.name.split(".")[0]] = alias.name
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if not node.module:
             return
         for alias in node.names:
             if alias.name != "*":
                 self.aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         return
 
 
@@ -214,22 +214,22 @@ class _ScopeBindingCollector(ast.NodeVisitor):
                 for name in names:
                     self.objects[name] = symbol
 
-    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+    def visit_Assign(self, node: ast.Assign) -> None:
         self._record(list(node.targets), node.value)
         self.generic_visit(node.value)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self._record([node.target], node.value)
         if node.value is not None:
             self.generic_visit(node.value)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         return
 
 
@@ -320,16 +320,16 @@ class _Visitor(ast.NodeVisitor):
             self.visit(statement)
         self.scopes.pop()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._push_scope(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._push_scope(node)
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._push_scope(node)
 
-    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+    def visit_Call(self, node: ast.Call) -> None:
         callee = _callee_text(node)
         classification = self._classify(node, callee)
         if classification is not None:
@@ -490,9 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     categories: dict[str, int] = {}
     for site in found.values():
         categories[site.category] = categories.get(site.category, 0) + 1
-    summary = ", ".join(
-        f"{name}={count}" for name, count in sorted(categories.items())
-    ) or "none"
+    summary = ", ".join(f"{name}={count}" for name, count in sorted(categories.items())) or "none"
     print(f"direct-effect call sites: {len(found)} ({summary})")
     if failures:
         print(
