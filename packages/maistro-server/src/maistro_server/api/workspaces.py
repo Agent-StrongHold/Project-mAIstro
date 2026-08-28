@@ -1,8 +1,8 @@
 """Canonical Workspace identity and membership API (#37).
 
-This is a projection/ownership boundary, not a second Workspace model. Product
-metadata may travel in ``Workspace.metadata``, while access stays in separate
-``WorkspaceMembership`` records owned by ``WorkspaceStore``.
+This is an ownership boundary, not a second Workspace model. Product-specific
+persona/tab state belongs in a projection keyed by ``workspace_id``; access
+stays in separate ``WorkspaceMembership`` records owned by ``WorkspaceStore``.
 """
 
 from __future__ import annotations
@@ -82,7 +82,6 @@ class CreateWorkspaceBody(BaseModel):
 
     name: str = Field(min_length=1)
     description: str = ""
-    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class UpdateWorkspaceBody(BaseModel):
@@ -90,7 +89,6 @@ class UpdateWorkspaceBody(BaseModel):
 
     name: str | None = Field(default=None, min_length=1)
     description: str | None = None
-    metadata: dict[str, object] | None = None
 
 
 class SetWorkspaceMembershipBody(BaseModel):
@@ -109,22 +107,7 @@ async def create_workspace(
         creator_user_id=_user_id(auth),
         name=body.name,
         description=body.description,
-    ) if not body.metadata else await _create_with_metadata(store, body, _user_id(auth))
-
-
-async def _create_with_metadata(
-    store: WorkspaceStore,
-    body: CreateWorkspaceBody,
-    user_id: str,
-) -> Workspace:
-    workspace = await store.create(
-        creator_user_id=user_id,
-        name=body.name,
-        description=body.description,
     )
-    if not body.metadata:
-        return workspace
-    return await store.update(workspace.model_copy(update={"metadata": dict(body.metadata)}))
 
 
 @router.get("", response_model=list[Workspace])
@@ -164,8 +147,6 @@ async def update_workspace(
         updates["name"] = body.name
     if body.description is not None:
         updates["description"] = body.description
-    if body.metadata is not None:
-        updates["metadata"] = dict(body.metadata)
     return await store.update(workspace.model_copy(update=updates))
 
 
