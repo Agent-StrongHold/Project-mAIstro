@@ -16,68 +16,30 @@ from maistro.workspaces import (
     Workspace,
     WorkspaceAccessDenied,
     WorkspaceMembership,
-    WorkspaceNotFound,
     WorkspaceOwnershipError,
     WorkspaceRole,
     WorkspaceStore,
 )
+from maistro_server.api import projects
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.workspace_access import (
+    configure_workspace_store,
+    get_workspace_store,
+    require_workspace_membership,
+    require_workspace_owner,
+)
+from maistro_server.api.workspace_access import (
+    user_id as authenticated_user_id,
+)
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+router.include_router(projects.router)
 
-_workspace_store: WorkspaceStore | None = None
-
-
-def configure_workspace_store(store: WorkspaceStore | None) -> None:
-    """Install the canonical store served by these routes."""
-    global _workspace_store
-    _workspace_store = store
-
-
-def get_workspace_store() -> WorkspaceStore:
-    if _workspace_store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No Workspace store is configured",
-        )
-    return _workspace_store
-
-
-def _user_id(auth: AuthenticatedPrincipal | None) -> str:
-    return auth.user_id if auth is not None else "dev"
-
-
-async def _require_membership(
-    store: WorkspaceStore,
-    workspace_id: str,
-    user_id: str,
-) -> WorkspaceMembership:
-    try:
-        membership = await store.get_membership(workspace_id, user_id=user_id)
-    except WorkspaceNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found",
-        ) from exc
-    if membership is None:
-        # Do not disclose that a Workspace exists to a non-member.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
-    return membership
-
-
-async def _require_owner(
-    store: WorkspaceStore,
-    workspace_id: str,
-    user_id: str,
-) -> WorkspaceMembership:
-    membership = await _require_membership(store, workspace_id, user_id)
-    if not membership.can_administer:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Workspace owner permission required",
-        )
-    return membership
+# Compatibility for callers/tests from the #37 slice. The implementation now
+# lives in workspace_access so Project and Workspace routes share one boundary.
+_user_id = authenticated_user_id
+_require_membership = require_workspace_membership
+_require_owner = require_workspace_owner
 
 
 class CreateWorkspaceBody(BaseModel):
@@ -107,7 +69,7 @@ async def create_workspace(
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> Workspace:
     return await store.create(
-        creator_user_id=_user_id(auth),
+        creator_user_id=authenticated_user_id(auth),
         name=body.name,
         description=body.description,
     )
@@ -118,7 +80,7 @@ async def list_workspaces(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> list[Workspace]:
-    return await store.list_for_user(_user_id(auth))
+    return await store.list_for_user(authenticated_user_id(auth))
 
 
 @router.get("/{workspace_id}", response_model=Workspace)
@@ -127,7 +89,7 @@ async def get_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> Workspace:
-    await _require_membership(store, workspace_id, _user_id(auth))
+    await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
     workspace = await store.get(workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
@@ -141,7 +103,7 @@ async def update_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> Workspace:
-    await _require_owner(store, workspace_id, _user_id(auth))
+    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     workspace = await store.get(workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
@@ -159,7 +121,7 @@ async def delete_workspace(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> None:
-    await _require_owner(store, workspace_id, _user_id(auth))
+    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     try:
         await store.delete(workspace_id)
     except WorkspaceOwnershipError as exc:
@@ -172,7 +134,7 @@ async def list_members(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> list[WorkspaceMembership]:
-    await _require_membership(store, workspace_id, _user_id(auth))
+    await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
     return await store.list_memberships(workspace_id)
 
 
@@ -184,7 +146,7 @@ async def set_member(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> WorkspaceMembership:
-    await _require_owner(store, workspace_id, _user_id(auth))
+    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     try:
         return await store.set_membership(workspace_id, user_id=user_id, role=body.role)
     except WorkspaceAccessDenied as exc:
@@ -198,8 +160,8 @@ async def remove_member(
     auth: RequireAuth,
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
 ) -> None:
-    requester = _user_id(auth)
-    requester_membership = await _require_membership(store, workspace_id, requester)
+    requester = authenticated_user_id(auth)
+    requester_membership = await require_workspace_membership(store, workspace_id, requester)
     if requester != user_id and not requester_membership.can_administer:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -209,3 +171,6 @@ async def remove_member(
         await store.remove_membership(workspace_id, user_id=user_id)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+__all__ = ["configure_workspace_store", "get_workspace_store", "router"]
