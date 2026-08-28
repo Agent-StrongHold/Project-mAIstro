@@ -1,0 +1,4 @@
+{
+  "_comment": "Actual AST call sites at curated direct-effect boundaries for #55. Imports/definitions are not usage. Update with scripts/check_direct_effects.py --update, then review every blank disposition/owner/rationale.",
+  "sites": {}
+}
