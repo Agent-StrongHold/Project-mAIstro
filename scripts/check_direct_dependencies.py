@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""Reject unused direct runtime dependencies unless their non-import use is reviewed.
+
+The check covers every ``packages/*/pyproject.toml`` runtime dependency. A
+dependency is directly used when production Python imports one of the top-level
+modules provided by that installed distribution. Dependencies required through
+entry points, framework discovery, declarative configuration, or another
+non-import runtime mechanism must be recorded in the reviewed exception ledger.
+
+The ledger is two-way: a newly-unused dependency fails, but so does an exception
+for a removed dependency or one that has become directly imported. That keeps
+exceptions from becoming a permanent hiding place for stale packages.
+
+Run after the workspace is installed so ``importlib.metadata`` can map Python
+distributions to their actual import packages::
+
+    python scripts/check_direct_dependencies.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+from collections import defaultdict
+from dataclasses import dataclass
+from importlib import metadata
+import json
+from pathlib import Path
+import re
+import sys
+import tomllib
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+LEDGER = ROOT / "quality" / "direct-dependency-exceptions.json"
+
+_VALID_CATEGORIES = frozenset(
+    {
+        "ENTRYPOINT_RUNTIME",
+        "FRAMEWORK_RUNTIME",
+        "DECLARATIVE_RUNTIME",
+        "PLATFORM_RUNTIME",
+        "PACKAGING_RUNTIME",
+    }
+)
+_EXCLUDED_PARTS = frozenset({"tests", "test", "mutants", "build", "dist", ".venv"})
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+@dataclass(frozen=True)
+class PackageUsage:
+    """Runtime dependency/import evidence for one production package."""
+
+    manifest: str
+    dependencies: frozenset[str]
+    imports: frozenset[str]
+    import_names: dict[str, frozenset[str]]
+
+    @property
+    def unused(self) -> frozenset[str]:
+        return frozenset(
+            dependency
+            for dependency in self.dependencies
+            if not self.imports.intersection(self.import_names[dependency])
+        )
+
+
+def canonical_name(name: str) -> str:
+    """Return a PEP 503-style normalized distribution name."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_name(requirement: str) -> str:
+    """Extract and normalize the distribution name from a PEP 508 requirement."""
+    match = _NAME_RE.match(requirement.strip())
+    if match is None:
+        raise ValueError(f"cannot parse dependency requirement: {requirement!r}")
+    return canonical_name(match.group(0))
+
+
+def runtime_dependencies(manifest: Path) -> frozenset[str]:
+    """Read only ``project.dependencies``; test/optional groups are not shipped runtime."""
+    data = tomllib.loads(manifest.read_text())
+    project = data.get("project", {})
+    raw = project.get("dependencies", [])
+    return frozenset(requirement_name(item) for item in raw)
+
+
+def _literal_dynamic_import(node: ast.Call) -> str | None:
+    dotted = _dotted_name(node.func)
+    if dotted not in {"importlib.import_module", "__import__"} or not node.args:
+        return None
+    first = node.args[0]
+    if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+        return None
+    return first.value.split(".", 1)[0]
+
+
+def _dotted_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def imports_from_source(source: str) -> frozenset[str]:
+    """Return top-level modules imported by one Python source string."""
+    tree = ast.parse(source)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module.split(".", 1)[0])
+        elif isinstance(node, ast.Call):
+            dynamic = _literal_dynamic_import(node)
+            if dynamic:
+                found.add(dynamic)
+    return frozenset(found)
+
+
+def production_imports(package_dir: Path) -> frozenset[str]:
+    """Collect imports from shipped Python while excluding tests/generated artifacts."""
+    found: set[str] = set()
+    for path in package_dir.rglob("*.py"):
+        relative = path.relative_to(package_dir)
+        if any(part in _EXCLUDED_PARTS for part in relative.parts):
+            continue
+        if path.name.startswith("test_"):
+            continue
+        try:
+            found.update(imports_from_source(path.read_text(errors="replace")))
+        except SyntaxError as exc:
+            raise RuntimeError(f"cannot parse production Python {path}: {exc}") from exc
+    return frozenset(found)
+
+
+def installed_distribution_imports() -> dict[str, frozenset[str]]:
+    """Invert installed package metadata to distribution -> top-level import names."""
+    inverted: dict[str, set[str]] = defaultdict(set)
+    for import_name, distributions in metadata.packages_distributions().items():
+        for distribution in distributions:
+            inverted[canonical_name(distribution)].add(import_name.split(".", 1)[0])
+    return {name: frozenset(imports) for name, imports in inverted.items()}
+
+
+def import_names_for(
+    dependency: str,
+    installed: dict[str, frozenset[str]],
+) -> frozenset[str]:
+    """Resolve import names, using the conventional underscore spelling as a fallback."""
+    mapped = installed.get(dependency)
+    if mapped:
+        return mapped
+    return frozenset({dependency.replace("-", "_")})
+
+
+def discover(
+    root: Path = ROOT,
+    installed: dict[str, frozenset[str]] | None = None,
+) -> list[PackageUsage]:
+    """Discover runtime dependency/import evidence for every package manifest."""
+    distribution_imports = installed if installed is not None else installed_distribution_imports()
+    usages: list[PackageUsage] = []
+    for manifest in sorted((root / "packages").glob("*/pyproject.toml")):
+        dependencies = runtime_dependencies(manifest)
+        if not dependencies:
+            continue
+        package_dir = manifest.parent
+        imports = production_imports(package_dir)
+        names = {
+            dependency: import_names_for(dependency, distribution_imports)
+            for dependency in dependencies
+        }
+        usages.append(
+            PackageUsage(
+                manifest=manifest.relative_to(root).as_posix(),
+                dependencies=dependencies,
+                imports=imports,
+                import_names=names,
+            )
+        )
+    return usages
+
+
+def load_ledger(path: Path = LEDGER) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load the reviewed non-import-use exception ledger."""
+    if not path.exists():
+        raise FileNotFoundError(path)
+    data = json.loads(path.read_text())
+    if data.get("schema_version") != 1 or not isinstance(data.get("exceptions"), dict):
+        raise ValueError("direct-dependency exception ledger must have schema_version=1 and exceptions")
+    return data["exceptions"]
+
+
+def _validate_exception(manifest: str, dependency: str, entry: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    category = entry.get("category")
+    owner = entry.get("owner")
+    rationale = entry.get("rationale")
+    prefix = f"{manifest}: {dependency}"
+    if category not in _VALID_CATEGORIES:
+        failures.append(f"{prefix}: invalid/missing exception category {category!r}")
+    if not isinstance(owner, str) or not owner.strip():
+        failures.append(f"{prefix}: exception is missing an owner")
+    if not isinstance(rationale, str) or len(rationale.strip()) < 20:
+        failures.append(f"{prefix}: exception rationale is missing or too vague")
+    return failures
+
+
+def audit(
+    usages: list[PackageUsage],
+    exceptions: dict[str, dict[str, dict[str, Any]]],
+) -> list[str]:
+    """Return two-way ratchet failures for unused dependencies and stale exceptions."""
+    failures: list[str] = []
+    by_manifest = {usage.manifest: usage for usage in usages}
+
+    for usage in usages:
+        recorded = exceptions.get(usage.manifest, {})
+        for dependency in sorted(usage.unused):
+            entry = recorded.get(dependency)
+            if entry is None:
+                failures.append(
+                    f"{usage.manifest}: {dependency} is a direct runtime dependency with no "
+                    "production import and no reviewed non-import-runtime exception"
+                )
+                continue
+            failures.extend(_validate_exception(usage.manifest, dependency, entry))
+
+    for manifest, entries in sorted(exceptions.items()):
+        usage = by_manifest.get(manifest)
+        if usage is None:
+            failures.append(f"{manifest}: exception ledger names no discovered production package")
+            continue
+        for dependency, entry in sorted(entries.items()):
+            failures.extend(_validate_exception(manifest, dependency, entry))
+            if dependency not in usage.dependencies:
+                failures.append(f"{manifest}: {dependency} exception is stale; dependency was removed")
+            elif dependency not in usage.unused:
+                failures.append(
+                    f"{manifest}: {dependency} exception is stale; production code now imports it"
+                )
+
+    return failures
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--list-unused",
+        action="store_true",
+        help="print all dependencies requiring reviewed non-import-runtime exceptions",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        usages = discover()
+        exceptions = load_ledger()
+    except (FileNotFoundError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"FAIL: direct-dependency usage check could not run: {exc}", file=sys.stderr)
+        return 1
+
+    if args.list_unused:
+        for usage in usages:
+            for dependency in sorted(usage.unused):
+                print(f"{usage.manifest}: {dependency}")
+
+    failures = audit(usages, exceptions)
+    if failures:
+        print("FAIL: direct runtime dependency inventory is not justified\n")
+        for failure in failures:
+            print(f"  - {failure}")
+        print(
+            "\nRemove unused dependencies. If a dependency is required without a direct Python "
+            "import, add a narrowly reviewed exception with category, owner, and rationale."
+        )
+        return 1
+
+    dependency_count = sum(len(usage.dependencies) for usage in usages)
+    unused_count = sum(len(usage.unused) for usage in usages)
+    print(
+        f"direct-dependency usage OK: {len(usages)} packages, {dependency_count} runtime "
+        f"dependencies, {unused_count} reviewed non-import-runtime exceptions"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
