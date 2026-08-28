@@ -264,4 +264,4 @@ def test_the_canonical_branch_matches_the_repositorys_default() -> None:
     adr = Path(__file__).resolve().parents[3] / "docs/adr/ADR-095-four-tier-branch-model.md"
     body = adr.read_text(encoding="utf-8")
 
-    assert f"branch off `{CANONICAL_DEVELOPMENT_BRANCH}`" in body
+    assert f"branch from `{CANONICAL_DEVELOPMENT_BRANCH}`" in body
