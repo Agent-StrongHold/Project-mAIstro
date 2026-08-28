@@ -272,6 +272,8 @@ class RunStore(Protocol):
 
     async def has_runs_in_project(self, project_id: str) -> bool: ...
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
     async def get_run(self, run_id: str) -> Run | None: ...
 
     async def transition_run(
@@ -577,6 +579,20 @@ class InMemoryRunStore:
         for run_id in doomed[:limit]:
             await self.delete_run(run_id, force=True)
         return min(len(doomed), limit)
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338): durable state claiming work
+        is in flight is exactly what recovery exists to own, so its count and
+        age must be observable without walking every Run by hand. Cheap on
+        every backend — a status filter, no payload materialization beyond the
+        oldest timestamp.
+        """
+        open_runs = [run for run in self._runs.values() if run.status not in TERMINAL_RUN_STATUSES]
+        if not open_runs:
+            return 0, None
+        return len(open_runs), min(run.created_at for run in open_runs)
 
     async def archive_cold_runs(
         self,

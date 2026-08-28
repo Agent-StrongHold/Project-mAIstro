@@ -13,7 +13,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -35,7 +35,12 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
-from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    ChatRunAdmitter,
+    chat_turn_outcome,
+    failure_category,
+)
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
@@ -370,6 +375,7 @@ class Container:
         """
         if self.chat_admitter is None:
             return None
+        run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -384,9 +390,52 @@ class Container:
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except asyncio.CancelledError:
+            # The client disconnected mid-admission. Without the shield the
+            # compensating write would be aborted by the same cancellation it
+            # exists to clean up after — the `_close_chat_run` shield's reason,
+            # one step earlier in the turn.
+            await asyncio.shield(self._cancel_incomplete_admission(run))
+            raise
         except Exception:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+            await self._cancel_incomplete_admission(run)
             return None
+
+    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
+        """Compensate a chat Run whose admission never reached RUNNING (#338).
+
+        Admission persists CREATED, then QUEUED, then RUNNING. An exception
+        between any two of those writes used to strand the Run at the state it
+        had reached: the caller got `None`, so `_close_chat_run` had nothing to
+        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
+        work is waiting to run that nothing will ever run.
+
+        CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
+        is the honest word: the turn was never dispatched, so nothing failed
+        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
+        returned from admission, making it `_close_chat_run`'s to settle — not
+        this method's. Idempotent by the terminal guard; a concurrent settle
+        loses the race harmlessly because the compensating write is logged,
+        never re-raised — compensation must not replace the turn's answer.
+        """
+        if run is None:
+            return
+        try:
+            current = await self.run_store.get_run(run.run_id)
+            if current is None or current.status in TERMINAL_RUN_STATUSES:
+                return
+            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+                return
+            await self.run_store.transition_run(
+                run.run_id,
+                RunStatus.CANCELLED,
+                error=ADMISSION_INCOMPLETE,
+            )
+        except Exception:
+            logger.warning(
+                "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
+            )
 
     async def _close_chat_run(
         self,
@@ -490,10 +539,48 @@ class Container:
         Settles Attempts whose holder stopped renewing its lease. Attempts
         created without a TTL are never touched, so a deployment that has not
         opted into leases sees this do nothing.
+
+        Each reclaimed Attempt is carried through the canonical lifecycle seam
+        (#462): reconciliation with the ``RECOVERED`` cause parks the NodeRun
+        ``WAITING`` and parks its Run, which is the disposition b36a promised
+        and the sweep previously stopped short of — a reclaimed Attempt whose
+        NodeRun stayed ``RUNNING`` forever was durable state still claiming
+        work was in flight. Both halves are idempotent, so a crash between
+        them heals on any later reconcile of the same Attempt rather than
+        needing this tick to be atomic.
+
+        The tick also refreshes the recovery-visibility gauges (#338): how
+        many Runs are non-terminal, and how old the oldest one is.
         """
+        from maistro.observability.metrics import (
+            non_terminal_runs,
+            oldest_non_terminal_run_age_seconds,
+            recovered_attempts_total,
+        )
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
+            reconciler = AttemptLifecycleReconciler(self.run_store)
+            for attempt in reclaimed:
+                try:
+                    await reconciler.reconcile(attempt)
+                except RunIntegrityError:
+                    # The Attempt is already settled; a NodeRun another path
+                    # terminalized concurrently is not this sweep's to rewrite.
+                    logger.warning(
+                        "reclaimed Attempt %s could not be reconciled",
+                        attempt.attempt_id,
+                        exc_info=True,
+                    )
+            recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
+
+        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
+        non_terminal_runs.set(open_runs)
+        moment = now if now is not None else datetime.now(UTC)
+        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
+        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
