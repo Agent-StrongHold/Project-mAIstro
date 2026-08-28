@@ -630,3 +630,41 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
     stuck = await store.get_node_run(node_run.node_run_id)
     assert stuck is not None and stuck.status is RunStatus.QUEUED
     assert "could not be reconciled" in caplog.text
+
+
+# --- #231: the schedule admitter is wired, not left for callers to build ----
+
+
+async def test_the_container_wires_a_schedule_admitter() -> None:
+    """`ScheduleRunAdmitter` had no production caller and no constructor call.
+
+    #251 found it admitting Runs nothing executed; the other half of the same
+    gap is that nothing built it, so the live scheduler grew its own
+    create-and-advance logic instead (#231). Built here, from the three stores
+    the spine already wires, so a producer cannot hold a different idea of
+    what admission means.
+    """
+    from maistro.scheduling.admission import ScheduleRunAdmitter
+
+    container = await _container()
+
+    assert isinstance(container.schedule_admitter, ScheduleRunAdmitter)
+
+
+def test_a_container_without_a_template_store_has_no_schedule_admitter() -> None:
+    """An admitter that cannot resolve a template cannot admit, so None is the
+    honest answer rather than one that raises on first use.
+
+    Asserted on the declared default rather than an instance: `Container` takes
+    thirteen required arguments, and a Container assembled by hand — the case
+    this default exists for — is exactly the one that never runs
+    `create_container`'s wiring.
+    """
+    import dataclasses
+
+    from maistro.container import Container
+
+    defaults = {f.name: f.default for f in dataclasses.fields(Container)}
+
+    assert defaults["template_store"] is None
+    assert defaults["schedule_admitter"] is None

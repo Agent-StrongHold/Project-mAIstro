@@ -93,6 +93,19 @@ class EngineService:
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "schedule_store", None)
 
+    @property
+    def schedule_admitter(self) -> Any:
+        """The core Container's schedule admission seam, or None.
+
+        None for the same reason as `schedule_store`: without the bridge there
+        is no canonical spine in this process, and the scheduler then keeps the
+        behavior it had — evaluate locally and run the registered DAG — rather
+        than failing every tick. With the bridge, this is what makes a firing
+        and its Run one act instead of two (#231).
+        """
+        container = getattr(getattr(self, "_agent_port", None), "container", None)
+        return getattr(container, "schedule_admitter", None)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 

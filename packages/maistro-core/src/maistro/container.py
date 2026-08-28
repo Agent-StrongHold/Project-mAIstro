@@ -50,6 +50,7 @@ from maistro.runs.wiring import (
     wire_chat_admission,
     wire_execution_spine,
 )
+from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
@@ -166,6 +167,13 @@ class Container:
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
     schedule_store: ScheduleStore = None  # type: ignore[assignment]
+    #: The seam that turns a due schedule into canonical Runs (#231). Built
+    #: here rather than by each caller for the reason `task_admitter` and
+    #: `chat_admitter` are: a producer that constructs its own admitter is a
+    #: producer with its own idea of what admission means, which is what the
+    #: canonical spine exists to stop. `None` when there is no template store,
+    #: because an admitter that cannot resolve a template cannot admit.
+    schedule_admitter: ScheduleRunAdmitter | None = None
     #: Delegation dependencies (#147). Read by `build_node_resolver`, which is
     #: what makes them admissible under ADR-082426-6201 — that ADR retired
     #: `a2a_broker` for having no reader, and check-wiring-reads.py enforces the
@@ -901,6 +909,15 @@ async def create_container(
         # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
+    # The third admitter, built from the three stores the spine already wired.
+    # Until now `ScheduleRunAdmitter` had no production caller at all — #251
+    # found it admitting Runs nothing executed, and the other half of that gap
+    # is that nothing constructed it either.
+    schedule_admitter = (
+        ScheduleRunAdmitter(run_store, graph_template_store, schedule_store)
+        if graph_template_store is not None
+        else None
+    )
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -1101,6 +1118,7 @@ async def create_container(
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
         schedule_store=schedule_store,
+        schedule_admitter=schedule_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
