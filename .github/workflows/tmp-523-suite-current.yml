@@ -1,0 +1,30 @@
+name: temp-523-suite-current
+
+on:
+  push:
+    branches:
+      - chatgpt/tmp-523-suite-current
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/tmp-523-suite-current
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate exact suite inventory note
+        run: python scripts/check-suite-inventory.py --update --note 523-workspace-api
+      - name: Commit generated note on temp branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-523-suite-current.yml
+          git add docs/testing/inventory-notes
+          git commit -m 'Generated current #523 suite inventory note'
+          git push origin HEAD:chatgpt/tmp-523-suite-current
