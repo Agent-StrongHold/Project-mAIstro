@@ -91,7 +91,7 @@ class PgWorkspaceStore:
             await conn.execute(
                 """INSERT INTO canonical_workspaces
                        (workspace_id, name, created_at, updated_at, payload)
-                   VALUES ($1, $2, $3, $4, $5)""",
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
                 workspace.workspace_id,
                 workspace.name,
                 workspace.created_at,
@@ -122,7 +122,7 @@ class PgWorkspaceStore:
         async with self._pool.acquire() as conn:
             status = await conn.execute(
                 """UPDATE canonical_workspaces
-                      SET name = $2, updated_at = $3, payload = $4
+                      SET name = $2, updated_at = $3, payload = $4::text::jsonb
                     WHERE workspace_id = $1""",
                 updated.workspace_id,
                 updated.name,
@@ -258,15 +258,22 @@ class PgWorkspaceStore:
     #: reconstruct the query to see that, and the next edit is one f-slot away
     #: from being a real injection. Each statement is now readable as what
     #: PostgreSQL receives.
+    #: `$5::text::jsonb`, not a bare `$5`. `json_of` returns text, and the
+    #: container's pool registers a JSON codec -- so a bare JSONB parameter is
+    #: encoded a second time and the row stores a JSON *string* rather than an
+    #: object. A reader on a raw caller-supplied pool then gets the outer
+    #: representation back and `model_of` fails. The cast makes the write mean
+    #: the same thing on either pool, which is what `runs/pg_store.py` has done
+    #: throughout and this store did not follow (Codex, #516).
     _INSERT_MEMBERSHIP: Final = """
         INSERT INTO canonical_workspace_memberships
             (workspace_id, user_id, role, added_at, payload)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5::text::jsonb)
     """
     _UPSERT_MEMBERSHIP: Final = """
         INSERT INTO canonical_workspace_memberships
             (workspace_id, user_id, role, added_at, payload)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5::text::jsonb)
         ON CONFLICT (workspace_id, user_id) DO UPDATE
             SET role = EXCLUDED.role,
                 added_at = EXCLUDED.added_at,

@@ -22,6 +22,7 @@ JSON payload, where pydantic restores the offset.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -76,6 +77,18 @@ class SqliteWorkspaceStore:
     def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
         self._conn = conn
         self.project_store: ProjectScopeStore = project_store
+        # One aiosqlite connection is shared by every caller, so two concurrent
+        # writers issue two `BEGIN IMMEDIATE`s on it and the second raises
+        # "cannot start a transaction within a transaction" -- a spurious error
+        # where the caller should simply have waited. `SqliteRunStore` already
+        # carries this lock for the same reason; this store did not (Codex,
+        # #516).
+        #
+        # Taken inside each method rather than by a decorator, for the reason
+        # `SqliteRunStore` records: a decorator's declared return type is
+        # `Coroutine`, which pyright will not accept where the protocol asks
+        # for the `CoroutineType` a plain `async def` produces.
+        self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and their indexes."""
@@ -218,50 +231,52 @@ class SqliteWorkspaceStore:
         role: WorkspaceRole,
     ) -> WorkspaceMembership:
         """Create or re-role a membership, refusing to strip the last owner."""
-        await self._begin_immediate()
-        try:
-            await self._require_workspace(workspace_id)
-            existing = await self._membership(workspace_id, user_id)
-            if (
-                existing is not None
-                and existing.role is WorkspaceRole.OWNER
-                and role is not WorkspaceRole.OWNER
-            ):
-                await self._require_another_owner(workspace_id, excluding_user_id=user_id)
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                await self._require_workspace(workspace_id)
+                existing = await self._membership(workspace_id, user_id)
+                if (
+                    existing is not None
+                    and existing.role is WorkspaceRole.OWNER
+                    and role is not WorkspaceRole.OWNER
+                ):
+                    await self._require_another_owner(workspace_id, excluding_user_id=user_id)
 
-            membership = WorkspaceMembership(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                role=role,
-                added_at=existing.added_at if existing is not None else datetime.now(UTC),
-            )
-            await self._write_membership(membership)
-        except BaseException:
-            await self._conn.rollback()
-            raise
-        await self._conn.commit()
-        return membership
+                membership = WorkspaceMembership(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    role=role,
+                    added_at=existing.added_at if existing is not None else datetime.now(UTC),
+                )
+                await self._write_membership(membership)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
+            return membership
 
     async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
         """Drop a membership, refusing to strip the last owner."""
-        await self._begin_immediate()
-        try:
-            await self._require_workspace(workspace_id)
-            existing = await self._membership(workspace_id, user_id)
-            if existing is None:
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                await self._require_workspace(workspace_id)
+                existing = await self._membership(workspace_id, user_id)
+                if existing is None:
+                    await self._conn.rollback()
+                    return
+                if existing.role is WorkspaceRole.OWNER:
+                    await self._require_another_owner(workspace_id, excluding_user_id=user_id)
+                await self._conn.execute(
+                    """DELETE FROM canonical_workspace_memberships
+                        WHERE workspace_id = ? AND user_id = ?""",
+                    (workspace_id, user_id),
+                )
+            except BaseException:
                 await self._conn.rollback()
-                return
-            if existing.role is WorkspaceRole.OWNER:
-                await self._require_another_owner(workspace_id, excluding_user_id=user_id)
-            await self._conn.execute(
-                """DELETE FROM canonical_workspace_memberships
-                    WHERE workspace_id = ? AND user_id = ?""",
-                (workspace_id, user_id),
-            )
-        except BaseException:
-            await self._conn.rollback()
-            raise
-        await self._conn.commit()
+                raise
+            await self._conn.commit()
 
     async def _begin_immediate(self) -> None:
         """Take the write lock before reading the roster, not after.
