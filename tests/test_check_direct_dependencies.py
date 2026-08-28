@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -24,12 +24,7 @@ def _write_package(tmp_path: Path, dependencies: list[str], source: str = "") ->
     source_dir.mkdir(parents=True)
     deps = ",\n".join(f'    "{dependency}"' for dependency in dependencies)
     (package / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "demo"\n'
-        'version = "0.1.0"\n'
-        "dependencies = [\n"
-        f"{deps}\n"
-        "]\n"
+        f'[project]\nname = "demo"\nversion = "0.1.0"\ndependencies = [\n{deps}\n]\n'
     )
     (source_dir / "app.py").write_text(source)
     return package

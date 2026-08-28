@@ -21,14 +21,14 @@ from __future__ import annotations
 
 import argparse
 import ast
-from collections import defaultdict
-from dataclasses import dataclass
-from importlib import metadata
 import json
-from pathlib import Path
 import re
 import sys
 import tomllib
+from collections import defaultdict
+from dataclasses import dataclass
+from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -191,7 +191,9 @@ def load_ledger(path: Path = LEDGER) -> dict[str, dict[str, dict[str, Any]]]:
         raise FileNotFoundError(path)
     data = json.loads(path.read_text())
     if data.get("schema_version") != 1 or not isinstance(data.get("exceptions"), dict):
-        raise ValueError("direct-dependency exception ledger must have schema_version=1 and exceptions")
+        raise ValueError(
+            "direct-dependency exception ledger must have schema_version=1 and exceptions"
+        )
     return data["exceptions"]
 
 
@@ -238,7 +240,9 @@ def audit(
         for dependency, entry in sorted(entries.items()):
             failures.extend(_validate_exception(manifest, dependency, entry))
             if dependency not in usage.dependencies:
-                failures.append(f"{manifest}: {dependency} exception is stale; dependency was removed")
+                failures.append(
+                    f"{manifest}: {dependency} exception is stale; dependency was removed"
+                )
             elif dependency not in usage.unused:
                 failures.append(
                     f"{manifest}: {dependency} exception is stale; production code now imports it"
