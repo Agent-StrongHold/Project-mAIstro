@@ -306,6 +306,17 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
                 error=_verdict_error(verdict),
             )
 
+        return await self._dispatch_or_decline(synth, synthesized_kinds, inputs, ctx, depth)
+
+    async def _dispatch_or_decline(
+        self,
+        synth: SynthResult,
+        synthesized_kinds: list[str],
+        inputs: SynthDagIn,
+        ctx: NodeContext,
+        depth: int,
+    ) -> SynthDagOut:
+        """Run the approved config as a canonical child Run, or say why not (#520)."""
         if self._run_store is None:
             if self._llm_call is None:
                 return SynthDagOut(
