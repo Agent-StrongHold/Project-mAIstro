@@ -252,9 +252,15 @@ def test_chat_complete_with_mock_llm_port() -> None:
     assert body["choices"][0]["message"]["content"] == "mock response"
     mock_llm.complete.assert_called_once()
     sent = mock_llm.complete.call_args.args[0]
-    # The user message is forwarded intact (a PM system prompt is prepended).
-    assert expected_messages[0] in sent.messages
-    assert sent.messages[0]["role"] == "system"
+    # The user's messages reach the model EXACTLY as sent. `_conversation_only`
+    # builds the request from `req.messages` unchanged, and #483/#488 removed
+    # the PM system prompt this used to assert was prepended -- injecting
+    # nothing is now part of what containment guarantees, so the assertion is
+    # inverted rather than deleted (#500).
+    assert sent.messages == expected_messages
+    # And containment's other half, asserted here because this is the test that
+    # holds the request object: no tool surface travels with a chat completion.
+    assert sent.tools is None
 
 
 def test_mission_create_dispatches_task() -> None:
