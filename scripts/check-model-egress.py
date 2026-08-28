@@ -42,10 +42,11 @@ import json
 import sys
 from pathlib import Path
 
+import check_direct_effects
+
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "model-egress.json"
 REACHABILITY = ROOT / "scripts" / "check-reachability.py"
-DIRECT_EFFECTS = ROOT / "scripts" / "check_direct_effects.py"
 
 #: Path fragments that identify a model endpoint.
 _ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
@@ -66,10 +67,6 @@ def _load_script(name: str, path: Path) -> object:
 
 def _load_reachability() -> object:
     return _load_script("_reachability", REACHABILITY)
-
-
-def _load_direct_effects() -> object:
-    return _load_script("_direct_effects", DIRECT_EFFECTS)
 
 
 def performs_egress(source: str) -> bool:
@@ -129,9 +126,7 @@ def main() -> int:
         )
         return 1
     print(f"OK: {len(found)} modules call a model endpoint directly, exactly as inventoried")
-
-    direct_effects = _load_direct_effects()
-    return int(direct_effects.main([]))  # type: ignore[attr-defined]
+    return check_direct_effects.main([])
 
 
 if __name__ == "__main__":
