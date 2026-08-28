@@ -33,8 +33,10 @@ Two more cover resolver paths the fixtures never reached -- `RATCHET_BASE_REV`
 being honored, and a ledger that `cat-file -e` finds but `git show` cannot read.
 Four cover the seams every wiring-reads test substitutes away: `_entries_from`'s
 guards against a base ledger of another shape, `_trusted_baseline` run for real
-against this checkout, and the helper loader removing a half-executed module
-from `sys.modules` instead of caching the wreck.
+against whichever of its three states this checkout produces (`origin/develop`
+absent, present and sharing history, or present and sharing none), and the
+helper loader removing a half-executed module from `sys.modules` instead of
+caching the wreck.
 
 Two existing tests in that file were re-pointed at the new `_trusted_baseline`
 seam rather than replaced — `main` now judges new debt against the base, so a

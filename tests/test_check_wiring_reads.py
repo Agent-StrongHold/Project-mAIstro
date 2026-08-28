@@ -26,6 +26,15 @@ BASELINE = ROOT / "quality" / "wiring-reads-baseline.json"
 _SOURCE = "packages/demo/src/demo/container.py"
 
 
+def _git_rc(*args: str) -> int:
+    """This checkout's answer to a git question, as a return code.
+
+    The three-state test below has to ask the same questions the resolver asks
+    without reimplementing its answers, so it asks git directly.
+    """
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True).returncode
+
+
 @pytest.fixture(scope="module")
 def check():
     spec = importlib.util.spec_from_file_location("check_wiring_reads", SCRIPT)
@@ -400,31 +409,40 @@ class TestTheSeamsTheOtherTestsSubstitute:
 
         assert check._entries_from(loaded) == {"demo.Root": {"f": "why"}}
 
-    def test_trusted_baseline_resolves_or_refuses_by_what_the_checkout_offers(self, check) -> None:
+    def test_trusted_baseline_follows_the_checkout_into_one_of_its_three_states(
+        self, check
+    ) -> None:
         """The unsubstituted path, run against whatever checkout we are in.
 
-        Both outcomes are correct and both are asserted, because which one
-        happens is a property of the checkout rather than of the code. CI runs
-        this suite in `ci.yml`'s `test` job, which clones shallow; the gate
-        itself runs in `quality.yml`, which sets `fetch-depth: 0`. An earlier
-        version of this test asserted only the resolving case and failed in the
-        shallow job -- correctly, which is the point: with no merge base the
-        resolver must refuse and say why, never quietly fall back to the
-        candidate's own ledger. That refusal is the invariant the whole change
-        exists to protect, so it is worth pinning in the environment that
-        actually produces it.
+        Which state happens is a property of the checkout, not of the code, and
+        the three are genuinely different answers rather than degrees of one:
+
+        * `origin/develop` does not resolve -- a shallow clone, which is what
+          `ci.yml`'s `test` job gives this suite. There is no trusted reference
+          to name, so the resolver reads the worktree and *says so*; a run that
+          labels itself `worktree` is not claiming to have checked monotonicity.
+        * It resolves and shares history -- `quality.yml` sets `fetch-depth: 0`,
+          so this is the state the gate is actually judged in.
+        * It resolves and shares no history. Then a baseline was available in
+          principle and could not be reached, and the resolver must refuse and
+          say why rather than fall back to the candidate's own ledger. That
+          refusal is the invariant this whole change exists to protect.
+
+        An earlier version asserted only the middle case and failed in the
+        shallow job; the version after it asserted the first case *as* the
+        third, which is the confusion worth naming: an absent ref and an
+        unreachable base are not the same non-passing state, and only one of
+        them is non-passing at all.
         """
         prov = check._provenance()
-        has_base = (
-            subprocess.run(
-                ["git", "merge-base", "origin/develop", "HEAD"],
-                cwd=ROOT,
-                capture_output=True,
-            ).returncode
-            == 0
-        )
+        resolves = _git_rc("rev-parse", "--verify", "origin/develop^{commit}") == 0
 
-        if has_base:
+        if not resolves:
+            trusted, baseline = check._trusted_baseline()
+            assert isinstance(trusted, dict)
+            assert baseline.origin == "worktree"
+            assert baseline.base_sha is None
+        elif _git_rc("merge-base", "origin/develop", "HEAD") == 0:
             trusted, baseline = check._trusted_baseline()
             assert isinstance(trusted, dict)
             assert baseline.origin == "base"
