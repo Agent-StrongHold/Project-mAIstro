@@ -1,0 +1,32 @@
+name: temp-523-vulture-current2
+
+on:
+  push:
+    branches:
+      - chatgpt/tmp-523-vulture-current2
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/tmp-523-vulture-current2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: 0.12.5
+      - run: uv pip install --system vulture==2.16
+      - run: python scripts/check-vulture-baseline.py --update packages/*/src --min-confidence 60 --exclude '*/third_party/*'
+      - run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-523-vulture-current2.yml
+          git add quality/vulture-baseline.json
+          git commit -m 'Generated current #523 Vulture ledger'
+          git push origin HEAD:chatgpt/tmp-523-vulture-current2
