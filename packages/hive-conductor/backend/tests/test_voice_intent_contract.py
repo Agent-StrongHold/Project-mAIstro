@@ -51,9 +51,11 @@ def _utterance(**kw: str) -> voice.VoiceIntentBody:
 
 
 class TestTheResponseSaysOnlyWhatTheRouteCanEstablish:
+    @pytest.mark.ac("ADR-082826-51b9/AC-1")
     def test_no_field_survives_that_the_route_cannot_fill(self) -> None:
         assert set(voice.VoiceIntentResponse.model_fields) == {"understood", "intent", "reply"}
 
+    @pytest.mark.ac("ADR-082826-51b9/AC-1")
     def test_actions_taken_is_gone_rather_than_permanently_empty(self) -> None:
         """Removed, not defaulted to `[]`.
 
@@ -63,11 +65,13 @@ class TestTheResponseSaysOnlyWhatTheRouteCanEstablish:
         """
         assert "actions_taken" not in voice.VoiceIntentResponse.model_fields
 
+    @pytest.mark.ac("ADR-082826-51b9/AC-2")
     def test_intent_is_constrained_to_the_two_states_it_can_distinguish(self) -> None:
         with pytest.raises(ValidationError):
             voice.VoiceIntentResponse(understood=True, intent="turned_on_light", reply="done")
 
     @pytest.mark.asyncio
+    @pytest.mark.ac("ADR-082826-51b9/AC-2")
     async def test_a_reply_is_conversation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(voice, "build_llm_port", lambda: RecordingLLM())
 
@@ -78,6 +82,7 @@ class TestTheResponseSaysOnlyWhatTheRouteCanEstablish:
         assert result.reply == "the kitchen light is on"
 
     @pytest.mark.asyncio
+    @pytest.mark.ac("ADR-082826-51b9/AC-2")
     async def test_no_reply_is_unknown_rather_than_a_silent_conversation(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -90,6 +95,7 @@ class TestTheResponseSaysOnlyWhatTheRouteCanEstablish:
 
 
 class TestVoiceRunsOnTheChatPathsSeam:
+    @pytest.mark.ac("ADR-082826-51b9/AC-3")
     def test_both_routes_pass_through_the_same_containment_helper(self) -> None:
         """Identity, not equivalence.
 
@@ -100,6 +106,7 @@ class TestVoiceRunsOnTheChatPathsSeam:
         assert chat._conversation_only is service.conversation_only
 
     @pytest.mark.asyncio
+    @pytest.mark.ac("ADR-082826-51b9/AC-4")
     async def test_build_llm_port_is_the_only_port_voice_constructs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -129,6 +136,7 @@ class TestVoiceRunsOnTheChatPathsSeam:
         assert result.reply == "the kitchen light is on"
 
     @pytest.mark.asyncio
+    @pytest.mark.ac("ADR-082826-51b9/AC-3")
     async def test_the_utterance_reaches_the_model_with_no_tools_offered(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -19,6 +19,11 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
+ac-modules:
+  AC-1: routes.voice
+  AC-2: routes.voice
+  AC-3: routes.voice
+  AC-4: routes.voice
 tests:
   - packages/hive-conductor/backend/tests/test_voice_intent_contract.py
   - packages/hive-conductor/backend/tests/test_m0_tool_containment.py
@@ -72,6 +77,28 @@ The response states only what a contained turn can establish.
 
 Restoring an action record remains #315's, together with the Warden boundary
 that must gate the tools before any of them may run again.
+
+## Acceptance criteria
+
+All four are carried by `routes.voice` and proven in
+`packages/hive-conductor/backend/tests/test_voice_intent_contract.py`.
+
+- [x] **AC-1** No field of `VoiceIntentResponse` is one the route cannot fill.
+  `actions_taken` is absent rather than defaulted to `[]`, because an
+  always-empty list cannot distinguish "no tool ran" from "a tool ran and
+  nobody recorded it".
+- [x] **AC-2** `intent` admits only the two states the contained service can
+  distinguish, and each is reached: a reply is `conversation`, no reply is
+  `unknown`. A value naming a tool is refused.
+- [x] **AC-3** Voice reaches the model through the same objects the chat routes
+  use -- `build_llm_port` for the port and `conversation_only` for the
+  tool-stripping boundary -- held by identity, not by two copies that agree.
+  The utterance and its room/source/speaker context arrive with no tools
+  offered and no smuggled extras.
+- [x] **AC-4** Stubbing `build_llm_port` alone keeps the route offline: it
+  constructs no transport of its own. This is the regression that matters,
+  because the previous code built an `HttpOpenAIProtocolLLM` directly whenever
+  LiteLLM settings were present, and the test fails against that code.
 
 ## Consequences
 
