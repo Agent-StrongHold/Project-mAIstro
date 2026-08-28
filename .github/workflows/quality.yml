@@ -37,17 +37,19 @@ on:
   # unreviewed, it was unmeasured, and every accumulated failure arrived at once
   # on retarget, against the branch least able to absorb it.
   #
-  # A required-check set that silently does not apply to a whole class of PRs or
-  # merge-group candidates is worse than none. The queue must test the synthetic
-  # candidate it will actually land, not reuse results from a pre-queue PR head.
+  # A required-check set that silently does not apply to a whole class of PRs is
+  # worse than none: the green tick means different things depending on the base
+  # and nothing on the PR says which. #161.
   pull_request:
+  # A merge queue judges the synthetic current-base + candidate tree, so every
+  # required quality check must report on that exact merge-group SHA too.
   merge_group:
     types: [checks_requested]
   push:
     branches: [main, integration, develop, feat/*]
 
-# Supersede PR and merge-group runs; let protected-branch pushes finish so their
-# pass/fail record survives.
+# See the rationale in ci.yml: supersede candidate runs, let protected-branch
+# pushes finish so their pass/fail record survives.
 concurrency:
   group: quality-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
@@ -470,9 +472,26 @@ jobs:
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this candidate added) -----
+      #
       # The aggregate above cannot see a change: a new 400-line module landing
       # at 0% moves a 42,000-statement total by a fraction of a point.
+      #
+      # PER FILE, and branch arcs included — both learned from review of the
+      # first version, which wrapped `diff-cover`. That tool pools every changed
+      # line before applying its threshold, so five uncovered lines in a new file
+      # plus ninety-five covered elsewhere passed at 95% — the aggregate defect
+      # again, one scope smaller. It also scores line hits only, so `--branch`
+      # collected arc data that nothing read.
+      #
+      # THRESHOLDS, measured over every PR merged into `develop` since 15abb9d
+      # (#124, #125, #128, #123, #126), per file: worst line coverage 94.9%,
+      # worst branch coverage 85.7%. Floors of 90 and 80 sit under each measured
+      # worst — separate numbers because the distributions differ, and a single
+      # shared floor would have to be the lower of the two, which would stop
+      # enforcing anything on lines. Raise as the sample grows.
       - name: Diff coverage gate (per file, lines 90% / branches 80%)
+        # A push has no candidate base SHA, so there is no "lines this candidate
+        # touched" to measure. The aggregate floor is what governs a push.
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           DIFF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -509,6 +528,11 @@ jobs:
       - name: install age + age-keygen
         run: |
           set -e
+          # Bounded: an unbounded apt-get or curl here hangs the whole job with
+          # no output. Observed 2026-08-19 — quality.yml sat 29 minutes on this
+          # step (past its own timeout-minutes) with every later step pending,
+          # because the fetch from dl.filippo.io never returned and nothing
+          # bounded it. `|| true` tolerates a *failed* apt, not a wedged one.
           timeout 180 sudo apt-get update || true
           timeout 180 sudo apt-get install -y age || true
           if ! command -v age-keygen &> /dev/null; then
@@ -519,39 +543,96 @@ jobs:
             age-keygen --help > /dev/null && echo "✓ age-keygen ready"
           fi
 
+      # The analyzer CLIs are NOT project extras (see requirements-dev-tools.txt
+      # — semgrep-class tools carry conflicting pins; these are safe in-venv).
       - name: install quality tools
         run: uv pip install radon xenon vulture pyright interrogate pytest-timeout
 
+      # ----- Pillar 3: code smells -----
       - name: ruff lint (full ruleset)
         run: uv run ruff check .
 
       - name: ruff format check
         run: uv run ruff format --check .
 
+      # The workflow header has claimed since Phase 20 that radon findings are
+      # gated against quality/radon-baseline.json — but the checker was never
+      # invoked (Codex, #262): the plain `radon cc` below reports blocks and
+      # exits 0 regardless, so the documented gate did not exist. Now it does:
+      # fails on any unbaselined C-or-worse block, or a baselined block whose
+      # complexity grew; stale entries are pruned as hotspots are refactored.
       - name: radon CC ratchet (new/regressed hotspots vs quality/radon-baseline.json)
         run: uv run python scripts/check-radon-baseline.py
 
       - name: radon CC (report; the ratchet above is the gate)
         run: uv run radon cc packages/maistro-core/src --min B --total-average
 
+      # Single-sourced version (E1/#294): VERSION is the source of truth, and
+      # every package's pyproject.toml/__version__ fallback, inter-package
+      # dependency lower bound, and app-level FastAPI(version=...) literal
+      # must agree with it — catches drift before merge, not just at bump time.
       - name: version consistency check (VERSION vs. every version site)
         run: uv run python scripts/bump_version.py --check
 
+      # The step above proves the 32 version sites agree on a number. It says
+      # nothing about the number's relationship to the release the repo is
+      # writing notes for — and VERSION 0.9.0 against a CHANGELOG heading of
+      # `## [1.0.0] - TBD` is coherent only if something states that they are
+      # meant to differ. This checks that story: one pending release, VERSION
+      # at or below it, no dated release above it, and a README block naming
+      # all three numbers as labelled fields so a reader is not left to infer
+      # any of them (#83).
+      #
+      # It reads the repository's `v*` tags, which is what makes "nothing has
+      # been released yet" a checked fact rather than a claim that rots the
+      # moment the first tag is pushed. The job's checkout above uses
+      # `fetch-depth: 0`, which fetches them; without tags the gate demands
+      # `Released: none` and so fails loudly on a published repo rather than
+      # passing while the README understates.
       - name: release consistency (VERSION, CHANGELOG, README and tags tell one story)
         run: uv run python scripts/check-release-consistency.py
 
+      # The maistro-registry gate validates front-matter relationships
+      # (supersedes/depends_on); it never resolves prose links in a document
+      # body. Renaming an ADR therefore leaves dead [ADR-xxx](...) links behind
+      # in every spec that cited the old filename, invisibly. This is a strict
+      # 0-baseline, not a ratchet: a broken relative link is never acceptable
+      # and fixing one is always a one-line change.
       - name: doc links (every relative markdown link resolves)
         run: uv run python scripts/check-doc-links.py
 
+      # Unlike the ratchets below, this one is a *count-free* ratchet: the
+      # baseline names every tolerated gap, and a gap that gets fixed but left
+      # in the file fails the build too. That asymmetry is the point — a count
+      # ratchet lets one fix pay for one new gap, which is how three separate
+      # reviews found a control that no longer covered its own motivating case.
+      #
+      # Enumerated security controls (_PROTECTED_OPS, SENSITIVE_PATH_PATTERNS,
+      # CORE_PUBLIC_SURFACE) are checked as properties against the real tree
+      # rather than trusted as hand-written lists. See the script's docstring
+      # for the four findings that motivated it.
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
 
+      # The vendored IFEval grader and corpus are the *exam* the RSI loop is
+      # scored against, so they must stay byte-comparable to what Google
+      # published. This verifies the committed tree still matches its pinned
+      # content hashes and that no upstream import survived the documented
+      # rewrite — i.e. that nobody (human or loop) hand-edited the grader into
+      # something more forgiving while keeping the official name on it.
+      # Offline by design: it checks invariants, it does not re-fetch.
       - name: vendored benchmark provenance (IFEval grader + corpus)
         run: uv run python scripts/vendor_ifeval.py --check
 
       - name: vendored benchmark provenance (BFCL checker + corpus)
         run: uv run python scripts/vendor_bfcl.py --check
 
+      # Ratchet, not a 0-baseline: full backlog (77 ERROR blocks measured
+      # 2026-06-29) is too large to clear in one PR (Phase 18 code-health
+      # sweep). Hard-fails on REGRESSION (new violations beyond the
+      # recorded baseline) on every branch; raise the floor as the backlog
+      # is worked down, and drop the ratchet for a strict 0-baseline once
+      # XENON_BASELINE reaches 0.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
           XENON_BASELINE: 77
@@ -565,6 +646,25 @@ jobs:
             exit 1
           fi
 
+      # Per-identity debt ledger, not a count: quality/vulture-baseline.json
+      # records the exact reviewed finding identities per classification rule,
+      # so a new finding fails by name and a fixed one must shrink the ledger
+      # in the same PR. This step ran a total-count ceiling until 2026-08
+      # (history in git); a count could hold slack — the ceiling sat at 1,426
+      # while the tree had 1,422 findings — and 4 findings of retained slack
+      # would have silently paid for a later regression. The same invocation
+      # also runs in vulture-ratchet.yml; the ledger JSON is the single
+      # authority, this job extends it to feat/* pushes.
+      #
+      # Scope: ALL packages/*/src (2026-07-01), not just maistro-core — a single
+      # invocation so cross-package reachability resolves public APIs consumed
+      # across packages (e.g. maistro-rsi -> maistro-evolve), which a per-package
+      # scan would false-positive. The `packages/*/src` glob auto-covers new
+      # packages; adding one surfaces every new identity for banking (that IS
+      # the ratchet). `third_party/` is vendored upstream source (Google's
+      # IFEval verifier, BFCL's AST checker), kept byte-faithful so the
+      # benchmarks run the official implementation — linting someone else's
+      # tree for dead names measures nothing we can act on.
       - name: vulture (dead-code; confidence ≥ 60 — per-identity ledger)
         run: >-
           uv run python scripts/check-vulture-baseline.py
@@ -572,24 +672,87 @@ jobs:
           --min-confidence 60
           --exclude '*/third_party/*'
 
+      # Vulture works at symbol granularity inside a file, so it is structurally
+      # blind to a whole module that only its own siblings and tests import —
+      # every symbol in it looks used. That is the shape of #344/#346/#347 and
+      # ADR-064's unwired redact(): correct, well-covered code with no caller.
+      # This ratchet closes that blind spot at module granularity.
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
 
+      # Both gates above stop one level short of the DI root. `Container` is not
+      # a value object -- its fields exist so the runtime can consume them -- and
+      # a field that is constructed, stored and read by nobody is wiring that
+      # does nothing. Reachability counts the module as reached because the
+      # container imports it; vulture counts the symbol as used because the
+      # assignment uses it. That is how `archive_store` (#133) and `a2a_broker`
+      # (#225) each survived audits and were found by grep. Scope is narrow on
+      # purpose: the same check over every uncalled public export would seed at
+      # 662 entries and teach banking (ADR-082526-1899).
       - name: wiring reads ratchet (DI attributes nothing reads back)
         run: uv run python scripts/check-wiring-reads.py
 
+      # The reachability ratchet says *how much* is unwired; the convergence
+      # matrix says *who owns what* and which subsystem each unreachable module
+      # belongs to. It is the M0 planning surface (#28), so it is checked rather
+      # than trusted: the rows must partition every production module, and each
+      # row's unreachable count is recomputed from the same import graph. A row
+      # that drifts out of date is a wrong plan, silently.
       - name: convergence matrix (subsystem ownership stays current)
         run: uv run python scripts/check-convergence-matrix.py
 
+      # The baseline says a module is unreachable; this says what is to be done
+      # about it. Without the pairing, 207 unexplained entries is a number people
+      # learn to ignore rather than a plan (#33). CONNECT must name the root that
+      # would reach it, RETIRE must name what replaces it -- a disposition with no
+      # evidence is a shrug.
       - name: reachability dispositions (every unreachable module has an owner)
         run: uv run python scripts/check-reachability-dispositions.py
 
+      # SECURITY.md was the one load-bearing document with no gate behind it --
+      # no script and no workflow referenced it at all -- while making the
+      # strongest claims in the repository about what the code does. It had
+      # Known Limitation #1 backwards (three files named as having no SSRF
+      # guard; all three had one), and the consequence was a second SSRF
+      # implementation written because the first was documented as absent (#157).
       - name: security inventory (SECURITY.md's checkable claims match the code)
         run: uv run python scripts/check-security-inventory.py
 
+      # BACKLOG.md is the hand-maintained work-source of record until the DB
+      # backlog is live (#50), and agents read it as well as people. The gate
+      # reads its vocabulary out of the file's own legend tables, so a legend
+      # and its usage cannot drift apart (#30).
       - name: backlog consistency (legends match usage; citations resolve)
         run: uv run python scripts/check-backlog-consistency.py
 
+      # Measuring how far a completion claim outruns its evidence was the easy
+      # half; failing when it moves is the half that holds a line (#31). Seven
+      # debt counters, each may only go down, and an unbanked improvement fails
+      # too so the ceiling cannot hold slack a later regression would spend.
+      # --run-tests runs only the ~180 @pytest.mark.ac tests, not the suite.
+      # One invocation, both checks. `--run-tests` executes the ~180 AC-marked
+      # tests, and the script performs that run once before dispatching either
+      # check — so splitting these across two steps re-collected the corpus and
+      # re-ran every AC test a second time, doubling this gate's slowest part
+      # and its flake exposure inside a 20-minute cap. Two questions, one
+      # measurement.
+      #
+      # THE RATCHET says the repository did not get worse: ten debt counters
+      # against quality/ac-state-ceilings.json, each may only go down, and an
+      # unbanked improvement fails too so the ceiling cannot hold slack a later
+      # regression would spend.
+      #
+      # THE MANDATE says this change proved what it claimed, in two halves.
+      # The criterion half: zero tolerance on criteria the PR creates or newly
+      # claims. The chain half (ADR-082526-ef55): zero tolerance on absent links
+      # it introduces — an orphan spec, a taken decision nothing implements, a
+      # spec stating nothing checkable. Both compare against the base by
+      # identity rather than by count, because a ceiling on totals lets a new
+      # violation be paid for by an unrelated legacy fix. Legacy stays on the
+      # ceilings either way.
+      #
+      # `--mandate` needs the immutable candidate base. A push has none, so a
+      # push gets the ratchet alone; PR and merge-group candidates get mandate.
       - name: acceptance-state ratchet + mandate
         env:
           MANDATE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -601,11 +764,36 @@ jobs:
             uv run python scripts/check-ac-state.py --run-tests --ratchet
           fi
 
+      # ----- Pillar 4: types -----
       - name: mypy --strict
         run: uv run mypy --strict packages/maistro-core/src
 
+      # Ratchet, matching the xenon/vulture pattern above — NOT advisory.
+      #
+      # This step used to be `pyright ... || echo "::warning::"`. The comment then
+      # recorded a backlog of 17 findings and said "escalate once triaged to zero".
+      # Measured 2026-07-26: 24 errors, 23 warnings. The backlog grew by 7 while
+      # nobody could block on it, which is the whole case against a warning-only
+      # gate: it cannot hold a line, so the line moves.
+      #
+      # mypy --strict above stays the hard 0-baseline type gate. This ratchet makes
+      # pyright block on REGRESSION instead, so the count can only go down. Lower
+      # PYRIGHT_BASELINE as findings are fixed; drop the ratchet for a plain
+      # `pyright` invocation once it reaches 0.
+      #
+      # Known real bugs inside the baseline, tracked for a dedicated fix PR:
+      # unawaited coroutines in cli/_builders_tui.py, possibly-unbound tool_result
+      # in artificer, a dead import in agents/factory.py.
       - name: pyright (type cross-check — ratchet)
         env:
+          # 24 -> 21: `register_node` was typed
+          # `type[BaseNode[Any, Any]] -> type[BaseNode[Any, Any]]`, which erased
+          # every decorated subclass's own `__init__`, so each
+          # dependency-injected construction in `build_node_resolver` was
+          # reported as `No parameter named ...`. Making the decorator generic
+          # removed six findings (three that were in this baseline, three #147
+          # would have added). Ratcheted rather than left slack, per the note
+          # above -- 3 points of headroom is 3 regressions that land silently.
           PYRIGHT_BASELINE: 21
         run: |
           uv run pyright --outputjson packages/maistro-core/src > pyright.json || true
@@ -617,23 +805,45 @@ jobs:
             exit 1
           fi
 
+      # ----- Pillar 2: Hypothesis property tests -----
+      # The property suite lives in formal/ (also run by formal-conformance.yml
+      # on PRs; cheap enough to gate here too). The old `-m "scope: property"`
+      # was invalid -m syntax, and no core tests carry a property scope marker.
       - name: Hypothesis property tests (formal/)
         env:
           PYTHONPATH: packages/maistro-core/src
         run: |
           uv run pytest formal/ --timeout=120 -q
 
+      # ----- Pillar 7: architecture fitness functions -----
+      # The convergence spine's central claim is that Run/NodeRun/Attempt is the
+      # one execution identity. A second one arrives as an enum, not as a
+      # decision — someone needs pending/running/failed and the repository
+      # quietly has another lifecycle. Every work-state enum is classified in
+      # quality/execution-lifecycles.json (#36).
       - name: execution lifecycles (no unclassified second spine)
         run: uv run python scripts/check-execution-lifecycles.py
 
+      # Invariant 2 of #36 cannot be enforced as written yet: maistro.providers
+      # is a registry with no HTTP client, so there is no approved Provider
+      # implementation for a caller to be outside of. #56 builds it. What is
+      # enforceable meanwhile is that the set of direct callers cannot grow.
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
 
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src
+        # The directory guard was removed along with the warning it emitted:
+        # while the suite did not exist, this pillar passed green having
+        # asserted nothing, and would have silently gone back to doing so if
+        # the directory were ever deleted. It is now a hard step.
         run: uv run pytest packages/maistro-core/tests/fitness -v --timeout=30
 
+      # ----- Pillar 8: docstring coverage on touched modules -----
+      # Per-module floors are RATCHET BASELINES set at measured coverage
+      # (2026-06-10): regressions fail; raise the floor as docstrings land.
+      # 95% everywhere is the Phase 15 push.
       - name: interrogate (docstring coverage ratchet)
         run: |
           uv run interrogate -f 38 packages/maistro-core/src/maistro/graph/nodes
