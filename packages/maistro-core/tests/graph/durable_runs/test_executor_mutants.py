@@ -193,19 +193,32 @@ class TestResultOutput:
 
 
 class TestSynthDepth:
-    def test_synth_depth_increments_exactly_once_from_three(self) -> None:
-        record = durable_record(
+    def _record_at_depth(self, depth: int = 3):
+        return durable_record(
             {"id": "one", "nodes": [{"id": "n1", "kind": "agent.synth_dag"}], "edges": []},
             run_id="r-depth",
-            blackboard_snapshot={"metadata": {"synth_depth": 3}},
+            blackboard_snapshot={"metadata": {"synth_depth": depth}},
         )
+
+    def test_dispatched_synth_increments_exactly_once_from_three(self) -> None:
+        record = self._record_at_depth()
         spec = record.run.graph.materialize().nodes[0]
         updated = _maybe_increment_synth_depth(
             record,
             spec,
-            NodeResult(success=True, output=_SynthOut(success=True)),
+            NodeResult(success=True, output=_SynthOut(success=True, dispatched=True)),
         )
         assert updated.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 4
+
+    def test_truthful_decline_does_not_consume_depth(self) -> None:
+        record = self._record_at_depth()
+        spec = record.run.graph.materialize().nodes[0]
+        updated = _maybe_increment_synth_depth(
+            record,
+            spec,
+            NodeResult(success=True, output=_SynthOut(success=True, dispatched=False)),
+        )
+        assert updated.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 3
 
     def test_refused_synth_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=False))
@@ -215,9 +228,13 @@ class TestSynthDepth:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=True))
         assert _actually_spawned("agent.synth_dag", result) is True
 
-    def test_missing_synth_flags_default_to_spawned(self) -> None:
+    def test_success_without_dispatch_does_not_count_as_spawn(self) -> None:
+        result = NodeResult(success=True, output=_SynthOut(success=True, dispatched=False))
+        assert _actually_spawned("agent.synth_dag", result) is False
+
+    def test_missing_dispatch_flag_is_not_evidence_of_spawn(self) -> None:
         result = NodeResult(success=True, output=_Out(text="x"))
-        assert _actually_spawned("agent.synth_dag", result) is True
+        assert _actually_spawned("agent.synth_dag", result) is False
 
     def test_non_synth_kind_counts_unconditionally(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=False))
