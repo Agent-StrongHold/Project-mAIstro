@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  tests/: +11
+  tests/: +12
 ---
 
 # #352 direct runtime dependency usage coverage
 
-Adds eleven focused root-suite cases for the production direct-dependency ratchet: requirement normalization, static and literal-dynamic imports, test-only false positives, third-party distribution-to-import mapping, local workspace namespace mapping, missing disposition failure, reviewed non-import runtime dispositions, explicit pending-cleanup ownership, stale dispositions after direct use or dependency removal, and required category/owner/rationale metadata.
+Adds twelve focused root-suite cases for the production direct-dependency ratchet: requirement normalization, static and literal-dynamic imports, test-only false positives, third-party distribution-to-import mapping, deterministic aliases for distributions whose import roots differ from their package names, local workspace namespace mapping, missing disposition failure, reviewed non-import runtime dispositions, explicit pending-cleanup ownership, stale dispositions after direct use or dependency removal, and required category/owner/rationale metadata.
 
-The gate covers `[project].dependencies` for every `packages/*/pyproject.toml`; optional/dev groups are intentionally outside this production-runtime check. Production Python under each package is scanned with AST imports while test, mutant, build, distribution, and virtual-environment trees are excluded. Local workspace distributions are mapped from checked-in package source roots so editable-install metadata cannot falsely report shared namespaces such as `maistro-core` as unused.
+The gate covers `[project].dependencies` for every `packages/*/pyproject.toml`; optional/dev groups are intentionally outside this production-runtime check. Production Python under each package is scanned with AST imports while test, mutant, build, distribution, and virtual-environment trees are excluded. Local workspace distributions are mapped from checked-in package source roots so editable-install metadata cannot falsely report shared namespaces such as `maistro-core` as unused. Stable distribution/import aliases for `PyYAML -> yaml`, `Pillow -> PIL`, and `argon2-cffi -> argon2` keep the verdict identical when installed metadata differs between the CI `--extra dev` and security `--all-extras` environments.
 
 The ratchet is part of the existing `scripts/pip_audit_gate.py` supply-chain entry point rather than a new tooling module. This keeps both existing pip-audit workflows on one dependency-policy gate without changing the repository reachability/convergence matrix: the final probe remained at 978 production modules with 213 unreachable, and the 52-subsystem convergence check stayed current.
 
