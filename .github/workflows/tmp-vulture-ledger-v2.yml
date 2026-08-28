@@ -1,0 +1,37 @@
+name: Temporary Vulture Ledger Generator v2
+
+on:
+  push:
+    branches: [chatgpt/tmp-523-vulture-update-v2]
+    paths:
+      - .github/workflows/tmp-vulture-ledger-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - name: Install pinned analyzer
+        run: uv pip install --system vulture==2.16
+      - name: Generate exact reviewed ledger
+        run: >-
+          python scripts/check-vulture-baseline.py --update
+          packages/*/src
+          --min-confidence 60
+          --exclude '*/third_party/*'
+      - name: Commit generated ledger on temporary branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add quality/vulture-baseline.json
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "Generate exact live #523 Vulture ledger"
+          git push origin HEAD:chatgpt/tmp-523-vulture-update-v2
