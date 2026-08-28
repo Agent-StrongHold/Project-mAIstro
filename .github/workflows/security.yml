@@ -24,18 +24,19 @@ on:
   # unreviewed, it was unmeasured, and every accumulated failure arrived at once
   # on retarget, against the branch least able to absorb it.
   #
-  # A required-check set that silently does not apply to a whole class of PRs is
-  # worse than none: the green tick means different things depending on the base
-  # and nothing on the PR says which. #161.
+  # Merge groups are first-class candidates: required security checks must run
+  # on the synthetic SHA the queue will actually land.
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, integration, develop, feat/*]
   schedule:
     - cron: "30 7 * * *"
 
 concurrency:
-  group: security-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: security-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   sast:
@@ -93,12 +94,12 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "merge_group" ]; then
             gitleaks git --redact --log-opts="$BASE_SHA..$HEAD_SHA" .
           elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "main" ] && [ "$REF_NAME" != "integration" ] && [ "$REF_NAME" != "develop" ]; then
             if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
@@ -134,7 +135,12 @@ jobs:
     name: Container scan + SBOM + cosign
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || github.event_name == 'schedule'
+    if: >-
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main') ||
+      github.event_name == 'schedule'
+    env:
+      CANDIDATE_TAG: ${{ github.event.pull_request.number || github.event.merge_group.head_sha || 'nightly' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build hive-conductor image
@@ -142,14 +148,14 @@ jobs:
           docker build -f packages/hive-conductor/Dockerfile \
             --build-arg VITE_POC_MODE=pm \
             --build-arg VITE_BASE_PATH=/pm/ \
-            -t hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} .
+            -t hive-conductor:pr-${CANDIDATE_TAG} .
       - name: Build maistro-engine image
-        run: docker build -t maistro-engine:pr-${{ github.event.pull_request.number || 'nightly' }} .
+        run: docker build -t maistro-engine:pr-${CANDIDATE_TAG} .
 
       - name: Verify live Python packages supersede base-image SBOM inventory
         run: |
           docker run --rm --entrypoint python \
-            hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} \
+            hive-conductor:pr-${CANDIDATE_TAG} \
             -c "import importlib.metadata as m; from packaging.version import Version; assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); print('live msgpack='+m.version('msgpack')+', setuptools='+m.version('setuptools'))"
 
       - name: Trivy scan (HIGH/CRITICAL only)
@@ -162,7 +168,7 @@ jobs:
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           version: v0.73.0
-          image-ref: hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }}
+          image-ref: hive-conductor:pr-${{ env.CANDIDATE_TAG }}
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
@@ -173,7 +179,7 @@ jobs:
           curl -sSfL -o grype.tgz https://github.com/anchore/grype/releases/download/v0.116.0/grype_0.116.0_linux_amd64.tar.gz
           echo "40aff724297312f91ea390d003bed8d8651c74cc7f5b26732db80b3a408d2fc5  grype.tgz" | sha256sum --check
           tar -xzf grype.tgz grype && sudo mv grype /usr/local/bin/
-          grype hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} \
+          grype hive-conductor:pr-${CANDIDATE_TAG} \
             --fail-on high --only-fixed --output table
 
       - name: SBOM (syft CycloneDX-JSON)
@@ -181,15 +187,15 @@ jobs:
           curl -sSfL -o syft.tgz https://github.com/anchore/syft/releases/download/v1.49.0/syft_1.49.0_linux_amd64.tar.gz
           echo "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe  syft.tgz" | sha256sum --check
           tar -xzf syft.tgz syft && sudo mv syft /usr/local/bin/
-          syft hive-conductor:pr-${{ github.event.pull_request.number || 'nightly' }} \
+          syft hive-conductor:pr-${CANDIDATE_TAG} \
             -o cyclonedx-json > sbom-hive-conductor.json
-          syft maistro-engine:pr-${{ github.event.pull_request.number || 'nightly' }} \
+          syft maistro-engine:pr-${CANDIDATE_TAG} \
             -o cyclonedx-json > sbom-maistro-engine.json
 
       - name: Upload SBOMs as artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sboms-${{ github.event.pull_request.number || 'nightly' }}
+          name: sboms-${{ env.CANDIDATE_TAG }}
           path: sbom-*.json
 
       - name: Install uv + Python
