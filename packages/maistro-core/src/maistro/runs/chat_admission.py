@@ -37,6 +37,7 @@ from collections import OrderedDict
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.metrics import registry
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
@@ -84,6 +85,23 @@ MAX_RECORDED_ANSWER_CHARS = 2_000
 UPSTREAM_FAILURE = "upstream_error"
 INTERNAL_FAILURE = "internal_error"
 TIMEOUT_FAILURE = "timeout"
+
+#: What a Run records when admission created it and then could not dispatch it
+#: (#338). Its own category rather than `internal_error`, because the two say
+#: different things to anyone reading the record or sweeping for stuck work:
+#: this Run never ran at all, so there is no partial effect to reason about and
+#: nothing to retry against. Recovery can tell never-dispatched from failed-
+#: while-running by this value alone.
+NEVER_DISPATCHED = "never_dispatched"
+
+#: How often compensation itself failed, leaving a Run non-terminal with no
+#: owner (#338 DoD). A counter rather than a log line alone: this is the
+#: residual failure the compensation cannot rule out, so it needs to be
+#: countable rather than only greppable.
+stranded_chat_runs_total = registry.counter(
+    "stranded_chat_runs_total",
+    "Chat Runs admitted but left non-terminal because compensation failed",
+)
 
 
 def failure_category(exc: BaseException) -> str:

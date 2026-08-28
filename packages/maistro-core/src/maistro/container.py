@@ -35,7 +35,13 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
-from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
+from maistro.runs.chat_admission import (
+    NEVER_DISPATCHED,
+    ChatRunAdmitter,
+    chat_turn_outcome,
+    failure_category,
+    stranded_chat_runs_total,
+)
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
@@ -370,6 +376,7 @@ class Container:
         """
         if self.chat_admitter is None:
             return None
+        run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -384,9 +391,63 @@ class Container:
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except asyncio.CancelledError:
+            # A client disconnecting between QUEUED and RUNNING strands the Run
+            # exactly as an error does, and `CancelledError` is not an
+            # `Exception`, so it would otherwise pass straight through this
+            # handler. Compensate, then let the cancellation continue: swallowing
+            # it here would tell the caller the turn is proceeding.
+            await self._abandon_chat_run(run)
+            raise
         except Exception:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+            await self._abandon_chat_run(run)
             return None
+
+    async def _abandon_chat_run(self, run: Run | None) -> None:
+        """Terminalize a Run that was admitted and then never dispatched (#338).
+
+        Without this, a failure anywhere after the QUEUED transition left a
+        durable Run sitting QUEUED forever: `_admit_chat_turn` returned None, so
+        `_close_chat_run` had nothing to terminalize, and no sweeper owns a
+        non-terminal Run. Every such turn was a permanent row that recovery
+        reads as work still to do.
+
+        `run is None` covers the case the exception came from `admit` itself:
+        no Run exists, so there is nothing to compensate and nothing was
+        stranded. The shield is the same one `_close_chat_run` uses and for the
+        same reason — this runs on the cancellation path too, and an unshielded
+        write there would abort exactly when it is most needed.
+
+        CANCELLED rather than FAILED, and the lifecycle is what decides that:
+        `RUN_TRANSITIONS` gives CREATED and QUEUED an edge to CANCELLED and no
+        edge to FAILED, because FAILED means the work ran and went wrong. This
+        work never ran. The sanitized cause on the record says which kind of
+        cancellation it was, so "the user hung up" and "dispatch never happened"
+        stay distinguishable.
+
+        Idempotent through `_terminalize`, which returns early on a Run already
+        in the target state, so a compensation that races another one — or a
+        retry of the whole admission — settles rather than raising.
+        """
+        if run is None:
+            return
+        try:
+            await asyncio.shield(
+                self._terminalize(run.run_id, RunStatus.CANCELLED, None, NEVER_DISPATCHED)
+            )
+        except Exception:
+            # Louder than the admission warning above: that one is a turn that
+            # did not get a Run, which is tolerable. This is a Run that exists,
+            # is not terminal, and now has nobody to finish it — the exact state
+            # this method exists to prevent.
+            logger.error(
+                "chat Run %s was admitted but could not be terminalized after a "
+                "failed dispatch; it remains non-terminal",
+                run.run_id,
+                exc_info=True,
+            )
+            stranded_chat_runs_total.inc()
 
     async def _close_chat_run(
         self,
