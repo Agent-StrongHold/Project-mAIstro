@@ -3,9 +3,11 @@ name: Temporary Vulture Ledger Generator
 on:
   push:
     branches: [chatgpt/tmp-523-vulture-update]
+    paths:
+      - .github/workflows/tmp-vulture-ledger.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   generate:
@@ -25,9 +27,11 @@ jobs:
           packages/*/src
           --min-confidence 60
           --exclude '*/third_party/*'
-      - name: Upload generated ledger
-        uses: actions/upload-artifact@v4
-        with:
-          name: vulture-baseline-523
-          path: quality/vulture-baseline.json
-          if-no-files-found: error
+      - name: Commit generated ledger on temporary branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add quality/vulture-baseline.json
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "Generate exact #523 Vulture ledger"
+          git push origin HEAD:chatgpt/tmp-523-vulture-update
