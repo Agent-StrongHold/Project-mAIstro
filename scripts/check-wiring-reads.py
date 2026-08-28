@@ -311,7 +311,11 @@ def main(argv: list[str]) -> int:
             ratchet=RATCHET,
             baseline=baseline,
         )
-        authorized = prov.load_authorizations(RATCHET)
+        # The SAME revision the ledger came from, named explicitly rather than
+        # resolved a second time. Two independent resolutions of "the base" can
+        # disagree -- and a grant read from one commit authorizing a floor
+        # measured against another is not the check anyone thinks it is.
+        authorized = prov.load_authorizations(RATCHET, base=baseline.base_sha)
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1

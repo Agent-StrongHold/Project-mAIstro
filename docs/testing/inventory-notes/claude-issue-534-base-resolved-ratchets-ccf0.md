@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +19
+  tests/: +20
 ---
 # claude-issue-534-base-resolved-ratchets-ccf0
 
@@ -29,7 +29,10 @@ changed because the seams they substitute did.
     it authorizes nothing (the finding: a separate file with prose reasons made
     the grant reviewable, not *prior*), and a grants file that parses to
     something other than an object is refused.
-- 7 in `tests/test_check_wiring_reads.py`:
+- 8 in `tests/test_check_wiring_reads.py`:
+  - `TestBothReadsOfTheBaseComeFromOneCommit` (1) — `main` resolves the base
+    once and hands the answer to the grants read, rather than letting the two
+    look it up independently against a ref that moves.
   - `TestAnAuthorizationPermitsTheIncreaseItDoesNotRecordIt` (3) — an authorized
     field the candidate never banks used to pass *and print that the ledger
     matched*, leaving the trusted floor permanently dependent on the grant.
@@ -39,6 +42,12 @@ changed because the seams they substitute did.
     versioning is grandfathered, `--update` persists the declared version, and
     the repo's own committed ledger carries one — without that last, the check
     could never fire on the real file.
+
+`_base_state()` replaced the bare `_trusted()` substitution at every call site
+that reaches `main`. The two reads of the base have to move as a pair now: a
+test that fakes the ledger and leaves the grants to resolve for real asks git
+for a base SHA that does not exist, which the shallow `test` job reported as
+three merge-base failures whose cause was a half-built fixture.
 
 `TestAuthorizationsAreASeparateAct` moved off `tmp_path` and onto real
 repositories: grants are read from the base revision now, and only a repository

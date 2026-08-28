@@ -229,7 +229,7 @@ def test_main_fails_on_each_ledger_divergence(check, monkeypatch, capsys):
     ):
         monkeypatch.setattr(check, "unread_fields", lambda *a, c=current: c)
         monkeypatch.setattr(check, "_load_baseline", lambda *a, r=recorded: r)
-        monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, recorded))
+        _base_state(check, monkeypatch, recorded)
         assert check.main([]) == 1
     capsys.readouterr()
 
@@ -238,7 +238,7 @@ def test_main_passes_when_the_ledger_matches(check, monkeypatch, capsys):
     ledger = {"demo.Root": {"known": "why"}}
     monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
     monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
-    monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, ledger))
+    _base_state(check, monkeypatch, ledger)
     assert check.main([]) == 0
     assert "matches the current unread set" in capsys.readouterr().out
 
@@ -258,6 +258,22 @@ def _trusted(check, entries, *, version="1"):
         text="{}", origin="base", base_sha="0" * 40, path=Path("ledger.json")
     )
     return lambda *a, e=entries, v=version: (e, baseline, v)
+
+
+def _base_state(check, monkeypatch, entries, *, authorized=None, version="1"):
+    """Both of `main`'s reads of the base, substituted together.
+
+    They have to move as a pair. `main` now reads the grants from the SAME
+    revision the ledger came from, so a test that fakes the ledger and leaves
+    the grants to resolve for real asks git to look up a base SHA that does
+    not exist. In the shallow `test` job that surfaced as three failures whose
+    message was about a merge base and whose cause was a half-built fixture.
+    """
+    prov = check._provenance()
+    monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, entries, version=version))
+    monkeypatch.setattr(prov, "load_authorizations", lambda *a, **k: authorized or {})
+    monkeypatch.setattr(check, "_provenance", lambda: prov)
+    return prov
 
 
 @pytest.mark.ac("ADR-082526-1899/AC-6")
@@ -322,10 +338,7 @@ class TestTheLedgerIsNotItsOwnOracle:
         banked = {"demo.Root": {"known": "why", "fresh": "self-written justification"}}
         monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known", "fresh"]})
         monkeypatch.setattr(check, "_load_baseline", lambda *a: banked)
-        monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, trusted))
-        prov = check._provenance()
-        monkeypatch.setattr(prov, "load_authorizations", lambda *a, **k: authorized or {})
-        monkeypatch.setattr(check, "_provenance", lambda: prov)
+        _base_state(check, monkeypatch, trusted, authorized=authorized)
 
     def test_banking_and_justifying_in_one_tree_still_fails(
         self, check, monkeypatch, capsys
@@ -366,11 +379,7 @@ class TestTheLedgerIsNotItsOwnOracle:
         ledger = {"demo.Root": {"known": "why"}}
         monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
         monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
-        monkeypatch.setattr(
-            check,
-            "_trusted_baseline",
-            _trusted(check, {"demo.Root": {"known": "why", "gone": "was"}}),
-        )
+        _base_state(check, monkeypatch, {"demo.Root": {"known": "why", "gone": "was"}})
 
         assert check.main([]) == 0
         capsys.readouterr()
@@ -393,6 +402,35 @@ class TestTheLedgerIsNotItsOwnOracle:
         assert "could not be resolved" in capsys.readouterr().err
 
 
+class TestBothReadsOfTheBaseComeFromOneCommit:
+    """The ledger and the grants that authorize raising it (#534).
+
+    Resolved independently, they can disagree: two lookups of "the base" run
+    at different moments, against a ref that moves. A grant read from one
+    commit permitting a floor measured against another is not the check it
+    looks like, so `main` resolves once and names the answer.
+    """
+
+    def test_the_grants_are_read_from_the_ledgers_own_revision(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        seen: dict[str, object] = {}
+        prov = _base_state(check, monkeypatch, {"demo.Root": {"known": "why"}})
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
+        monkeypatch.setattr(
+            prov,
+            "load_authorizations",
+            lambda ratchet, **kwargs: seen.update(kwargs) or {},
+        )
+
+        assert check.main([]) == 0
+        capsys.readouterr()
+
+        # The sentinel `_trusted` hands back as the baseline's commit.
+        assert seen["base"] == "0" * 40
+
+
 class TestAnAuthorizationPermitsTheIncreaseItDoesNotRecordIt:
     """A grant says the floor may rise; the ledger says it did (#534).
 
@@ -407,16 +445,12 @@ class TestAnAuthorizationPermitsTheIncreaseItDoesNotRecordIt:
         """Measures a new unread field, is allowed to, and never records it."""
         monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known", "fresh"]})
         monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
-        monkeypatch.setattr(
-            check, "_trusted_baseline", _trusted(check, {"demo.Root": {"known": "why"}})
+        _base_state(
+            check,
+            monkeypatch,
+            {"demo.Root": {"known": "why"}},
+            authorized={"demo.Root.fresh": "#534 -- @owner: consumed downstream"},
         )
-        prov = check._provenance()
-        monkeypatch.setattr(
-            prov,
-            "load_authorizations",
-            lambda *a, **k: {"demo.Root.fresh": "#534 -- @owner: consumed downstream"},
-        )
-        monkeypatch.setattr(check, "_provenance", lambda: prov)
 
     def test_an_authorized_field_absent_from_the_candidate_ledger_fails(
         self, check, monkeypatch, capsys
@@ -462,7 +496,7 @@ class TestTheMetricDefinitionHasToMatch:
         ledger = {"demo.Root": {"known": "why"}}
         monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
         monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
-        monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, ledger, version=version))
+        _base_state(check, monkeypatch, ledger, version=version)
 
     def test_a_floor_measured_under_another_definition_is_refused(
         self, check, monkeypatch, capsys
