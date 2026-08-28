@@ -1,0 +1,274 @@
+name: Temporary finalize 55 inventory
+
+on:
+  push:
+    branches:
+      - feat/55-direct-effect-inventory
+
+permissions:
+  contents: write
+
+jobs:
+  finish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/55-direct-effect-inventory
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Patch analyzer, regenerate and classify inventory
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          analyzer = Path("scripts/check_direct_effects.py")
+          text = analyzer.read_text()
+
+          old_scan = '''def _production_python_files(root: Path = ROOT) -> list[Path]:
+              """Return production Python under package src/backends, excluding tests."""
+              files: list[Path] = []
+              bases = [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]
+              for base in bases:
+                  if not base.exists():
+                      continue
+                  for path in base.rglob("*.py"):
+                      rel = path.relative_to(base)
+                      if "tests" in rel.parts or path.name.startswith("test_"):
+                          continue
+                      files.append(path)
+              return sorted(set(files))
+          '''
+          new_scan = '''_EXCLUDED_PRODUCTION_FILES = frozenset(
+              {
+                  # Standalone developer hill-climb driver, invoked manually rather than shipped
+                  # as an application/runtime path. Its model egress remains covered by the
+                  # legacy broad model-egress census and is called out explicitly in the PR.
+                  "packages/hive-conductor/run_hill_climb.py",
+              }
+          )
+
+
+          def _production_python_files(root: Path = ROOT) -> list[Path]:
+              """Return shipped package Python, excluding tests and explicit dev utilities."""
+              packages = root / "packages"
+              if not packages.exists():
+                  return []
+              files: list[Path] = []
+              for path in packages.rglob("*.py"):
+                  rel = path.relative_to(root)
+                  rel_text = rel.as_posix()
+                  if "tests" in rel.parts or path.name.startswith("test_"):
+                      continue
+                  if rel_text in _EXCLUDED_PRODUCTION_FILES:
+                      continue
+                  files.append(path)
+              return sorted(files)
+          '''
+          if old_scan not in text:
+              raise SystemExit("scan block marker not found")
+          text = text.replace(old_scan, new_scan)
+
+          call_marker = '''    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+              return _string_parts(node.left, bindings, seen) + _string_parts(
+                  node.right,
+                  bindings,
+                  seen,
+              )
+              return ()
+          '''
+          call_replacement = '''    if isinstance(node, ast.Call):
+              callee = _dotted(node.func)
+              if callee in {"os.environ.get", "os.getenv"}:
+                  default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
+                  if default is None:
+                      for keyword in node.keywords:
+                          if keyword.arg == "default":
+                              default = keyword.value
+                              break
+                  if default is not None:
+                      return _string_parts(default, bindings, seen)
+              return ()
+              if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                  return _string_parts(node.left, bindings, seen) + _string_parts(
+                      node.right,
+                      bindings,
+                      seen,
+                  )
+              return ()
+          '''
+          if call_marker not in text:
+              raise SystemExit("string-parts marker not found")
+          text = text.replace(call_marker, call_replacement)
+
+          path_marker = '''    (
+              "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
+              "HarnessSessionManager.stop",
+              "safe.stop",
+          ): ("HARNESS_EFFECT", "harness.stop"),
+          }
+
+
+          @dataclass(frozen=True)
+          class Site:
+          '''
+          path_replacement = '''    (
+              "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
+              "HarnessSessionManager.stop",
+              "safe.stop",
+          ): ("HARNESS_EFFECT", "harness.stop"),
+              (
+                  "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+                  "_generate_cloudflare",
+                  "httpx.post",
+              ): ("MODEL_EFFECT", "cloudflare-image-http"),
+              (
+                  "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+                  "_generate_azure",
+                  "httpx.post",
+              ): ("MODEL_EFFECT", "azure-openai-image-http"),
+              (
+                  "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+                  "_generate_gemini",
+                  "httpx.post",
+              ): ("MODEL_EFFECT", "gemini-image-http"),
+          }
+
+
+          @dataclass(frozen=True)
+          class Site:
+          '''
+          if path_marker not in text:
+              raise SystemExit("path-rule marker not found")
+          text = text.replace(path_marker, path_replacement)
+          analyzer.write_text(text)
+
+          tests = Path("tests/test_check_direct_effects.py")
+          t = tests.read_text()
+          addition = '''
+
+          def test_environment_default_model_endpoint_is_detected(gate) -> None:
+              source = """
+          import os
+          import httpx
+          def ask():
+              return httpx.post(f"{base}{os.environ.get('LLM_CHAT_PATH', '/v1/chat/completions')}")
+          """
+              sites = gate.analyze_source(source)
+              assert [(site.category, site.entry_point) for site in sites] == [
+                  ("MODEL_EFFECT", "openai-compatible-http"),
+              ]
+
+
+          def test_non_src_package_python_is_scanned_but_explicit_dev_utility_is_not(gate, tmp_path) -> None:
+              shipped = tmp_path / "packages/demo/frontend/server/mcp/effect.py"
+              shipped.parent.mkdir(parents=True)
+              shipped.write_text("pass\n")
+              test_file = tmp_path / "packages/demo/tests/test_effect.py"
+              test_file.parent.mkdir(parents=True)
+              test_file.write_text("pass\n")
+              excluded = tmp_path / "packages/hive-conductor/run_hill_climb.py"
+              excluded.parent.mkdir(parents=True)
+              excluded.write_text("pass\n")
+
+              found = {path.relative_to(tmp_path).as_posix() for path in gate._production_python_files(tmp_path)}
+              assert found == {"packages/demo/frontend/server/mcp/effect.py"}
+
+
+          def test_curated_image_provider_http_is_detected_without_generic_http_matching(gate) -> None:
+              source = """
+          import httpx
+          def _generate_gemini(url):
+              return httpx.post(url, json={})
+          """
+              sites = gate.analyze_source(
+                  source,
+                  "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+              )
+              assert [(site.category, site.entry_point) for site in sites] == [
+                  ("MODEL_EFFECT", "gemini-image-http"),
+              ]
+          '''
+          if "test_environment_default_model_endpoint_is_detected" not in t:
+              tests.write_text(t + addition)
+
+          PY
+
+          python scripts/check_direct_effects.py --update
+
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          path = Path("quality/direct-effect-call-sites.json")
+          payload = json.loads(path.read_text())
+          for site_id, entry in payload["sites"].items():
+              category = entry["category"]
+              source = entry["path"]
+              if category == "CANONICAL_INVOCATION":
+                  entry["disposition"] = "INTENTIONAL_LIBRARY/INFRASTRUCTURE"
+                  entry["owner"] = "#55"
+                  entry["rationale"] = (
+                      "Canonical capabilities-layer Invocation plumbing; this call is the governed seam, "
+                      "not a direct-effect bypass."
+                  )
+              elif category == "HARNESS_EFFECT":
+                  entry["disposition"] = "INTENTIONAL_LIBRARY/INFRASTRUCTURE"
+                  entry["owner"] = "#56"
+                  entry["rationale"] = (
+                      "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns "
+                      "ensuring shipped callers reach it only through governed Invocation paths."
+                  )
+              elif source == "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py":
+                  entry["disposition"] = "INTENTIONAL_LIBRARY/INFRASTRUCTURE"
+                  entry["owner"] = "#56"
+                  entry["rationale"] = (
+                      "Terminal model-provider adapter egress; #56 owns ensuring every shipped caller reaches "
+                      "provider execution through the governed Binding/Invocation boundary."
+                  )
+              elif source.startswith("packages/maistro-canvas/frontend/server/mcp/"):
+                  entry["disposition"] = "MIGRATE_TO_GOVERNED_INVOCATION"
+                  entry["owner"] = "#59"
+                  entry["rationale"] = (
+                      "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns routing "
+                      "MCP effects through the governed path, using #56's model egress boundary."
+                  )
+              elif category == "TOOL_EFFECT":
+                  entry["disposition"] = "MIGRATE_TO_GOVERNED_INVOCATION"
+                  entry["owner"] = "#57"
+                  entry["rationale"] = (
+                      "Shipped tool call can cause an external effect without an Invocation record; #57 owns "
+                      "governed tool execution and expected-effect evidence."
+                  )
+              elif category == "MCP_EFFECT":
+                  entry["disposition"] = "MIGRATE_TO_GOVERNED_INVOCATION"
+                  entry["owner"] = "#59"
+                  entry["rationale"] = (
+                      "Direct MCP call bypasses canonical authorization/Invocation; #59 owns MCP ingress/egress "
+                      "convergence onto the governed supply-chain path."
+                  )
+              elif category == "MODEL_EFFECT":
+                  entry["disposition"] = "MIGRATE_TO_GOVERNED_INVOCATION"
+                  entry["owner"] = "#56"
+                  entry["rationale"] = (
+                      "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns the "
+                      "single governed model egress migration."
+                  )
+              else:
+                  raise SystemExit(f"unclassified category for {site_id}: {category}")
+
+          path.write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+          python scripts/check_direct_effects.py
+          python scripts/check-model-egress.py
+          python -m pip install -q pytest
+          python -m pytest -q tests/test_check_direct_effects.py
+          rm .github/workflows/tmp-finish-55.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/check_direct_effects.py tests/test_check_direct_effects.py quality/direct-effect-call-sites.json .github/workflows/tmp-finish-55.yml
+          git commit -m "Complete #55 direct-effect inventory classification"
+          git push origin HEAD:feat/55-direct-effect-inventory
