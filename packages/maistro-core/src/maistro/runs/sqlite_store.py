@@ -369,8 +369,7 @@ class SqliteRunStore:
             f"FROM canonical_runs WHERE status NOT IN ({placeholders})",
             tuple(_TERMINAL_STATUS_VALUES),
         )
-        if row is None:
-            return 0, None
+        assert row is not None  # nosec B101 - COUNT(*) always yields a row
         count = int(row[0])
         oldest = datetime.fromisoformat(row[1]) if row[1] else None
         return count, oldest

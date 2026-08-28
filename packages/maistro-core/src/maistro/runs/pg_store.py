@@ -487,8 +487,7 @@ class PgRunStore:
                 "FROM canonical_runs WHERE status != ALL($1::text[])",
                 list(_TERMINAL_STATUS_VALUES),
             )
-        if row is None:
-            return 0, None
+        assert row is not None  # nosec B101 - COUNT(*) always yields a row
         oldest_raw = row["oldest"]
         oldest = datetime.fromisoformat(oldest_raw) if oldest_raw else None
         return int(row["open_runs"]), oldest

@@ -402,3 +402,56 @@ async def test_cancellation_during_admission_compensates_and_propagates() -> Non
     (run,) = _chat_runs(container)
     assert run.status is RunStatus.CANCELLED
     assert run.error == ADMISSION_INCOMPLETE
+
+
+async def test_compensation_declines_a_run_already_past_queued() -> None:
+    """A Run at RUNNING returned from admission, so it is `_close_chat_run`'s
+    to settle — compensation must observe and step away, not cancel live work."""
+    from maistro.graph import Graph, Node
+
+    container = await _container()
+    project_id = (await container.project_scope_store.create_root("compensation")).project_id
+    graph = Graph(
+        workspace_id="compensation",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await container.run_store.create_run(graph)
+    await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+    running = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    await container._cancel_incomplete_admission(running)
+
+    current = await container.run_store.get_run(run.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+    assert current.error is None
+
+
+async def test_compensation_failure_is_logged_never_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Compensation must not replace the turn's answer: a store that breaks
+    during the compensating write itself is logged, and nothing propagates."""
+    container = await _container()
+    container.conduit = _Conduit()
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None
+
+    class _BrokenGet:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def get_run(self, run_id):
+            raise RuntimeError("store down")
+
+    container.run_store = _BrokenGet(container.run_store)  # type: ignore[assignment]
+    with caplog.at_level(logging.WARNING):
+        await container._cancel_incomplete_admission(run)
+
+    assert "could not be compensated" in caplog.text
