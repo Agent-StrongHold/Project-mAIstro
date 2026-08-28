@@ -1,11 +1,23 @@
 """Bounded-cycle parity coverage for durable Graph frontier execution.
 
-The legacy ``GraphRun`` executor supports terminating loops natively via
-``config.max_cycles``. ADR-081226-69ee retires ``GraphRun`` through parity
-tests, so the durable path must prove the same shape: a back edge guarded by
-a condition that flips on a later visit reaches ``COMPLETED`` with distinct
-canonical NodeRuns and Attempts per visit, cycle-tagged edge decisions, and
-one parent-linked TraversalCommit chain spanning the repeated visits (#44).
+ADR-081226-69ee retires the legacy ``GraphRun`` executor through parity tests,
+so the durable path must prove the loop shapes ``GraphRun`` supports (#44).
+Two claims, stated separately because their parity postures differ:
+
+- A **condition-terminated** loop — a back edge whose guard flips on a later
+  visit — reaches ``COMPLETED`` with distinct canonical NodeRuns and Attempts
+  per visit, cycle-tagged edge decisions, and one parent-linked
+  TraversalCommit chain spanning the repeated visits. Same outcome as
+  ``GraphRun``, now with durable canonical identity.
+
+- A loop whose guard **never** flips is refused fail-closed. ``GraphRun``
+  exits its ``config.max_cycles`` loop and then marks the run ``COMPLETED``
+  whenever every executed node succeeded — truncation reported as success.
+  The durable path deliberately does not reproduce that: exhausting the step
+  budget terminalizes the Run as ``FAILED`` even though no node failed,
+  because claiming success over still-owed frontier work is exactly what the
+  canonical spine refuses (#243, ADR-082526-237d). The divergence is pinned
+  here on the Attempt-firewalled path, not silently inherited.
 """
 
 from __future__ import annotations
@@ -21,10 +33,13 @@ from maistro.graph.durable_runs import (
     InMemoryDurableRunStore,
     RunStatus,
     SqliteDurableRunStore,
+    attempt_executor,
 )
 from maistro.graph.nodes import BaseNode, NodeContext, get_node, register_node
 from maistro.runs.model import AttemptStatus
+from maistro.runtime import PythonExecutionRuntime
 
+from .._canonical_helpers import durable_record
 from .._canonical_helpers import run_legacy_dag_fixture as run_durable_dag
 
 
@@ -39,6 +54,21 @@ class _StepOut(BaseModel):
 class _ReviewOut(BaseModel):
     approved: bool
     visit: int
+
+
+class _NeverApproveNode(BaseNode[_EmptyIn, _ReviewOut]):
+    """Rejects on every visit, so its back edge never stops selecting."""
+
+    kind: ClassVar[str] = "test.cycle.never_approve"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _EmptyIn
+    output_schema: ClassVar[type[BaseModel]] = _ReviewOut
+
+    visits: ClassVar[int] = 0
+
+    async def _execute(self, inputs: _EmptyIn, ctx: NodeContext) -> _ReviewOut:
+        type(self).visits += 1
+        return _ReviewOut(approved=False, visit=type(self).visits)
 
 
 class _StepNode(BaseNode[_EmptyIn, _StepOut]):
@@ -70,7 +100,7 @@ class _FlipReviewNode(BaseNode[_EmptyIn, _ReviewOut]):
         return _ReviewOut(approved=type(self).visits >= 2, visit=type(self).visits)
 
 
-for _cls in (_StepNode, _FlipReviewNode):
+for _cls in (_StepNode, _FlipReviewNode, _NeverApproveNode):
     with contextlib.suppress(ValueError):
         register_node(_cls)
 
@@ -298,3 +328,76 @@ async def test_bounded_cycle_history_survives_sqlite_reopen(tmp_path: Any) -> No
         (run.node_id, run.ordinal) for run in result.node_runs
     ]
     assert len(persisted.traversal_commits) == len(result.traversal_commits)
+
+
+def _endless_loop_dag() -> dict[str, Any]:
+    """A back edge whose guard never flips: the loop is bounded only by budget."""
+    return {
+        "id": "cycle-endless-loop",
+        "name": "unbounded review loop",
+        "entry_node": "step",
+        "nodes": [
+            {"id": "step", "kind": _StepNode.kind},
+            {"id": "review", "kind": _NeverApproveNode.kind},
+            {"id": "done", "kind": _StepNode.kind},
+        ],
+        "edges": [
+            {"id": "step-review", "from_node": "step", "to_node": "review"},
+            {
+                "id": "review-step",
+                "from_node": "review",
+                "to_node": "step",
+                "condition": "approved == False",
+            },
+            {
+                "id": "review-done",
+                "from_node": "review",
+                "to_node": "done",
+                "condition": "approved == True",
+            },
+        ],
+    }
+
+
+async def test_unbounded_back_edge_fails_closed_instead_of_truncating() -> None:
+    """The deliberate divergence from ``GraphRun.max_cycles`` semantics.
+
+    ``GraphRun`` exits its cycle loop at the configured bound and reports
+    ``COMPLETED`` when every executed node succeeded, silently truncating a
+    graph that still owed work. The durable path must instead refuse: budget
+    exhaustion is ``FAILED`` with the budget named, never a success claim over
+    an owed frontier — even though not a single node failed.
+    """
+    store = InMemoryDurableRunStore()
+    record = durable_record(
+        _endless_loop_dag(),
+        run_id="r-cycle-endless",
+        active_node_id="step",
+    )
+    await store.create(record)
+
+    result = await asyncio.wait_for(
+        attempt_executor._walk(
+            record,
+            store=store,
+            node_resolver=lambda node_id, graph: _resolver(node_id, _endless_loop_dag()),
+            runtime=PythonExecutionRuntime(),
+            max_steps=8,
+        ),
+        timeout=10.0,
+    )
+
+    assert result.status is RunStatus.FAILED
+    assert result.run.error is not None
+    assert result.run.error.startswith("StepBudgetExhausted:")
+    assert "max_steps=8" in result.run.error
+
+    executed = [run for run in result.node_runs if run.status is RunStatus.COMPLETED]
+    assert executed, "the loop body must actually have run before the refusal"
+    assert not any(run.status is RunStatus.FAILED for run in result.node_runs)
+    completed_attempts = [
+        attempt for attempt in result.attempts if attempt.status is AttemptStatus.COMPLETED
+    ]
+    assert {attempt.node_run_id for attempt in completed_attempts} >= {
+        run.node_run_id for run in executed
+    }
