@@ -44,6 +44,10 @@
         "develop-based PR at all — requiring a check that never reports leaves",
         "the PR waiting on an `Expected` status forever.",
         "",
+        "The base-trusted autonomous merge admissibility check is required here",
+        "after #476: a candidate must not be able to replace the judge that decides",
+        "whether the same candidate may merge without independent authority.",
+        "",
         "`archive` is gone: #212 moved that MinIO leg into quality.yml so its",
         "coverage joins the combined report, and it reports as `coverage (MinIO)`",
         "now. Branch protection keys by bare name, so the old context was a",
@@ -80,6 +84,7 @@
           "test",
           "wheel-imports",
           "workflow-lint",
+          "autonomous-merge-admissibility",
           "block",
           "formal-conformance",
           "Gate C — canonical clean install",
@@ -120,6 +125,9 @@
         "ADR-095's stabilization tier: develop -> integration -> main. Same",
         "protection as develop, and the same required checks for the same reason.",
         "",
+        "This remains the declared tier even while no live integration branch exists.",
+        "If the tier is recreated, this is the contract it must receive.",
+        "",
         "Omitting it left the promotion path open — a change could reach",
         "integration directly, or red, and then be promoted to main through a",
         "gate that only ever inspected the integration->main hop."
@@ -135,6 +143,7 @@
           "test",
           "wheel-imports",
           "workflow-lint",
+          "autonomous-merge-admissibility",
           "block",
           "formal-conformance",
           "Gate C — canonical clean install",
@@ -197,6 +206,7 @@
           "test",
           "wheel-imports",
           "workflow-lint",
+          "autonomous-merge-admissibility",
           "block",
           "formal-conformance",
           "Gate C — canonical clean install",
@@ -255,8 +265,8 @@
       "merges immediately. That ordering is the whole reason #162 is blocked by",
       "#161 — the names have to exist and be stable first.",
       "",
-      "Linear history is required on all three branches (ADR-095), so merges are",
-      "squash or rebase, never merge commits."
+      "Linear history is required on all three declared tiers (ADR-095), so merges",
+      "are squash or rebase, never merge commits."
     ]
   }
 }
