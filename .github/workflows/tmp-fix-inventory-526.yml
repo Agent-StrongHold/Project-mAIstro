@@ -1,0 +1,43 @@
+name: "Temporary #526 Fix and Inventory Generator"
+
+on:
+  push:
+    branches: [chatgpt/tmp-526-fix-and-inventory]
+    paths:
+      - .github/workflows/tmp-fix-inventory-526.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - name: Install collection dependencies
+        run: |
+          uv sync --locked --extra dev --extra bootstrap
+          uv pip install --system -r packages/hive-conductor/backend/requirements.txt
+      - name: Apply Ruff's exact export ordering
+        run: uv run ruff check packages/maistro-core/src/maistro/agents/recipes/__init__.py --fix
+      - name: "Generate #526 inventory delta"
+        run: python scripts/check-suite-inventory.py --update --note 526-agentrecipe-node-template
+      - name: Explain the inventory movement
+        run: |
+          cat >> docs/testing/inventory-notes/526-agentrecipe-node-template.md <<'EOF'
+
+          The AgentRecipe-to-NodeTemplate projection slice adds maistro-core tests for cached and disk-backed recipe projection, explicit runtime semantics, inert recipe snapshots, provenance hashing, non-inference of Binding ids or authority, and canonical instantiated template provenance. This note records only the collected-node-ID movement.
+          EOF
+      - name: Commit generated outputs on temporary branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/maistro-core/src/maistro/agents/recipes/__init__.py docs/testing/inventory-notes/526-agentrecipe-node-template.md
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "Generate #526 Ruff fix and suite inventory delta"
+          git push origin HEAD:chatgpt/tmp-526-fix-and-inventory
