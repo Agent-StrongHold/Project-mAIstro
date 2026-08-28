@@ -316,6 +316,7 @@ jobs:
             packages/maistro-core/tests/runs \
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
+            packages/maistro-core/tests/workspaces \
             packages/maistro-core/tests/scheduling -v --tb=short
       - name: upload coverage data
         uses: actions/upload-artifact@v4
