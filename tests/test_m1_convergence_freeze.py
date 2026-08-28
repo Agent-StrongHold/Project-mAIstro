@@ -10,8 +10,6 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-m1-convergence-freeze.py"
 MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
@@ -156,35 +154,40 @@ class TestTheBaseRevisionIsResolvedNotAssumed:
         assert module._fetched_base("develop") == "FETCH_HEAD"
         assert fetched == [["git", "fetch", "--no-tags", "--depth=1", "origin", "develop"]]
 
-    def test_a_remote_ref_this_clone_has_is_returned_without_fetching(self) -> None:
-        """Against the real clone, on the branch that needs no network.
+    def test_the_repositorys_own_base_resolves(self) -> None:
+        """Against the real clone rather than a fake: the helper has to name a
+        revision `git` will actually accept -- and it has to do it without a
+        network call.
 
         Never `_fetched_base("HEAD")`: `origin/HEAD` is absent in plenty of
-        checkouts, so that would send this unconditional test down the fetch
-        path and fail the whole root suite in any clone with no `origin` or an
-        unreachable one -- while the live PR gate it belongs to is not even
-        active. So it names a remote ref this clone actually has, and skips
-        when there is none to name.
-        """
-        listed = subprocess.run(
-            [
-                "git",
-                "for-each-ref",
-                "--count=1",
-                "--format=%(refname:strip=3)",
-                "refs/remotes/origin",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        base_ref = listed.stdout.strip()
-        if not base_ref:
-            pytest.skip("this clone has no origin refs, so there is no no-fetch case to cover")
+        checkouts, so that spelling sends an unconditional test down the fetch
+        path, and the whole root suite then fails in any clone with no `origin`
+        or an unreachable one -- while the live PR gate this belongs to is not
+        even active.
 
-        assert _fetched_base(base_ref) == f"origin/{base_ref}"
-        assert _rev_exists(f"origin/{base_ref}")
+        The earlier fix for that named whichever remote ref the clone happened
+        to have and skipped when it had none. That worked, but a conditional
+        skip is a test that stops running when the condition changes, and the
+        condition here is "somebody's checkout". So the ref is *made* instead:
+        one temporary remote-tracking ref, pointing at HEAD, deleted again in
+        `finally`. The no-fetch branch is then covered in every clone, on every
+        machine, with no network and nothing to skip.
+        """
+        ref = "m1-freeze-selftest"
+        qualified = f"refs/remotes/origin/{ref}"
+        subprocess.run(
+            ["git", "update-ref", qualified, "HEAD"], cwd=ROOT, check=True, capture_output=True
+        )
+        try:
+            assert _fetched_base(ref) == f"origin/{ref}"
+            assert _rev_exists(f"origin/{ref}")
+        finally:
+            subprocess.run(
+                ["git", "update-ref", "-d", qualified],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+            )
 
 
 class _FakeSubprocess:
