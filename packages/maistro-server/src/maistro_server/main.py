@@ -38,6 +38,7 @@ from maistro_server.api import (
     runs,
     tasks,
     webhooks,
+    workspaces,
     ws,
 )
 from maistro_server.api.chat_completions import RUN_ID_HEADER
@@ -277,6 +278,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The run_id POST /tasks returns has to resolve somewhere, or it is an
     # advertised handle with nothing behind it.
     runs.configure_run_store(run_store)
+    # Workspace identity follows the same durability choice as Project/Run
+    # scope. PostgreSQL deployments use the canonical durable store on the same
+    # pool; local deployments share the Container's canonical Project store so
+    # Workspace creation still provisions the one Root Project seen by tasks.
+    from maistro.workspaces import InMemoryWorkspaceStore, PgWorkspaceStore
+
+    workspace_store = (
+        PgWorkspaceStore(spine_pool)
+        if spine_pool is not None
+        else InMemoryWorkspaceStore(project_store=container.project_scope_store)
+    )
+    workspaces.configure_workspace_store(workspace_store)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
     # #150 had to build here for want of one.
@@ -326,6 +339,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Run afterwards — and without this that guard latched permanently.
     reset_task_queue()
     runs.configure_run_store(None)
+    workspaces.configure_workspace_store(None)
 
     await cleanup_all_containers()
 
@@ -367,7 +381,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     # Response headers a browser client may actually read. Without this the
     # header is sent and then hidden: `response.headers` in browser JS only
@@ -441,6 +455,7 @@ app.include_router(metrics.router)
 API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
+app.include_router(workspaces.router, prefix=API_V1_PREFIX)
 app.include_router(agents.router, prefix=f"{API_V1_PREFIX}/maistro")
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
@@ -456,6 +471,7 @@ app.include_router(canvas.router)
 # Backward compatibility — also mount at root (will be removed in v2)
 app.include_router(tasks.router)
 app.include_router(runs.router)
+app.include_router(workspaces.router)
 app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)
