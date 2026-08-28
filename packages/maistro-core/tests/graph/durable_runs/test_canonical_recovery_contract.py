@@ -144,7 +144,7 @@ async def test_pinned_run_rejects_a_different_graph_before_physical_work() -> No
         executed.append(node_id)
         return _Step()
 
-    with pytest.raises(RunIntegrityError, match="Graph|graph|pinned|Run"):
+    with pytest.raises(RunIntegrityError, match=r"Graph|graph|pinned|Run"):
         await traversal.run_durable_graph(
             supplied_graph,
             store=InMemoryDurableRunStore(),
@@ -191,7 +191,7 @@ async def test_canonical_path_does_not_bootstrap_run_before_traversal_checkpoint
     """
     run_store, workspace_id, project_id = await _spine()
 
-    with pytest.raises(RunIntegrityError, match="admit|run_id|Run"):
+    with pytest.raises(RunIntegrityError, match=r"admit|run_id|Run"):
         await traversal.run_durable_graph(
             _graph(workspace_id, project_id),
             store=_FailCreateStore(),
