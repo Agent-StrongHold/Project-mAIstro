@@ -41,14 +41,18 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+  # A merge queue judges the synthetic current-base + candidate tree, so every
+  # required quality check must report on that exact merge-group SHA too.
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, integration, develop, feat/*]
 
-# See the rationale in ci.yml: supersede PR runs, let protected-branch pushes
-# finish so their pass/fail record survives.
+# See the rationale in ci.yml: supersede candidate runs, let protected-branch
+# pushes finish so their pass/fail record survives.
 concurrency:
-  group: quality-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: quality-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   # ----- Coverage is produced by several jobs and judged by one (#211) -----
@@ -468,7 +472,7 @@ jobs:
             -m pytest tests/ --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
-      # ----- Pillar 1b: diff coverage (the lines this PR added) -----
+      # ----- Pillar 1b: diff coverage (the lines this candidate added) -----
       #
       # The aggregate above cannot see a change: a new 400-line module landing
       # at 0% moves a 42,000-statement total by a fraction of a point.
@@ -487,12 +491,14 @@ jobs:
       # shared floor would have to be the lower of the two, which would stop
       # enforcing anything on lines. Raise as the sample grows.
       - name: Diff coverage gate (per file, lines 90% / branches 80%)
-        # A push has no base_ref, so there is no "lines this PR touched" to
-        # measure. The aggregate floor is what governs a push.
-        if: github.event_name == 'pull_request'
+        # A push has no candidate base SHA, so there is no "lines this candidate
+        # touched" to measure. The aggregate floor is what governs a push.
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          DIFF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           uv run python scripts/check-diff-coverage.py coverage.xml \
-            --base "origin/${{ github.base_ref }}"
+            --base "$DIFF_BASE_SHA"
 
   quality-gate:
     name: Quality gate (Pillars 1–4, 7, 8)
@@ -746,13 +752,15 @@ jobs:
       # violation be paid for by an unrelated legacy fix. Legacy stays on the
       # ceilings either way.
       #
-      # `--mandate` needs a base to diff against, and `github.base_ref` is empty
-      # on a push, so a push gets the ratchet alone.
+      # `--mandate` needs the immutable candidate base. A push has none, so a
+      # push gets the ratchet alone; PR and merge-group candidates get mandate.
       - name: acceptance-state ratchet + mandate
+        env:
+          MANDATE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ -n "$MANDATE_BASE_SHA" ]; then
             uv run python scripts/check-ac-state.py \
-              --run-tests --ratchet --mandate "origin/${{ github.base_ref }}"
+              --run-tests --ratchet --mandate "$MANDATE_BASE_SHA"
           else
             uv run python scripts/check-ac-state.py --run-tests --ratchet
           fi
