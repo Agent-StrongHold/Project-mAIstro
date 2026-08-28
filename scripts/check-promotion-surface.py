@@ -100,6 +100,8 @@ PROMOTION_ROOTS: dict[str, str] = {
     # here was invisible (Codex, #513).
     "maistro_rsi.cli": "the installed command entry point",
     "maistro_rsi.__main__": "the `python -m maistro_rsi` entry point",
+    "services.rsi": "drives LocalRsiLoop from the Conductor",
+    "routes.rsi": "approves candidate patches and applies them with `git am`",
     "maistro_evolve.fitness": "holds the breeding and promotion thresholds",
     "maistro_evolve.scorecard": "renders the score a promotion decision reads",
 }
@@ -107,7 +109,16 @@ PROMOTION_ROOTS: dict[str, str] = {
 #: Where first-party source lives. A module outside these is third-party and is
 #: not walked -- its supply-chain risk is `pip-audit`'s problem, not this
 #: gate's, and following it would drag in the standard library.
-SOURCE_ROOTS = ("packages/*/src",)
+SOURCE_ROOTS = (
+    "packages/*/src",
+    # The Conductor ships a flat backend rather than a `src` layout, so this
+    # pattern never matched it -- and the two production RSI entry points live
+    # there: `services/rsi.py` constructs and runs `LocalRsiLoop`, and
+    # `routes/rsi.py` approves candidate patches and applies them with `git am`.
+    # Both exercise capabilities this gate promises to cover, and neither could
+    # enter the module index at all (Codex, #513).
+    "packages/hive-conductor/backend",
+)
 
 
 @dataclass(frozen=True)

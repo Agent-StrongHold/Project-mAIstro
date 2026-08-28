@@ -54,6 +54,19 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "maistro-evolve/tests/",
     # --- what the loop reaches into -----------------------------------------
     "maistro/security/",
+    # --- the Conductor's own RSI execution surface --------------------------
+    # The product ships two production entry points for the capabilities this
+    # list governs, and the `maistro_rsi/` and `maistro_evolve/` patterns above
+    # never reached them because they live in the Conductor's flat backend:
+    # `services/rsi.py` constructs and runs `LocalRsiLoop`, and `routes/rsi.py`
+    # approves a candidate patch and applies it with `git am`. Applying a
+    # self-modification patch is a promotion, wherever the code that does it
+    # happens to live (Codex, #513).
+    "hive-conductor/backend/services/rsi.py",
+    "hive-conductor/backend/routes/rsi.py",
+    # The services package initializer, on the same reasoning as the others
+    # below: a docstring today, on the runtime import path regardless.
+    "hive-conductor/backend/services/__init__.py",
     # Package initializers on the promotion path. Python executes these before
     # the module actually imported, so they are on the runtime import path even
     # when they only re-export. They are re-export shims *today*, and a
