@@ -1,4 +1,92 @@
 {
   "schema_version": 1,
-  "exceptions": {}
+  "exceptions": {
+    "packages/hive-conductor/pyproject.toml": {
+      "argon2-cffi": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "Redundant with maistro-core's direct argon2-cffi dependency; Conductor has no production argon2 import. #514 owns removing or reconciling the duplicate pin."
+      },
+      "bcrypt": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "Conductor currently supplies maistro.security.passwords' lazy bcrypt legacy verifier even though maistro-core does not declare that runtime import; #514 owns moving dependency ownership to core or another explicit boundary."
+      },
+      "langfuse": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "Conductor telemetry imports OpenTelemetry and only targets a Langfuse OTLP endpoint; it never imports the Langfuse SDK. #514 owns replacing or removing this proxy dependency."
+      },
+      "python-multipart": {
+        "category": "FRAMEWORK_RUNTIME",
+        "owner": "#352",
+        "rationale": "FastAPI Form(...) in backend/routes/design.py causes Starlette to load the multipart parser dynamically; the application itself does not import python-multipart."
+      },
+      "regex": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "Redundant with maistro-core's hard regex dependency used by Warden; Conductor has no production regex import. #514 owns removing or reconciling the duplicate pin."
+      },
+      "structlog": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "Conductor has no production structlog import and maistro-core already owns structlog. #514 owns removing or reconciling this duplicate direct pin."
+      },
+      "uvicorn": {
+        "category": "ENTRYPOINT_RUNTIME",
+        "owner": "#352",
+        "rationale": "packages/hive-conductor/backend/Dockerfile invokes the uvicorn console entry point to serve main:app, so runtime use is external to Python imports."
+      }
+    },
+    "packages/maistro-canvas/pyproject.toml": {
+      "asyncpg": {
+        "category": "PLATFORM_RUNTIME",
+        "owner": "#352",
+        "rationale": "frontend/server/models/db.py selects the postgresql+asyncpg SQLAlchemy dialect, which loads asyncpg by driver name rather than a source import."
+      }
+    },
+    "packages/maistro-design/pyproject.toml": {
+      "pyyaml": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "maistro-design has no production yaml import while maistro-core owns YAML parsing; #514 owns removing or relocating this unimported direct pin."
+      }
+    },
+    "packages/maistro-rsi/pyproject.toml": {
+      "pydantic": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "maistro-rsi does not import pydantic directly; its Pydantic-backed PipelineGenome arrives through maistro-evolve. #514 owns removing or reconciling this duplicate direct pin."
+      }
+    },
+    "packages/maistro-server/pyproject.toml": {
+      "fastmcp": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "Server reaches FastMCP through imported maistro-core tool server modules, not a server import; #514 owns expressing this through the appropriate maistro-core extra instead of a raw duplicate pin."
+      },
+      "langfuse": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "maistro-server has no production langfuse import. #514 owns removing the stale pin or replacing it with the actual observability dependency if a consumer is demonstrated."
+      },
+      "uvicorn": {
+        "category": "ENTRYPOINT_RUNTIME",
+        "owner": "#352",
+        "rationale": "The server image and launcher invoke the uvicorn console entry point to serve maistro_server.main:app; application modules do not import the entrypoint package."
+      }
+    },
+    "packages/maistro-turing/pyproject.toml": {
+      "httpx": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "maistro-turing has no production httpx import and maistro-core already owns HTTPX; #514 owns removing or reconciling this duplicate direct pin."
+      },
+      "structlog": {
+        "category": "PENDING_CLEANUP",
+        "owner": "#514",
+        "rationale": "maistro-turing has no production structlog import and maistro-core already owns structlog; #514 owns removing or reconciling this duplicate direct pin."
+      }
+    }
+  }
 }
