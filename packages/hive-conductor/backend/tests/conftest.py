@@ -1,3 +1,4 @@
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -142,15 +143,24 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, mo
 def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
     """Keep older API tests' service-level LLM patches effective after #488.
 
-    The containment route imports build_llm_port into routes.chat so production
-    requests cannot fall back into the tool loop. Some pre-existing tests patch
-    services.chat_completion.build_llm_port. Route the test alias through that
-    service symbol dynamically so those mocks still test the current route.
+    The containment routes import build_llm_port into their own module so a
+    production request cannot fall back into the tool loop. Some pre-existing
+    tests patch services.chat_completion.build_llm_port. Route each module's
+    alias through that service symbol dynamically so those mocks still test the
+    current route.
+
+    Every module carrying the alias, not just routes.chat (#500). Missing one
+    does not merely fail its tests: `test_voice_is_conversational_only` builds a
+    fake LLM, asserts `tools is None` on the request it receives, and passed
+    that assertion over an object the route never called -- so the containment
+    claim it exists to prove went unverified while the suite looked busy.
     """
-    import routes.chat as chat_routes
     import services.chat_completion as chat_service
 
-    monkeypatch.setattr(chat_routes, "build_llm_port", lambda: chat_service.build_llm_port())
+    for module_name in ("routes.chat", "routes.voice"):
+        module = importlib.import_module(module_name)
+        if hasattr(module, "build_llm_port"):
+            monkeypatch.setattr(module, "build_llm_port", lambda: chat_service.build_llm_port())
 
 
 def _seed_test_user() -> None:
