@@ -691,6 +691,7 @@ async def create_container(
     # connection the durable-event stores are written against; `pg_pool` is an
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
     # wiring below came to assume "a database is configured" means "SQLite".
+    db_pool: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
