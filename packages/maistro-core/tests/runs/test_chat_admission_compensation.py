@@ -15,6 +15,7 @@ how the next one goes unnoticed.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -80,6 +81,19 @@ class _FailAfter:
         if failing:
             raise self._error
         return await self._store.transition_run(run_id, status, **kwargs)
+
+
+async def _graph_for(container: Container):
+    """A minimal Graph filed in a real Project, so a Run can be created."""
+    from maistro.graph import Graph, Node
+
+    project_id = (await container.project_scope_store.create_root("stranded-probe")).project_id
+    return Graph(
+        workspace_id="stranded-probe",
+        project_id=project_id,
+        name="probe",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
 
 
 async def _only_run(container: Container) -> Any:
@@ -282,3 +296,129 @@ class TestTheResidualCaseIsCountedRatherThanHidden:
         )
 
         assert await container._admit_chat_turn(MESSAGES) is None
+
+
+class TestTheRecoverableSetIsObservableRightNow:
+    """#338's DoD asks what is stranded *now*, not how often it happened.
+
+    `stranded_chat_runs_total` cannot answer that, and the distinction is not
+    academic: it is a per-process cumulative counter, so it reads zero on a
+    process that just started against a database full of stranded rows, and it
+    never falls when they are settled. These cover the query-derived pair, whose
+    defining property is that they come back down.
+    """
+
+    async def _open_run(self, container: Container):
+        """A Run parked in a non-terminal status, as a crash would leave one."""
+        graph = await _graph_for(container)
+        run = await container.run_store.create_run(graph)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        return run
+
+    async def test_a_stranded_run_is_counted_and_aged(self) -> None:
+        container = await _container()
+        run = await self._open_run(container)
+
+        open_runs, age = await container.refresh_recovery_gauges(
+            now=run.created_at + timedelta(seconds=90)
+        )
+
+        assert open_runs == 1
+        assert age == pytest.approx(90.0, abs=1.0)
+
+    async def test_the_gauges_return_to_zero_once_it_terminalizes(self) -> None:
+        """The property a cumulative counter cannot have. This is the test the
+        review asked for, and the reason the counter is not a substitute.
+
+        Asserted on the PUBLISHED gauges, not the return value. An earlier
+        version checked only what the method returned, and a mutant that
+        floored the published gauge at 1 -- so it could never report "nothing
+        stranded" -- passed it. An operator reads the registry; the return
+        value is a convenience.
+        """
+        from maistro.observability.metrics import (
+            non_terminal_runs,
+            oldest_non_terminal_run_age_seconds,
+        )
+
+        container = await _container()
+        run = await self._open_run(container)
+        await container.refresh_recovery_gauges()
+        assert sum(s["value"] for s in non_terminal_runs.collect()) == 1
+
+        await container.run_store.transition_run(run.run_id, RunStatus.CANCELLED)
+
+        open_runs, age = await container.refresh_recovery_gauges()
+        assert open_runs == 0
+        assert age == 0.0
+        assert sum(s["value"] for s in non_terminal_runs.collect()) == 0
+        assert sum(s["value"] for s in oldest_non_terminal_run_age_seconds.collect()) == 0
+
+    async def test_a_compensated_admission_leaves_nothing_behind(self) -> None:
+        """End to end: the defect this PR fixes, measured by the metric the DoD
+        asks for. The Run is created and stranded, compensation settles it, and
+        the recoverable set is empty afterwards -- not merely 'a failure was
+        counted once'."""
+        container = await _container()
+        container.run_store = _FailAfter(
+            container.run_store, after=1, error=RuntimeError("store is down")
+        )
+
+        assert await container._admit_chat_turn(MESSAGES) is None
+
+        assert (await _only_run(container)).status is RunStatus.CANCELLED
+        assert (await container.refresh_recovery_gauges())[0] == 0
+
+    async def test_an_uncompensated_run_stays_visible(self) -> None:
+        """The residual case the counter was added for, now also *current* state:
+        when compensation itself cannot land, the row is still there and the
+        gauge still says so, in a form that survives this process."""
+        container = await _container()
+        container.run_store = _FailAfter(
+            container.run_store,
+            after=1,
+            error=RuntimeError("store is down"),
+            transient=False,
+        )
+
+        await container._admit_chat_turn(MESSAGES)
+
+        container.run_store = container.run_store._store  # let the store answer again
+        assert (await container.refresh_recovery_gauges())[0] == 1
+
+    async def test_the_gauges_are_published_not_just_returned(self) -> None:
+        """An operator reads the registry, not this method's return value."""
+        from maistro.observability.metrics import (
+            non_terminal_runs,
+            oldest_non_terminal_run_age_seconds,
+        )
+
+        container = await _container()
+        await self._open_run(container)
+
+        await container.refresh_recovery_gauges()
+
+        assert sum(s["value"] for s in non_terminal_runs.collect()) == 1
+        assert sum(s["value"] for s in oldest_non_terminal_run_age_seconds.collect()) >= 0
+
+    async def test_the_recovery_tick_refreshes_them(self) -> None:
+        """The sweep is the tick that already walks the store, so it publishes
+        too -- but the method stands alone for deployments with no leases."""
+        container = await _container()
+        await self._open_run(container)
+
+        assert await container.recover_abandoned_attempts() == 0
+
+        from maistro.observability.metrics import non_terminal_runs
+
+        assert sum(s["value"] for s in non_terminal_runs.collect()) == 1
+
+    async def test_a_clock_behind_the_run_does_not_report_negative_age(self) -> None:
+        """Skew between whoever created the Run and whoever measures it is an
+        artifact, not work that has been waiting for minus a minute."""
+        container = await _container()
+        run = await self._open_run(container)
+
+        _, age = await container.refresh_recovery_gauges(now=run.created_at - timedelta(minutes=1))
+
+        assert age == 0.0

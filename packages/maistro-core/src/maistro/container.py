@@ -13,7 +13,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -537,6 +537,38 @@ class Container:
         )
         return self.durable_event_cursor
 
+    async def refresh_recovery_gauges(self, *, now: datetime | None = None) -> tuple[int, float]:
+        """Publish how much recoverable non-terminal work exists right now (#338).
+
+        Derived from the store on every call rather than accumulated, which is
+        the difference the DoD asks for. `stranded_chat_runs_total` counts
+        compensation writes that failed inside this process: it reads zero on a
+        process that just started against a database full of stranded rows, and
+        it never falls when they are settled. These two answer "is anything
+        stranded right now, and how long has it been" -- and go back to zero as
+        soon as the last non-terminal Run terminalizes.
+
+        Public and separately callable, not just a side effect of the lease
+        sweep: an operator with no leases configured still needs the answer, and
+        a deployment that has not opted into leases would otherwise never
+        compute it. The sweep calls it because that is the tick that already
+        looks at the whole store.
+        """
+        from maistro.observability.metrics import (
+            non_terminal_runs,
+            oldest_non_terminal_run_age_seconds,
+        )
+
+        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
+        moment = now if now is not None else datetime.now(UTC)
+        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
+        # Never negative: a Run created by a clock slightly ahead of this one is
+        # a clock-skew artifact, not work that has been waiting for minus a minute.
+        age = max(age, 0.0)
+        non_terminal_runs.set(open_runs)
+        oldest_non_terminal_run_age_seconds.set(age)
+        return open_runs, age
+
     async def recover_abandoned_attempts(
         self, *, now: datetime | None = None, limit: int = 100
     ) -> int:
@@ -555,6 +587,8 @@ class Container:
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
+        await self.refresh_recovery_gauges(now=now)
+
         return len(reclaimed)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:

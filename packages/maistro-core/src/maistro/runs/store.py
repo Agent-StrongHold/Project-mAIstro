@@ -272,6 +272,8 @@ class RunStore(Protocol):
 
     async def has_runs_in_project(self, project_id: str) -> bool: ...
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
     async def get_run(self, run_id: str) -> Run | None: ...
 
     async def transition_run(
@@ -653,6 +655,24 @@ class InMemoryRunStore:
         rule with a foreign key; this is the reference store's equivalent.
         """
         return any(run.project_id == project_id for run in self._runs.values())
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest was created.
+
+        Current state, not a running total (#338). A cumulative counter of
+        compensation failures cannot answer "is anything stranded right now"
+        -- it is zero in a freshly started process that inherited a database
+        full of stranded rows, and it never falls when they are settled. This
+        is derived from the store on every call, so it drops back to zero the
+        moment the last non-terminal Run terminalizes.
+
+        "Non-terminal" is the recoverable set by definition: a Run outside
+        `TERMINAL_RUN_STATUSES` is one some producer still owes an outcome for.
+        """
+        open_runs = [run for run in self._runs.values() if run.status not in TERMINAL_RUN_STATUSES]
+        if not open_runs:
+            return 0, None
+        return len(open_runs), min(run.created_at for run in open_runs)
 
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)

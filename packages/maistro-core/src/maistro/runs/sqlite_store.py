@@ -356,6 +356,23 @@ class SqliteRunStore:
         )
         return row is not None
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest was created.
+
+        Same shape as the PostgreSQL store: a status filter plus one MIN over
+        the ISO-8601 `created_at` in the payload, which sorts lexically in the
+        order the datetimes do (#338).
+        """
+        placeholders = _placeholders(len(_TERMINAL_STATUS_VALUES))
+        row = await self._fetchone(
+            "SELECT COUNT(*), MIN(json_extract(payload, '$.created_at')) "
+            f"FROM canonical_runs WHERE status NOT IN ({placeholders})",
+            tuple(_TERMINAL_STATUS_VALUES),
+        )
+        if row is None:
+            return 0, None
+        return int(row[0]), datetime.fromisoformat(row[1]) if row[1] else None
+
     async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
         """Terminal Runs carrying a deadline and descended from by nobody.
 

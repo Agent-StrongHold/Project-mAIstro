@@ -185,3 +185,20 @@ maistro_circuit_state = registry.gauge(
     "maistro_circuit_state",
     "Circuit state per dependency (ADR-037; 0=closed, 1=half-open, 2=open)",
 )
+
+
+# --- Recoverable non-terminal Runs (#338) ------------------------------------
+# Current state, deliberately not a running total. `stranded_chat_runs_total`
+# counts compensation writes that failed, cumulatively, inside one process: it
+# reads zero in a process that just started on a database full of stranded rows,
+# and it never falls when they are settled. These are derived from the store, so
+# they answer "is anything stranded right now, and how long has it been" and
+# return to zero once the last non-terminal Run terminalizes.
+non_terminal_runs = registry.gauge(
+    "maistro_non_terminal_runs",
+    "Runs in a non-terminal status as of the last recovery tick (#338)",
+)
+oldest_non_terminal_run_age_seconds = registry.gauge(
+    "maistro_oldest_non_terminal_run_age_seconds",
+    "Age of the oldest non-terminal Run as of the last recovery tick (#338)",
+)

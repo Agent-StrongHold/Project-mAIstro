@@ -474,6 +474,24 @@ class PgRunStore:
             )
         return found is not None
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest was created.
+
+        One pass over a status filter (#338). `created_at` lives in the JSONB
+        payload, but ISO-8601 strings written in a single format order the same
+        way the datetimes do, so MIN needs no materialization per row.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS open_runs, MIN(payload->>'created_at') AS oldest "
+                "FROM canonical_runs WHERE status != ALL($1::text[])",
+                list(_TERMINAL_STATUS_VALUES),
+            )
+        if row is None:
+            return 0, None
+        oldest_raw = row["oldest"]
+        return int(row["open_runs"]), datetime.fromisoformat(oldest_raw) if oldest_raw else None
+
     async def transition_run(
         self,
         run_id: str,
