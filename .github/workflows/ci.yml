@@ -658,7 +658,13 @@ jobs:
           # command for the same reason one level down: /proc/self/environ would
           # carry it too, and the next person to drop `-xdev` should not get a
           # second way to match nothing but themselves.
-          scan='find / -xdev -type f -exec grep -l "$NEEDLE" {} + 2>/dev/null | head -20'
+          # Double-quoted with the expansion escaped, so `$NEEDLE` reaches the
+          # variable as text and the *container's* shell expands it. The
+          # single-quoted spelling meant the same thing and drew shellcheck
+          # SC2016 ("expressions don't expand in single quotes") -- which is
+          # exactly what was intended, but a lint you have to explain on every
+          # read is worse than a spelling that needs no explanation.
+          scan="find / -xdev -type f -exec grep -l \"\$NEEDLE\" {} + 2>/dev/null | head -20"
 
           for builder in 1 0; do
             echo "::group::DOCKER_BUILDKIT=$builder"
