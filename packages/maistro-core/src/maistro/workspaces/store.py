@@ -21,7 +21,6 @@ class WorkspaceStore(Protocol):
         creator_user_id: str,
         name: str,
         description: str = "",
-        metadata: dict[str, object] | None = None,
     ) -> Workspace: ...
 
     async def get(self, workspace_id: str) -> Workspace | None: ...
@@ -66,13 +65,8 @@ class InMemoryWorkspaceStore:
         creator_user_id: str,
         name: str,
         description: str = "",
-        metadata: dict[str, object] | None = None,
     ) -> Workspace:
-        workspace = Workspace(
-            name=name,
-            description=description,
-            metadata=dict(metadata or {}),
-        )
+        workspace = Workspace(name=name, description=description)
         owner = WorkspaceMembership(
             workspace_id=workspace.workspace_id,
             user_id=creator_user_id,
