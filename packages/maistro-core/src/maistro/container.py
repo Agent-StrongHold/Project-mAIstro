@@ -58,6 +58,8 @@ from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.store import WorkspaceStore
+from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
 if TYPE_CHECKING:
     import httpx
@@ -147,6 +149,11 @@ class Container:
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
+    #: Canonical Workspace identity and membership (#516). The Workspace the
+    #: scope tree above hangs off: `project_scope_store` has had a durable
+    #: backend since #132 while the thing its `workspace_id` names had none,
+    #: so the only Workspaces that survived a restart were the Conductor's own.
+    workspace_store: WorkspaceStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -932,6 +939,14 @@ async def create_container(
         # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
+    # The same `project_scope_store` object the spine just selected, not a
+    # second resolution of the same question: a Workspace whose Root Project is
+    # filed in another database is a Workspace whose Runs cannot be filed.
+    workspace_store = await wire_workspace_store(
+        db_pool,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -1127,6 +1142,7 @@ async def create_container(
         episodic_store=episodic_store,
         project_store=project_store,
         project_scope_store=project_scope_store,
+        workspace_store=workspace_store,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
@@ -1315,6 +1331,10 @@ _REQUIRED_PG_TABLES: Final = (
     "security_strikes",
     "security_violations",
     "security_rate_limits",
+    # The canonical Workspace (#516). Same reasoning as the spine's tables: a
+    # `postgresql://` deployment that skipped `alembic upgrade head` should hear
+    # about it once, at startup, naming every table it lacks.
+    *WORKSPACE_PG_TABLES,
 )
 
 

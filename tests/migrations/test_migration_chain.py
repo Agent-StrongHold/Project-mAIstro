@@ -62,6 +62,11 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
+        # The Workspace those Projects and Runs belong to (#516). Their
+        # `workspace_id` columns were bare Text with nothing to reference
+        # until migration 019 gave the Workspace a table of its own.
+        "canonical_workspaces",
+        "canonical_workspace_memberships",
         "child_profiles",
         "design_outputs",
         "design_projects",
