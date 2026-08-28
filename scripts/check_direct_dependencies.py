@@ -3,16 +3,20 @@
 
 The check covers every ``packages/*/pyproject.toml`` runtime dependency. A
 dependency is directly used when production Python imports one of the top-level
-modules provided by that installed distribution. Dependencies required through
-entry points, framework discovery, declarative configuration, or another
-non-import runtime mechanism must be recorded in the reviewed exception ledger.
+modules provided by that distribution. Local workspace distributions are mapped
+from their source trees rather than trusting editable-install metadata, which is
+not reliable for shared namespaces such as ``maistro``.
+
+Dependencies required through entry points, framework discovery, declarative
+configuration, or another non-import runtime mechanism must be recorded in the
+reviewed exception ledger.
 
 The ledger is two-way: a newly-unused dependency fails, but so does an exception
 for a removed dependency or one that has become directly imported. That keeps
 exceptions from becoming a permanent hiding place for stale packages.
 
-Run after the workspace is installed so ``importlib.metadata`` can map Python
-distributions to their actual import packages::
+Run after the workspace is installed so third-party ``importlib.metadata`` can
+map Python distributions to their actual import packages::
 
     python scripts/check_direct_dependencies.py
 """
@@ -146,12 +150,48 @@ def installed_distribution_imports() -> dict[str, frozenset[str]]:
     return {name: frozenset(imports) for name, imports in inverted.items()}
 
 
+def _local_import_roots(manifest: Path) -> frozenset[str]:
+    """Derive the import roots shipped by a local workspace package."""
+    roots: set[str] = set()
+    src = manifest.parent / "src"
+    if src.is_dir():
+        for child in src.iterdir():
+            if child.name.startswith("."):
+                continue
+            if child.is_dir():
+                roots.add(child.name)
+            elif child.suffix == ".py":
+                roots.add(child.stem)
+
+    data = tomllib.loads(manifest.read_text())
+    wheel = data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
+    for package in wheel.get("packages", []):
+        roots.add(Path(package).name)
+    for target in wheel.get("sources", {}).values():
+        if isinstance(target, str) and target:
+            roots.add(target.split("/", 1)[0])
+    return frozenset(roots)
+
+
+def local_distribution_imports(root: Path = ROOT) -> dict[str, frozenset[str]]:
+    """Map local distribution names to import roots from checked-in package layout."""
+    result: dict[str, frozenset[str]] = {}
+    for manifest in sorted((root / "packages").glob("*/pyproject.toml")):
+        data = tomllib.loads(manifest.read_text())
+        name = data.get("project", {}).get("name")
+        if isinstance(name, str):
+            roots = _local_import_roots(manifest)
+            if roots:
+                result[canonical_name(name)] = roots
+    return result
+
+
 def import_names_for(
     dependency: str,
-    installed: dict[str, frozenset[str]],
+    distributions: dict[str, frozenset[str]],
 ) -> frozenset[str]:
     """Resolve import names, using the conventional underscore spelling as a fallback."""
-    mapped = installed.get(dependency)
+    mapped = distributions.get(dependency)
     if mapped:
         return mapped
     return frozenset({dependency.replace("-", "_")})
@@ -162,7 +202,10 @@ def discover(
     installed: dict[str, frozenset[str]] | None = None,
 ) -> list[PackageUsage]:
     """Discover runtime dependency/import evidence for every package manifest."""
-    distribution_imports = installed if installed is not None else installed_distribution_imports()
+    distribution_imports = dict(installed or installed_distribution_imports())
+    for name, imports in local_distribution_imports(root).items():
+        distribution_imports[name] = frozenset(distribution_imports.get(name, frozenset()) | imports)
+
     usages: list[PackageUsage] = []
     for manifest in sorted((root / "packages").glob("*/pyproject.toml")):
         dependencies = runtime_dependencies(manifest)
