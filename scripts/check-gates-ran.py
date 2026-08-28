@@ -41,10 +41,17 @@ The distinction is the same one `passing_ac_ids` draws between `set()` and
 `None`: "nothing passed" and "we do not know" are different answers, and only
 one of them is safe to treat as success.
 
+The optional JSON output is for the trusted `workflow_run` publisher. A
+`workflow_run` job's own check belongs to the default-branch workflow run, not
+to the pull-request or merge-group SHA being judged. The publisher therefore
+uses this verdict to create the required `gates-ran` check on that candidate SHA.
+
 Usage
 -----
     python3 scripts/check-gates-ran.py --check-runs runs.json
     python3 scripts/check-gates-ran.py --check-runs runs.json --require-complete
+    python3 scripts/check-gates-ran.py --check-runs runs.json --require-complete \
+        --json-output verdict.json
 
 `runs.json` is the body of `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`.
 The workflow fetches it; this script does no network I/O, so its logic is
@@ -111,6 +118,16 @@ class Verdict:
     def ok(self) -> bool:
         return not self.absent and not self.stalled and not self.unfinished
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "error": None,
+            "absent": self.absent,
+            "stalled": self.stalled,
+            "unfinished": self.unfinished,
+            "ran": self.ran,
+        }
+
 
 def evaluate(
     required: list[str],
@@ -165,6 +182,11 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [run for run in runs if isinstance(run, dict)]
 
 
+def _write_json(path: Path | None, payload: dict[str, Any]) -> None:
+    if path is not None:
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-runs", type=Path, required=True)
@@ -173,22 +195,50 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also fail when a required check is present but has not finished",
     )
+    parser.add_argument(
+        "--json-output",
+        type=Path,
+        help="write a machine-readable verdict for the trusted check publisher",
+    )
     args = parser.parse_args(argv)
 
     try:
         runs = _load(args.check_runs)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(
-            f"FAIL: the check-run payload is unreadable, so whether the gates ran is unmeasured.\n  {exc}"
+        required = required_check_names()
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        message = f"the gate set is unmeasured: {exc}"
+        _write_json(
+            args.json_output,
+            {
+                "ok": False,
+                "error": message,
+                "absent": [],
+                "stalled": [],
+                "unfinished": [],
+                "ran": [],
+            },
         )
+        print(f"FAIL: {message}")
         return 1
 
-    required = required_check_names()
     if not required:
-        print("FAIL: the required-check contract is empty; nothing to verify ran.")
+        message = "the required-check contract is empty; nothing to verify ran"
+        _write_json(
+            args.json_output,
+            {
+                "ok": False,
+                "error": message,
+                "absent": [],
+                "stalled": [],
+                "unfinished": [],
+                "ran": [],
+            },
+        )
+        print(f"FAIL: {message}.")
         return 1
 
     verdict = evaluate(required, runs, require_complete=args.require_complete)
+    _write_json(args.json_output, verdict.as_dict())
     if verdict.ok:
         print(f"ok: all {len(required)} required check(s) ran on this head")
         return 0

@@ -3,19 +3,21 @@ name: Cage Guard — Auto-reject PRs touching cage/ or eval/
 permissions:
   contents: read
 
-# Runs on every PR and *passes* unless the diff touches the immutable paths
-# (#162). It used to trigger only on those paths, which made it unrequirable in
-# two ways at once: on a normal PR it never reported, so branch protection would
-# wait on an `Expected` status forever; and it had no success path at all — the
-# single step was `exit 1`. A check that can only ever fail cannot be a required
-# check, so under branch protection it would have stayed advisory, and a failing
-# advisory check does not block a merge. The guard would have been decorative
-# exactly when it mattered.
+# Runs on every PR and merge-group candidate and *passes* unless the diff touches
+# the immutable paths (#162). It used to trigger only on those paths, which made
+# it unrequirable in two ways at once: on a normal PR it never reported, so
+# branch protection would wait on an `Expected` status forever; and it had no
+# success path at all — the single step was `exit 1`. A check that can only ever
+# fail cannot be a required check, so under branch protection it would have
+# stayed advisory, and a failing advisory check does not block a merge. The guard
+# would have been decorative exactly when it mattered.
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
-  group: cage-guard-${{ github.ref }}
+  group: cage-guard-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,20 +31,21 @@ jobs:
 
       - name: Reject immutable path changes
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          # `...` is the merge base, so this is what the PR changed rather than
-          # everything that has landed on the base branch since it forked.
+          # `...` is the merge base, so this is what the PR or synthetic merge
+          # group changed rather than everything that has landed on the base
+          # branch since it forked.
           touched=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
             'packages/hive-conductor/cage' \
             'packages/hive-conductor/eval')
           if [ -z "$touched" ]; then
-            echo "OK: this PR does not modify cage/ or eval/."
+            echo "OK: this candidate does not modify cage/ or eval/."
             exit 0
           fi
-          echo "::error::This PR modifies cage/ or eval/ — these paths are IMMUTABLE."
+          echo "::error::This candidate modifies cage/ or eval/ — these paths are IMMUTABLE."
           echo "::error::The Turing Cage and Eval suite cannot be modified by automated processes."
           echo "::error::If this is a legitimate human-initiated change, a repo admin must merge manually."
           echo "Files:"
