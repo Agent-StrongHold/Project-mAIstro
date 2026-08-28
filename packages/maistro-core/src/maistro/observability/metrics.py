@@ -185,3 +185,21 @@ maistro_circuit_state = registry.gauge(
     "maistro_circuit_state",
     "Circuit state per dependency (ADR-037; 0=closed, 1=half-open, 2=open)",
 )
+
+# --- Recovery disposition (#462 / #338) --------------------------------------
+# Refreshed by `Container.recover_abandoned_attempts`, the operator-scheduled
+# recovery tick — the one place that already looks at the whole store. A
+# non-terminal Run that keeps aging between ticks is the alarm these exist to
+# ring: durable state claiming work is in flight that no process owns.
+recovered_attempts_total = registry.counter(
+    "maistro_recovered_attempts_total",
+    "Attempts reclaimed from lapsed execution leases and reconciled (#462)",
+)
+non_terminal_runs = registry.gauge(
+    "maistro_non_terminal_runs",
+    "Runs currently in a non-terminal status, as of the last recovery tick",
+)
+oldest_non_terminal_run_age_seconds = registry.gauge(
+    "maistro_oldest_non_terminal_run_age_seconds",
+    "Age of the oldest non-terminal Run, as of the last recovery tick",
+)

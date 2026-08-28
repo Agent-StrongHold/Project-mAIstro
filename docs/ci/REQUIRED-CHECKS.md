@@ -19,13 +19,26 @@ python3 scripts/check-required-checks.py
 python3 scripts/check-required-checks.py --update
 ```
 
-## One required check the table cannot list: `gates-ran`
+## One required context the table cannot list: `gates-ran`
 
-`.github/workflows/gates-ran.yml` produces **`gates-ran`** from `workflow_run`.
-It is therefore absent from the generated table by construction, but it is a
-required merge check on both live protected branches. It verifies that the
-required workflow families actually ran for the PR head rather than treating an
-absent workflow as green.
+`.github/workflows/gates-ran.yml` is intentionally a `workflow_run` publisher,
+so it is absent from the generated PR-job table by construction. Its native job
+runs from the protected default branch and is named `gates-ran-publisher`.
+After evaluating the exact triggering PR head with trusted default-branch code,
+it publishes the required **`gates-ran`** commit-status context onto that PR
+head. Both live protected branches require that context.
+
+This distinction is deliberate. A `workflow_run` job's native check is attached
+to the default-branch SHA; requiring that native check on a PR would wait for a
+context that can never report on the candidate. Publishing the aggregate verdict
+onto `github.event.workflow_run.head_sha` keeps the judge protected while putting
+the result exactly where branch protection evaluates it.
+
+`gates-ran` is stricter than GitHub's raw required-check semantics: GitHub treats
+a skipped required check as successful, while this aggregate requires real
+execution evidence. On `main` promotions it also includes the main-only CodeQL
+and container-scan checks; those are excluded on `develop` PRs where they do not
+execute by design.
 
 ## Scope
 
