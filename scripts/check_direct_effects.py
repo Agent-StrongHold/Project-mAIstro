@@ -132,6 +132,21 @@ _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
         "HarnessSessionManager.stop",
         "safe.stop",
     ): ("HARNESS_EFFECT", "harness.stop"),
+    (
+        "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+        "_generate_cloudflare",
+        "httpx.post",
+    ): ("MODEL_EFFECT", "cloudflare-image-http"),
+    (
+        "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+        "_generate_azure",
+        "httpx.post",
+    ): ("MODEL_EFFECT", "azure-openai-image-http"),
+    (
+        "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+        "_generate_gemini",
+        "httpx.post",
+    ): ("MODEL_EFFECT", "gemini-image-http"),
 }
 
 
@@ -156,19 +171,29 @@ class Scope:
     objects: dict[str, str]
 
 
+_EXCLUDED_PRODUCTION_FILES = frozenset(
+    {
+        # Standalone developer hill-climb driver, invoked manually rather than shipped
+        # as an application/runtime path.
+        "packages/hive-conductor/run_hill_climb.py",
+    }
+)
+
+
 def _production_python_files(root: Path = ROOT) -> list[Path]:
-    """Return production Python under package src/backends, excluding tests."""
+    """Return shipped package Python, excluding tests and explicit dev utilities."""
+    packages = root / "packages"
+    if not packages.exists():
+        return []
     files: list[Path] = []
-    bases = [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]
-    for base in bases:
-        if not base.exists():
+    for candidate in packages.rglob("*.py"):
+        rel = candidate.relative_to(root)
+        if "tests" in rel.parts or candidate.name.startswith("test_"):
             continue
-        for path in base.rglob("*.py"):
-            rel = path.relative_to(base)
-            if "tests" in rel.parts or path.name.startswith("test_"):
-                continue
-            files.append(path)
-    return sorted(set(files))
+        if rel.as_posix() in _EXCLUDED_PRODUCTION_FILES:
+            continue
+        files.append(candidate)
+    return sorted(files)
 
 
 class _ScopeImportCollector(ast.NodeVisitor):
@@ -287,6 +312,40 @@ def _scope_bindings(
     return collector.strings, collector.objects
 
 
+def _environment_default_parts(
+    node: ast.Call,
+    bindings: dict[str, ast.expr],
+    seen: frozenset[str],
+) -> tuple[str, ...]:
+    """Return literal default fragments for supported environment lookups."""
+    if _dotted(node.func) not in {"os.environ.get", "os.getenv"}:
+        return ()
+    default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
+    if default is None:
+        for keyword in node.keywords:
+            if keyword.arg == "default":
+                default = keyword.value
+                break
+    if default is None:
+        return ()
+    return _string_parts(default, bindings, seen)
+
+
+def _joined_string_parts(
+    node: ast.JoinedStr,
+    bindings: dict[str, ast.expr],
+    seen: frozenset[str],
+) -> tuple[str, ...]:
+    """Resolve literal fragments from an f-string without evaluating expressions."""
+    parts: list[str] = []
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            parts.append(value.value)
+        elif isinstance(value, ast.FormattedValue):
+            parts.extend(_string_parts(value.value, bindings, seen))
+    return tuple(parts)
+
+
 def _string_parts(
     node: ast.expr,
     bindings: dict[str, ast.expr],
@@ -301,13 +360,9 @@ def _string_parts(
             seen | {node.id},
         )
     if isinstance(node, ast.JoinedStr):
-        parts: list[str] = []
-        for value in node.values:
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                parts.append(value.value)
-            elif isinstance(value, ast.FormattedValue):
-                parts.extend(_string_parts(value.value, bindings, seen))
-        return tuple(parts)
+        return _joined_string_parts(node, bindings, seen)
+    if isinstance(node, ast.Call):
+        return _environment_default_parts(node, bindings, seen)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _string_parts(node.left, bindings, seen) + _string_parts(
             node.right,

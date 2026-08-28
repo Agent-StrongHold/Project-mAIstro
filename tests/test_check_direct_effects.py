@@ -143,3 +143,47 @@ def test_audit_rejects_new_stale_and_undocumented_sites(gate) -> None:
     assert any("disposition" in message for message in failures)
     assert any("owner is required" in message for message in failures)
     assert any("rationale is required" in message for message in failures)
+
+
+def test_environment_default_model_endpoint_is_detected(gate) -> None:
+    source = """
+import os
+import httpx
+def ask():
+    return httpx.post(f"{base}{os.environ.get('LLM_CHAT_PATH', '/v1/chat/completions')}")
+"""
+    sites = gate.analyze_source(source)
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("MODEL_EFFECT", "openai-compatible-http"),
+    ]
+
+
+def test_non_src_package_python_is_scanned_but_explicit_dev_utility_is_not(gate, tmp_path) -> None:
+    shipped = tmp_path / "packages/demo/frontend/server/mcp/effect.py"
+    shipped.parent.mkdir(parents=True)
+    shipped.write_text("pass\n")
+    test_file = tmp_path / "packages/demo/tests/test_effect.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("pass\n")
+    excluded = tmp_path / "packages/hive-conductor/run_hill_climb.py"
+    excluded.parent.mkdir(parents=True)
+    excluded.write_text("pass\n")
+    found = {
+        item.relative_to(tmp_path).as_posix() for item in gate._production_python_files(tmp_path)
+    }
+    assert found == {"packages/demo/frontend/server/mcp/effect.py"}
+
+
+def test_curated_image_provider_http_is_detected_without_generic_http_matching(gate) -> None:
+    source = """
+import httpx
+def _generate_gemini(url):
+    return httpx.post(url, json={})
+"""
+    sites = gate.analyze_source(
+        source,
+        "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+    )
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("MODEL_EFFECT", "gemini-image-http"),
+    ]

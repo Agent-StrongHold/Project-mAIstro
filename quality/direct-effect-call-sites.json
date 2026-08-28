@@ -8,9 +8,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
@@ -19,9 +19,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/routes/providers.py::activate_provider._register_and_test::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/routes/providers.py",
@@ -30,9 +30,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/benchmark_eval.py::evaluate_code_output::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/benchmark_eval.py",
@@ -41,9 +41,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._extract_patterns::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
@@ -52,9 +52,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._score_against_new::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
@@ -63,9 +63,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus.score::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
@@ -74,9 +74,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/canvas_dag.py::visual_quality_eval::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canvas_dag.py",
@@ -85,9 +85,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
@@ -96,9 +96,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
@@ -107,9 +107,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "_browse_url",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
@@ -118,9 +118,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "_web_search",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/eval_bootstrap.py::_extract_criteria::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/eval_bootstrap.py",
@@ -129,9 +129,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/evolution.py::_EvolutionService._build_llm_call._llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/evolution.py",
@@ -140,9 +140,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/graph_runner.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/graph_runner.py",
@@ -151,9 +151,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/graph_runner.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/graph_runner.py",
@@ -162,9 +162,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "browse_url",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/graph_runner.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
       "path": "packages/hive-conductor/backend/services/graph_runner.py",
@@ -173,9 +173,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/graph_runner.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/graph_runner.py",
@@ -184,9 +184,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "web_search",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/skill_optimizer.py::optimize_skill::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/skill_optimizer.py",
@@ -195,9 +195,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/skill_optimizer.py::optimize_tool::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/skill_optimizer.py",
@@ -206,9 +206,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::_gemini_grounded_search::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -217,9 +217,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::browse_url::TOOL_EFFECT:browser.browse#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -228,9 +228,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.browse",
       "callee": "client.browse",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::clarify::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -239,9 +239,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::web_search::TOOL_EFFECT:browser.search_web#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -250,9 +250,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.search_web",
       "callee": "client.search_web",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/ui_auto_climb.py::generate_edit::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
@@ -261,9 +261,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/ui_auto_climb.py::score_visual::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
@@ -272,9 +272,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/ui_hill_climber.py::generate_ui_mutation::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_hill_climber.py",
@@ -283,9 +283,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/ui_hill_climber.py::score_ui_code::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_hill_climber.py",
@@ -294,9 +294,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/hive-conductor/backend/services/ui_hill_climber.py::score_ui_visual::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_hill_climber.py",
@@ -305,9 +305,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_probe_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
@@ -316,9 +316,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_run_code_probe::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
@@ -327,9 +327,97 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+    },
+    "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py::LiteLLMCallable._post_with_pacing::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py",
+      "qualname": "LiteLLMCallable._post_with_pacing",
+      "line": 518,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/character.py::analyze_photo::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/character.py",
+      "qualname": "analyze_photo",
+      "line": 224,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/character.py::generate_character_sheet::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/character.py",
+      "qualname": "generate_character_sheet",
+      "line": 468,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/image_provider.py::_generate_azure::MODEL_EFFECT:azure-openai-image-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+      "qualname": "_generate_azure",
+      "line": 131,
+      "category": "MODEL_EFFECT",
+      "entry_point": "azure-openai-image-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/image_provider.py::_generate_cloudflare::MODEL_EFFECT:cloudflare-image-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+      "qualname": "_generate_cloudflare",
+      "line": 96,
+      "category": "MODEL_EFFECT",
+      "entry_point": "cloudflare-image-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/image_provider.py::_generate_gemini::MODEL_EFFECT:gemini-image-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
+      "qualname": "_generate_gemini",
+      "line": 180,
+      "category": "MODEL_EFFECT",
+      "entry_point": "gemini-image-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/story.py::decompose_book::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/story.py",
+      "qualname": "decompose_book",
+      "line": 375,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
+    },
+    "packages/maistro-canvas/frontend/server/mcp/story.py::generate_story::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-canvas/frontend/server/mcp/story.py",
+      "qualname": "generate_story",
+      "line": 131,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "httpx.post",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
     },
     "packages/maistro-core/src/maistro/agents/conductor.py::_call_gateway::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/agents/conductor.py",
@@ -338,9 +426,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_llm_call.py::maistro_llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_llm_call.py",
@@ -349,9 +437,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven::MODEL_EFFECT:model-helper#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -360,9 +448,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "model-helper",
       "callee": "maistro_llm_call",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven::TOOL_EFFECT:browser.search_web#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -371,9 +459,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.search_web",
       "callee": "client.search_web",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_jira_driven::MCP_EFFECT:atlassian.jira_get_my_issues#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -382,9 +470,9 @@
       "category": "MCP_EFFECT",
       "entry_point": "atlassian.jira_get_my_issues",
       "callee": "client.jira_get_my_issues",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Direct MCP call bypasses canonical authorization/Invocation; #59 owns governed MCP ingress and egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_jira_driven::MCP_EFFECT:atlassian.jira_get_my_issues#2": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -393,9 +481,9 @@
       "category": "MCP_EFFECT",
       "entry_point": "atlassian.jira_get_my_issues",
       "callee": "client.jira_get_my_issues",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Direct MCP call bypasses canonical authorization/Invocation; #59 owns governed MCP ingress and egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_jira_driven::MCP_EFFECT:atlassian.jira_search_issues#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -404,9 +492,9 @@
       "category": "MCP_EFFECT",
       "entry_point": "atlassian.jira_search_issues",
       "callee": "client.jira_search_issues",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#59",
+      "rationale": "Direct MCP call bypasses canonical authorization/Invocation; #59 owns governed MCP ingress and egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_jira_driven::MODEL_EFFECT:model-helper#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -415,9 +503,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "model-helper",
       "callee": "maistro_llm_call",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/agents/pm_runner.py::run_pm_task::MODEL_EFFECT:model-helper#1": {
       "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
@@ -426,9 +514,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "model-helper",
       "callee": "maistro_llm_call",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
@@ -437,9 +525,9 @@
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#55",
+      "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
     },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.send::HARNESS_EFFECT:harness.send#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
@@ -448,9 +536,9 @@
       "category": "HARNESS_EFFECT",
       "entry_point": "harness.send",
       "callee": "safe.send",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
     },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.send_invocation::CANONICAL_INVOCATION:GovernedInvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
@@ -459,9 +547,9 @@
       "category": "CANONICAL_INVOCATION",
       "entry_point": "GovernedInvocationExecutionService.invoke",
       "callee": "invocation_service.invoke",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#55",
+      "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
     },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.start::HARNESS_EFFECT:harness.start_session#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
@@ -470,9 +558,9 @@
       "category": "HARNESS_EFFECT",
       "entry_point": "harness.start_session",
       "callee": "provider.start_session",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
     },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.stop::HARNESS_EFFECT:harness.stop#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
@@ -481,9 +569,9 @@
       "category": "HARNESS_EFFECT",
       "entry_point": "harness.stop",
       "callee": "safe.stop",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
     },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.stream::HARNESS_EFFECT:harness.stream#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
@@ -492,9 +580,9 @@
       "category": "HARNESS_EFFECT",
       "entry_point": "harness.stream",
       "callee": "safe.stream",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
     },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
@@ -503,9 +591,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "svc.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#2": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
@@ -514,9 +602,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
@@ -525,9 +613,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py::OpenAICompatibleProvider.__call__::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py",
@@ -536,9 +624,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "Terminal model-provider adapter egress; #56 owns ensuring callers reach it through governed Binding/Invocation."
     },
     "packages/maistro-rsi/src/maistro_rsi/autorun.py::make_llm_proposer._propose::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/autorun.py",
@@ -547,9 +635,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "httpx.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-rsi/src/maistro_rsi/free_router.py::resolve_concrete_free_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/free_router.py",
@@ -558,9 +646,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "httpx.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
     "packages/maistro-rsi/src/maistro_rsi/gateway.py::make_gateway_llm_call.llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/gateway.py",
@@ -569,9 +657,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "",
-      "owner": "",
-      "rationale": ""
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#56",
+      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     }
   }
 }
