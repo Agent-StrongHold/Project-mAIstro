@@ -63,6 +63,23 @@ def test_discover_uses_distribution_to_import_mapping(gate, tmp_path) -> None:
     assert usages[0].unused == frozenset()
 
 
+def test_local_workspace_distribution_mapping_beats_editable_metadata_gap(gate, tmp_path) -> None:
+    core = tmp_path / "packages" / "core"
+    (core / "src" / "shared_ns").mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname = "core-dist"\nversion = "0.1.0"\ndependencies = []\n'
+    )
+    app = tmp_path / "packages" / "app"
+    (app / "src" / "app").mkdir(parents=True)
+    (app / "pyproject.toml").write_text(
+        '[project]\nname = "app"\nversion = "0.1.0"\ndependencies = ["core-dist"]\n'
+    )
+    (app / "src" / "app" / "main.py").write_text("from shared_ns import feature\n")
+    usages = gate.discover(tmp_path, {})
+    app_usage = next(usage for usage in usages if usage.manifest.endswith("app/pyproject.toml"))
+    assert app_usage.unused == frozenset()
+
+
 def test_missing_exception_for_unused_runtime_dependency_fails(gate, tmp_path) -> None:
     _write_package(tmp_path, ["uvicorn>=0.32"], "pass\n")
     usage = gate.discover(tmp_path, {"uvicorn": frozenset({"uvicorn"})})[0]
