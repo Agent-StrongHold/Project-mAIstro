@@ -21,11 +21,8 @@ jobs:
           from pathlib import Path
           path = Path('docs/architecture/CONVERGENCE-MATRIX.md')
           text = path.read_text()
-          old = '| maistro-server HTTP app | `maistro_server` | Product entry point |'
-          if old not in text:
-              raise SystemExit('ownership row not found')
-          marker = '| maistro-server HTTP app | `maistro_server` product process | `0/20` |'
-          replacement = '| maistro-server HTTP app | `maistro_server` product process | `0/21` |'
+          marker = '| maistro-server HTTP app | `maistro_server.main` | `0/20` |'
+          replacement = '| maistro-server HTTP app | `maistro_server.main` | `0/21` |'
           if marker not in text:
               raise SystemExit('measured disposition row not found')
           path.write_text(text.replace(marker, replacement, 1))
