@@ -1,0 +1,40 @@
+name: temp-523-matrix-current
+
+on:
+  push:
+    branches:
+      - chatgpt/tmp-523-matrix-current
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/tmp-523-matrix-current
+      - name: Apply measured convergence count
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('docs/architecture/CONVERGENCE-MATRIX.md')
+          text = path.read_text()
+          old = '| maistro-server HTTP app | `maistro_server` | Product entry point |'
+          if old not in text:
+              raise SystemExit('ownership row not found')
+          marker = '| maistro-server HTTP app | `maistro_server` product process | `0/20` |'
+          replacement = '| maistro-server HTTP app | `maistro_server` product process | `0/21` |'
+          if marker not in text:
+              raise SystemExit('measured disposition row not found')
+          path.write_text(text.replace(marker, replacement, 1))
+          PY
+      - name: Commit generated matrix on temp branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-523-matrix-current.yml
+          git add docs/architecture/CONVERGENCE-MATRIX.md
+          git commit -m 'Record current #523 convergence count'
+          git push origin HEAD:chatgpt/tmp-523-matrix-current
