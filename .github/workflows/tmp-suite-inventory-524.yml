@@ -1,0 +1,41 @@
+name: Temporary #524 Suite Inventory Generator
+
+on:
+  push:
+    branches: [chatgpt/tmp-524-suite-inventory]
+    paths:
+      - .github/workflows/tmp-suite-inventory-524.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - name: Install collection dependencies
+        run: |
+          uv sync --locked --extra dev --extra bootstrap
+          uv pip install --system -r packages/hive-conductor/backend/requirements.txt
+      - name: Generate #524 inventory delta
+        run: python scripts/check-suite-inventory.py --update --note 524-persona-template-provenance
+      - name: Explain the inventory movement
+        run: |
+          cat >> docs/testing/inventory-notes/524-persona-template-provenance.md <<'EOF'
+
+The Persona template source-provenance slice adds focused maistro-core tests for native and legacy YAML source classification, loader-attested provenance, spoof resistance, and serialization behavior. This note records only the resulting collected-node-ID movement; no suite was removed or skipped.
+EOF
+      - name: Commit generated note on temporary branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/testing/inventory-notes/524-persona-template-provenance.md
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "Generate #524 suite inventory delta"
+          git push origin HEAD:chatgpt/tmp-524-suite-inventory
