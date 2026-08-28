@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from maistro.graph.definitions import GraphTemplate
-from maistro.graph.templates import GraphTemplateConflict
+from maistro.graph.definitions import GraphTemplate, NodeTemplate
+from maistro.graph.templates import GraphTemplateConflict, NodeTemplateConflict, revalidated
 from maistro.runs.evidence_json import json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -48,7 +48,7 @@ class PgGraphTemplateStore:
                 template.workspace_id,
                 template.name,
                 template.content_hash,
-                json_of(template),
+                json_of(revalidated(template)),
             )
         if row is None:
             raise GraphTemplateConflict(
@@ -94,4 +94,84 @@ class PgGraphTemplateStore:
         return [int(row["version"]) for row in rows]
 
 
-__all__ = ["PgGraphTemplateStore"]
+class PgNodeTemplateStore:
+    """Durable NodeTemplate registry (#556).
+
+    The same statement shape as `PgGraphTemplateStore`, against its own table,
+    because the two families have the same identity and the same redefinition
+    rule and differing here would be differing for no reason.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def put(self, template: NodeTemplate) -> NodeTemplate:
+        """Register one version, idempotently for identical content.
+
+        `DO UPDATE ... WHERE` rather than `DO NOTHING`, for the reason its
+        GraphTemplate sibling records: on conflict this has to tell "already
+        registered, same content" from "already registered, different content",
+        and `DO NOTHING` returns no row either way.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO node_templates
+                       (template_id, version, workspace_id, name, node_type, content_hash, payload)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb)
+                   ON CONFLICT (template_id, version) DO UPDATE
+                       SET payload = EXCLUDED.payload
+                       WHERE node_templates.content_hash = EXCLUDED.content_hash
+                   RETURNING template_id""",
+                template.template_id,
+                template.version,
+                template.workspace_id,
+                template.name,
+                template.node_type,
+                template.content_hash,
+                json_of(revalidated(template)),
+            )
+        if row is None:
+            raise NodeTemplateConflict(
+                f"NodeTemplate {template.template_id!r} version {template.version} already "
+                "exists with different content; register a new version instead"
+            )
+        return template
+
+    async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None:
+        async with self._pool.acquire() as conn:
+            if version is not None:
+                payload: Any = await conn.fetchval(
+                    "SELECT payload FROM node_templates WHERE template_id = $1 AND version = $2",
+                    template_id,
+                    version,
+                )
+            else:
+                payload = await conn.fetchval(
+                    """SELECT payload FROM node_templates
+                       WHERE template_id = $1
+                       ORDER BY version DESC
+                       LIMIT 1""",
+                    template_id,
+                )
+        return model_of(NodeTemplate, payload) if payload is not None else None
+
+    async def list_for_workspace(self, workspace_id: str) -> list[NodeTemplate]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM node_templates
+                   WHERE workspace_id = $1
+                   ORDER BY name, template_id, version""",
+                workspace_id,
+            )
+        return [model_of(NodeTemplate, row["payload"]) for row in rows]
+
+    async def versions(self, template_id: str) -> list[int]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT version FROM node_templates WHERE template_id = $1 ORDER BY version",
+                template_id,
+            )
+        return [int(row["version"]) for row in rows]
+
+
+__all__ = ["PgGraphTemplateStore", "PgNodeTemplateStore"]

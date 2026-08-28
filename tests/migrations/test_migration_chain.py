@@ -72,6 +72,11 @@ EXPECTED_TABLES = frozenset(
         "knowledge_nodes",
         "learnings",
         "memory_entries",
+        # The NodeTemplate half of the reusable-definition model (019). Its
+        # GraphTemplate sibling has been durable since 014; without this one a
+        # Node's `source_template` named a version nothing could resolve after a
+        # restart (#556).
+        "node_templates",
         "orgs",
         "outcomes",
         "prompts",

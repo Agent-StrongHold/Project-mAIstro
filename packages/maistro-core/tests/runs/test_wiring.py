@@ -21,7 +21,7 @@ from maistro.tasks.queue import TaskQueue
 
 
 async def test_without_a_connection_the_spine_is_in_memory() -> None:
-    scope_store, run_store, admitter, _templates, _schedules = await wire_execution_spine(
+    scope_store, run_store, admitter, _templates, _schedules, _node_templates = await wire_execution_spine(
         None, workspace_id="w1"
     )
 
@@ -32,7 +32,7 @@ async def test_without_a_connection_the_spine_is_in_memory() -> None:
 
 async def test_with_a_connection_the_spine_is_durable() -> None:
     async with aiosqlite.connect(":memory:") as conn:
-        scope_store, run_store, _admitter, _templates, _schedules = await wire_execution_spine(
+        scope_store, run_store, _admitter, _templates, _schedules, _node_templates = await wire_execution_spine(
             conn, workspace_id="w1"
         )
 
@@ -43,7 +43,7 @@ async def test_with_a_connection_the_spine_is_durable() -> None:
 async def test_the_root_project_exists_before_the_first_submission() -> None:
     """Resolved eagerly: a Run store refuses a Graph in a Project that isn't
     there, so a lazy root turns misconfiguration into a first-task failure."""
-    scope_store, _run_store, _admitter, _templates, _schedules = await wire_execution_spine(
+    scope_store, _run_store, _admitter, _templates, _schedules, _node_templates = await wire_execution_spine(
         None, workspace_id="w1"
     )
 
@@ -58,7 +58,7 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
     same store the wiring handed back, in both backends."""
     conn = await aiosqlite.connect(":memory:") if durable else None
     try:
-        _scope_store, run_store, admitter, _templates, _schedules = await wire_execution_spine(
+        _scope_store, run_store, admitter, _templates, _schedules, _node_templates = await wire_execution_spine(
             conn, workspace_id="w1"
         )
         queue = TaskQueue(admitter=admitter)
@@ -75,7 +75,7 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
 
 
 async def test_the_workspace_is_the_one_asked_for() -> None:
-    _scope_store, run_store, admitter, _templates, _schedules = await wire_execution_spine(
+    _scope_store, run_store, admitter, _templates, _schedules, _node_templates = await wire_execution_spine(
         None, workspace_id="tenant-a"
     )
     queue = TaskQueue(admitter=admitter)
@@ -118,7 +118,7 @@ async def test_a_pool_without_the_spine_tables_falls_back_and_says_so(caplog) ->
             return False
 
     with caplog.at_level(logging.WARNING):
-        _scope, run_store, _admitter, _templates, _schedules = await wire_execution_spine(
+        _scope, run_store, _admitter, _templates, _schedules, _node_templates = await wire_execution_spine(
             None, workspace_id="w1", pg_pool=_PoolWithoutTheSpine()
         )
 
@@ -181,7 +181,7 @@ async def test_a_migrated_pool_gets_the_postgres_schedule_store(pg_pool: Any) ->
     from maistro.runs.wiring import wire_execution_spine
     from maistro.scheduling.pg_store import PgScheduleStore
 
-    _scope, _runs, _admitter, _templates, schedules = await wire_execution_spine(
+    _scope, _runs, _admitter, _templates, schedules, _node_templates = await wire_execution_spine(
         None, workspace_id="w1", pg_pool=pg_pool
     )
     assert isinstance(schedules, PgScheduleStore)
@@ -191,7 +191,7 @@ async def test_without_a_pool_or_a_connection_schedules_are_in_memory() -> None:
     from maistro.runs.wiring import wire_execution_spine
     from maistro.scheduling.store import InMemoryScheduleStore
 
-    _scope, _runs, _admitter, _templates, schedules = await wire_execution_spine(
+    _scope, _runs, _admitter, _templates, schedules, _node_templates = await wire_execution_spine(
         None, workspace_id="w1"
     )
     assert isinstance(schedules, InMemoryScheduleStore)
