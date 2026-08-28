@@ -171,16 +171,19 @@ class TestTheShippedRuleset:
         table out is what makes the file checkable against its own governance
         instead of against itself.
         """
-        #: branch -> required approvals, per ADR-095's protection table.
-        expected_approvals = {"develop": 0, "integration": 0, "main": 1}
+        #: branch -> required approvals, per ADR-095's protection table as
+        #: amended by the M0 policy reconciliation: `integration` is retired
+        #: (ADR-095 "integration is retired"), leaving the two live tiers.
+        expected_approvals = {"develop": 0, "main": 1}
         rules = gate.load_ruleset()["branches"]
-        assert set(rules) == set(expected_approvals), "ADR-095 protects all three tiers"
+        assert set(rules) == set(expected_approvals), "ADR-095 protects both live tiers"
         for branch, rule in rules.items():
             reviews = rule["required_pull_request_reviews"]
             assert reviews["required_approving_review_count"] == expected_approvals[branch], branch
-            # "Linear history is required on all three -> merges are squash or
-            # rebase, not merge commits."
-            assert rule["required_linear_history"] is True, branch
+            # Linear history on develop -> merges are squash or rebase. `main`
+            # "intentionally permits merge commits and does not require linear
+            # history" (ADR-095 as amended): release merges are its markers.
+            assert rule["required_linear_history"] is (branch != "main"), branch
             # "Admins are not enforced so a solo maintainer/agent isn't
             # deadlocked" — and the cage guard's own message promises an admin
             # can merge a legitimate cage/eval change past that required check.
@@ -191,12 +194,15 @@ class TestTheShippedRuleset:
             assert rule["required_conversation_resolution"] is True, branch
 
     def test_main_requires_a_superset_of_the_other_tiers(self, gate) -> None:
-        """develop and integration require what runs everywhere; main adds the
-        four that only run there. A check required on a lower tier and not on
-        main would make the published branch the more weakly gated one."""
+        """Every lower tier requires what runs everywhere; main adds the ones
+        that only run there. A check required on a lower tier and not on main
+        would make the published branch the more weakly gated one. With
+        `integration` retired (ADR-095 as amended) the lower tiers are just
+        `develop`; the loop stays so a reintroduced tier is covered the day
+        its entry appears."""
         rules = gate.load_ruleset()["branches"]
         main = set(rules["main"]["required_status_checks"]["contexts"])
-        for lower in ("develop", "integration"):
+        for lower in set(rules) - {"main"}:
             assert set(rules[lower]["required_status_checks"]["contexts"]) < main, lower
 
     def test_the_apply_payload_carries_no_comment_keys(self, gate, capsys):
