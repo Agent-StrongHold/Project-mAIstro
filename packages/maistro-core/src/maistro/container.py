@@ -783,6 +783,27 @@ class Container:
         )
 
 
+def _wire_schedule_admission(
+    run_store: RunStore,
+    template_store: GraphTemplateStore | None,
+    schedule_store: ScheduleStore,
+) -> ScheduleRunAdmitter | None:
+    """The third admitter, from the three stores the spine already wired.
+
+    Until now `ScheduleRunAdmitter` had no production caller at all — #251
+    found it admitting Runs nothing executed, and the other half of that gap
+    is that nothing constructed it either, so the live scheduler grew its own
+    create-and-advance logic instead (#231).
+
+    A function rather than an inline conditional because `create_container` is
+    already at the complexity ceiling: one more branch in it is one more thing
+    that has to be read to answer any other question about the wiring.
+    """
+    if template_store is None:
+        return None
+    return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -909,15 +930,7 @@ async def create_container(
         # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
-    # The third admitter, built from the three stores the spine already wired.
-    # Until now `ScheduleRunAdmitter` had no production caller at all — #251
-    # found it admitting Runs nothing executed, and the other half of that gap
-    # is that nothing constructed it either.
-    schedule_admitter = (
-        ScheduleRunAdmitter(run_store, graph_template_store, schedule_store)
-        if graph_template_store is not None
-        else None
-    )
+    schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
