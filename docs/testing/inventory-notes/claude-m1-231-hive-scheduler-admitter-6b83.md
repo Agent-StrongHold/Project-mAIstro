@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +3
 ---
 # claude-m1-231-hive-scheduler-admitter-6b83
 
-Two new tests in `tests/test_container_wiring.py` for the schedule-admission
+Three new tests in `tests/test_container_wiring.py` for the schedule-admission
 seam (#231), purely additive:
 
 - `create_container` builds a `ScheduleRunAdmitter` from the three stores the
@@ -14,3 +14,5 @@ seam (#231), purely additive:
   the default exists for, since `Container` takes thirteen required arguments
   and such a Container never runs `create_container`'s wiring — carries no
   admitter rather than one that raises on first use.
+- the branch behind that default, executed rather than declared: the wiring
+  returns None for an absent template store and an admitter for a present one.

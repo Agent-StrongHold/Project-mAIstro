@@ -668,3 +668,22 @@ def test_a_container_without_a_template_store_has_no_schedule_admitter() -> None
 
     assert defaults["template_store"] is None
     assert defaults["schedule_admitter"] is None
+
+
+async def test_wiring_declines_to_build_an_admitter_with_no_template_store() -> None:
+    """The branch behind that default, executed rather than declared.
+
+    An admitter that cannot resolve a template cannot admit, so the wiring
+    returns None instead of constructing one that raises on first use.
+    """
+    from maistro.container import _wire_schedule_admission
+
+    container = await _container()
+
+    assert _wire_schedule_admission(container.run_store, None, container.schedule_store) is None
+    assert (
+        _wire_schedule_admission(
+            container.run_store, container.template_store, container.schedule_store
+        )
+        is not None
+    )
