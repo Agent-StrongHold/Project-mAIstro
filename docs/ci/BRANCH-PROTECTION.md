@@ -1,6 +1,6 @@
 # Branch protection
 
-**Status:** the ruleset is written down and machine-checked. **It is not applied
+**Status:** the policy is written down and machine-checked. **It is not applied
 yet** — applying it needs repository-admin scope in the GitHub UI or API, which
 no CI job in this repository holds.
 
@@ -10,21 +10,22 @@ checked against [`REQUIRED-CHECKS.md`](REQUIRED-CHECKS.md) by
 
 ## What is true today
 
-Every branch in this repository reports `protected: false` — `main` and
-`develop` included. So:
+Both live protection targets, `main` and `develop`, report `protected: false`.
+The ADR-095 `integration` tier remains in the reviewed policy, but there is no
+live `integration` branch at the M0 closeout point. Therefore:
 
 - no required status checks — **a red PR can be merged**;
 - no required review;
 - no required conversation resolution — an unresolved P1 thread does not block;
 - no up-to-date-with-base requirement.
 
-Every gate in `quality.yml`, `ci.yml`, `security.yml`, `registry.yml` and the
-ratchet scripts is **advisory**. They run, they are read, and nothing enforces
-them at the merge boundary.
+Every gate in `quality.yml`, `ci.yml`, `security.yml`, `registry.yml`, the
+base-trusted autonomous-merge workflow, and the ratchet scripts is still
+**advisory at the live merge boundary** until #162 is applied.
 
 This is also the direct answer to *"are unresolved comments why PRs are not
 auto-merging?"* — **no.** Nothing is blocking a merge, and equally nothing is
-requiring anything. Enabling *Allow auto-merge* before this ruleset is applied
+requiring anything. Enabling *Allow auto-merge* before this policy is applied
 would be actively harmful: GitHub's auto-merge waits for *required* checks, so
 with none configured it merges as soon as it is armed.
 
@@ -36,7 +37,7 @@ change diverged from it in four places without saying so; review caught all
 four. A governance artifact that quietly contradicts the governing ADR is worse
 than none, because it looks authoritative.
 
-`enforce_admins` is **false** on all three, per ADR-095: *"a solo
+`enforce_admins` is **false** on all three declared tiers, per ADR-095: *"a solo
 maintainer/agent isn't deadlocked"*. That is also load-bearing for the cage
 guard, whose own failure message promises that an admin may merge a legitimate
 `cage/` or `eval/` change manually — true only while an admin can bypass a
@@ -54,9 +55,9 @@ with `--update-doc`; do not hand-edit between the markers.
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **25** |
-| `integration` | yes | **0** | yes | no | no | **25** |
-| `main` | yes | **1** | yes | no | no | **29** |
+| `develop` | yes | **0** | yes | no | no | **26** |
+| `integration` | yes | **0** | yes | no | no | **26** |
+| `main` | yes | **1** | yes | no | no | **30** |
 
 | Check | `develop` | `integration` | `main` |
 |---|:--:|:--:|:--:|
@@ -70,6 +71,7 @@ with `--update-doc`; do not hand-edit between the markers.
 | `SAST (bandit + semgrep + gitleaks)` | ● | ● | ● |
 | `Supply chain (pip-audit)` | ● | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● | ● |
+| `autonomous-merge-admissibility` | ● | ● | ● |
 | `block` | ● | ● | ● |
 | `coverage (MinIO)` | ● | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● | ● |
@@ -118,6 +120,20 @@ If a check gains a `base_ref` condition and is not listed there, the audit
 refuses to let any branch require it. Guessing "main" would be right today and
 silently wrong the first time someone couples a job to a different branch.
 
+### The autonomous judge is now part of the same contract
+
+#476 landed the base-trusted `pull_request_target` judge. The required-check
+contract now recognizes `pull_request_target` alongside `pull_request`, so
+`autonomous-merge-admissibility` is not a manually remembered exception. It is
+required on all three declared tiers.
+
+That requirement is intentionally self-referential in the safe direction: a PR
+that changes `.github/branch-protection.json`, required-check policy, workflows,
+or the autonomous judge is a red trusted-surface change. An agent-authored PR
+for such a change must fail autonomous admissibility and take the independent
+manual path. The candidate does not get to approve a new rule that would let the
+same candidate merge.
+
 ### Two checks were changed to make them requirable
 
 [`REQUIRED-CHECKS.md`](REQUIRED-CHECKS.md) deferred both of these to #162, and
@@ -149,8 +165,9 @@ check that can be required, is.
 
 ## The rest of the rule
 
-- **Stale reviews dismissed on a new push**, on all three branches. Without it
-  an approval survives a force-push that replaces the diff it approved.
+- **Stale reviews dismissed on a new push**, on all three declared tiers.
+  Without it an approval survives a force-push that replaces the diff it
+  approved.
 - **Linear history required** on all three (ADR-095), so merges are squash or
   rebase, never merge commits.
 - **Conversation resolution required.** This is the setting that makes an
@@ -162,7 +179,7 @@ check that can be required, is.
   essentially every concurrent pair, which is that failure mode in its mildest
   form. A merge queue is the alternative and would cost less rebasing; it is a
   later change, not a blocker for this one.
-- **No force pushes, no deletions**, on all three branches.
+- **No force pushes, no deletions**, on all three declared tiers.
 
 ## Applying it
 
@@ -170,32 +187,47 @@ Needs a token with **admin** scope on the repository. The script prints the call
 and deliberately does not make it — a script that silently held such a token
 would be a worse problem than the one it solves.
 
+For the branches that exist now:
+
 ```bash
-python3 scripts/check-branch-protection.py --apply develop      # prints the gh api call
-python3 scripts/check-branch-protection.py --apply integration
+python3 scripts/check-branch-protection.py --apply develop
 python3 scripts/check-branch-protection.py --apply main
 ```
 
-Then, in **Settings → General → Pull Requests**, tick **Allow auto-merge** — and
-only then, for the reason at the top of this file.
+If the ADR-095 stabilization tier is recreated, apply its already-reviewed
+contract too:
 
-Afterwards, confirm the live state matches:
+```bash
+python3 scripts/check-branch-protection.py --apply integration
+```
+
+Then read the live API back and prove it matches. Only after that should **Allow
+auto-merge** be enabled in repository settings.
 
 ```bash
 GH_TOKEN=<admin token> python3 scripts/check-branch-protection.py --verify
 ```
 
+`--verify` currently iterates every declared tier, so while `integration` does
+not exist its 404 is expected and must not be mistaken for a failure of the two
+live branch protections. Direct live read-back of `develop` and `main` is the M0
+proof unless the branch is recreated before closeout.
+
 ## Verifying it works
 
 The acceptance for #162 is behavioural, not a settings screenshot:
 
-- a PR with a failing required check cannot be merged, on any of the three;
+- a PR with a failing required check cannot be merged on each live protected
+  branch;
 - a PR with an unresolved review thread cannot be merged;
-- a PR into `main` without an approving review cannot be merged (`develop` and
-  `integration` require none, per ADR-095);
-- a merge commit is refused on all three, since linear history is required;
-- auto-merge, when armed, waits for all of the above.
+- a PR into `main` without an approving review cannot be merged (`develop`
+  requires none, per ADR-095);
+- a merge commit is refused on the live protected branches, since linear history
+  is required;
+- auto-merge, when armed, waits for all of the above;
+- `autonomous-merge-admissibility` is required before an autonomous PR may
+  merge.
 
-`--verify` checks these are *configured* — every field the ruleset declares,
-not just the context list. That they *bind* is worth one deliberate red PR to
+`--verify` checks these are *configured* — every field the policy declares, not
+just the context list. That they *bind* is worth one deliberate red PR to
 observe, once, after applying.
