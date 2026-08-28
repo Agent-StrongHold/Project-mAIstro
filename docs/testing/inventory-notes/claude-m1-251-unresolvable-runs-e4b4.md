@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +5
 ---
 # claude-m1-251-unresolvable-runs-e4b4
 
-Four new tests in `tests/runs/test_consumption.py` for #251's second
+Five new tests in `tests/runs/test_consumption.py` for #251's second
 acceptance criterion — a Run this process cannot resolve must fail visibly
 rather than sit unstarted — all purely additive:
 
@@ -17,3 +17,6 @@ rather than sit unstarted — all purely additive:
   its kind resolves here or not;
 - two concurrent ticks dispose of one unresolvable Run exactly once, the
   claim serving as the mutex for disposal as it already does for execution.
+- a disposal that loses its claim — the second tick, once the first has
+  already terminalized the Run — is logged rather than raised: the refusal is
+  normal, and the Run is already in the state the loser wanted.

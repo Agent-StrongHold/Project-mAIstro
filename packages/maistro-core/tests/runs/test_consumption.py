@@ -501,3 +501,31 @@ async def test_two_ticks_do_not_both_dispose_of_one_unresolvable_run() -> None:
     run = await container.run_store.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.FAILED
+
+
+async def test_a_disposal_that_loses_its_claim_is_logged_never_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The concurrent-disposal case from the losing side.
+
+    Two ticks can only race here when the second still sees the Run listed;
+    once the first has disposed of it, the second's claim is refused by the
+    lifecycle table. That refusal is normal, not an error to propagate — a
+    tick that lost is finished, and the Run is already in the state it wanted.
+    """
+    import logging
+
+    container = await _container()
+    run_id = await _admit_schedule_run(
+        container, kind="test.consumer.never_registered", workspace="ws-lost-disposal"
+    )
+    # Dispose of it, exactly as the winning tick would.
+    await container._fail_unresolvable_run(run_id, "unresolvable_node_kind: x")
+
+    with caplog.at_level(logging.WARNING):
+        await container._fail_unresolvable_run(run_id, "unresolvable_node_kind: x")
+
+    assert "could not be settled" in caplog.text
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.FAILED
