@@ -36,6 +36,7 @@ from maistro.runs.store import (
     ActiveAttemptExists,
     AttemptNotFound,
     RunIntegrityError,
+    RunStore,
     StaleExecutionFence,
 )
 
@@ -46,9 +47,16 @@ from .types import DurableRunRecord
 class DurableRunExecutionStore:
     """Expose canonical execution lifecycle operations for one durable Run."""
 
-    def __init__(self, store: DurableRunStore, *, run_id: str) -> None:
+    def __init__(
+        self,
+        store: DurableRunStore,
+        *,
+        run_id: str,
+        run_store: RunStore | None = None,
+    ) -> None:
         self._store = store
         self._run_id = run_id
+        self._run_store = run_store
         self._lock = asyncio.Lock()
 
     async def get_run(self, run_id: str) -> Run | None:
@@ -136,29 +144,44 @@ class DurableRunExecutionStore:
         lease_holder: str | None = None,
         lease_ttl: timedelta | None = None,
     ) -> Attempt:
-        created: Attempt | None = None
+        """Obtain the Attempt, from the canonical store when there is one.
+
+        The third of #44's construction sites (ADR-082826-d9f5). The body this
+        replaces was a line-for-line copy of `InMemoryRunStore.create_attempt`
+        -- same terminal-NodeRun guard, same active-Attempt check, same
+        `max(ordinal) + 1`, same lease construction -- which is what a second
+        system of record looks like from the inside. With a `run_store` the
+        Attempt's identity is the store's and this record carries a projection
+        of it; without one the previous in-record mint is unchanged.
+
+        The record's own preconditions are still checked first even on the
+        canonical path. Until the write-back lands, a NodeRun terminalized in
+        the record can still read RUNNING canonically, and the aggregate is the
+        one that knows this Run is finished with that node.
+        """
+        if self._run_store is not None:
+            self._require_creatable(await self._get_record(), node_run_id)
+            created = await self._run_store.create_attempt(
+                node_run_id,
+                runtime_id=runtime_id,
+                executor_id=executor_id,
+                deadline_at=deadline_at,
+                resume_checkpoint_id=resume_checkpoint_id,
+                lease_holder=lease_holder,
+                lease_ttl=lease_ttl,
+            )
+            await self._mutate(
+                lambda record: record.model_copy(update={"attempts": (*record.attempts, created)})
+            )
+            return created.model_copy(deep=True)
+
+        minted: Attempt | None = None
 
         def update(record: DurableRunRecord) -> DurableRunRecord:
-            nonlocal created
-            node_run = next(
-                (item for item in record.node_runs if item.node_run_id == node_run_id),
-                None,
-            )
-            if node_run is None:
-                raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
-            if node_run.status in TERMINAL_RUN_STATUSES:
-                raise RunIntegrityError("cannot create Attempt under a terminal NodeRun")
-
-            existing = [
-                attempt for attempt in record.attempts if attempt.node_run_id == node_run_id
-            ]
-            if any(
-                attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
-                for attempt in existing
-            ):
-                raise ActiveAttemptExists(f"NodeRun {node_run_id!r} already has an active Attempt")
+            nonlocal minted
+            existing = self._require_creatable(record, node_run_id)
             ordinal = max((attempt.ordinal for attempt in existing), default=0) + 1
-            created = Attempt(
+            minted = Attempt(
                 node_run_id=node_run_id,
                 ordinal=ordinal,
                 runtime_id=runtime_id,
@@ -169,20 +192,38 @@ class DurableRunExecutionStore:
             if lease_holder is not None:
                 lease = ExecutionLease(
                     node_run_id=node_run_id,
-                    attempt_id=created.attempt_id,
+                    attempt_id=minted.attempt_id,
                     lease_epoch=ordinal,
                     holder=lease_holder,
                 )
                 if lease_ttl is not None:
                     lease = renewed_lease(lease, at=lease.issued_at, ttl=lease_ttl)
-                created = Attempt.model_validate(
-                    {**created.model_dump(mode="python"), "execution_lease": lease}
+                minted = Attempt.model_validate(
+                    {**minted.model_dump(mode="python"), "execution_lease": lease}
                 )
-            return record.model_copy(update={"attempts": (*record.attempts, created)})
+            return record.model_copy(update={"attempts": (*record.attempts, minted)})
 
         await self._mutate(update)
-        assert created is not None
-        return created.model_copy(deep=True)
+        assert minted is not None
+        return minted.model_copy(deep=True)
+
+    @staticmethod
+    def _require_creatable(record: DurableRunRecord, node_run_id: str) -> list[Attempt]:
+        """Refuse an Attempt the record cannot carry, and return its siblings."""
+        node_run = next(
+            (item for item in record.node_runs if item.node_run_id == node_run_id),
+            None,
+        )
+        if node_run is None:
+            raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            raise RunIntegrityError("cannot create Attempt under a terminal NodeRun")
+        existing = [attempt for attempt in record.attempts if attempt.node_run_id == node_run_id]
+        if any(
+            attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING} for attempt in existing
+        ):
+            raise ActiveAttemptExists(f"NodeRun {node_run_id!r} already has an active Attempt")
+        return existing
 
     async def renew_lease(
         self,
@@ -199,6 +240,13 @@ class DurableRunExecutionStore:
         store it was given, and a durable Graph node is executed by a process
         that can die exactly like a task worker.
         """
+        if self._run_store is not None:
+            canonical = await self._run_store.renew_lease(
+                attempt_id, fencing_token=fencing_token, ttl=ttl, at=at
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
         renewed: Attempt | None = None
 
         def update(record: DurableRunRecord) -> DurableRunRecord:
@@ -228,6 +276,13 @@ class DurableRunExecutionStore:
         single `DurableRunRecord`. A sweep across every durable Run is the
         `DurableRunStore`'s question, not this view's, and answering it here
         would quietly widen what a caller holding one Run can touch.
+
+        The one Attempt write still applied in-record on the canonical path,
+        for that reason: `RunStore.reclaim_expired_attempts` sweeps every Run,
+        so delegating here would settle other Runs' work as a side effect of
+        resuming this one. The canonical row keeps its lapsed lease until that
+        global sweep reaches it and settles it the same way -- reclaim is
+        idempotent, so the two converge rather than disagree.
         """
         moment = now if now is not None else datetime.now(UTC)
         reclaimed: list[Attempt] = []
@@ -282,6 +337,19 @@ class DurableRunExecutionStore:
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
     ) -> Attempt:
+        if self._run_store is not None:
+            canonical = await self._run_store.transition_attempt(
+                attempt_id,
+                target,
+                at=at,
+                result=result,
+                error=error,
+                metrics=metrics,
+                fencing_token=fencing_token,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
         def update(record: DurableRunRecord) -> DurableRunRecord:
             attempts = list(record.attempts)
             for index, attempt in enumerate(attempts):
@@ -302,6 +370,16 @@ class DurableRunExecutionStore:
         updated = await self._mutate(update)
         attempt = next(item for item in updated.attempts if item.attempt_id == attempt_id)
         return attempt.model_copy(deep=True)
+
+    @staticmethod
+    def _replace_attempt(record: DurableRunRecord, updated: Attempt) -> DurableRunRecord:
+        """Mirror a canonically-settled Attempt back into the aggregate."""
+        attempts = list(record.attempts)
+        for index, attempt in enumerate(attempts):
+            if attempt.attempt_id == updated.attempt_id:
+                attempts[index] = updated
+                return record.model_copy(update={"attempts": tuple(attempts)})
+        raise RunIntegrityError(f"Attempt {updated.attempt_id!r} does not exist")
 
     @staticmethod
     def _validate_fence(attempt: Attempt, fencing_token: str | None) -> None:

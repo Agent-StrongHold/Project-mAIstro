@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -44,6 +45,38 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.CANCELLED: frozenset(),
     RunStatus.TIMED_OUT: frozenset(),
 }
+
+
+def transition_path(current: RunStatus, target: RunStatus) -> tuple[RunStatus, ...]:
+    """Return the shortest legal sequence of moves from ``current`` to ``target``.
+
+    A caller that knows only where a Run or NodeRun *is* and where it *must
+    end up* -- a store reconciling a record it did not author, most of all --
+    would otherwise either invent an illegal jump or overwrite the status,
+    and overwriting is how a lifecycle table stops meaning anything. Ordering
+    the search by status value keeps the answer deterministic where two
+    shortest paths exist, so two processes reconciling the same gap agree.
+
+    Returns the empty tuple when there is nothing to do, and raises when no
+    legal path exists -- a terminal status is genuinely unreachable from
+    another, and silently doing nothing there would hide a real disagreement.
+    """
+    if current is target:
+        return ()
+    frontier: deque[tuple[RunStatus, tuple[RunStatus, ...]]] = deque([(current, ())])
+    seen = {current}
+    while frontier:
+        status, path = frontier.popleft()
+        for candidate in sorted(RUN_TRANSITIONS[status], key=lambda item: item.value):
+            if candidate in seen:
+                continue
+            walked = (*path, candidate)
+            if candidate is target:
+                return walked
+            seen.add(candidate)
+            frontier.append((candidate, walked))
+    raise ValueError(f"no legal transition path from {current.value!r} to {target.value!r}")
+
 
 ATTEMPT_TRANSITIONS: dict[AttemptStatus, frozenset[AttemptStatus]] = {
     AttemptStatus.CREATED: frozenset({AttemptStatus.RUNNING, AttemptStatus.CANCELLED}),
@@ -437,5 +470,6 @@ __all__ = [
     "settle_open_node_run",
     "transition_attempt",
     "transition_node_run",
+    "transition_path",
     "transition_run",
 ]

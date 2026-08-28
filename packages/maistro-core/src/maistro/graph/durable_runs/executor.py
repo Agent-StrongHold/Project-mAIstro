@@ -29,10 +29,13 @@ from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_pa
 from maistro.runs.lifecycle import (
     settle_open_node_run,
     transition_node_run,
+    transition_path,
     transition_run,
 )
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
+    AcceptedNodeOutcome,
+    AttemptResult,
     GraphSnapshot,
     NodeRun,
     Run,
@@ -130,6 +133,140 @@ async def _new_run_canonically(
     return await run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
 
+async def _canonical_spine(
+    record: DurableRunRecord,
+    run_store: RunStore | None,
+) -> RunStore | None:
+    """Return the canonical store only when it actually holds this Run.
+
+    Resolved once, at the top of a walk, rather than re-asked at each site.
+    A record persisted before the convergence carries a Run the canonical
+    store never saw, so minting its NodeRuns there would attach them to
+    nothing; taking the pre-convergence path for it is what lets old records
+    keep running instead of failing on resume.
+    """
+    if run_store is None:
+        return None
+    return run_store if await run_store.get_run(record.run_id) is not None else None
+
+
+async def _new_node_run(
+    record: DurableRunRecord,
+    node_id: str,
+    *,
+    ordinal: int,
+    run_store: RunStore | None,
+) -> NodeRun:
+    """Obtain a frontier NodeRun, from the canonical store when there is one.
+
+    The second of #44's three construction sites (ADR-082826-d9f5). The store
+    allocates the ordinal from the NodeRuns it already holds for the Run, which
+    is the same count the record keeps, so the aggregate's "consecutive in
+    persistence order" invariant holds either way -- with a `run_store` every
+    NodeRun of the Run is minted there, so the two counts cannot drift.
+    """
+    if run_store is None:
+        node_run = NodeRun(run_id=record.run_id, node_id=node_id, ordinal=ordinal)
+        node_run = transition_node_run(node_run, RunStatus.QUEUED)
+        return transition_node_run(node_run, RunStatus.RUNNING)
+    node_run = await run_store.create_node_run(record.run_id, node_id=node_id)
+    await run_store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    return await run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+
+
+async def _canonical_outcome(
+    outcome: AcceptedNodeOutcome | None,
+    *,
+    run_store: RunStore,
+) -> AcceptedNodeOutcome | None:
+    """Restate accepted evidence in terms of the Attempt the store actually holds.
+
+    An `AcceptedNodeOutcome` binds a logical outcome to exactly one physical
+    Attempt, and the canonical store refuses one whose evidence does not match
+    its own row. The record's copy of that Attempt has been through the durable
+    store's JSON envelope, which the canonical in-memory row has not, so the
+    two describe the same Attempt in different shapes and the guard -- rightly
+    -- rejects the difference. The binding is the `attempt_id`; restating the
+    evidence from the store's own row keeps that binding while letting the
+    store validate against itself.
+    """
+    if outcome is None:
+        return None
+    attempt = await run_store.get_attempt(outcome.attempt_result.attempt_id)
+    if attempt is None:
+        return outcome
+    return outcome.model_copy(update={"attempt_result": AttemptResult.from_attempt(attempt)})
+
+
+async def _mirror_node_run(
+    node_run: NodeRun,
+    *,
+    run_store: RunStore,
+) -> None:
+    """Walk one canonical NodeRun up to the status the record already gave it."""
+    canonical = await run_store.get_node_run(node_run.node_run_id)
+    if canonical is None or canonical.status is node_run.status:
+        return
+    outcome = await _canonical_outcome(node_run.accepted_outcome, run_store=run_store)
+    for step in transition_path(canonical.status, node_run.status):
+        final = step is node_run.status
+        await run_store.transition_node_run(
+            node_run.node_run_id,
+            step,
+            result=node_run.result if final else None,
+            error=node_run.error if final else None,
+            accepted_outcome=outcome if final else None,
+        )
+
+
+async def _mirror_run(
+    record: DurableRunRecord,
+    *,
+    run_store: RunStore,
+) -> None:
+    """Walk the canonical Run up to the status the record already gave it."""
+    run = await run_store.get_run(record.run_id)
+    if run is None or run.status is record.run.status:
+        return
+    for step in transition_path(run.status, record.run.status):
+        final = step is record.run.status
+        await run_store.transition_run(
+            record.run_id,
+            step,
+            result=record.run.result if final else None,
+            error=record.run.error if final else None,
+        )
+
+
+async def _mirror_lifecycle(
+    record: DurableRunRecord,
+    *,
+    run_store: RunStore | None,
+) -> None:
+    """Carry the record's own lifecycle moves into the store that owns them.
+
+    Identity alone would be worse than neither: a canonical NodeRun frozen at
+    the status it was minted with, while the record calls the same node
+    finished, is a row that lies to every canonical consumer and that a global
+    lease sweep would then act on. The traversal fold is synchronous and
+    applies its transitions in the aggregate, so the write-back happens here,
+    once per walked step, against what the store currently holds rather than
+    against what this process last saw -- another writer may have moved the
+    row in between.
+
+    The gap is walked, not jumped: `transition_path` finds the shortest legal
+    sequence, so a node the record answered out of a HITL pause reaches
+    COMPLETED via QUEUED and RUNNING instead of demanding an edge the
+    lifecycle table does not have. Only the final hop carries the payload;
+    the intermediate ones are the ladder, not the outcome.
+    """
+    if run_store is None:
+        return
+    for node_run in record.node_runs:
+        await _mirror_node_run(node_run, run_store=run_store)
+    await _mirror_run(record, run_store=run_store)
+
+
 def _new_run(
     graph: Graph,
     *,
@@ -224,7 +361,12 @@ async def run_durable_graph(
     )
     record = DurableRunRecord(run=run, graph_state=state, version=1)
     await store.create(record)
-    return await _walk(record, store=store, node_resolver=node_resolver)
+    return await _walk(
+        record,
+        store=store,
+        node_resolver=node_resolver,
+        run_store=run_store,
+    )
 
 
 async def resume_durable_graph(
@@ -232,6 +374,7 @@ async def resume_durable_graph(
     *,
     store: DurableRunStore,
     node_resolver: NodeResolver,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Resume execution of a previously persisted durable graph run."""
     record = await store.get(run_id)
@@ -250,7 +393,12 @@ async def resume_durable_graph(
     if run.status is not RunStatus.RUNNING:
         run = transition_run(run, RunStatus.RUNNING)
     record = await _checkpoint(record, store=store, run=run, resume_at=None)
-    return await _walk(record, store=store, node_resolver=node_resolver)
+    return await _walk(
+        record,
+        store=store,
+        node_resolver=node_resolver,
+        run_store=run_store,
+    )
 
 
 async def _walk(
@@ -259,9 +407,11 @@ async def _walk(
     store: DurableRunStore,
     node_resolver: NodeResolver,
     max_steps: int = 256,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Execute one persisted frontier per step until pause or terminal state."""
     graph = record.run.graph.materialize()
+    spine = await _canonical_spine(record, run_store)
     steps = 0
 
     while record.graph_state.active_node_ids and steps < max_steps:
@@ -272,17 +422,20 @@ async def _walk(
             None,
         )
         if unknown is not None:
-            return await _mark_failed(
+            record = await _mark_failed(
                 record,
                 error_code="UnknownNode",
                 error_message=f"node_id={unknown!r} not present in Graph",
                 store=store,
             )
+            await _mirror_lifecycle(record, run_store=spine)
+            return record
 
         record, node_runs = await _ensure_frontier_node_runs(
             record,
             frontier,
             store=store,
+            run_store=spine,
         )
         items = await _execute_frontier(
             record,
@@ -292,10 +445,13 @@ async def _walk(
             node_resolver=node_resolver,
         )
         record = await _fold_frontier(record, graph, items, store=store)
+        await _mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
 
-    return await _finish_walk(record, store=store, max_steps=max_steps)
+    record = await _finish_walk(record, store=store, max_steps=max_steps)
+    await _mirror_lifecycle(record, run_store=spine)
+    return record
 
 
 async def _execute_frontier(
@@ -785,6 +941,7 @@ async def _ensure_frontier_node_runs(
     frontier: tuple[str, ...],
     *,
     store: DurableRunStore,
+    run_store: RunStore | None = None,
 ) -> tuple[DurableRunRecord, tuple[NodeRun, ...]]:
     """Resume or create one canonical running NodeRun per frontier member."""
     node_runs = list(record.node_runs)
@@ -806,13 +963,12 @@ async def _ensure_frontier_node_runs(
             selected.append(node_run)
             continue
 
-        node_run = NodeRun(
-            run_id=record.run_id,
-            node_id=node_id,
+        node_run = await _new_node_run(
+            record,
+            node_id,
             ordinal=len(node_runs) + 1,
+            run_store=run_store,
         )
-        node_run = transition_node_run(node_run, RunStatus.QUEUED)
-        node_run = transition_node_run(node_run, RunStatus.RUNNING)
         node_runs.append(node_run)
         selected.append(node_run)
         visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
