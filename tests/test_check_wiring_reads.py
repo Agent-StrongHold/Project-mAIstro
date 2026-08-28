@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -399,15 +400,38 @@ class TestTheSeamsTheOtherTestsSubstitute:
 
         assert check._entries_from(loaded) == {"demo.Root": {"f": "why"}}
 
-    def test_trusted_baseline_resolves_against_this_repository(self, check) -> None:
-        """The unsubstituted path, run against the real checkout: it returns the
-        ledger entries and a Baseline that says where they came from."""
-        trusted, baseline = check._trusted_baseline()
+    def test_trusted_baseline_resolves_or_refuses_by_what_the_checkout_offers(self, check) -> None:
+        """The unsubstituted path, run against whatever checkout we are in.
 
-        assert isinstance(trusted, dict)
-        assert baseline.origin in {"base", "worktree"}
-        if baseline.origin == "base":
+        Both outcomes are correct and both are asserted, because which one
+        happens is a property of the checkout rather than of the code. CI runs
+        this suite in `ci.yml`'s `test` job, which clones shallow; the gate
+        itself runs in `quality.yml`, which sets `fetch-depth: 0`. An earlier
+        version of this test asserted only the resolving case and failed in the
+        shallow job -- correctly, which is the point: with no merge base the
+        resolver must refuse and say why, never quietly fall back to the
+        candidate's own ledger. That refusal is the invariant the whole change
+        exists to protect, so it is worth pinning in the environment that
+        actually produces it.
+        """
+        prov = check._provenance()
+        has_base = (
+            subprocess.run(
+                ["git", "merge-base", "origin/develop", "HEAD"],
+                cwd=ROOT,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+        if has_base:
+            trusted, baseline = check._trusted_baseline()
+            assert isinstance(trusted, dict)
+            assert baseline.origin == "base"
             assert baseline.base_sha
+        else:
+            with pytest.raises(prov.RatchetProvenanceError, match="no merge base"):
+                check._trusted_baseline()
 
     def test_a_helper_that_fails_to_load_leaves_no_broken_module_behind(
         self, check, monkeypatch, tmp_path
