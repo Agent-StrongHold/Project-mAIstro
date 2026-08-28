@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -8,6 +10,7 @@ from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.main import app as server_app
 
 
 def _principal(user_id: str) -> AuthenticatedPrincipal:
@@ -24,7 +27,7 @@ def _as_user(app: FastAPI, user_id: str) -> None:
 
 
 @pytest.fixture
-async def api() -> tuple[FastAPI, TestClient, InMemoryWorkspaceStore]:
+async def api() -> AsyncIterator[tuple[FastAPI, TestClient, InMemoryWorkspaceStore]]:
     app = FastAPI()
     app.include_router(workspace_api.router)
     store = InMemoryWorkspaceStore()
@@ -33,6 +36,7 @@ async def api() -> tuple[FastAPI, TestClient, InMemoryWorkspaceStore]:
     try:
         yield app, client, store
     finally:
+        client.close()
         app.dependency_overrides.clear()
         workspace_api.configure_workspace_store(None)
 
@@ -115,6 +119,12 @@ async def test_owner_can_update_identity_fields(api) -> None:
     assert updated.json()["description"] == "renamed"
 
 
+def test_production_app_mounts_workspace_routes_at_v1_and_legacy_paths() -> None:
+    paths = {route.path for route in server_app.routes}
+    assert "/v1/workspaces" in paths
+    assert "/workspaces" in paths
+
+
 async def test_routes_fail_closed_when_no_workspace_store_is_configured() -> None:
     app = FastAPI()
     app.include_router(workspace_api.router)
@@ -124,4 +134,5 @@ async def test_routes_fail_closed_when_no_workspace_store_is_configured() -> Non
         response = client.get("/workspaces")
         assert response.status_code == 503
     finally:
+        client.close()
         workspace_api.configure_workspace_store(None)
