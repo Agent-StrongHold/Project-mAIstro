@@ -170,17 +170,28 @@ class TestTheShippedRuleset:
         than the ADR's, so it agreed with the mistake. Spelling the accepted
         table out is what makes the file checkable against its own governance
         instead of against itself.
+
+        Amended for #162, which retired `integration` and dropped the
+        linear-history requirement on `main`. Both are decisions the ADR now
+        states outright, so they are pinned here the same way the old shape
+        was: this test follows the ADR, it does not get a vote.
         """
         #: branch -> required approvals, per ADR-095's protection table.
-        expected_approvals = {"develop": 0, "integration": 0, "main": 1}
+        expected_approvals = {"develop": 0, "main": 1}
+        #: "`integration` is retired. Reintroducing a stabilization tier is a
+        #: new governance decision, not an implicit resurrection of this ADR's
+        #: old shape." A third entry appearing here is that resurrection.
         rules = gate.load_ruleset()["branches"]
-        assert set(rules) == set(expected_approvals), "ADR-095 protects all three tiers"
+        assert set(rules) == set(expected_approvals), "ADR-095 protects develop and main"
+        #: "`main` intentionally permits merge commits and does not require
+        #: linear history. The merge commit is an explicit release/promotion
+        #: marker." Asserted per branch rather than universally, so turning it
+        #: back on for `main` is as loud as turning it off for `develop`.
+        expected_linear = {"develop": True, "main": False}
         for branch, rule in rules.items():
             reviews = rule["required_pull_request_reviews"]
             assert reviews["required_approving_review_count"] == expected_approvals[branch], branch
-            # "Linear history is required on all three -> merges are squash or
-            # rebase, not merge commits."
-            assert rule["required_linear_history"] is True, branch
+            assert rule["required_linear_history"] is expected_linear[branch], branch
             # "Admins are not enforced so a solo maintainer/agent isn't
             # deadlocked" — and the cage guard's own message promises an admin
             # can merge a legitimate cage/eval change past that required check.
@@ -191,12 +202,15 @@ class TestTheShippedRuleset:
             assert rule["required_conversation_resolution"] is True, branch
 
     def test_main_requires_a_superset_of_the_other_tiers(self, gate) -> None:
-        """develop and integration require what runs everywhere; main adds the
-        four that only run there. A check required on a lower tier and not on
-        main would make the published branch the more weakly gated one."""
+        """develop requires what runs everywhere; main adds the checks that
+        only run there. A check required on a lower tier and not on main would
+        make the published branch the more weakly gated one.
+
+        `integration` dropped out of the loop with #162, which retired it.
+        """
         rules = gate.load_ruleset()["branches"]
         main = set(rules["main"]["required_status_checks"]["contexts"])
-        for lower in ("develop", "integration"):
+        for lower in set(rules) - {"main"}:
             assert set(rules[lower]["required_status_checks"]["contexts"]) < main, lower
 
     def test_the_apply_payload_carries_no_comment_keys(self, gate, capsys):

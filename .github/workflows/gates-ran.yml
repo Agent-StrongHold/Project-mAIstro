@@ -44,6 +44,10 @@ on:
       # so its completion is evidence about the head this job judges. Absent
       # from here, a Gate C result never woke the evaluator (#497).
       - "Gate C"
+      # Produces the required `autonomous-merge-admissibility` check (#318),
+      # so its completion is evidence about the head this job judges — the
+      # same reason Gate C is listed above, and the same defect if omitted.
+      - "Autonomous Merge Safety"
       - "Registry CI"
       - "Vulture Ratchet"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
