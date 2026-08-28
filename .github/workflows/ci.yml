@@ -633,21 +633,69 @@ jobs:
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
       # The static gate above reads the ignore files. This one builds the
-      # actual RSI runner from a context carrying a canary `.env` and proves
-      # the canary is in no layer -- because the question is what Docker did,
-      # not what the rules say it should have (#308).
+      # actual RSI runner from a context carrying canary secrets and proves
+      # none is in any layer -- because the question is what Docker did, not
+      # what the rules say it should have (#308).
+      #
+      # The canaries are planted at the root AND under `packages/`, and one
+      # inside the re-included frontend bundle. Root-only planting is how a
+      # whole class of root-relative patterns passed this job while denying
+      # nothing below the context root (Codex, #510).
       #
       # `docker build` twice, once per builder: BuildKit honours
       # Dockerfile.rsi-runner.dockerignore and the classic builder honours the
       # root one, and the whole point is that neither route leaks.
-      - name: A canary .env cannot reach the RSI runner image (BuildKit and classic)
+      - name: Canary secrets cannot reach the RSI runner image (BuildKit and classic)
         run: |
           set -euo pipefail
           CANARY="rsi-canary-$(date +%s)-do-not-ship"
           printf 'DB_PASSWORD=%s\nOPENAI_API_KEY=%s\n' "$CANARY" "$CANARY" > .env
           printf '%s\n' "$CANARY" > rsi-canary.pem
           mkdir -p rsi-reports && printf '%s\n' "$CANARY" > rsi-reports/previous-run.json
-          trap 'rm -f .env rsi-canary.pem; rm -rf rsi-reports' EXIT
+
+          # The same secrets again, BELOW the context root. Docker matches
+          # relative to that root, so `*.p12` and `id_rsa*` denied the root
+          # copies and nothing else -- and this build copies the whole
+          # `packages` tree. A canary planted only at the root passed while an
+          # operator's `packages/*/id_rsa` rode into the image (Codex, #510).
+          #
+          # An existing package, not a new directory: `members = ["packages/*"]`
+          # makes every child of `packages/` a workspace member, and one
+          # without a pyproject.toml fails `uv sync` inside the build.
+          deep=packages/maistro-core
+          printf 'DB_PASSWORD=%s\n' "$CANARY" > "$deep/.env"
+          printf '%s\n' "$CANARY" > "$deep/.env.local"
+          printf '%s\n' "$CANARY" > "$deep/gateway.env"
+          printf '%s\n' "$CANARY" > "$deep/rsi-canary.pem"
+          printf '%s\n' "$CANARY" > "$deep/client.p12"
+          printf '%s\n' "$CANARY" > "$deep/client.pfx"
+          printf '%s\n' "$CANARY" > "$deep/id_rsa"
+          printf '%s\n' "$CANARY" > "$deep/id_ed25519"
+          printf '%s\n' "$CANARY" > "$deep/backup.age"
+          printf '%s\n' "$CANARY" > "$deep/.age-key.txt"
+          printf '%s\n' "$CANARY" > "$deep/recovery-phrase.txt"
+          mkdir -p "$deep/secrets" && printf '%s\n' "$CANARY" > "$deep/secrets/token"
+
+          # And one inside the generated bundle the ignore files deliberately
+          # re-include for the backend image. That exception is the only rule
+          # here that UNDOES a denial; a secret beneath it is what makes rule
+          # ORDER load-bearing rather than a detail.
+          bundle=packages/hive-conductor/frontend/dist
+          mkdir -p "$bundle" && printf 'API_KEY=%s\n' "$CANARY" > "$bundle/.env"
+
+          # A function rather than a long single-quoted trap: the paths are
+          # already in variables, and a cleanup nobody can read is a cleanup
+          # that leaves a canary in the checkout.
+          cleanup() {
+            rm -f .env rsi-canary.pem
+            rm -rf rsi-reports
+            rm -f "$deep"/.env "$deep"/.env.local "$deep"/gateway.env \
+                  "$deep"/rsi-canary.pem "$deep"/client.p12 "$deep"/client.pfx \
+                  "$deep"/id_rsa "$deep"/id_ed25519 "$deep"/backup.age \
+                  "$deep"/.age-key.txt "$deep"/recovery-phrase.txt "$bundle"/.env
+            rm -rf "$deep"/secrets
+          }
+          trap cleanup EXIT
 
           # `-xdev` keeps the walk on the image's own filesystem, which is where
           # every COPY lands. Without it the search descends into /proc and

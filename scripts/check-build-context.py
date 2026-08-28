@@ -16,14 +16,22 @@ The subtler half is which file applies. `<dockerfile>.dockerignore` is read by
 `docker build` — none of which is a property anyone can check by reading the
 Dockerfile.
 
-So this gate asserts three things:
+So this gate asserts five things:
 
-1. Both ignore files exist and carry the **same rules**. Comments may differ;
-   rules may not.
+1. Both ignore files exist and carry the **same rules in the same order**.
+   Comments may differ; rules may not. Order is part of the meaning — Docker
+   resolves a path by the last rule that matches it.
 2. Those rules deny every pattern in `MUST_DENY` — the secret set. A rule that
    is merely present is not enough: it has to be there in both files, because
    either one may be the one that runs.
-3. No rule denies a **tracked** path. `**/data/` is the natural rule to reach
+3. Every exception (`!rule`) is one that was written down, with its reason, in
+   `EXPECTED_NEGATIONS`. An exception is the only construct that can undo a
+   denial, so an unrecognised one fails rather than being trusted.
+4. The **finished** rule set, evaluated in order, excludes every path in
+   `SECRET_PROBES` and keeps every path in `KEPT_PROBES`. This is the question
+   (2) cannot answer: an exception added below the secret rules re-includes
+   what they denied without changing whether the denial is written (#510).
+5. No rule denies a **tracked** path. `**/data/` is the natural rule to reach
    for and it would silently strip `packages/hive-conductor/backend/data/` and
    the BFCL benchmark corpus out of every image. A build context missing source
    files fails late, confusingly, and in the image rather than here.
@@ -35,8 +43,9 @@ Usage
 
 from __future__ import annotations
 
-import fnmatch
+import re
 import subprocess
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,19 +63,100 @@ CANDIDATE_IMAGES: tuple[str, ...] = ("Dockerfile.rsi-runner",)
 MUST_DENY: tuple[tuple[str, str], ...] = (
     (".env", "the database password, gateway key and every provider key"),
     ("**/.env", "the same file anywhere under the context"),
+    (".env.*", "the same file under any suffix an operator gave it"),
+    ("**/.env.*", "the same, anywhere under the context"),
+    ("gateway.env", "the LiteLLM gateway key under its own filename"),
+    ("**/gateway.env", "the same, anywhere under the context"),
     ("/.git", "every secret ever committed and later removed"),
     ("*.pem", "private keys"),
+    ("**/*.pem", "private keys anywhere under the context"),
+    ("*.p12", "PKCS#12 client certificates and their keys"),
+    ("**/*.p12", "the same, anywhere under the context"),
+    ("*.pfx", "PKCS#12 under its other name"),
+    ("**/*.pfx", "the same, anywhere under the context"),
     ("id_rsa*", "ssh private keys"),
+    ("**/id_rsa*", "ssh private keys anywhere under the context"),
+    ("id_ed25519*", "ssh private keys"),
+    ("**/id_ed25519*", "ssh private keys anywhere under the context"),
     ("*.age", "age-encrypted vault material (SPEC-011)"),
+    ("**/*.age", "the same, anywhere under the context"),
+    (".age-key*", "the age identity that decrypts the vault"),
+    ("**/.age-key*", "the same, anywhere under the context"),
+    ("recovery-phrase*", "the vault recovery phrase (#360)"),
+    ("**/recovery-phrase*", "the same, anywhere under the context"),
     ("/secrets/", "anything an operator put somewhere named for what it is"),
+    ("**/secrets/", "the same, anywhere under the context"),
     ("/.venv", "host-specific, and tooling caches credentials in it"),
     ("/rsi-reports/", "previous candidates' exported patches and scorecards"),
 )
 
-#: `.env.example` ships as documentation and holds no value, so the deny of
-#: `.env.*` is re-allowed for it. A gate that demanded it be denied would be
-#: demanding the docs be removed.
-EXPECTED_NEGATIONS: frozenset[str] = frozenset({"!.env.example", "!**/.env.example"})
+#: Every negation the files are allowed to carry, and why. A negation is the
+#: one construct that can UNDO a denial, so the set is closed: an unrecognised
+#: `!rule` fails the gate rather than being read and trusted (Codex, #510).
+EXPECTED_NEGATIONS: dict[str, str] = {
+    "!.env.example": (
+        "documentation with no value in it; a gate demanding its denial would "
+        "be demanding the docs be removed"
+    ),
+    "!**/.env.example": "the same file wherever a package keeps its own",
+    "!packages/hive-conductor/frontend/dist": (
+        "the backend image's Dockerfile copies this generated bundle, and this "
+        "root file governs that build too"
+    ),
+    "!packages/hive-conductor/frontend/dist/**": "the bundle's contents, not just the directory",
+}
+
+#: Paths that must end up EXCLUDED after the whole ordered rule set is applied,
+#: not merely mentioned by some rule in it.
+#:
+#: The difference is the finding: `MUST_DENY` asks whether a denial is written,
+#: and a negation added below it can undo every one without changing that
+#: answer. Docker resolves a path by the LAST rule that matches, so the only
+#: honest question is what the file says about a path once it has finished
+#: talking. Each probe is a real shape an operator's tree takes -- at the root
+#: and again under `packages/`, because the runner copies that whole tree.
+SECRET_PROBES: tuple[tuple[str, str], ...] = (
+    (".env", "the operator's own environment file"),
+    ("packages/provider/.env", "a package-local environment file"),
+    ("packages/hive-conductor/frontend/dist/.env", "one under a re-included build output"),
+    (".env.local", "an environment file by its other name"),
+    ("packages/provider/.env.local", "the same, under a package"),
+    ("gateway.env", "the LiteLLM gateway key"),
+    ("packages/provider/gateway.env", "the same, under a package"),
+    ("server.pem", "a private key at the root"),
+    ("packages/provider/client.pem", "a private key under a package"),
+    ("client.p12", "a PKCS#12 bundle at the root"),
+    ("packages/provider/client.p12", "a PKCS#12 bundle under a package"),
+    ("client.pfx", "PKCS#12 under its other name"),
+    ("packages/provider/client.pfx", "the same, under a package"),
+    ("id_rsa", "an ssh key at the root"),
+    ("packages/provider/id_rsa", "an ssh key under a package"),
+    ("id_ed25519", "an ssh key at the root"),
+    ("packages/provider/id_ed25519", "an ssh key under a package"),
+    ("vault/master.age", "age-encrypted vault material"),
+    ("packages/provider/backup.age", "the same, under a package"),
+    (".age-key.txt", "the identity that decrypts all of it"),
+    ("packages/provider/.age-key.txt", "the same, under a package"),
+    ("recovery-phrase.txt", "the vault recovery phrase (#360)"),
+    ("packages/provider/recovery-phrase.txt", "the same, under a package"),
+    ("secrets/token", "a directory named for what is in it"),
+    ("packages/provider/secrets/token", "the same, under a package"),
+    (".git/config", "the history, which holds every secret ever removed"),
+    (".venv/lib/python3.12/site-packages/keyring.json", "credentials cached by tooling"),
+    ("rsi-reports/cycle-3/export.patch", "a previous candidate's exported patch"),
+)
+
+#: Paths that must survive the same evaluation. The exceptions exist for a
+#: reason and a gate that only checked denials could be satisfied by denying
+#: everything.
+KEPT_PROBES: tuple[tuple[str, str], ...] = (
+    (".env.example", "documentation the image is supposed to carry"),
+    ("packages/maistro-core/.env.example", "the same, under a package"),
+    (
+        "packages/hive-conductor/frontend/dist/index.js",
+        "the generated bundle the backend image copies",
+    ),
+)
 
 
 def rules(text: str) -> list[str]:
@@ -86,6 +176,55 @@ def _tracked_paths() -> list[str]:
     return [line for line in listed.stdout.splitlines() if line]
 
 
+def _segment_regex(segment: str) -> str:
+    """One path segment of a Docker ignore pattern, as a regex.
+
+    `*` and `?` stop at a separator here, which is the entire point: `fnmatch`
+    lets `*` cross `/`, so `*.p12` appeared to deny
+    `packages/provider/client.p12` when Docker denies only `client.p12`. The
+    approximation was documented as biased toward false failures; it was in
+    fact hiding the root-relative-pattern defect from the gate that was
+    supposed to find it (Codex, #510).
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(segment):
+        char = segment[index]
+        if char == "*":
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char == "[":
+            close = segment.find("]", index + 1)
+            if close == -1:
+                out.append(re.escape(char))
+            else:
+                out.append(segment[index : close + 1])
+                index = close
+        else:
+            out.append(re.escape(char))
+        index += 1
+    return "".join(out)
+
+
+@cache
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    """A Docker ignore pattern as an anchored regex over a whole path.
+
+    `**` spans path segments; everything else is confined to one. The trailing
+    group is Docker's directory rule: excluding `secrets` excludes everything
+    under it, which is why a rule naming a directory needs no `/**`.
+    """
+    parts: list[str] = []
+    segments = pattern.split("/")
+    for position, segment in enumerate(segments):
+        if segment == "**":
+            parts.append(".*" if position == len(segments) - 1 else "(?:[^/]+/)*")
+        else:
+            parts.append(_segment_regex(segment) + ("/" if position < len(segments) - 1 else ""))
+    return re.compile("".join(parts) + "(?:/.*)?$")
+
+
 def denies(rule: str, path: str) -> bool:
     """Whether `rule` excludes `path`, as Docker's matcher would.
 
@@ -93,21 +232,64 @@ def denies(rule: str, path: str) -> bool:
     top-level directory only — unlike gitignore, where it denies one at any
     depth. The rules are written with a leading `/` where top-level is what is
     meant, so both readings agree and nobody has to know which applies.
-
-    A deliberate approximation, and biased the safe way: it may claim a rule
-    matches when Docker's would not, which produces a false failure a human
-    reads, rather than the reverse.
     """
     pattern = rule.lstrip("/").rstrip("/")
-    if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, f"{pattern}/*"):
-        return True
-    # `**/x` matches x at any depth, including the top.
-    if pattern.startswith("**/"):
-        bare = pattern[3:]
-        parts = path.split("/")
-        return any(fnmatch.fnmatch(part, bare) for part in parts)
-    # A bare directory name denies everything beneath it.
-    return path.startswith(f"{pattern}/")
+    return bool(_pattern_regex(pattern).match(path))
+
+
+def _effective_rule(ruleset: list[str], path: str) -> str | None:
+    """The rule Docker would resolve `path` by: the LAST one that matches it.
+
+    This is the whole difference between "a denial is written" and "the path is
+    denied". A negation below a denial wins, so any question about what reaches
+    the image has to be asked of the finished file rather than of its lines.
+    """
+    last: str | None = None
+    for rule in ruleset:
+        if denies(rule.lstrip("!"), path):
+            last = rule
+    return last
+
+
+def _is_denied(ruleset: list[str], path: str) -> bool:
+    """Whether `path` is excluded once the whole ordered rule set is applied."""
+    rule = _effective_rule(ruleset, path)
+    return rule is not None and not rule.startswith("!")
+
+
+def _unexpected_negations(root_rules: list[str], runner_rules: list[str]) -> list[str]:
+    """A negation nobody wrote down is the one construct that undoes a denial."""
+    failures: list[str] = []
+    for name, ruleset in ((ROOT_IGNORE.name, root_rules), (RUNNER_IGNORE.name, runner_rules)):
+        for rule in ruleset:
+            if rule.startswith("!") and rule not in EXPECTED_NEGATIONS:
+                failures.append(
+                    f"  {name} carries the unrecognised exception {rule!r} — an exception "
+                    f"re-includes what a denial above it excluded, so each one is listed "
+                    f"in EXPECTED_NEGATIONS with the reason it exists"
+                )
+    return failures
+
+
+def _probes_resolve_correctly(root_rules: list[str], runner_rules: list[str]) -> list[str]:
+    """Evaluate the ordered rule set, rather than reading it for keywords."""
+    failures: list[str] = []
+    for name, ruleset in ((ROOT_IGNORE.name, root_rules), (RUNNER_IGNORE.name, runner_rules)):
+        for path, what in SECRET_PROBES:
+            if not _is_denied(ruleset, path):
+                landed = _effective_rule(ruleset, path)
+                because = (
+                    f"the last rule matching it is {landed!r}" if landed else "no rule matches it"
+                )
+                failures.append(f"  {name} would let {path!r} into the context — {what}; {because}")
+        for path, what in KEPT_PROBES:
+            if _is_denied(ruleset, path):
+                landed = _effective_rule(ruleset, path)
+                failures.append(
+                    f"  {name} excludes {path!r}, which the build needs — {what}; "
+                    f"the last rule matching it is {landed!r}"
+                )
+    return failures
 
 
 def _divergence(root_rules: list[str], runner_rules: list[str]) -> list[str]:
@@ -132,30 +314,79 @@ def _missing_denials(root_rules: list[str], runner_rules: list[str]) -> list[str
         for name, ruleset in ((ROOT_IGNORE.name, root_rules), (RUNNER_IGNORE.name, runner_rules)):
             if pattern not in ruleset:
                 failures.append(f"  {name} does not deny {pattern!r} — {why}")
-    for negation in sorted(EXPECTED_NEGATIONS):
+    for negation, why in sorted(EXPECTED_NEGATIONS.items()):
         if negation not in root_rules:
-            failures.append(
-                f"  {ROOT_IGNORE.name} lost {negation!r}; `.env.example` is documentation "
-                f"with no value in it and belongs in the context"
-            )
+            failures.append(f"  {ROOT_IGNORE.name} lost {negation!r}; {why}")
     return failures
 
 
 def _over_broad(root_rules: list[str]) -> list[str]:
     """A rule that denies a tracked file empties the image of source."""
-    negated = {r.lstrip("!") for r in root_rules if r.startswith("!")}
-    tracked = _tracked_paths()
     failures: list[str] = []
-    for rule in root_rules:
-        if rule.startswith("!"):
+    for path in _tracked_paths():
+        if not _is_denied(root_rules, path):
             continue
-        for path in tracked:
-            if denies(rule, path) and not any(denies(n, path) for n in negated):
+        failures.append(
+            f"  rule {_effective_rule(root_rules, path)!r} denies the TRACKED file "
+            f"{path!r} — a build context missing source fails late and inside the image"
+        )
+    return failures
+
+
+def _dockerfiles() -> list[str]:
+    """Every tracked Dockerfile, whatever it is named."""
+    out: list[str] = []
+    for path in _tracked_paths():
+        name = Path(path).name
+        if name.endswith(".dockerignore"):
+            continue
+        if name == "Dockerfile" or name.startswith("Dockerfile."):
+            out.append(path)
+    return out
+
+
+def _copy_sources(dockerfile: Path) -> list[tuple[int, str]]:
+    """Context paths a Dockerfile copies, with the line each is on.
+
+    `--from=` copies take from an earlier stage or another image rather than
+    from the build context, so they are not this file's business.
+    """
+    found: list[tuple[int, str]] = []
+    for number, raw in enumerate(dockerfile.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line.upper().startswith("COPY ") or "--from=" in line:
+            continue
+        tokens = [t for t in line.split()[1:] if not t.startswith("--")]
+        for source in tokens[:-1]:
+            if source in {".", "./"} or "*" in source:
+                continue
+            found.append((number, source))
+    return found
+
+
+def _denied_copy_sources(root_rules: list[str]) -> list[str]:
+    """A rule here can break a build over there (#510).
+
+    This file governs every `docker build` rooted at the repository, not only
+    the RSI runner's. `**/dist` was written for build output and silently took
+    `packages/hive-conductor/frontend/dist/` out of the backend image's
+    context, where its Dockerfile copies it — a failure that surfaces inside a
+    build log, after the base image and the dependency layers are already
+    built, rather than here in a second.
+
+    Existence is `_missing_copy_sources`' question; this one is only about
+    whether the ignore rules would remove it.
+    """
+    failures: list[str] = []
+    for name in _dockerfiles():
+        for number, source in _copy_sources(ROOT / name):
+            probe = source.rstrip("/")
+            if _is_denied(root_rules, probe):
                 failures.append(
-                    f"  rule {rule!r} denies the TRACKED file {path!r} — a build "
-                    f"context missing source fails late and inside the image"
+                    f"  {name}:{number} copies {source!r} from the context, and "
+                    f"{_effective_rule(root_rules, probe)!r} excludes it — the build "
+                    f"would fail at that COPY"
                 )
-                break
     return failures
 
 
@@ -212,7 +443,10 @@ def audit() -> list[str]:
     failures = (
         _divergence(root_rules, runner_rules)
         + _missing_denials(root_rules, runner_rules)
+        + _unexpected_negations(root_rules, runner_rules)
+        + _probes_resolve_correctly(root_rules, runner_rules)
         + _over_broad(root_rules)
+        + _denied_copy_sources(root_rules)
     )
     for name in CANDIDATE_IMAGES:
         dockerfile = ROOT / name

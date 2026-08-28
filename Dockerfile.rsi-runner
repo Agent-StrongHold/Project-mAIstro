@@ -47,7 +47,25 @@ COPY docs /workspace/docs
 # CLAUDE.md and AGENTS.md are the agent's own instructions; the rest are read
 # by the doc-regression gate in the fitness scorecard.
 COPY CLAUDE.md AGENTS.md README.md CONTRIBUTING.md SECURITY.md /workspace/
-COPY .gitattributes .python-version /workspace/
+# `.gitignore` comes in with them, and it earns its place: the RUN below does
+# `git add -A` on a fresh repo, and `_run_variant` does the same on every
+# candidate. Without it, a `.pytest_cache/` or `.coverage.<host>.<pid>` the
+# agent's own test run produced is committed into the candidate and can be
+# carried out in a promotion patch (Codex, #510).
+COPY .gitattributes .python-version .gitignore /workspace/
+# Repository fixtures the scoped test command reads directly. Neither is
+# incidental: `tools/run_rsi_isolated.sh` runs `packages/maistro-rsi/tests`,
+# where `test_sandbox.py` reads `sbx/maistro-rsi/spec.yaml` and
+# `test_harvest_entry_point.py` reads `.github/workflows/rsi-harvest.yml`.
+# Absent, six tests fail with FileNotFoundError -- in the BASELINE run, which
+# every candidate is scored against, so every candidate is rejected on its
+# merits regardless of what it changed (Codex, #510).
+#
+# Both trees are on the RSI containment surface (`SENSITIVE_PATH_PATTERNS`
+# names `.github/` and `sbx/`), so a candidate may read them here and no patch
+# touching either can leave the loop.
+COPY sbx /workspace/sbx
+COPY .github /workspace/.github
 
 # The build context is a linked git worktree (its .git is a file pointing
 # outside the context), so bake a fresh, self-contained repo the loop can clone.
