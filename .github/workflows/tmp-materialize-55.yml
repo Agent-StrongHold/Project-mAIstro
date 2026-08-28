@@ -60,20 +60,64 @@ jobs:
           if count != 1:
               raise SystemExit(f"production scan replacement count={count}")
 
+          helper_anchor = "def _string_parts(\n"
+          helpers = '''def _environment_default_parts(
+              node: ast.Call,
+              bindings: dict[str, ast.expr],
+              seen: frozenset[str],
+          ) -> tuple[str, ...]:
+              """Return literal default fragments for supported environment lookups."""
+              if _dotted(node.func) not in {"os.environ.get", "os.getenv"}:
+                  return ()
+              default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
+              if default is None:
+                  for keyword in node.keywords:
+                      if keyword.arg == "default":
+                          default = keyword.value
+                          break
+              if default is None:
+                  return ()
+              return _string_parts(default, bindings, seen)
+
+
+          def _joined_string_parts(
+              node: ast.JoinedStr,
+              bindings: dict[str, ast.expr],
+              seen: frozenset[str],
+          ) -> tuple[str, ...]:
+              """Resolve literal fragments from an f-string without evaluating expressions."""
+              parts: list[str] = []
+              for value in node.values:
+                  if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                      parts.append(value.value)
+                  elif isinstance(value, ast.FormattedValue):
+                      parts.extend(_string_parts(value.value, bindings, seen))
+              return tuple(parts)
+
+
+          '''
+          if helper_anchor not in text:
+              raise SystemExit("string-parts helper anchor not found")
+          text = text.replace(helper_anchor, helpers + helper_anchor, 1)
+
+          joined_pattern = re.compile(
+              r"    if isinstance\(node, ast\.JoinedStr\):\n"
+              r"        parts: list\[str\] = \[\]\n"
+              r".*?        return tuple\(parts\)\n",
+              re.DOTALL,
+          )
+          joined_replacement = (
+              "    if isinstance(node, ast.JoinedStr):\n"
+              "        return _joined_string_parts(node, bindings, seen)\n"
+          )
+          text, count = joined_pattern.subn(joined_replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"joined-string replacement count={count}")
+
           binop = "    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):\n"
           call_block = (
               "    if isinstance(node, ast.Call):\n"
-              "        callee = _dotted(node.func)\n"
-              "        if callee in {\"os.environ.get\", \"os.getenv\"}:\n"
-              "            default: ast.expr | None = node.args[1] if len(node.args) >= 2 else None\n"
-              "            if default is None:\n"
-              "                for keyword in node.keywords:\n"
-              "                    if keyword.arg == \"default\":\n"
-              "                        default = keyword.value\n"
-              "                        break\n"
-              "            if default is not None:\n"
-              "                return _string_parts(default, bindings, seen)\n"
-              "        return ()\n"
+              "        return _environment_default_parts(node, bindings, seen)\n"
           )
           if binop not in text:
               raise SystemExit("binop insertion point not found")
