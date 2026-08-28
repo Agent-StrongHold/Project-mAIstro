@@ -111,3 +111,9 @@ jobs:
         if: always()
         shell: bash
         run: docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+
+  negative-probe-keepalive:
+    name: Negative probe keepalive
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "keep workflow active while the required Gate C job is intentionally skipped"
