@@ -241,7 +241,11 @@ jobs:
 
           python scripts/check_direct_effects.py
           python scripts/check-model-egress.py
-          python -m pytest -q --confcutdir=tests tests/test_check_direct_effects.py
+          rm -rf /tmp/maistro55
+          mkdir -p /tmp/maistro55/tests /tmp/maistro55/scripts
+          cp tests/test_check_direct_effects.py /tmp/maistro55/tests/
+          cp scripts/check_direct_effects.py /tmp/maistro55/scripts/
+          python -m pytest -q --rootdir=/tmp/maistro55 /tmp/maistro55/tests/test_check_direct_effects.py
 
           rm .github/workflows/tmp-materialize-55.yml
           git config user.name "github-actions[bot]"
