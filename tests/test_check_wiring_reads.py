@@ -377,3 +377,52 @@ class TestTheLedgerIsNotItsOwnOracle:
 
         assert check.main([]) == 1
         assert "could not be resolved" in capsys.readouterr().err
+
+
+class TestTheSeamsTheOtherTestsSubstitute:
+    """Every test above replaces `_trusted_baseline` and the ledger shim, which
+    is what makes them cheap — and leaves the real ones unexercised. These run
+    them for real, because a seam nothing ever executes is a seam that can rot.
+    """
+
+    def test_entries_from_tolerates_a_ledger_that_is_not_the_shape_it_expects(self, check) -> None:
+        """The base ledger comes from an arbitrary revision, so it may predate
+        this schema, be `null`, or have been hand-edited. None of those should
+        crash the gate — they mean "nothing trusted is recorded"."""
+        assert check._entries_from(None) == {}
+        assert check._entries_from([1, 2, 3]) == {}
+        assert check._entries_from({}) == {}
+        assert check._entries_from({"roots": "not-a-mapping"}) == {}
+
+    def test_entries_from_reads_the_real_shape(self, check) -> None:
+        loaded = {"roots": {"demo.Root": {"source": _SOURCE, "unread": {"f": "why"}}}}
+
+        assert check._entries_from(loaded) == {"demo.Root": {"f": "why"}}
+
+    def test_trusted_baseline_resolves_against_this_repository(self, check) -> None:
+        """The unsubstituted path, run against the real checkout: it returns the
+        ledger entries and a Baseline that says where they came from."""
+        trusted, baseline = check._trusted_baseline()
+
+        assert isinstance(trusted, dict)
+        assert baseline.origin in {"base", "worktree"}
+        if baseline.origin == "base":
+            assert baseline.base_sha
+
+    def test_a_helper_that_fails_to_load_leaves_no_broken_module_behind(
+        self, check, monkeypatch, tmp_path
+    ) -> None:
+        """A half-executed module left in `sys.modules` would be handed to the
+        next caller as if it had loaded, so the loader removes it and re-raises.
+        Worth pinning: the cache that makes this fast is what makes the failure
+        sticky if it is not cleaned up.
+        """
+        broken = tmp_path / "ratchet_provenance.py"
+        broken.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+        monkeypatch.setattr(check, "_PROVENANCE_SOURCE", broken)
+        monkeypatch.delitem(sys.modules, "_ratchet_provenance", raising=False)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            check._provenance()
+
+        assert "_ratchet_provenance" not in sys.modules

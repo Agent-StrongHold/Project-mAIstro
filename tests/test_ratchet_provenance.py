@@ -19,6 +19,7 @@ from scripts.ratchet_provenance import (
     Provenance,
     RatchetProvenanceError,
     head_sha,
+    load_authorizations,
     require_measurement,
     require_metric_version,
     resolve_baseline,
@@ -263,3 +264,110 @@ class TestTheProvenanceRecord:
 
 def test_head_sha_reports_the_candidate_commit(repo: Path) -> None:
     assert head_sha(repo) == _run(repo, "rev-parse", "HEAD")
+
+
+class TestAuthorizationsAreASeparateAct:
+    """`--update` writes the ledger; it never writes this file (#534).
+
+    That separation is the whole mechanism — if banking could authorize
+    itself the gate would be back where it started — so the parsing and the
+    refusals get their own coverage rather than riding on a ratchet's tests.
+    """
+
+    def _write_auth(self, tmp_path: Path, payload: object) -> Path:
+        path = tmp_path / "ratchet-authorizations.json"
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return path
+
+    def test_an_absent_file_authorizes_nothing(self, tmp_path: Path) -> None:
+        """The default state: no floor-raise is pre-approved."""
+        assert load_authorizations("wiring-reads", path=tmp_path / "absent.json") == {}
+
+    def test_a_complete_record_is_granted_and_reads_back_as_prose(self, tmp_path: Path) -> None:
+        path = self._write_auth(
+            tmp_path,
+            {
+                "wiring-reads": {
+                    "demo.Root.field": {
+                        "owner": "@owner",
+                        "issue": "#534",
+                        "reason": "consumed by a downstream product",
+                    }
+                }
+            },
+        )
+
+        granted = load_authorizations("wiring-reads", path=path)
+
+        assert granted == {"demo.Root.field": "#534 -- @owner: consumed by a downstream product"}
+
+    @pytest.mark.parametrize("missing", ["owner", "issue", "reason"])
+    def test_an_incomplete_record_is_refused(self, tmp_path: Path, missing: str) -> None:
+        """An unexplained floor-raise is not an authorization."""
+        record = {"owner": "@owner", "issue": "#534", "reason": "because"}
+        record[missing] = "   "
+        path = self._write_auth(tmp_path, {"wiring-reads": {"demo.Root.field": record}})
+
+        with pytest.raises(RatchetProvenanceError, match=missing):
+            load_authorizations("wiring-reads", path=path)
+
+    def test_another_ratchets_authorizations_do_not_leak(self, tmp_path: Path) -> None:
+        """One file, many ratchets: a grant is scoped to the one that earned it."""
+        path = self._write_auth(
+            tmp_path,
+            {"vulture": {"other.entry": {"owner": "@o", "issue": "#1", "reason": "r"}}},
+        )
+
+        assert load_authorizations("wiring-reads", path=path) == {}
+
+    def test_a_ratchet_present_with_no_entries_is_empty_not_an_error(self, tmp_path: Path) -> None:
+        path = self._write_auth(tmp_path, {"wiring-reads": None})
+
+        assert load_authorizations("wiring-reads", path=path) == {}
+
+    def test_an_unparseable_file_is_refused_rather_than_ignored(self, tmp_path: Path) -> None:
+        """Silently treating a corrupt authorizations file as "nothing is
+        authorized" would be safe; treating it as unreadable is honest, and
+        the difference matters when someone is trying to land a floor-raise."""
+        path = tmp_path / "ratchet-authorizations.json"
+        path.write_text("{ not json", encoding="utf-8")
+
+        with pytest.raises(RatchetProvenanceError, match="not valid JSON"):
+            load_authorizations("wiring-reads", path=path)
+
+
+class TestTheRemainingResolverPaths:
+    def test_the_environment_variable_is_honored(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CI names the base through `RATCHET_BASE_REV` rather than relying on
+        the default trunk ref existing in the checkout."""
+        forked_at = _run(repo, "rev-parse", "HEAD")
+        _write(repo, LEDGER, {"tolerated": ["known", "candidate-only"]})
+        _commit(repo, "branch edit")
+        monkeypatch.setenv(BASE_REV_ENV, forked_at)
+
+        baseline = resolve_baseline(repo / LEDGER, root=repo)
+
+        assert baseline.base_sha == forked_at
+        assert baseline.loads()["tolerated"] == ["known"]
+
+    def test_a_ledger_that_exists_but_cannot_be_read_raises(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`cat-file -e` says the blob is there and `show` still fails — a
+        damaged object store. Never a fallback to the worktree.
+        """
+        import scripts.ratchet_provenance as module
+
+        real_git = module._git
+
+        def _fail_show(args: list[str], *, root: Path):
+            if args and args[0] == "show":
+                return subprocess.CompletedProcess(args, 128, "", "object file is empty")
+            return real_git(args, root=root)
+
+        monkeypatch.setattr(module, "_git", _fail_show)
+
+        with pytest.raises(RatchetProvenanceError, match="could not be read"):
+            resolve_baseline(repo / LEDGER, root=repo)
