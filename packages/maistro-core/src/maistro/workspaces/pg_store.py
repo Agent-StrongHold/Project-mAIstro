@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.projects.pg_scope_store import PgProjectScopeStore
+from maistro.projects.scope import Project
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
     Workspace,
@@ -60,10 +61,12 @@ class PgWorkspaceStore:
                 json_of(workspace),
             )
             await self._write_membership(conn, owner)
-            # Reuse the canonical Project store rather than reproducing Root
-            # Project creation semantics here. Passing the transaction is what
-            # makes Workspace + membership + Root Project one durable action.
-            await self.project_store.create_root(workspace.workspace_id, conn=conn)
+            # PgProjectScopeStore currently owns its connection acquisition.
+            # Calling it here would commit Workspace identity before Root
+            # Project creation. Provision the same canonical Project row in the
+            # caller-owned transaction instead; the existing partial unique
+            # index remains the one-root authority.
+            await self._create_root(conn, workspace.workspace_id)
         return workspace.model_copy(deep=True)
 
     async def get(self, workspace_id: str) -> Workspace | None:
@@ -190,9 +193,7 @@ class PgWorkspaceStore:
                 workspace_id,
                 user_id,
             )
-            existing = (
-                model_of(WorkspaceMembership, payload) if payload is not None else None
-            )
+            existing = model_of(WorkspaceMembership, payload) if payload is not None else None
             if (
                 existing is not None
                 and existing.role is WorkspaceRole.OWNER
@@ -265,6 +266,32 @@ class PgWorkspaceStore:
         )
         if other is None:
             raise WorkspaceAccessDenied("a Workspace must retain at least one owner")
+
+    @staticmethod
+    async def _create_root(conn: Any, workspace_id: str) -> Project:
+        root = Project(
+            workspace_id=workspace_id,
+            name="Root",
+            parent_project_id=None,
+            is_root=True,
+        )
+        await conn.execute(
+            """INSERT INTO canonical_projects
+               (project_id, workspace_id, parent_project_id, is_root, payload)
+               VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
+               ON CONFLICT DO NOTHING""",
+            root.project_id,
+            root.workspace_id,
+            json_of(root),
+        )
+        payload = await conn.fetchval(
+            """SELECT payload FROM canonical_projects
+                WHERE workspace_id = $1 AND is_root""",
+            workspace_id,
+        )
+        if payload is None:  # pragma: no cover - guarded by the same transaction
+            raise WorkspaceOwnershipError("Workspace Root Project was not persisted")
+        return model_of(Project, payload)
 
     @staticmethod
     async def _write_membership(conn: Any, membership: WorkspaceMembership) -> None:
