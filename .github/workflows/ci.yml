@@ -121,6 +121,12 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # `Dockerfile.rsi-runner` copied the repository root into an image that
+      # then runs agent-authored code, and nothing denied `.env` (#308). The
+      # per-Dockerfile ignore is BuildKit-only, so two files have to agree or
+      # the protection depends on which builder ran.
+      - name: No secret reaches an image build context
+        run: python3 scripts/check-build-context.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
@@ -626,6 +632,52 @@ jobs:
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
+      # The static gate above reads the ignore files. This one builds the
+      # actual RSI runner from a context carrying a canary `.env` and proves
+      # the canary is in no layer -- because the question is what Docker did,
+      # not what the rules say it should have (#308).
+      #
+      # `docker build` twice, once per builder: BuildKit honours
+      # Dockerfile.rsi-runner.dockerignore and the classic builder honours the
+      # root one, and the whole point is that neither route leaks.
+      - name: A canary .env cannot reach the RSI runner image (BuildKit and classic)
+        run: |
+          set -euo pipefail
+          CANARY="rsi-canary-$(date +%s)-do-not-ship"
+          printf 'DB_PASSWORD=%s\nOPENAI_API_KEY=%s\n' "$CANARY" "$CANARY" > .env
+          printf '%s\n' "$CANARY" > rsi-canary.pem
+          mkdir -p rsi-reports && printf '%s\n' "$CANARY" > rsi-reports/previous-run.json
+          trap 'rm -f .env rsi-canary.pem; rm -rf rsi-reports' EXIT
+
+          for builder in 1 0; do
+            echo "::group::DOCKER_BUILDKIT=$builder"
+            DOCKER_BUILDKIT=$builder docker build -f Dockerfile.rsi-runner \
+              -t "maistro-rsi-runner:canary-$builder" .
+
+            # The filesystem the loop actually sees.
+            if docker run --rm --entrypoint sh "maistro-rsi-runner:canary-$builder" \
+                 -c "grep -rl '$CANARY' / 2>/dev/null | head -20" | grep -q .; then
+              echo "::error::the canary is in the image filesystem (DOCKER_BUILDKIT=$builder)"
+              exit 1
+            fi
+
+            # And the layers, because a file deleted in a later layer is still
+            # in the earlier one and still `docker save`-able.
+            docker save "maistro-rsi-runner:canary-$builder" -o /tmp/canary.tar
+            if tar -xOf /tmp/canary.tar | grep -qa "$CANARY"; then
+              echo "::error::the canary is in an exported layer (DOCKER_BUILDKIT=$builder)"
+              exit 1
+            fi
+            rm -f /tmp/canary.tar
+
+            # And the build history, where a bad ARG or ENV would show.
+            if docker history --no-trunc "maistro-rsi-runner:canary-$builder" | grep -qa "$CANARY"; then
+              echo "::error::the canary is in the image history (DOCKER_BUILDKIT=$builder)"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+          echo "ok: the canary reached neither filesystem, layers nor history, under either builder"
 
   workflow-lint:
     runs-on: ubuntu-latest

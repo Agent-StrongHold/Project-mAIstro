@@ -21,7 +21,33 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 
 WORKDIR /workspace
-COPY . /workspace
+
+# An explicit allowlist, not `COPY . /workspace` (#308). Two ignore files stand
+# between this and the operator's `.env`, and they are the right defence -- but
+# a deny-list is a claim about everything that exists, re-made every time
+# someone adds a file. This is a claim about what the loop NEEDS, which is a
+# shorter list and a fixed one. A new top-level directory has to be named here
+# before it can reach an image that runs agent-authored code.
+#
+# scripts/check-build-context.py keeps this in agreement with the ignore files.
+COPY pyproject.toml uv.lock VERSION conftest.py alembic.ini /workspace/
+COPY packages /workspace/packages
+COPY scripts /workspace/scripts
+COPY tests /workspace/tests
+COPY formal /workspace/formal
+COPY tools /workspace/tools
+COPY quality /workspace/quality
+COPY alembic /workspace/alembic
+COPY agents /workspace/agents
+COPY templates /workspace/templates
+# The loop reads specs and ADRs: `spec_tracker` scores new acceptance criteria
+# and `check-ac-state` folds them, so a candidate that adds a criterion is
+# unscoreable without these.
+COPY docs /workspace/docs
+# CLAUDE.md and AGENTS.md are the agent's own instructions; the rest are read
+# by the doc-regression gate in the fitness scorecard.
+COPY CLAUDE.md AGENTS.md README.md CONTRIBUTING.md SECURITY.md /workspace/
+COPY .gitattributes .python-version /workspace/
 
 # The build context is a linked git worktree (its .git is a file pointing
 # outside the context), so bake a fresh, self-contained repo the loop can clone.
