@@ -164,7 +164,9 @@ def _local_import_roots(manifest: Path) -> frozenset[str]:
                 roots.add(child.stem)
 
     data = tomllib.loads(manifest.read_text())
-    wheel = data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
+    wheel = (
+        data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
+    )
     for package in wheel.get("packages", []):
         roots.add(Path(package).name)
     for target in wheel.get("sources", {}).values():
@@ -204,7 +206,9 @@ def discover(
     """Discover runtime dependency/import evidence for every package manifest."""
     distribution_imports = dict(installed or installed_distribution_imports())
     for name, imports in local_distribution_imports(root).items():
-        distribution_imports[name] = frozenset(distribution_imports.get(name, frozenset()) | imports)
+        distribution_imports[name] = frozenset(
+            distribution_imports.get(name, frozenset()) | imports
+        )
 
     usages: list[PackageUsage] = []
     for manifest in sorted((root / "packages").glob("*/pyproject.toml")):
