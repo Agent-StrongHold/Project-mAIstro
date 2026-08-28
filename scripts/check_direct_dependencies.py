@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject unused direct runtime dependencies unless their non-import use is reviewed.
+"""Reject unreviewed unused direct runtime dependencies.
 
 The check covers every ``packages/*/pyproject.toml`` runtime dependency. A
 dependency is directly used when production Python imports one of the top-level
@@ -9,11 +9,13 @@ not reliable for shared namespaces such as ``maistro``.
 
 Dependencies required through entry points, framework discovery, declarative
 configuration, or another non-import runtime mechanism must be recorded in the
-reviewed exception ledger.
+reviewed disposition ledger. Pre-existing unimported declarations may be
+ratcheted temporarily as ``PENDING_CLEANUP`` only with a concrete owner and
+rationale; new unreviewed declarations still fail immediately.
 
-The ledger is two-way: a newly-unused dependency fails, but so does an exception
+The ledger is two-way: a newly-unused dependency fails, but so does a disposition
 for a removed dependency or one that has become directly imported. That keeps
-exceptions from becoming a permanent hiding place for stale packages.
+runtime exceptions and cleanup debt from becoming permanent hiding places.
 
 Run after the workspace is installed so third-party ``importlib.metadata`` can
 map Python distributions to their actual import packages::
@@ -45,6 +47,7 @@ _VALID_CATEGORIES = frozenset(
         "DECLARATIVE_RUNTIME",
         "PLATFORM_RUNTIME",
         "PACKAGING_RUNTIME",
+        "PENDING_CLEANUP",
     }
 )
 _EXCLUDED_PARTS = frozenset({"tests", "test", "mutants", "build", "dist", ".venv"})
@@ -233,7 +236,7 @@ def discover(
 
 
 def load_ledger(path: Path = LEDGER) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load the reviewed non-import-use exception ledger."""
+    """Load the reviewed unused-direct-dependency disposition ledger."""
     if not path.exists():
         raise FileNotFoundError(path)
     data = json.loads(path.read_text())
@@ -251,11 +254,11 @@ def _validate_exception(manifest: str, dependency: str, entry: dict[str, Any]) -
     rationale = entry.get("rationale")
     prefix = f"{manifest}: {dependency}"
     if category not in _VALID_CATEGORIES:
-        failures.append(f"{prefix}: invalid/missing exception category {category!r}")
+        failures.append(f"{prefix}: invalid/missing disposition category {category!r}")
     if not isinstance(owner, str) or not owner.strip():
-        failures.append(f"{prefix}: exception is missing an owner")
+        failures.append(f"{prefix}: disposition is missing an owner")
     if not isinstance(rationale, str) or len(rationale.strip()) < 20:
-        failures.append(f"{prefix}: exception rationale is missing or too vague")
+        failures.append(f"{prefix}: disposition rationale is missing or too vague")
     return failures
 
 
@@ -263,7 +266,7 @@ def audit(
     usages: list[PackageUsage],
     exceptions: dict[str, dict[str, dict[str, Any]]],
 ) -> list[str]:
-    """Return two-way ratchet failures for unused dependencies and stale exceptions."""
+    """Return two-way ratchet failures for unused dependencies and stale dispositions."""
     failures: list[str] = []
     by_manifest = {usage.manifest: usage for usage in usages}
 
@@ -274,7 +277,7 @@ def audit(
             if entry is None:
                 failures.append(
                     f"{usage.manifest}: {dependency} is a direct runtime dependency with no "
-                    "production import and no reviewed non-import-runtime exception"
+                    "production import and no reviewed disposition"
                 )
                 continue
             failures.extend(_validate_exception(usage.manifest, dependency, entry))
@@ -282,17 +285,17 @@ def audit(
     for manifest, entries in sorted(exceptions.items()):
         usage = by_manifest.get(manifest)
         if usage is None:
-            failures.append(f"{manifest}: exception ledger names no discovered production package")
+            failures.append(f"{manifest}: disposition ledger names no discovered production package")
             continue
         for dependency, entry in sorted(entries.items()):
             failures.extend(_validate_exception(manifest, dependency, entry))
             if dependency not in usage.dependencies:
                 failures.append(
-                    f"{manifest}: {dependency} exception is stale; dependency was removed"
+                    f"{manifest}: {dependency} disposition is stale; dependency was removed"
                 )
             elif dependency not in usage.unused:
                 failures.append(
-                    f"{manifest}: {dependency} exception is stale; production code now imports it"
+                    f"{manifest}: {dependency} disposition is stale; production code now imports it"
                 )
 
     return failures
@@ -303,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--list-unused",
         action="store_true",
-        help="print all dependencies requiring reviewed non-import-runtime exceptions",
+        help="print all dependencies requiring reviewed dispositions",
     )
     args = parser.parse_args(argv)
 
@@ -326,15 +329,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {failure}")
         print(
             "\nRemove unused dependencies. If a dependency is required without a direct Python "
-            "import, add a narrowly reviewed exception with category, owner, and rationale."
+            "import, add a narrowly reviewed runtime disposition. Baseline cleanup debt only with "
+            "a concrete owner and rationale."
         )
         return 1
 
     dependency_count = sum(len(usage.dependencies) for usage in usages)
-    unused_count = sum(len(usage.unused) for usage in usages)
+    disposition_count = sum(len(usage.unused) for usage in usages)
     print(
         f"direct-dependency usage OK: {len(usages)} packages, {dependency_count} runtime "
-        f"dependencies, {unused_count} reviewed non-import-runtime exceptions"
+        f"dependencies, {disposition_count} reviewed dispositions"
     )
     return 0
 
