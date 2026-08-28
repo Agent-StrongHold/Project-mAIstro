@@ -13,6 +13,7 @@ from maistro.workspaces.model import (
     WorkspaceOwnershipError,
     WorkspaceRole,
 )
+from maistro.workspaces.pg_store import PgWorkspaceStore
 from maistro.workspaces.store import InMemoryWorkspaceStore, WorkspaceStore
 
 
@@ -35,6 +36,7 @@ def resolve_workspace_id(value: object) -> str:
 
 __all__ = [
     "InMemoryWorkspaceStore",
+    "PgWorkspaceStore",
     "Workspace",
     "WorkspaceAccessDenied",
     "WorkspaceMember",
