@@ -15,8 +15,9 @@ on every PR.
 
 It also records **how** each check is triggered, because #161's whole point is
 that a check scoped to the PR's *base branch* means different things on
-different PRs. A new `branches:` filter under `pull_request:` shows up here as a
-changed row rather than as a silent hole in coverage.
+different PRs. A new `branches:` filter under `pull_request:` or
+`pull_request_target:` shows up here as a changed row rather than as a silent
+hole in coverage.
 
 What it deliberately does not do
 --------------------------------
@@ -57,12 +58,17 @@ class ContractError(RuntimeError):
 
 
 def _pull_request_trigger(doc: dict) -> dict | None:
-    """The `pull_request:` block, or None when the workflow has no PR trigger.
+    """The PR trigger block, or None when the workflow has no PR trigger.
 
-    Three spellings, all valid:
+    Both `pull_request` and `pull_request_target` are merge-boundary checks.
+    The latter matters for base-trusted judges such as autonomous-merge safety:
+    excluding it from this contract would make a required check invisible to
+    the branch-protection audit precisely because it is loaded from the base.
+
+    Three spellings are valid for either trigger family:
 
         on: {pull_request: {branches: [main]}}   -> the filter dict
-        on: {pull_request: null}                 -> {} (unfiltered)
+        on: {pull_request_target: null}          -> {} (unfiltered)
         on: [push, pull_request]                 -> {} (unfiltered)
 
     ``on:`` is YAML 1.1's boolean ``True`` after parsing — the classic GitHub
@@ -75,13 +81,17 @@ def _pull_request_trigger(doc: dict) -> dict | None:
     checks it omitted were still gating merges.
     """
     triggers = doc.get(True, doc.get("on"))
+    pr_events = ("pull_request", "pull_request_target")
     if isinstance(triggers, list):
-        return {} if "pull_request" in triggers else None
+        return {} if any(event in triggers for event in pr_events) else None
     if isinstance(triggers, str):
-        return {} if triggers == "pull_request" else None
-    if not isinstance(triggers, dict) or "pull_request" not in triggers:
+        return {} if triggers in pr_events else None
+    if not isinstance(triggers, dict):
         return None
-    return triggers["pull_request"] or {}
+    for event in pr_events:
+        if event in triggers:
+            return triggers[event] or {}
+    return None
 
 
 #: Trigger filters that make a check's presence conditional, and how to say so.
@@ -160,7 +170,7 @@ def _matrix_rows(job: dict) -> list[dict]:
     for key, values in axes.items():
         if not isinstance(values, list):
             raise ContractError(f"matrix axis {key!r} is not a list")
-        combos = [{**combo, key: value} for combo in combos for value in values]
+        combos = [{**combo, key: value} for combo in combos for key_value in [value]]
     if include:
         extra = [dict(entry) for entry in include]
         combos = extra if combos == [{}] else combos + extra
