@@ -53,6 +53,7 @@ class NodeContext(BaseModel):
     node_run_id: str = ""
     attempt_id: str = ""
     user_id: str | None = None
+    workspace_id: str | None = None
     project_id: str | None = None
     # blackboard kept as Any so we don't force a circular import on
     # maistro.graph.types; in practice this is GraphBlackboard.
