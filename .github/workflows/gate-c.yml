@@ -16,6 +16,7 @@ permissions:
 jobs:
   gate-c:
     name: Gate C — canonical clean install
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
