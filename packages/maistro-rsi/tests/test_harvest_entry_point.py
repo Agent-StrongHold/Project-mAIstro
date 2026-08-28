@@ -260,8 +260,17 @@ class TestTheWorkflowMatchesThePolicy:
 def test_the_canonical_branch_matches_the_repositorys_default() -> None:
     """ADR-095 names `develop` as the active integration tier and the base every
     topic branch targets. If that ever moves, this constant has to move with it
-    rather than silently keep aiming at the old one."""
+    rather than silently keep aiming at the old one.
+
+    Matched against two places rather than one sentence. #162 rewrote this ADR
+    and reworded "branch off" to "branch from", which failed the single exact
+    phrase this used to pin even though the decision it encodes had not moved
+    at all -- the constant still matched the ADR. Naming the branch in the flow
+    diagram *and* in the prose keeps a genuine change to the canonical branch
+    failing while a rewrite that leaves it alone does not.
+    """
     adr = Path(__file__).resolve().parents[3] / "docs/adr/ADR-095-four-tier-branch-model.md"
     body = adr.read_text(encoding="utf-8")
 
-    assert f"branch off `{CANONICAL_DEVELOPMENT_BRANCH}`" in body
+    assert f"topic branches -> {CANONICAL_DEVELOPMENT_BRANCH} -> main" in body
+    assert f"branch from `{CANONICAL_DEVELOPMENT_BRANCH}`" in body
