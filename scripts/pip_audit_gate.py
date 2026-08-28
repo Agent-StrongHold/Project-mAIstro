@@ -305,7 +305,9 @@ def audit(
     for manifest, entries in sorted(dispositions.items()):
         usage = by_manifest.get(manifest)
         if usage is None:
-            failures.append(f"{manifest}: disposition ledger names no discovered production package")
+            failures.append(
+                f"{manifest}: disposition ledger names no discovered production package"
+            )
             continue
         for dependency, entry in sorted(entries.items()):
             failures.extend(_validate_dependency_disposition(manifest, dependency, entry))
@@ -356,7 +358,9 @@ def audit_pip_report(path: str) -> int:
     with open(path) as fh:
         data = json.load(fh)
 
-    vulnerable = [dependency for dependency in data.get("dependencies", []) if dependency.get("vulns")]
+    vulnerable = [
+        dependency for dependency in data.get("dependencies", []) if dependency.get("vulns")
+    ]
     blocking: list[tuple[dict, dict]] = [
         (dependency, vulnerability)
         for dependency in vulnerable
@@ -370,8 +374,7 @@ def audit_pip_report(path: str) -> int:
             fix = vulnerability.get("fix_versions") or []
             hint = f"upgrade to {fix[-1]}" if fix else "NO FIX AVAILABLE — needs triage"
             print(
-                f"  {dependency['name']}=={dependency['version']} "
-                f"{vulnerability['id']} -> {hint}"
+                f"  {dependency['name']}=={dependency['version']} {vulnerability['id']} -> {hint}"
             )
         print(
             "\nFix by upgrading the dependency. Only add a (package, advisory) "
@@ -382,9 +385,7 @@ def audit_pip_report(path: str) -> int:
 
     for dependency in vulnerable:
         for vulnerability in dependency["vulns"]:
-            print(
-                f"allowed: {dependency['name']}=={dependency['version']} {vulnerability['id']}"
-            )
+            print(f"allowed: {dependency['name']}=={dependency['version']} {vulnerability['id']}")
     print(f"pip-audit OK ({len(vulnerable)} known, all triaged in ALLOWED)")
     return 0
 
