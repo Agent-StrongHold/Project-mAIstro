@@ -1,6 +1,6 @@
 ---
 id: ADR-095
-title: Four-tier branch model with protected, CI-gated merges
+title: Protected develop-to-main promotion model
 repo: maistro-engine
 kind: adr
 status: Accepted
@@ -26,79 +26,93 @@ history:
     date: 2026-05-29
 ---
 
-# ADR-095: Four-tier branch model with protected, CI-gated merges
+# ADR-095: Protected develop-to-main promotion model
 
 ## Context
 
-ADR-001 established `main < integration` with `integration` as the default PR base and `main` taking periodic sync PRs. As the repo consolidated into a single monorepo (see `docs/archive/CONSOLIDATION-PLAN.md`) and shifted to high-volume AI-assisted change, we want a clearer separation between *active feature integration* and *stabilized QA*, plus enforced (not just conventional) protection so nothing reaches `main` un-reviewed or un-tested.
+The original decision introduced an `integration` stabilization tier between
+`develop` and `main`. The live repository no longer has that branch, and the
+actual operating model has converged on one active integration branch plus a
+release/promotion branch. M0 #162 also moved the enforcement mechanism from a
+planned classic-protection application to live GitHub repository Rulesets.
+
+The decision must describe the merge boundary that actually exists rather than
+preserve a historical tier that nobody uses.
 
 ## Decision
 
-Adopt a **four-tier** branch hierarchy. Work flows **upward**; each promotion is a pull request, never a direct push:
+Work flows:
 
-```
-feat/* bug/* idea/* doc/* chore/*   →  develop  →  integration  →  main
-        (topic branches)               (active     (stabilized    (release-
-                                         dev tier)   QA tier)       grade)
+```text
+topic branches -> develop -> main
 ```
 
-- **Topic branches** (`feat/*`, `bug/*`, `idea/*`, `doc/*`, `chore/*`, `fix/*`) — branch off `develop`; PR into `develop`.
-- **`develop`** — active integration of feature work. PR-gated, 0 required approvals.
-- **`integration`** — stabilized QA tier; receives PRs from `develop`. PR-gated, 0 required approvals.
-- **`main`** — release-grade; receives PRs from `integration` only. PR-gated, **1 required approval**.
+- **Topic branches** branch from `develop` and return by pull request.
+- **`develop`** is the canonical active integration branch. It requires a pull
+  request, zero approvals, strict required checks, conversation resolution,
+  stale-review dismissal, no deletion or non-fast-forward update, restricted
+  creation, and linear history. Squash/rebase are the normal merge methods.
+- **`main`** is the release/promotion ledger. Ordinary releases are a single
+  `develop -> main` pull request. It requires one approval, strict required
+  checks including the main-only CodeQL/container checks, conversation
+  resolution, stale-review dismissal, no deletion or non-fast-forward update,
+  and restricted creation.
+- **`main` intentionally permits merge commits and does not require linear
+  history.** The merge commit is an explicit release/promotion marker. Detailed
+  development history remains linear on `develop` because feature work was
+  already squash/rebase integrated there.
+- **`integration` is retired.** Reintroducing a stabilization tier is a new
+  governance decision, not an implicit resurrection of this ADR's old shape.
 
-### Branch protection (enforced via GitHub, not convention)
+## Live enforcement
 
-| Branch | PR required | Approvals | Linear history | Force-push | Deletion | Required CI checks |
-|--------|:-----------:|:---------:|:--------------:|:----------:|:--------:|--------------------|
-| `main` | yes | **1** | yes | no | no | added per-check as CI goes green |
-| `integration` | yes | 0 | yes | no | no | added per-check as CI goes green |
-| `develop` | yes | 0 | yes | no | no | added per-check as CI goes green |
+Repository Rulesets are the merge boundary. The reviewable source of truth is
+`.github/branch-protection.json`; its `ruleset` sections record Ruleset-only
+semantics such as targets, allowed merge methods, `gates-ran`, and bypass mode.
 
-- **Linear history** is required on all three → merges are **squash or rebase**, not merge commits.
-- **Admins are not enforced** (`enforce_admins=false`) so a solo maintainer/agent isn't deadlocked, but the gates still block accidental direct pushes and unreviewed `main` merges.
-- **Required status checks** are added incrementally: a CI job becomes a required gate only once it is reliably green (the repo is mid-cleanup toward green `lint-and-type-check` + `test`). This avoids a deadlock where a red pre-existing check blocks all merges.
+Both live branches require the ordinary PR gate set plus:
+
+- `autonomous-merge-admissibility` — base-trusted policy that prevents an
+  ordinary PR-authoring agent from weakening the judge that decides whether the
+  same candidate may merge;
+- `gates-ran` — verifies that required workflow families actually ran for the
+  PR head rather than treating absence as success.
+
+`main` additionally requires the three CodeQL analysis checks and
+`Container scan + SBOM + cosign`.
+
+### Bypass policy
+
+- `develop`: organization administrators / repository admin role may use the
+  administrative bypass. This is the independent/manual path for trusted-policy
+  and other deliberately non-autonomous changes.
+- `main`: administrator bypass is **pull-request-only**. There is no ordinary
+  direct-update path; releases still travel through a PR even when an
+  administrator must exercise emergency authority.
+
+Repository auto-merge may remain enabled because the live required checks are
+now load-bearing.
 
 ## Acceptance criteria
 
-- [x] `develop`, `integration`, `main` exist at origin.
-- [x] All three are protected: PR required, no force-push, no deletion, linear history.
-- [x] `main` requires 1 approving review; `develop`/`integration` require 0.
-- [ ] Required status checks (`lint-and-type-check`, `test`) added to each branch once green.
-      *(Verifiable only in GitHub branch-protection settings, not from the tree — left unchecked
-      until confirmed there. C3/#288.)*
-- [x] CONTRIBUTING documents the flow; topic branches base off `develop`.
-      ([`CONTRIBUTING.md` §Branch model](../../CONTRIBUTING.md#branch-model) — the four-tier
-      diagram, the "branch off `develop`, PR into `develop`" rule for every topic prefix, the
-      per-branch approval counts, and the squash/rebase consequence of linear history.)
-
-### Workflow branch-filter coverage (audited C3/#288, 2026-08-01)
-
-Every workflow that filters by branch includes `integration`; the rest are not branch-triggered.
-`registry.yml`'s `develop` gap noted in the v1 plan is already closed, and the stale
-`research/pm-fleet-poc` filter it mentioned is gone.
-
-| Workflow | `push` branches | `pull_request` branches | `integration` covered |
-|---|---|---|:--:|
-| `ci.yml` | `main, integration, develop, merge/main-into-integration` | `main, integration, develop` | yes |
-| `quality.yml` | `main, integration, develop, feat/*` | `main, integration, develop` | yes |
-| `security.yml` | `main, integration, develop, feat/*` (+ nightly) | `main, integration, develop` | yes |
-| `registry.yml` | `main, integration, develop` | *(unfiltered, path-scoped)* | yes |
-| `formal-conformance.yml` | `main, integration, develop` | *(unfiltered)* | yes |
-| `mutation.yml` | — | `main, integration, develop` (path-scoped, + nightly) | yes |
-| `cage-guard.yml` | — | *(unfiltered, path-scoped)* | yes |
-| `formal-conformance-nightly.yml` | — | — | n/a (schedule) |
-| `release-installer.yml` | tags `v*` | — | n/a (tag/dispatch) |
-| `rsi-harvest.yml` | — | — | n/a (dispatch) |
+- [x] `develop` and `main` exist and are covered by active repository Rulesets.
+- [x] `integration` is absent and explicitly retired from the active topology.
+- [x] `develop` requires strict checks, zero approvals, conversation resolution,
+      stale-review dismissal, linear history, and blocks deletion/non-fast-forward updates.
+- [x] `main` requires strict checks, one approval, conversation resolution,
+      stale-review dismissal, and blocks deletion/non-fast-forward updates.
+- [x] `main` permits release merge commits and intentionally omits linear-history enforcement.
+- [x] `autonomous-merge-admissibility` and `gates-ran` are required live.
+- [x] Main-only CodeQL/container checks are required on `main`, not `develop`.
+- [x] The live rules can be reconstructed from the checked-in policy artifact.
 
 ## Consequences
 
-- Feature work no longer bases off `integration` directly (the ADR-001 default) — it bases off `develop`.
-- Because linear history is enforced, PRs merge via squash/rebase; the merge-commit workflow used during the consolidation is retired.
-- `research/<tranche>` staging branches (ADR-001) are superseded by `develop` as the single active-integration tier.
-
-## Source references
-
-- Supersedes ADR-001 (integration-as-default-base).
-- `docs/archive/CONSOLIDATION-PLAN.md` — monorepo consolidation context.
-- ADR-031 (front-matter/registry), ADR-032 (contracts as acceptance criteria) — CI gates that will become required checks.
+- There is one canonical development integration point: `develop`.
+- `main` history is a sequence of explicit promotions, while detailed change
+  history remains on `develop`.
+- A trusted-policy change may deliberately fail the autonomous judge and still
+  be merged through the administrator/manual path; that is separation of
+  authority, not a gate failure to baseline away.
+- Adding another persistent promotion branch requires an explicit ADR change and
+  matching merge-boundary rules.
