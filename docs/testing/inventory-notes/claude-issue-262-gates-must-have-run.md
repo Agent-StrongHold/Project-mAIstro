@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +42
+  tests/: +45
 ---
 # claude-issue-262-gates-must-have-run
 
-Forty-two new node IDs across two files, both testing new gates in
+Forty-five new node IDs across two files, both testing new gates in
 `scripts/`. Nothing removed or reparametrised.
 
 Both gates currently find nothing — `m0-merge-candidate.yml` was removed before
@@ -31,15 +31,22 @@ drift over unrelated steps as a file grows.
 marker's own text contains the words it waives, so a scanner that read comments
 would flag its own escape hatch.
 
-## `test_check_gates_ran.py` — did the gates reach the commit (23)
+## `test_check_gates_ran.py` — did the gates reach the commit (26)
 
-The script tells apart three states that all render as "not green": a check that
-ran and failed (someone else's gate reports that), one still running (nobody's
-problem yet), and one that never ran at all. Only the third and its
-`action_required` cousin are findings —
-`test_action_required_is_the_finding_it_was_written_for` is the exact symptom a
-push with the default `GITHUB_TOKEN` produces, where a run exists so it looks
-checked and will never execute.
+The script distinguishes actual execution evidence from states that merely
+create a check-run record. A check that ran and failed is someone else's gate to
+report, and an in-progress check is acceptable until `--require-complete` is
+requested. A missing run remains the original finding. A present run whose
+conclusion is `action_required`, `stale`, `skipped`, or `cancelled` is also a
+finding because presence alone cannot prove the required enforcement executed
+to a verdict.
+
+The skipped/cancelled cases close the M0 false-green discovered while validating
+live branch protection. `test_skipped_required_check_is_not_execution_evidence`
+and `test_cancelled_required_check_is_not_execution_evidence` pin the evaluator
+semantics directly. `test_one_skipped_check_fails_the_real_contract` exercises
+the same condition through `main()` with the repository's actual required-check
+set, so a future refactor cannot silently weaken the aggregate result.
 
 `TestItRefusesToGuess` is the half that keeps the gate from becoming harmful. An
 unparseable payload, a missing file, a payload with no `check_runs` array, and
