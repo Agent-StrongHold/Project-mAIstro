@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +22
+  packages/maistro-core/tests: +23
 ---
 # claude-m1-44-store-convergence
 
@@ -8,7 +8,7 @@ Durable graph execution stops keeping its own copy of the execution spine and
 takes Run, NodeRun and Attempt from the canonical store (#44,
 ADR-082826-d9f5). Three suites, all additive.
 
-**`tests/graph/durable_runs/test_canonical_identity.py` (+12)** — the identity
+**`tests/graph/durable_runs/test_canonical_identity.py` (+13)** — the identity
 and the lifecycle are the store's:
 
 - a Run the durable graph executed is findable in the canonical store, with its
@@ -27,7 +27,9 @@ and the lifecycle are the store's:
 - without a `run_store` nothing reaches the spine and behaviour is unchanged,
   including on resume of a record written before the convergence;
 - a pinned `run_id` still wins, because an already-admitted Run being executed
-  must not be given a second identity.
+  must not be given a second identity;
+- and the traversal entrypoint takes the same path as the Attempt one, so which
+  module a caller imported does not decide whether its Run exists.
 
 **`tests/graph/durable_runs/test_canonical_execution_store.py` (+6)** — the
 Attempt boundary after the delegation: creation happens once, in the store;

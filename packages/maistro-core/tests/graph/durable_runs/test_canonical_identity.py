@@ -20,6 +20,7 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
+from maistro.graph.durable_runs import executor as traversal
 from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -363,3 +364,27 @@ async def test_a_failed_node_settles_canonically_too() -> None:
     assert outcome is not None, "failure is accepted evidence too, not an absence of it"
     assert outcome.attempt_result.attempt_id in {item.attempt_id for item in record.attempts}
     assert "intentional test failure" in str(node_runs[0].error)
+
+
+async def test_the_traversal_executor_takes_the_same_path() -> None:
+    """Two entrypoints, one rule. `attempt_executor` is what the package
+    exports, but `executor` is a public entrypoint too, and if only one of them
+    obtained identity from the store then which module a caller imported would
+    decide whether its Run existed."""
+    run_store, workspace_id, project_id = await _spine()
+
+    record = await traversal.run_durable_graph(
+        _graph(workspace_id, project_id),
+        store=InMemoryDurableRunStore(),
+        node_resolver=_resolver,
+        run_store=run_store,
+    )
+
+    assert record.status is RunStatus.COMPLETED
+    run = await run_store.get_run(record.run_id)
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await run_store.list_node_runs(record.run_id)
+    assert [item.status for item in node_runs] == [RunStatus.COMPLETED]
+    # Traversal accepts no physical evidence, so its NodeRuns carry no accepted
+    # outcome — the write-back has to cope with that rather than assume one.
+    assert node_runs[0].accepted_outcome is None

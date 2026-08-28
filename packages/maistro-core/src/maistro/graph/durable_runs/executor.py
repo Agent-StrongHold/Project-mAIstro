@@ -422,14 +422,13 @@ async def _walk(
             None,
         )
         if unknown is not None:
-            record = await _mark_failed(
+            return await _mark_failed(
                 record,
                 error_code="UnknownNode",
                 error_message=f"node_id={unknown!r} not present in Graph",
                 store=store,
+                run_store=spine,
             )
-            await _mirror_lifecycle(record, run_store=spine)
-            return record
 
         record, node_runs = await _ensure_frontier_node_runs(
             record,
@@ -1407,8 +1406,15 @@ async def _mark_failed(
     error_code: str,
     error_message: str,
     store: DurableRunStore,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
-    """Terminalize the parent Run and reconcile unfinished NodeRuns after failure."""
+    """Terminalize the parent Run and reconcile unfinished NodeRuns after failure.
+
+    Mirrors here rather than at the call site because this is a terminal exit
+    the walk does not come back from: a Run left RUNNING on the spine because
+    its graph failed is work nothing will ever recover, since recovery only
+    looks at what the store says is still open.
+    """
     record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
     error = f"{error_code}: {error_message}"[:512]
@@ -1416,12 +1422,14 @@ async def _mark_failed(
         raise ValueError(f"cannot fail run in status {run.status!r}")
     run = transition_run(run, RunStatus.FAILED, error=error)
     state = _replace_state(record.graph_state, active_node_ids=())
-    return await _checkpoint(
+    failed = await _checkpoint(
         record,
         store=store,
         run=run,
         graph_state=state,
     )
+    await _mirror_lifecycle(failed, run_store=run_store)
+    return failed
 
 
 __all__ = ["NodeResolver", "resume_durable_graph", "run_durable_graph"]
