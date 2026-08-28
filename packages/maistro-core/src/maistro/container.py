@@ -314,13 +314,13 @@ class Container:
         try:
             result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
         except BaseException as exc:
-            # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`
-            # verbatim to anyone holding the run_id, and a provider error's
-            # message carries the endpoint it called and can carry the key it
-            # sent — so recording it here would leak by a slower route what
-            # every response path already refuses to echo. The detail is in
-            # the log, which a run_id does not open.
-            await self._close_chat_run(run, error=failure_category(exc))
+            # Attempt reconciliation already owns cancellation, so a client
+            # disconnect observes CANCELLED rather than being reinterpreted as
+            # FAILED by this outer product boundary. Other failures retain the
+            # existing sanitized failure category.
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            error = {True: None, False: failure_category(exc)}[cancelled]
+            await self._close_chat_run(run, error=error, cancelled=cancelled)
             raise
         await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
@@ -455,6 +455,7 @@ class Container:
         *,
         error: str | None = None,
         result: dict[str, Any] | None = None,
+        cancelled: bool = False,
     ) -> None:
         """Terminalize a chat turn's Run, whichever way the turn ended.
 
@@ -468,7 +469,14 @@ class Container:
         """
         if run is None:
             return
-        target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
+        if cancelled and (error is not None or result is not None):
+            raise ValueError("cancelled chat closure cannot carry error or result")
+        if cancelled:
+            target = RunStatus.CANCELLED
+        elif error is not None:
+            target = RunStatus.FAILED
+        else:
+            target = RunStatus.COMPLETED
         try:
             await asyncio.shield(self._terminalize(run.run_id, target, result, error))
         except Exception:

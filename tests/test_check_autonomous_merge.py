@@ -97,6 +97,15 @@ def test_execution_change_is_yellow_for_agent():
     assert result.risk == "yellow" and not result.eligible
 
 
+def test_canonical_container_change_is_yellow_for_agent():
+    result = mod.assess(
+        [cf("packages/maistro-core/src/maistro/container.py")],
+        "",
+        head_ref="chatgpt/x",
+    )
+    assert result.risk == "yellow" and not result.eligible
+
+
 def test_low_risk_app_change_is_green_and_eligible():
     result = mod.assess(
         [cf("packages/hive-conductor/frontend/src/App.tsx")],
