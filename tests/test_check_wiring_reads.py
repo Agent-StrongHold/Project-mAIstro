@@ -219,15 +219,31 @@ def test_main_fails_on_each_ledger_divergence(check, monkeypatch, capsys):
     ):
         monkeypatch.setattr(check, "unread_fields", lambda *a, c=current: c)
         monkeypatch.setattr(check, "_load_baseline", lambda *a, r=recorded: r)
+        monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, recorded))
         assert check.main([]) == 1
     capsys.readouterr()
 
 
 def test_main_passes_when_the_ledger_matches(check, monkeypatch, capsys):
+    ledger = {"demo.Root": {"known": "why"}}
     monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
-    monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
+    monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
+    monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, ledger))
     assert check.main([]) == 0
     assert "matches the current unread set" in capsys.readouterr().out
+
+
+def _trusted(check, entries):
+    """Stand in for the base-revision ledger without building a git history.
+
+    `main` judges new debt against the base (#534), so a test that only
+    substitutes the worktree ledger would be judged against the real
+    repository's and fail for reasons it never set up.
+    """
+    baseline = check._provenance().Baseline(
+        text="{}", origin="base", base_sha="0" * 40, path=Path("ledger.json")
+    )
+    return lambda *a, e=entries: (e, baseline)
 
 
 @pytest.mark.ac("ADR-082526-1899/AC-6")
@@ -276,3 +292,88 @@ def test_every_declared_di_root_exists(check):
     """A declaration that no longer resolves must fail loudly, not silently pass."""
     for di_root in check.DI_ROOTS:
         assert check._public_fields(ROOT / di_root.source, di_root.cls)
+
+
+class TestTheLedgerIsNotItsOwnOracle:
+    """#534: banking a regression on the branch must not answer for it.
+
+    Before this, adding an unread field, running `--update`, and writing the
+    disposition were three edits one commit could make, and the gate went green
+    with the unread count silently raised. The trusted ledger now comes from the
+    base revision, so those edits change the bookkeeping and not the verdict.
+    """
+
+    def _weakened(self, check, monkeypatch, *, trusted, authorized=None):
+        """A candidate that measures one more unread field than the base has."""
+        banked = {"demo.Root": {"known": "why", "fresh": "self-written justification"}}
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known", "fresh"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: banked)
+        monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, trusted))
+        prov = check._provenance()
+        monkeypatch.setattr(prov, "load_authorizations", lambda *a, **k: authorized or {})
+        monkeypatch.setattr(check, "_provenance", lambda: prov)
+
+    def test_banking_and_justifying_in_one_tree_still_fails(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        self._weakened(check, monkeypatch, trusted={"demo.Root": {"known": "why"}})
+
+        assert check.main([]) == 1
+        assert "NEWLY UNREAD against the trusted baseline" in capsys.readouterr().err
+
+    def test_the_verdict_names_the_commit_it_judged_against(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """A failure a reader cannot trace to a base is not auditable."""
+        self._weakened(check, monkeypatch, trusted={"demo.Root": {"known": "why"}})
+
+        check.main([])
+
+        assert "baseline: base " + "0" * 12 in capsys.readouterr().out
+
+    def test_an_explicit_authorization_lets_a_deliberate_floor_raise_through(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """The escape hatch is a separate file `--update` never writes."""
+        self._weakened(
+            check,
+            monkeypatch,
+            trusted={"demo.Root": {"known": "why"}},
+            authorized={"demo.Root.fresh": "#534 -- @owner: consumed downstream"},
+        )
+
+        assert check.main([]) == 0
+        assert "authorized: demo.Root.fresh" in capsys.readouterr().out
+
+    def test_removing_a_tolerated_entry_needs_no_authorization(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """Improvements bank automatically; only new debt is gated."""
+        ledger = {"demo.Root": {"known": "why"}}
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
+        monkeypatch.setattr(
+            check,
+            "_trusted_baseline",
+            _trusted(check, {"demo.Root": {"known": "why", "gone": "was"}}),
+        )
+
+        assert check.main([]) == 0
+        capsys.readouterr()
+
+    def test_an_unreadable_base_fails_rather_than_trusting_the_candidate(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """The fallback that would reopen the hole."""
+        prov = check._provenance()
+
+        def _refuse(*_a, **_k):
+            raise prov.RatchetProvenanceError(
+                "base revision 'origin/develop' could not be resolved"
+            )
+
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_trusted_baseline", _refuse)
+
+        assert check.main([]) == 1
+        assert "could not be resolved" in capsys.readouterr().err

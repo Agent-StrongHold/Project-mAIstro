@@ -196,6 +196,7 @@
     "scripts/mutation_targets.py",
     "scripts/mutation_viability.py",
     "scripts/openrouter_rpm_pacer.py",
+    "scripts/ratchet_provenance.py",
     "scripts/rlphd_band_sim.py",
     "scripts/rlphd_cold_start_sim.py",
     "scripts/rlphd_two_tier_sim.py",
