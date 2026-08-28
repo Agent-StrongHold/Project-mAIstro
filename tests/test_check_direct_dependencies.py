@@ -80,17 +80,17 @@ def test_local_workspace_distribution_mapping_beats_editable_metadata_gap(gate, 
     assert app_usage.unused == frozenset()
 
 
-def test_missing_exception_for_unused_runtime_dependency_fails(gate, tmp_path) -> None:
+def test_missing_disposition_for_unused_runtime_dependency_fails(gate, tmp_path) -> None:
     _write_package(tmp_path, ["uvicorn>=0.32"], "pass\n")
     usage = gate.discover(tmp_path, {"uvicorn": frozenset({"uvicorn"})})[0]
     failures = gate.audit([usage], {})
     assert any("uvicorn is a direct runtime dependency" in failure for failure in failures)
 
 
-def test_reviewed_non_import_runtime_exception_passes(gate, tmp_path) -> None:
+def test_reviewed_non_import_runtime_disposition_passes(gate, tmp_path) -> None:
     _write_package(tmp_path, ["uvicorn>=0.32"], "pass\n")
     usage = gate.discover(tmp_path, {"uvicorn": frozenset({"uvicorn"})})[0]
-    exceptions = {
+    dispositions = {
         usage.manifest: {
             "uvicorn": {
                 "category": "ENTRYPOINT_RUNTIME",
@@ -99,13 +99,28 @@ def test_reviewed_non_import_runtime_exception_passes(gate, tmp_path) -> None:
             }
         }
     }
-    assert gate.audit([usage], exceptions) == []
+    assert gate.audit([usage], dispositions) == []
 
 
-def test_exception_becomes_stale_when_code_imports_dependency(gate, tmp_path) -> None:
+def test_pending_cleanup_disposition_passes_with_concrete_owner(gate, tmp_path) -> None:
+    _write_package(tmp_path, ["langfuse>=3"], "pass\n")
+    usage = gate.discover(tmp_path, {"langfuse": frozenset({"langfuse"})})[0]
+    dispositions = {
+        usage.manifest: {
+            "langfuse": {
+                "category": "PENDING_CLEANUP",
+                "owner": "#514",
+                "rationale": "Pre-existing unimported dependency is assigned to #514 for removal or ownership correction.",
+            }
+        }
+    }
+    assert gate.audit([usage], dispositions) == []
+
+
+def test_disposition_becomes_stale_when_code_imports_dependency(gate, tmp_path) -> None:
     _write_package(tmp_path, ["uvicorn>=0.32"], "import uvicorn\n")
     usage = gate.discover(tmp_path, {"uvicorn": frozenset({"uvicorn"})})[0]
-    exceptions = {
+    dispositions = {
         usage.manifest: {
             "uvicorn": {
                 "category": "ENTRYPOINT_RUNTIME",
@@ -114,14 +129,14 @@ def test_exception_becomes_stale_when_code_imports_dependency(gate, tmp_path) ->
             }
         }
     }
-    failures = gate.audit([usage], exceptions)
+    failures = gate.audit([usage], dispositions)
     assert any("production code now imports it" in failure for failure in failures)
 
 
-def test_exception_becomes_stale_when_dependency_is_removed(gate, tmp_path) -> None:
+def test_disposition_becomes_stale_when_dependency_is_removed(gate, tmp_path) -> None:
     _write_package(tmp_path, ["httpx>=0.27"], "import httpx\n")
     usage = gate.discover(tmp_path, {"httpx": frozenset({"httpx"})})[0]
-    exceptions = {
+    dispositions = {
         usage.manifest: {
             "uvicorn": {
                 "category": "ENTRYPOINT_RUNTIME",
@@ -130,14 +145,14 @@ def test_exception_becomes_stale_when_dependency_is_removed(gate, tmp_path) -> N
             }
         }
     }
-    failures = gate.audit([usage], exceptions)
+    failures = gate.audit([usage], dispositions)
     assert any("dependency was removed" in failure for failure in failures)
 
 
-def test_exception_requires_category_owner_and_specific_rationale(gate, tmp_path) -> None:
+def test_disposition_requires_category_owner_and_specific_rationale(gate, tmp_path) -> None:
     _write_package(tmp_path, ["uvicorn>=0.32"], "pass\n")
     usage = gate.discover(tmp_path, {"uvicorn": frozenset({"uvicorn"})})[0]
-    exceptions = {
+    dispositions = {
         usage.manifest: {
             "uvicorn": {
                 "category": "OTHER",
@@ -146,7 +161,7 @@ def test_exception_requires_category_owner_and_specific_rationale(gate, tmp_path
             }
         }
     }
-    failures = gate.audit([usage], exceptions)
-    assert any("invalid/missing exception category" in failure for failure in failures)
+    failures = gate.audit([usage], dispositions)
+    assert any("invalid/missing disposition category" in failure for failure in failures)
     assert any("missing an owner" in failure for failure in failures)
     assert any("too vague" in failure for failure in failures)
