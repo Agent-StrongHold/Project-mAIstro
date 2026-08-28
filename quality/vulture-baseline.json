@@ -202,6 +202,7 @@
         "packages/maistro-core/src/maistro/graph/node.py::unused variable 'duration_s'",
         "packages/maistro-core/src/maistro/graph/node.py::unused variable 'retry_count'",
         "packages/maistro-core/src/maistro/graph/node_types.py::unused variable 'owner_package'",
+        "packages/maistro-core/src/maistro/graph/nodes/agent_synth_dag.py::unused variable 'child_run_id'",
         "packages/maistro-core/src/maistro/graph/nodes/agent_synth_dag.py::unused variable 'run_output'",
         "packages/maistro-core/src/maistro/graph/nodes/agent_synth_dag.py::unused variable 'synthesized_nodes'",
         "packages/maistro-core/src/maistro/graph/nodes/airtable_poll.py::unused variable 'created_time'",
