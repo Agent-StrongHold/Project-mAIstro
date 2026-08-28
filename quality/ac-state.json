@@ -15,7 +15,7 @@
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 589,
     "criteria_annotated": 214,
-    "markers_found": 298,
+    "markers_found": 300,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -4675,8 +4675,8 @@
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
-        "declared": 12,
-        "covered": 0,
+        "declared": 10,
+        "covered": 2,
         "passing": 0,
         "reachable": 0
       },
@@ -4752,12 +4752,14 @@
           "id": "SPEC-081226-bb3a/AC-7",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_node_template_store.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Publishing a version keeps the old one addressable"
           ],
-          "rung": "declared"
+          "rung": "covered"
         },
         {
           "id": "SPEC-081226-bb3a/AC-8",
@@ -4807,12 +4809,14 @@
           "id": "SPEC-081226-bb3a/AC-12",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_node_template_store.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Templates and provenance survive restart"
           ],
-          "rung": "declared"
+          "rung": "covered"
         }
       ]
     },

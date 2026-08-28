@@ -24,7 +24,7 @@ from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
-from maistro.graph.templates import GraphTemplateStore
+from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -49,6 +49,7 @@ from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
     wire_execution_spine,
+    wire_node_template_store,
 )
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
@@ -169,6 +170,13 @@ class Container:
     #: of the spine is: a Container built directly, without `create_container`,
     #: still routes requests — it just cannot resolve a template.
     template_store: GraphTemplateStore | None = None
+    #: Durable home for reusable NodeTemplate definitions (#556). The
+    #: GraphTemplate half has had one since #145; without this one a Node's
+    #: `source_template` named a version nothing could resolve after a restart,
+    #: so SPEC-081226-bb3a AC-12 held for only one of the two template
+    #: families. Optional exactly as `template_store` is, and for the same
+    #: reason: a Container built directly still routes requests.
+    node_template_store: NodeTemplateStore | None = None
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -947,6 +955,7 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -1147,6 +1156,7 @@ async def create_container(
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
+        node_template_store=node_template_store,
         schedule_store=schedule_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
