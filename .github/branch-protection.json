@@ -14,10 +14,7 @@
   },
   "branches": {
     "develop": {
-      "$comment": [
-        "Canonical development branch. PR-gated, zero approvals, linear history.",
-        "Required checks include the base-trusted autonomous judge and gates-ran."
-      ],
+      "$comment": ["Canonical development branch. PR-gated, zero approvals, linear history."],
       "required_status_checks": {
         "strict": true,
         "contexts": [
@@ -30,7 +27,7 @@
           "coverage (no services)", "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)", "strike-ladder",
           "durable-events", "coverage (PostgreSQL)", "object storage (MinIO)",
-          "postgres (pg17)", "postgres (pg18)", "gates-ran"
+          "postgres (pg17)", "postgres (pg18)"
         ]
       },
       "enforce_admins": false,
@@ -51,6 +48,7 @@
       "ruleset": {
         "name": "Pr merge",
         "target": "~DEFAULT_BRANCH",
+        "additional_required_checks": ["gates-ran"],
         "allowed_merge_methods": ["squash", "rebase"],
         "bypass": {"OrganizationAdmin": "always", "RepositoryRole:admin": "always"}
       }
@@ -73,7 +71,7 @@
           "coverage (no services)", "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)", "strike-ladder",
           "durable-events", "coverage (PostgreSQL)", "object storage (MinIO)",
-          "postgres (pg17)", "postgres (pg18)", "gates-ran",
+          "postgres (pg17)", "postgres (pg18)",
           "Container scan + SBOM + cosign", "Analyze (actions)",
           "Analyze (javascript-typescript)", "Analyze (python)"
         ]
@@ -96,14 +94,13 @@
       "ruleset": {
         "name": "Main merge",
         "target": "refs/heads/main",
+        "additional_required_checks": ["gates-ran"],
         "allowed_merge_methods": ["squash", "rebase", "merge"],
         "bypass": {"OrganizationAdmin": "pull_request", "RepositoryRole:admin": "pull_request"}
       }
     }
   },
-  "advisory": {
-    "$comment": ["Checks that are deliberately non-required must be named here with a reason."]
-  },
+  "advisory": {"$comment": ["Checks deliberately non-required must be named here with a reason."]},
   "repository": {
     "allow_auto_merge": true,
     "delete_branch_on_merge": true,
