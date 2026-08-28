@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +51
+  packages/maistro-core/tests: +54
 ---
 # claude-issue-556-node-template-store-bca9
 
@@ -32,3 +32,18 @@ Verified against the pre-fix code: removing `revalidated()` from the three
 `put()` implementations fails 6 of the 9 — the two refusal bodies on all three
 backends — and leaves the third passing, which is correct, since it is the
 control asserting an unmutated template still stores.
+
+## Plus 3, from a branch CI could see was unrun
+
+The diff-coverage gate named `runs/wiring.py` at 81.2% — uncovered lines 94,
+96 and 102, which are the whole fallback half of `_pg_node_template_store`:
+the case where a PostgreSQL pool's database is migrated to 018 but not 019.
+Written and never executed, that branch was a comment with a syntax, which is
+the same gap this gate found in #522's purge bound.
+
+Three bodies in `tests/runs/test_wiring.py`, mirroring the ones `schedules`
+already has: the fallback returns a working in-process registry and warns how
+to fix it; a migrated pool gets the durable store and is NOT told to migrate;
+and `node_templates` is absent from `SPINE_PG_TABLES`, asserted because the
+tempting fix for a future "why aren't my NodeTemplates durable" is to add it
+there, and that fix would drop every pre-019 deployment to an in-memory spine.

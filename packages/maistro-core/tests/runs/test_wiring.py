@@ -190,6 +190,68 @@ async def test_a_pool_without_the_schedules_table_falls_back_and_says_so(
     assert "alembic upgrade head" in caplog.text
 
 
+async def test_a_pool_without_the_node_templates_table_falls_back_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The branch a deployment between 018 and 019 actually takes (#556).
+
+    Written and never executed, this would be a comment with a syntax — the
+    same gap the diff-coverage gate found in #522's purge bound. So it is run:
+    a pool whose database lacks the table gets a working in-process registry
+    and a warning that says how to fix it, rather than an `UndefinedTableError`
+    on the first `put`.
+    """
+    import logging
+
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+    from maistro.runs.wiring import _pg_node_template_store
+
+    class _PoolAtRevision018:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return False
+
+    with caplog.at_level(logging.WARNING):
+        templates = await _pg_node_template_store(_PoolAtRevision018())
+
+    assert isinstance(templates, InMemoryNodeTemplateStore)
+    assert "node_templates" in caplog.text
+    assert "alembic upgrade head" in caplog.text
+
+
+async def test_a_migrated_pool_gets_the_durable_node_template_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The other side of it, and the reason the warning above is a warning:
+    a migrated database must NOT be told to migrate."""
+    import logging
+
+    from maistro.graph.pg_templates import PgNodeTemplateStore
+    from maistro.runs.wiring import _pg_node_template_store
+
+    class _PoolAtRevision019:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return True
+
+    with caplog.at_level(logging.WARNING):
+        templates = await _pg_node_template_store(_PoolAtRevision019())
+
+    assert isinstance(templates, PgNodeTemplateStore)
+    assert "alembic upgrade head" not in caplog.text
+
+
+def test_the_spine_preflight_does_not_demand_the_node_templates_table() -> None:
+    """A database at `018` must not lose its Runs over a table it never had.
+
+    The same reasoning `schedules` carries, asserted for the same reason: the
+    tempting fix for a future "why aren't my NodeTemplates durable" is to add
+    this table to that tuple, and that fix would drop every pre-019 deployment
+    to an in-memory spine.
+    """
+    from maistro.runs.wiring import SPINE_PG_TABLES
+
+    assert "node_templates" not in SPINE_PG_TABLES
+
+
 def test_the_spine_preflight_does_not_demand_the_schedules_table() -> None:
     """A database at `015` must not lose its Runs over a table it never had.
 
