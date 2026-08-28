@@ -1,0 +1,94 @@
+name: Temporary verify 352 import aliases
+
+on:
+  push:
+    branches:
+      - feat/352-unused-direct-deps
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/352-unused-direct-deps
+      - uses: ./.github/actions/setup-uv
+      - name: Make distribution import aliases deterministic and verify both install shapes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/pip_audit_gate.py")
+          text = path.read_text()
+          marker = '_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")\n'
+          addition = '''_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
+          # Some wheels do not expose distribution->top-level-module metadata consistently
+          # across uv sync shapes. These distribution/import spellings are stable package API,
+          # so keep the mapping deterministic rather than making the verdict environment-dependent.
+          _DISTRIBUTION_IMPORT_OVERRIDES: dict[str, frozenset[str]] = {
+              "argon2-cffi": frozenset({"argon2"}),
+              "pillow": frozenset({"PIL"}),
+              "pyyaml": frozenset({"yaml"}),
+          }
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit("constant insertion marker mismatch")
+          text = text.replace(marker, addition, 1)
+
+          old = '''    mapped = distributions.get(dependency)
+              if mapped:
+                  return mapped
+              return frozenset({dependency.replace("-", "_")})
+          '''
+          new = '''    mapped = distributions.get(dependency, frozenset())
+              override = _DISTRIBUTION_IMPORT_OVERRIDES.get(dependency, frozenset())
+              if mapped or override:
+                  return frozenset(mapped | override)
+              return frozenset({dependency.replace("-", "_")})
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("import_names_for replacement marker mismatch")
+          path.write_text(text.replace(old, new, 1))
+
+          tests = Path("tests/test_check_direct_dependencies.py")
+          body = tests.read_text()
+          anchor = '''def test_local_workspace_distribution_mapping_beats_editable_metadata_gap(gate, tmp_path) -> None:
+          '''
+          test = '''def test_known_distribution_import_aliases_do_not_depend_on_installed_metadata(gate) -> None:
+              expected = {
+                  "argon2-cffi": "argon2",
+                  "pillow": "PIL",
+                  "pyyaml": "yaml",
+              }
+              for dependency, import_name in expected.items():
+                  assert import_name in gate.import_names_for(dependency, {})
+                  assert import_name in gate.import_names_for(
+                      dependency,
+                      {dependency: frozenset({"metadata_only_name"})},
+                  )
+
+
+          '''
+          if anchor not in body:
+              raise SystemExit("test insertion marker missing")
+          if "test_known_distribution_import_aliases_do_not_depend_on_installed_metadata" not in body:
+              body = body.replace(anchor, test + anchor, 1)
+          tests.write_text(body)
+          PY
+          uv run ruff format scripts/pip_audit_gate.py tests/test_check_direct_dependencies.py
+          uv run ruff check scripts/pip_audit_gate.py tests/test_check_direct_dependencies.py
+          uv sync --locked --extra dev
+          uv run pytest -q tests/test_check_direct_dependencies.py
+          uv run python -c 'import sys; sys.path.insert(0, "scripts"); import pip_audit_gate; raise SystemExit(pip_audit_gate.audit_direct_dependencies())'
+          uv sync --locked --all-extras
+          uv run python -c 'import sys; sys.path.insert(0, "scripts"); import pip_audit_gate; raise SystemExit(pip_audit_gate.audit_direct_dependencies())'
+          rm .github/workflows/tmp-352-import-aliases.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/pip_audit_gate.py tests/test_check_direct_dependencies.py .github/workflows/tmp-352-import-aliases.yml
+          git commit -m "Make #352 dependency import aliases deterministic"
+          git push origin HEAD:feat/352-unused-direct-deps
