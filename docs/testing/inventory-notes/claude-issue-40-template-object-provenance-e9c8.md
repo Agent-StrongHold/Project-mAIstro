@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +18
+  packages/maistro-core/tests: +30
 ---
 # claude-issue-40-template-object-provenance-e9c8
 
@@ -46,3 +46,38 @@ failed, which was the test being wrong rather than the code — `instantiate`
 allocates fresh node and edge ids per call by design, so it was comparing
 identities, not definitions. It now asserts the published template's own
 content is unmoved.
+
+## Revised after Codex review (+12, 30 total)
+
+Codex read the first version and was right on four counts; three changed this
+suite.
+
+The exclusion set was **narrowed**. It rejected every key R12 names, including
+`status`, `ordinal`, `deadline_at` and `holder` -- ordinary words that appear in
+definition data, so an HTTP node's `parameters={"expected_response": {"status":
+200}}` was refused. The consequence I had not thought through, and Codex had:
+template content is revalidated when a durable store *reconstructs* it, so a
+name-matching rule would stop previously-valid persisted templates from loading
+after an upgrade and take their schedules with them. Refusing new work is
+recoverable; refusing stored work is not. Those names moved to
+`RUNTIME_STATE_UNENFORCEABLE`, each with its reason, and
+`TestOrdinaryWordsAreNotExecutionState` parametrises over that mapping so the
+concession stays honest rather than becoming a quiet hole. The residue -- R12's
+terminal-state and retry-counter clauses, which no name-based rule can enforce
+-- is raised on #40 rather than narrowed away in silence.
+
+`actor_principal_id` moved the other way, into the rejected set. My own
+disposition for it read "authorization context, never template content" while
+admitting it, which is a contradiction Codex caught: a template carrying it
+would run all later work as one execution's principal.
+
+`separate_runtime_state` now traverses lists, and two tests pin it. It only
+recursed into dicts, while the validator walks lists too -- so
+`{"steps": [{"attempt_id": "a1"}]}` came back whole as "definition" and was then
+rejected by the validator that the refusal message tells callers to use this
+helper to satisfy.
+
+The parametrised refusal cases were re-pointed onto unambiguous fields, and the
+projection test that used `status` as runtime state now uses `attempt_id`; both
+had been asserting the behaviour Codex correctly says is wrong.
+

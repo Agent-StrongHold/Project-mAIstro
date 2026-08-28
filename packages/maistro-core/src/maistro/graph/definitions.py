@@ -19,51 +19,75 @@ def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-#: Field names that carry live execution state, which SPEC-081226-bb3a R12
-#: forbids from persisted NodeTemplate and GraphTemplate content. A template is
-#: a definition; a Run/NodeRun/Attempt is one execution of it. A template that
-#: has absorbed a `run_id` or a `deadline_at` is a record of something that
-#: already happened, and instantiating it replays another execution's state.
+#: Field names that identify live execution state unambiguously enough to
+#: reject on sight, per SPEC-081226-bb3a R12. A template is a definition; a
+#: Run/NodeRun/Attempt is one execution of it. A template that has absorbed a
+#: `run_id` or an `execution_lease` is a record of something that already
+#: happened, and instantiating it replays another execution's state.
 #:
-#: Grouped by the four categories R12 names, so a reader can check the list
-#: against the requirement rather than trusting it. `tests/graph/
-#: test_template_runtime_exclusion.py` pins every name here to a real field on
-#: the canonical execution models -- the set cannot drift from them, and the
-#: production module does not import them, because a reusable definition must
-#: not depend on the execution records it is reused by.
+#: "Unambiguously" is the whole design of this set, and it is narrower than R12
+#: reads. See RUNTIME_STATE_UNENFORCEABLE below for what that costs and why the
+#: alternative is worse. `tests/graph/test_template_runtime_exclusion.py` pins
+#: every name here to a real field on the canonical execution models -- the set
+#: cannot drift from them, and the production module does not import them,
+#: because a reusable definition must not depend on the records that execute it.
 RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
     {
-        # Run/NodeRun/Attempt identifiers
+        # Run/NodeRun/Attempt identity
         "run_id",
         "node_run_id",
         "attempt_id",
         "parent_run_id",
         "parent_node_run_id",
-        # terminal state
-        "status",
-        "started_at",
-        "finished_at",
-        "accepted_outcome",
-        # retry counters
-        "ordinal",
-        # runtime cancellation / deadline state
-        "deadline_at",
+        # the authorization identity of one execution, which must never be
+        # reused: a template carrying it would run later work as that principal
+        "actor_principal_id",
+        # lease, checkpoint and settled-outcome state -- compound names with no
+        # plausible reading as definition data
         "execution_lease",
         "lease_epoch",
         "fencing_token",
-        "expires_at",
-        "holder",
-        "issued_at",
         "resume_checkpoint_id",
+        "accepted_outcome",
         "retention_expires_at",
     }
 )
 
-#: Canonical execution-model fields deliberately NOT excluded, with the reason.
-#: R12 permits "defaults/policies that influence future execution" as definition
-#: data, and its forbidden list is four named categories rather than "every
-#: field of an execution record". Recorded here rather than left as an absence,
-#: because the next reader's question is why these are missing.
+#: Execution-state fields R12 names that this check deliberately does NOT
+#: reject, because their names are ordinary words that legitimately appear in
+#: definition data.
+#:
+#: R12 forbids "terminal state, retry counters, and runtime
+#: cancellation/deadline state", and by name these are `status`, `ordinal`,
+#: `started_at`, `finished_at`, `deadline_at`, `expires_at`, `issued_at` and
+#: `holder`. Rejecting those keys anywhere in an open dict would refuse an HTTP
+#: node's `parameters={"expected_response": {"status": 200}}`, an output schema
+#: with a `status` property, a scheduled template's own `deadline_at`, or a
+#: parameter named `holder`. Worse than refusing new work: template content is
+#: revalidated when a durable store reconstructs it, so previously-valid
+#: persisted templates would stop loading after an upgrade and take their
+#: schedules with them.
+#:
+#: So this check enforces the half it can prove and states the half it cannot,
+#: rather than enforcing R12 by name and breaking stored data. Closing the
+#: residue needs structural detection or a reserved namespace, not a longer
+#: list; that is raised on #40 rather than narrowed away in silence.
+RUNTIME_STATE_UNENFORCEABLE: dict[str, str] = {
+    "status": "an ordinary field name: HTTP status, document status, job status",
+    "ordinal": "a position in any user-defined sequence, not only a retry count",
+    "started_at": "a schedule or content timestamp as often as an execution one",
+    "finished_at": "likewise",
+    "deadline_at": "a scheduled template's own deadline is definition data",
+    "expires_at": "a credential or cache TTL a template may legitimately define",
+    "issued_at": "likewise",
+    "holder": "an ordinary noun -- account holder, licence holder, lease holder",
+}
+
+#: Canonical execution-model fields that are not execution *state* at all, with
+#: the reason. R12 permits "defaults/policies that influence future execution"
+#: as definition data, and its forbidden list is four named categories rather
+#: than "every field of an execution record". Recorded here rather than left as
+#: an absence, because the next reader's question is why these are missing.
 RUNTIME_STATE_ADMITTED: dict[str, str] = {
     "created_at": "record metadata, and a template has its own",
     "updated_at": "record metadata, and a template has its own",
@@ -80,7 +104,6 @@ RUNTIME_STATE_ADMITTED: dict[str, str] = {
     "node_id": "definition identity: a Node is the thing a template describes",
     "graph": "the definition an execution names, not execution state",
     "persona_id": "a definition-time binding, not execution state",
-    "actor_principal_id": "authorization context, never template content",
     "provenance": "template provenance is TemplateProvenance, a distinct field",
 }
 
@@ -137,14 +160,34 @@ def separate_runtime_state(content: dict[str, Any]) -> tuple[dict[str, Any], dic
     for key, value in content.items():
         if key in RUNTIME_STATE_FIELDS:
             runtime[key] = value
-        elif isinstance(value, dict):
-            nested_definition, nested_runtime = separate_runtime_state(value)
-            definition[key] = nested_definition
-            if nested_runtime:
-                runtime[key] = nested_runtime
-        else:
-            definition[key] = value
+            continue
+        # Lists are traversed because the validator traverses them. A helper
+        # the refusal message names, whose output the validator then rejects,
+        # is worse than no helper.
+        kept, removed = _split_value(value)
+        definition[key] = kept
+        if removed is not None:
+            runtime[key] = removed
     return definition, runtime
+
+
+def _split_value(value: Any) -> tuple[Any, Any]:
+    """Split one value into what a template keeps and what it must not."""
+
+    if isinstance(value, dict):
+        kept_dict, removed_dict = separate_runtime_state(value)
+        return kept_dict, (removed_dict or None)
+    if isinstance(value, list):
+        kept_list: list[Any] = []
+        removed_list: list[Any] = []
+        found = False
+        for item in value:
+            kept_item, removed_item = _split_value(item)
+            kept_list.append(kept_item)
+            removed_list.append(removed_item)
+            found = found or removed_item is not None
+        return kept_list, (removed_list if found else None)
+    return value, None
 
 
 class TemplateProvenance(BaseModel):
@@ -394,6 +437,7 @@ class GraphTemplate(BaseModel):
 __all__ = [
     "RUNTIME_STATE_ADMITTED",
     "RUNTIME_STATE_FIELDS",
+    "RUNTIME_STATE_UNENFORCEABLE",
     "Edge",
     "Graph",
     "GraphTemplate",

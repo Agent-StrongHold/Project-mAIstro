@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from maistro.graph.definitions import (
     RUNTIME_STATE_ADMITTED,
     RUNTIME_STATE_FIELDS,
+    RUNTIME_STATE_UNENFORCEABLE,
     GraphTemplate,
     Node,
     NodeTemplate,
@@ -50,13 +51,16 @@ class TestALiveRecordCannotBecomeATemplate:
         [
             ("parameters", {"run_id": "r1"}, "parameters.run_id"),
             ("metadata", {"attempt_id": "a1"}, "metadata.attempt_id"),
-            ("policies", {"status": "SUCCEEDED"}, "policies.status"),
-            ("inputs", {"ordinal": 3}, "inputs.ordinal"),
-            ("outputs", {"deadline_at": "2026-01-01T00:00:00Z"}, "outputs.deadline_at"),
+            ("policies", {"node_run_id": "nr1"}, "policies.node_run_id"),
+            ("inputs", {"resume_checkpoint_id": "c1"}, "inputs.resume_checkpoint_id"),
+            ("outputs", {"accepted_outcome": {}}, "outputs.accepted_outcome"),
             ("permissions", {"execution_lease": {}}, "permissions.execution_lease"),
+            # One execution's authorization identity. A template carrying it
+            # would run all later work as that principal.
+            ("parameters", {"actor_principal_id": "u1"}, "parameters.actor_principal_id"),
         ],
     )
-    def test_each_category_r12_names_is_refused(
+    def test_each_unambiguous_execution_field_is_refused(
         self, field: str, payload: dict[str, object], where: str
     ) -> None:
         with pytest.raises(ValidationError) as caught:
@@ -92,9 +96,9 @@ class TestALiveRecordCannotBecomeATemplate:
     def test_the_refusal_names_every_offending_path_not_just_the_first(self) -> None:
         """One round trip per template, not one per field a caller must find."""
         with pytest.raises(ValidationError) as caught:
-            _node_template(parameters={"run_id": "r1"}, metadata={"finished_at": "then"})
+            _node_template(parameters={"run_id": "r1"}, metadata={"attempt_id": "a1"})
 
-        assert sorted(_refusal(caught.value).paths) == ["metadata.finished_at", "parameters.run_id"]
+        assert sorted(_refusal(caught.value).paths) == ["metadata.attempt_id", "parameters.run_id"]
 
     @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
     def test_definition_data_that_merely_influences_execution_still_passes(self) -> None:
@@ -121,11 +125,11 @@ class TestSeparatingAnExecutionRecordFromItsDefinition:
         instead of choosing between a refused template and silent data loss.
         """
         definition, runtime = separate_runtime_state(
-            {"model": "claude", "run_id": "r1", "retry": {"status": "FAILED", "limit": 3}}
+            {"model": "claude", "run_id": "r1", "retry": {"attempt_id": "a1", "limit": 3}}
         )
 
         assert definition == {"model": "claude", "retry": {"limit": 3}}
-        assert runtime == {"run_id": "r1", "retry": {"status": "FAILED"}}
+        assert runtime == {"run_id": "r1", "retry": {"attempt_id": "a1"}}
 
     @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
     def test_what_it_returns_is_accepted_as_template_content(self) -> None:
@@ -172,21 +176,31 @@ class TestTheExclusionSetTracksTheModels:
             | set(Attempt.model_fields)
             | set(ExecutionLease.model_fields)
         )
-        undecided = canonical - RUNTIME_STATE_FIELDS - set(RUNTIME_STATE_ADMITTED)
+        undecided = (
+            canonical
+            - RUNTIME_STATE_FIELDS
+            - set(RUNTIME_STATE_ADMITTED)
+            - set(RUNTIME_STATE_UNENFORCEABLE)
+        )
 
         assert undecided == set(), (
             f"canonical execution fields with no R12 disposition: {sorted(undecided)}. "
-            "Add each to RUNTIME_STATE_FIELDS, or to RUNTIME_STATE_ADMITTED with why."
+            "Add each to RUNTIME_STATE_FIELDS, RUNTIME_STATE_UNENFORCEABLE, or "
+            "RUNTIME_STATE_ADMITTED, with why."
         )
 
     @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
-    def test_no_name_is_both_excluded_and_admitted(self) -> None:
+    def test_the_three_dispositions_do_not_overlap(self) -> None:
+        """A name in two buckets is a disposition nobody has actually made."""
         assert RUNTIME_STATE_FIELDS & set(RUNTIME_STATE_ADMITTED) == set()
+        assert RUNTIME_STATE_FIELDS & set(RUNTIME_STATE_UNENFORCEABLE) == set()
+        assert set(RUNTIME_STATE_ADMITTED) & set(RUNTIME_STATE_UNENFORCEABLE) == set()
 
     @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
     def test_every_admission_carries_a_reason(self) -> None:
         """An empty reason is a banked exception nobody has to defend."""
         assert [name for name, why in RUNTIME_STATE_ADMITTED.items() if not why.strip()] == []
+        assert [name for name, why in RUNTIME_STATE_UNENFORCEABLE.items() if not why.strip()] == []
 
 
 class TestAGraphTemplateVersionPinsWhatItEmbeds:
@@ -227,3 +241,54 @@ class TestAGraphTemplateVersionPinsWhatItEmbeds:
         # design, so those hashes differ for two instantiations of an unchanged
         # template.
         assert published.content_hash == published_hash_before
+
+
+class TestOrdinaryWordsAreNotExecutionState:
+    """The check refuses identity, not vocabulary.
+
+    Rejecting every key R12 names would refuse ordinary definition data, and
+    template content is revalidated when a durable store reconstructs it -- so
+    a name-matching rule would stop previously-valid persisted templates from
+    loading after an upgrade, taking their schedules with them. Refusing new
+    work is recoverable; refusing stored work is not.
+    """
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    @pytest.mark.parametrize("word", sorted(RUNTIME_STATE_UNENFORCEABLE))
+    def test_a_homonym_is_definition_data(self, word: str) -> None:
+        template = _node_template(parameters={"config": {word: "domain value"}})
+
+        assert template.instantiate().parameters["config"][word] == "domain value"
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_the_shape_the_reviewer_named_still_constructs(self) -> None:
+        """`{"expected_response": {"status": 200}}` on an HTTP node."""
+        template = _node_template(
+            parameters={"expected_response": {"status": 200}},
+            outputs={"schema": {"properties": {"status": {"type": "string"}}}},
+        )
+
+        assert template.content_hash
+
+
+class TestTheProjectionTraversesWhatTheValidatorTraverses:
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_runtime_state_inside_a_list_is_separated(self) -> None:
+        """The validator walks lists, so the helper it names must too.
+
+        Otherwise `separate_runtime_state` hands back a definition the
+        validator immediately rejects, while the refusal message tells the
+        caller to use exactly that helper.
+        """
+        definition, runtime = separate_runtime_state(
+            {"steps": [{"attempt_id": "a1", "name": "one"}, {"name": "two"}]}
+        )
+
+        assert definition == {"steps": [{"name": "one"}, {"name": "two"}]}
+        assert runtime == {"steps": [{"attempt_id": "a1"}, None]}
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_what_it_returns_from_a_list_constructs(self) -> None:
+        definition, _ = separate_runtime_state({"steps": [{"run_id": "r1", "name": "one"}]})
+
+        assert _node_template(parameters=definition).parameters == {"steps": [{"name": "one"}]}
