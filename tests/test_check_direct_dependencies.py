@@ -9,8 +9,8 @@ import pytest
 
 @pytest.fixture()
 def gate():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "check_direct_dependencies.py"
-    spec = importlib.util.spec_from_file_location("check_direct_dependencies", path)
+    path = Path(__file__).resolve().parents[1] / "scripts" / "pip_audit_gate.py"
+    spec = importlib.util.spec_from_file_location("pip_audit_gate", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
