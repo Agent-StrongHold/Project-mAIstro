@@ -24,9 +24,10 @@ What counts as red
 ------------------
 - **Absent** — a required check with no run on this head at all. This is the
   "gates did not run" state AC-2 names, and the one that renders as empty.
-- **`action_required`** — a run that exists and will never execute without a
-  human pressing a button. It is the exact symptom a `GITHUB_TOKEN` push
-  produces, and it is worth naming separately because it looks like a run.
+- **Non-executed** — a run record exists but its conclusion is
+  `action_required`, `stale`, `skipped`, or `cancelled`. Presence alone is not
+  evidence that the required enforcement executed. This matters because GitHub
+  can treat a skipped required check as acceptable at the merge boundary.
 - **Unfinished** — present but not `completed`. Red only under
   `--require-complete`, which is how the `workflow_run`-triggered job asks the
   question once the other workflows have finished. Without that flag an
@@ -64,8 +65,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_CHECKS_SCRIPT = REPO_ROOT / "scripts" / "check-required-checks.py"
 
-#: Conclusions that mean the run exists but will not execute on its own.
-STALLED = frozenset({"action_required", "stale"})
+#: Conclusions that do not prove the required enforcement executed to a verdict.
+NON_EXECUTED = frozenset({"action_required", "stale", "skipped", "cancelled"})
 
 
 def required_check_names() -> list[str]:
@@ -103,13 +104,13 @@ class Verdict:
     """What the head's check runs say about whether the gates reached it."""
 
     absent: list[str] = field(default_factory=list)
-    stalled: list[str] = field(default_factory=list)
+    not_executed: list[str] = field(default_factory=list)
     unfinished: list[str] = field(default_factory=list)
     ran: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.absent and not self.stalled and not self.unfinished
+        return not self.absent and not self.not_executed and not self.unfinished
 
 
 def evaluate(
@@ -136,8 +137,8 @@ def evaluate(
         if run is None:
             verdict.absent.append(name)
             continue
-        if run.get("conclusion") in STALLED:
-            verdict.stalled.append(name)
+        if run.get("conclusion") in NON_EXECUTED:
+            verdict.not_executed.append(name)
             continue
         if run.get("status") != "completed":
             (verdict.unfinished if require_complete else verdict.ran).append(name)
@@ -203,10 +204,14 @@ def main(argv: list[str] | None = None) -> int:
             "  empty space where a tick would go. If a workflow pushed this head with\n"
             "  the default GITHUB_TOKEN, GitHub will not start workflows for it (#262)."
         )
-    if verdict.stalled:
-        print(f"\n  awaiting approval, will never run on their own ({len(verdict.stalled)}):")
-        for name in verdict.stalled:
+    if verdict.not_executed:
+        print(f"\n  present but did not execute to a verdict ({len(verdict.not_executed)}):")
+        for name in verdict.not_executed:
             print(f"    {name}")
+        print(
+            "\n  A required check that is skipped, cancelled, stale, or awaiting approval\n"
+            "  is not evidence that its enforcement ran on this commit."
+        )
     if verdict.unfinished:
         print(f"\n  started but not finished ({len(verdict.unfinished)}):")
         for name in verdict.unfinished:
