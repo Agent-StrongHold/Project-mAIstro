@@ -215,6 +215,59 @@ class TestIdentityAndMembershipSurviveTheObjectThatWroteThem:
         with pytest.raises(WorkspaceNotFound):
             await second.get_membership(workspace.workspace_id, user_id=creator)
 
+    async def test_delete_purges_the_whole_project_tree_it_owns(self, backend) -> None:
+        """The clause `delete`'s contract states and no durable store honoured.
+
+        `purge_workspace` was reached through
+        `getattr(store, "purge_workspace", None)`, and only the in-memory
+        reference defined it. So this passed on the reference and silently did
+        nothing on PostgreSQL and SQLite, leaving the Project tree, its
+        memberships and its scoped resources behind with no Workspace to reach
+        them by (Codex, #516).
+
+        A *nested* child, not just the Root Project: both schemas declare
+        `ON DELETE RESTRICT` on the self-referencing parent link, so a purge
+        that deletes in the wrong order fails on the parent rather than
+        silently under-deleting. One level is enough to tell those apart.
+        """
+        from maistro.projects.scope import ProjectMembership, ProjectScopedResource
+
+        creator = _user("creator-")
+        first = await backend.store()
+        workspace = await first.create(creator_user_id=creator, name="Doomed")
+        projects = first.project_store
+
+        root = await projects.root_for_workspace(workspace.workspace_id)
+        child = await projects.create(
+            workspace_id=workspace.workspace_id,
+            parent_project_id=root.project_id,
+            name="Child",
+        )
+        await projects.set_membership(
+            ProjectMembership(
+                workspace_id=workspace.workspace_id,
+                project_id=child.project_id,
+                principal_id=creator,
+            )
+        )
+        await projects.put_resource(
+            ProjectScopedResource(
+                resource_id=f"res-{uuid4().hex[:8]}",
+                workspace_id=workspace.workspace_id,
+                project_id=child.project_id,
+                resource_type="secret",
+            )
+        )
+
+        await first.delete(workspace.workspace_id)
+
+        second = await backend.store()
+        assert await second.get(workspace.workspace_id) is None
+        # Read back through the Project store rather than by counting rows: the
+        # question is whether anything can still reach them.
+        assert await second.project_store.get(child.project_id) is None
+        assert await second.project_store.get(root.project_id) is None
+
 
 class TestTheRosterOrderingsTheProtocolPromises:
     async def test_list_for_user_returns_only_that_users_workspaces_newest_first(

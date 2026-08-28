@@ -177,9 +177,11 @@ class SqliteWorkspaceStore:
             await self._conn.rollback()
             raise WorkspaceNotFound(workspace_id)
         await self._conn.commit()
-        purge = getattr(self.project_store, "purge_workspace", None)
-        if purge is not None:
-            purge(workspace_id)
+        # A direct call, not `getattr(store, "purge_workspace", None)`. The
+        # optional form meant the Projects were purged in tests, where the
+        # store was the in-memory reference, and left orphaned on every durable
+        # deployment, where no implementation defined it (Codex, #516).
+        await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""

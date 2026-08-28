@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +69
+  packages/maistro-core/tests: +72
 ---
 # claude-issue-516-durable-workspace-store-5ae0
 
@@ -57,3 +57,33 @@ classified as in-memory and asserted a refusal that could never come -- they
 failed with DID NOT RAISE, which is the only reason it was caught. They now use
 the real `PgProjectScopeStore` and `SqliteProjectScopeStore`, which construct
 without a live connection and cannot drift from what the selector sees.
+
+## Project-tree teardown (+3, 72 total)
+
+One conformance test, three node IDs -- one per backend, which is the entire
+point of it.
+
+`WorkspaceStore.delete` promised to purge the Workspace's Projects and reached
+that purge through `getattr(self.project_store, "purge_workspace", None)`. Only
+`InMemoryProjectScopeStore` defined the method, so on PostgreSQL and SQLite the
+branch evaluated to `None` and did nothing: the Project tree, its memberships
+and its scoped resources survived with no Workspace left to reach them by.
+
+The old delete test asserted the Workspace row and its memberships were gone
+and stopped there, so it passed on all three backends while two of them
+orphaned everything below. `test_delete_purges_the_whole_project_tree_it_owns`
+builds a *nested* child under the Root Project, gives it a membership and a
+scoped resource, deletes the Workspace, reopens, and asserts both Projects are
+unreachable.
+
+Nested rather than root-only because both schemas declare `ON DELETE RESTRICT`
+on the self-referencing parent link: a purge that deletes in the wrong order
+fails on the parent instead of silently under-deleting, and one level of depth
+is enough to tell a correct implementation from either failure.
+
+Verified against the pre-fix code, which is the only reason to trust it:
+restoring the duck-typed call fails `[sqlite]` and `[postgres]` with the child
+Project still present, and passes `[memory]`. That split is the defect in one
+line -- the only backend that worked was the only one the old test could
+distinguish.
+
