@@ -42,6 +42,7 @@ async def run_durable_graph(
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    blackboard_metadata: Mapping[str, Any] | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
@@ -52,6 +53,10 @@ async def run_durable_graph(
     ``provenance`` records what admitted the work, and is accepted here as
     well as in the traversal executor so the two entry points cannot disagree
     about whether a Run remembers where it came from (#145).
+
+    ``blackboard_metadata`` seeds execution-only traversal context for a child
+    Graph. It does not become Run lifecycle state; composite callers use it to
+    preserve bounded recursion facts such as ``synth_depth`` across child Runs.
     """
     run = traversal._new_run(
         graph,
@@ -66,7 +71,7 @@ async def run_durable_graph(
         active_node_ids=(traversal._entry_node(graph),),
         blackboard_snapshot={
             "task_objective": graph.name,
-            "metadata": {},
+            "metadata": dict(blackboard_metadata or {}),
             "node_annotations": {},
         },
         metadata={"initial_inputs": dict(inputs or {}), "hitl_answers": {}},
@@ -185,6 +190,7 @@ async def _walk(
             graph=graph,
             store=store,
             node_resolver=node_resolver,
+            runtime=runtime,
             execution_service=execution_service,
             execution_store=execution_store,
         )
@@ -204,6 +210,7 @@ async def _walk_frontier(
     graph: Graph,
     store: DurableRunStore,
     node_resolver: NodeResolver,
+    runtime: ExecutionRuntime,
     execution_service: AttemptExecutionService,
     execution_store: DurableRunExecutionStore,
 ) -> DurableRunRecord:
@@ -231,7 +238,9 @@ async def _walk_frontier(
             graph,
             frontier,
             node_runs,
+            store=store,
             node_resolver=node_resolver,
+            runtime=runtime,
             execution_service=execution_service,
             execution_store=execution_store,
         )
@@ -305,7 +314,9 @@ async def _execute_frontier(
     frontier: tuple[str, ...],
     node_runs: tuple[NodeRun, ...],
     *,
+    store: DurableRunStore,
     node_resolver: NodeResolver,
+    runtime: ExecutionRuntime,
     execution_service: AttemptExecutionService,
     execution_store: DurableRunExecutionStore,
 ) -> tuple[Any, ...]:
@@ -314,7 +325,12 @@ async def _execute_frontier(
     for node_id, node_run in zip(frontier, node_runs, strict=True):
         spec = traversal._node_spec(graph, node_id)
         assert spec is not None
-        ctx = traversal._build_ctx(record, node_id)
+        ctx = traversal._build_ctx(record, node_id).model_copy(
+            update={
+                "workspace_id": record.run.workspace_id,
+                "project_id": record.run.project_id,
+            }
+        )
         node = node_resolver(node_id, graph)
         inputs = traversal._resolve_inputs(graph, record, node_run, spec)
         prepared.append((node_id, spec, node_run, ctx, node, inputs))
@@ -347,6 +363,44 @@ async def _execute_frontier(
 
         raw_result: NodeResult | None = None
 
+        async def run_child_graph(
+            child_graph: Any,
+            child_inputs: dict[str, Any],
+            node_override: Any | None,
+        ) -> Any:
+            if not isinstance(child_graph, Graph):
+                raise TypeError("durable child execution requires a canonical Graph")
+
+            def child_resolver(child_node_id: str, candidate: Graph) -> Any:
+                if node_override is not None:
+                    overridden = node_override(child_node_id, candidate)
+                    if overridden is not None:
+                        return overridden
+                return node_resolver(child_node_id, candidate)
+
+            blackboard_metadata = dict(
+                record.graph_state.blackboard_snapshot.get("metadata") or {}
+            )
+            if spec.node_type == "agent.synth_dag":
+                blackboard_metadata["synth_depth"] = int(
+                    blackboard_metadata.get("synth_depth", 0)
+                ) + 1
+            return await run_durable_graph(
+                child_graph,
+                store=store,
+                node_resolver=child_resolver,
+                inputs=child_inputs,
+                actor_principal_id=record.run.actor_principal_id,
+                runtime=runtime,
+                parent_run_id=record.run_id,
+                parent_node_run_id=node_run.node_run_id,
+                provenance={
+                    "admission_source": "graph.child_run",
+                    "parent_node_id": node_id,
+                },
+                blackboard_metadata=blackboard_metadata,
+            )
+
         async def executor(work_item: Any, execution_context: Any) -> NodeResult:
             nonlocal raw_result
             result: NodeResult = await node.run(work_item, execution_context)
@@ -360,6 +414,7 @@ async def _execute_frontier(
                 update={
                     "node_run_id": node_run.node_run_id,
                     "attempt_id": attempt.attempt_id,
+                    "child_graph_runner": run_child_graph,
                 }
             )
 
