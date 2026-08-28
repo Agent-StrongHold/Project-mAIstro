@@ -85,13 +85,19 @@ policy refuses to let the implementation author make that decision alone.
 
 ## Required-check configuration
 
-`autonomous-merge-admissibility` is intentionally not generated into
-`REQUIRED-CHECKS.md`: that generator currently walks `pull_request` workflows,
-while this gate uses `pull_request_target` so the candidate cannot replace the
-judge. Configure the check as required in GitHub branch protection/rulesets for
-branches where autonomous merging is permitted.
+`autonomous-merge-admissibility` is part of the machine-checked PR check
+contract in `REQUIRED-CHECKS.md`. The contract generator recognizes both
+`pull_request` and `pull_request_target`, so the base-trusted judge does not need
+a parallel manually remembered check list.
 
-Like `gates-ran`, the workflow first becomes live **after** the change adding it
-is on the default branch, because `pull_request_target` loads the base-branch
-copy. The introducing PR therefore requires a human merge. That is also the
-correct outcome because it changes the trusted CI surface.
+`.github/branch-protection.json` requires this context on every declared branch
+tier. Live branch protection must match that reviewed artifact before repository
+auto-merge is enabled. A change to the protection artifact or to the contract
+checker is itself a trusted-surface change, so an agent-authored PR making that
+change must fail autonomous admissibility and take the independent/manual merge
+path.
+
+Like `gates-ran`, the workflow first became live **after** the change adding it
+landed on the default branch, because `pull_request_target` loads the base-branch
+copy. The introducing PR therefore required a human merge. That was also the
+correct outcome because it changed the trusted CI surface.
