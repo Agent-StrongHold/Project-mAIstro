@@ -13,7 +13,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -539,10 +539,48 @@ class Container:
         Settles Attempts whose holder stopped renewing its lease. Attempts
         created without a TTL are never touched, so a deployment that has not
         opted into leases sees this do nothing.
+
+        Each reclaimed Attempt is carried through the canonical lifecycle seam
+        (#462): reconciliation with the ``RECOVERED`` cause parks the NodeRun
+        ``WAITING`` and parks its Run, which is the disposition b36a promised
+        and the sweep previously stopped short of — a reclaimed Attempt whose
+        NodeRun stayed ``RUNNING`` forever was durable state still claiming
+        work was in flight. Both halves are idempotent, so a crash between
+        them heals on any later reconcile of the same Attempt rather than
+        needing this tick to be atomic.
+
+        The tick also refreshes the recovery-visibility gauges (#338): how
+        many Runs are non-terminal, and how old the oldest one is.
         """
+        from maistro.observability.metrics import (
+            non_terminal_runs,
+            oldest_non_terminal_run_age_seconds,
+            recovered_attempts_total,
+        )
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
+            reconciler = AttemptLifecycleReconciler(self.run_store)
+            for attempt in reclaimed:
+                try:
+                    await reconciler.reconcile(attempt)
+                except RunIntegrityError:
+                    # The Attempt is already settled; a NodeRun another path
+                    # terminalized concurrently is not this sweep's to rewrite.
+                    logger.warning(
+                        "reclaimed Attempt %s could not be reconciled",
+                        attempt.attempt_id,
+                        exc_info=True,
+                    )
+            recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
+
+        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
+        non_terminal_runs.set(open_runs)
+        moment = now if now is not None else datetime.now(UTC)
+        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
+        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
