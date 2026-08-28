@@ -167,6 +167,11 @@ def _write_baseline(
     """Rewrite from an actual scan, carrying existing dispositions forward."""
     sources = {di_root.name: di_root.source for di_root in di_roots}
     payload = {
+        # Persisted so a later scan can tell whether the floor it is comparing
+        # against measures the same question. Declared and never recorded, the
+        # constant could be bumped and the gate would still compare a v2
+        # measurement with a v1 ledger and pass (Codex, #534).
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "roots": {
             name: {
                 "source": sources[name],
@@ -175,7 +180,7 @@ def _write_baseline(
                 },
             }
             for name, fields in sorted(current.items())
-        }
+        },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -269,8 +274,8 @@ def _print_failures(unauthorized: list[str], stale: list[str], undocumented: lis
         )
 
 
-def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object]:
-    """The ledger as of the base revision, and the record of where that was.
+def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object, object]:
+    """The ledger as of the base revision, where that was, and its metric version.
 
     Its own function so a test can substitute the trusted state without
     standing up a git history -- the same reason the ledger path is a module
@@ -278,7 +283,9 @@ def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object]:
     """
     prov = _provenance()
     baseline = prov.resolve_baseline(BASELINE, root=ROOT)
-    return _entries_from(baseline.loads(default={})), baseline
+    loaded = baseline.loads(default={})
+    version = loaded.get("metric_definition_version") if isinstance(loaded, dict) else None
+    return _entries_from(loaded), baseline, version
 
 
 def main(argv: list[str]) -> int:
@@ -296,8 +303,14 @@ def main(argv: list[str]) -> int:
 
     prov = _provenance()
     try:
-        trusted, baseline = _trusted_baseline()
+        trusted, baseline, recorded_version = _trusted_baseline()
         prov.require_measurement(current, ratchet=RATCHET, what="DI roots")
+        prov.require_metric_version(
+            METRIC_DEFINITION_VERSION,
+            recorded=recorded_version,
+            ratchet=RATCHET,
+            baseline=baseline,
+        )
         authorized = prov.load_authorizations(RATCHET)
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
@@ -311,6 +324,15 @@ def main(argv: list[str]) -> int:
     added, _, _ = _report(current, trusted)
     _, stale, undocumented = _report(current, recorded)
     unauthorized = [entry for entry in added if entry not in authorized]
+    # An authorization permits the increase; it does not stand in for recording
+    # it. Banked nowhere, the field is absent from the candidate's ledger too,
+    # so after the merge the trusted floor still lacks it and every later run
+    # keeps leaning on the grant (Codex, #534).
+    unbanked = [
+        entry
+        for entry in added
+        if entry in authorized and entry not in {f"{r}.{f}" for r, e in recorded.items() for f in e}
+    ]
 
     print(f"{len(DI_ROOTS)} declared DI root(s), {total} field(s) no production module reads")
     print(
@@ -328,12 +350,26 @@ def main(argv: list[str]) -> int:
         ).render()
     )
 
-    if added and not unauthorized:
+    if added and not unauthorized and not unbanked:
         print(f"\n{len(added)} authorized floor-raise(s) — see the record above.")
+
+    if unbanked:
+        print(
+            f"\n{len(unbanked)} authorized field(s) are NOT in this change's ledger:\n",
+            file=sys.stderr,
+        )
+        for entry in unbanked:
+            print(f"  {entry}", file=sys.stderr)
+        print(
+            "\nAn authorization permits the increase; it does not record it. Run\n"
+            "--update and write the disposition, or the trusted floor never learns\n"
+            "about the field and every later run depends on the grant.",
+            file=sys.stderr,
+        )
 
     _print_failures(unauthorized, stale, undocumented)
 
-    if unauthorized or stale or undocumented:
+    if unauthorized or unbanked or stale or undocumented:
         return 1
 
     print("\nWiring ledger matches the current unread set.")

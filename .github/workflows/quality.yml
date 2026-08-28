@@ -683,7 +683,22 @@ jobs:
       # (#225) each survived audits and were found by grep. Scope is narrow on
       # purpose: the same check over every uncalled public export would seed at
       # 662 entries and teach banking (ADR-082526-1899).
+      # `RATCHET_BASE_REV` names the revision this event is a change *from*.
+      # Without it the checker fell back to `origin/develop`, and on a push to
+      # `develop` that ref IS the pushed HEAD -- so the ledger was read out of
+      # the commit under judgement, which is the self-approval this ratchet
+      # exists to prevent (Codex, #534). A PR based on anything other than
+      # `develop` was judged against the wrong branch for the same reason.
+      #
+      # On the push that creates a branch, `github.event.before` is git's null
+      # SHA. That names no revision, so the checker falls through to the trunk
+      # rather than failing every first push to a `feat/*` branch.
       - name: wiring reads ratchet (DI attributes nothing reads back)
+        env:
+          RATCHET_BASE_REV: >-
+            ${{ github.event_name == 'pull_request'
+                && github.event.pull_request.base.sha
+                || github.event.before }}
         run: uv run python scripts/check-wiring-reads.py
 
       # The reachability ratchet says *how much* is unwired; the convergence

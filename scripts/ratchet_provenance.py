@@ -107,6 +107,11 @@ def _git(args: list[str], *, root: Path) -> subprocess.CompletedProcess[str]:
         raise RatchetProvenanceError(f"git {' '.join(args)} could not run: {exc}") from exc
 
 
+def _is_null_sha(rev: str) -> bool:
+    """git's all-zero sentinel -- "there was no previous commit", not a commit."""
+    return set(rev.strip()) == {"0"} and len(rev.strip()) in (40, 64)
+
+
 def _resolve_commit(rev: str, *, root: Path) -> str:
     proc = _git(["rev-parse", "--verify", f"{rev}^{{commit}}"], root=root)
     if proc.returncode != 0:
@@ -117,6 +122,31 @@ def _resolve_commit(rev: str, *, root: Path) -> str:
             "`fetch-depth: 0` is what gives the job its merge base."
         )
     return proc.stdout.strip()
+
+
+class SelfReferentialBaseline(RatchetProvenanceError):
+    """The base resolves to the candidate itself, so the ledger is its own oracle.
+
+    The route: `quality.yml` runs on `push:` as well as `pull_request:` and did
+    not name a base, so on a push to `develop` the fallback resolved
+    `origin/develop` to the pushed HEAD. The "trusted" baseline was then read
+    out of the commit under judgement, and a regression and its baseline update
+    in one push were mutually approving again (Codex, #534).
+
+    The condition is narrow on purpose. A merge base equal to HEAD is *normal*
+    -- a branch that has not committed anything yet sits exactly on its fork
+    point, and judging it against that fork point is right. What is never
+    right is the base *ref itself* resolving to HEAD while the worktree matches
+    HEAD, because then the measured tree and the trusted tree are the same
+    bytes and the comparison cannot fail. Modified tracked files are what makes
+    the local pre-commit loop a real comparison -- worktree scan against the
+    committed ledger -- so that case stays a normal run.
+
+    Refused rather than downgraded to `worktree`: a run that cannot compare is
+    a run that must not report a verdict, and the workflow now names the base
+    explicitly, so reaching this is a broken configuration rather than a state
+    anyone works in.
+    """
 
 
 def _merge_base(base_sha: str, *, root: Path) -> str:
@@ -135,6 +165,26 @@ def _merge_base(base_sha: str, *, root: Path) -> str:
     return proc.stdout.strip()
 
 
+def _refuse_self_reference(base_sha: str, *, root: Path) -> None:
+    """Refuse a base that is the tree being measured. See `SelfReferentialBaseline`."""
+    head = _git(["rev-parse", "HEAD"], root=root)
+    if head.returncode != 0 or base_sha != head.stdout.strip():
+        return
+    # Tracked modifications only: an untracked file an earlier CI step wrote
+    # would otherwise read as "this is somebody's working copy" and quietly
+    # switch the guard off in exactly the job it exists for.
+    dirty = _git(["status", "--porcelain", "--untracked-files=no"], root=root)
+    if dirty.returncode == 0 and dirty.stdout.strip():
+        return
+    raise SelfReferentialBaseline(
+        f"the base revision resolves to HEAD itself ({base_sha[:12]}) and the worktree "
+        "matches it, so the baseline would be read from the very commit under "
+        "judgement and the comparison could not fail.\n"
+        f"Name the event's own base explicitly in {BASE_REV_ENV} -- the pull "
+        "request's base SHA, or the pre-push revision for a push."
+    )
+
+
 def _base_rev(explicit: str | None, *, root: Path) -> str | None:
     """The revision to judge against, or None to judge against the worktree.
 
@@ -142,11 +192,16 @@ def _base_rev(explicit: str | None, *, root: Path) -> str | None:
     an error, never a downgrade to worktree. The default trunk ref is used only
     when the repository actually has it, which is what keeps a fresh clone or a
     detached tree from failing every gate.
+
+    The one exception is git's null SHA, which is what `github.event.before`
+    carries on the first push to a branch. It names no revision at all, so it
+    is not an unusable base -- it is the absence of one, and the fallback is
+    the right answer.
     """
-    if explicit:
+    if explicit and not _is_null_sha(explicit):
         return explicit
     from_env = os.environ.get(BASE_REV_ENV, "").strip()
-    if from_env:
+    if from_env and not _is_null_sha(from_env):
         return from_env
     probe = _git(["rev-parse", "--verify", f"{DEFAULT_BASE_REV}^{{commit}}"], root=root)
     return DEFAULT_BASE_REV if probe.returncode == 0 else None
@@ -163,7 +218,9 @@ def resolve_baseline(path: Path, *, base: str | None = None, root: Path = ROOT) 
         text = path.read_text(encoding="utf-8") if path.exists() else None
         return Baseline(text=text, origin="worktree", base_sha=None, path=path)
 
-    commit = _merge_base(_resolve_commit(rev, root=root), root=root)
+    base_sha = _resolve_commit(rev, root=root)
+    _refuse_self_reference(base_sha, root=root)
+    commit = _merge_base(base_sha, root=root)
     try:
         rel = path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError as exc:
@@ -173,8 +230,20 @@ def resolve_baseline(path: Path, *, base: str | None = None, root: Path = ROOT) 
 
     exists = _git(["cat-file", "-e", f"{commit}:{rel}"], root=root)
     if exists.returncode != 0:
-        # Absent at base is a real answer, not a failure: the ratchet is new,
-        # so the trusted baseline tolerates nothing.
+        # "Absent at base" is a real answer -- a new ratchet tolerates nothing.
+        # "Could not read the base" is the documented non-passing state. Both
+        # come back as a nonzero `cat-file`, and treating every nonzero as the
+        # first lets a zero-debt ratchet pass without ever reading its oracle
+        # (Codex, #534). So the commit itself is probed: if the tree reads, the
+        # path is genuinely missing; if it does not, the base is unreadable.
+        readable = _git(["cat-file", "-e", f"{commit}^{{tree}}"], root=root)
+        if readable.returncode != 0:
+            raise RatchetProvenanceError(
+                f"base commit {commit} could not be read: "
+                f"{(readable.stderr or exists.stderr).strip()}\n"
+                "An unreadable oracle is not an empty one. A missing or corrupt "
+                "object, or a partial fetch, produces this."
+            )
         return Baseline(text=None, origin="base", base_sha=commit, path=path)
 
     shown = _git(["show", f"{commit}:{rel}"], root=root)
@@ -250,20 +319,37 @@ class Provenance:
 AUTHORIZATIONS = ROOT / "quality" / "ratchet-authorizations.json"
 
 
-def load_authorizations(ratchet: str, *, path: Path = AUTHORIZATIONS) -> dict[str, str]:
+def load_authorizations(
+    ratchet: str,
+    *,
+    path: Path = AUTHORIZATIONS,
+    base: str | None = None,
+    root: Path = ROOT,
+) -> dict[str, str]:
     """Entries this ratchet is explicitly allowed to newly tolerate.
+
+    Read **from the base revision**, exactly like the ledger it authorizes an
+    increase to. Read from the worktree -- as it was -- the same commit could
+    add the unread field *and* the grant permitting it, so `unauthorized` came
+    back empty and the self-approval path this module exists to close stayed
+    open one level up. Requiring a separate file and prose reasons made the
+    grant reviewable; it did not make it *prior* (Codex, #534).
+
+    The consequence is deliberate and worth stating: a new grant does not take
+    effect in the change that introduces it. Authorizing a floor-raise is now
+    two merges -- the grant, then the regression it permits -- which is what
+    "independently established" has to mean when the only other reviewer is the
+    author.
 
     Each record must name an owner, an issue, and a reason. The point is not
     that a machine can tell a good reason from a bad one -- it cannot -- but
-    that raising a floor becomes a separate, reviewable edit that a reader can
-    weigh, rather than a line that appears inside a regenerated ledger.
+    that raising a floor becomes a separate, reviewable, *already-landed* edit.
     """
-    if not path.exists():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RatchetProvenanceError(f"{path.name} is not valid JSON: {exc}") from exc
+    baseline = resolve_baseline(path, base=base, root=root)
+    loaded = baseline.loads(default={})
+    if not isinstance(loaded, dict):
+        where = f"{baseline.base_sha}:{path.name}" if baseline.base_sha else path.name
+        raise RatchetProvenanceError(f"{where} is not a JSON object of ratchet grants")
 
     granted: dict[str, str] = {}
     for entry, record in (loaded.get(ratchet) or {}).items():
@@ -318,6 +404,7 @@ __all__ = [
     "Baseline",
     "Provenance",
     "RatchetProvenanceError",
+    "SelfReferentialBaseline",
     "head_sha",
     "load_authorizations",
     "require_measurement",
