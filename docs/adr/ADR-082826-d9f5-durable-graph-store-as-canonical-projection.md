@@ -78,6 +78,45 @@ Deliberately not decided here: the physical schema for traversal state, and whet
 `SqliteDurableRunStore` keeps a homelab twin. Both are implementation questions for the spec this
 ADR will carry, and neither changes the boundary above.
 
+## How: the executor obtains identity, rather than an adapter replaying it
+
+Recorded here because the first plausible route is a trap, and the evidence
+against it is cheap and worth keeping.
+
+The tempting route is an adapter: implement `DurableRunStore` over the canonical
+store and have `update()` diff the incoming record against what is stored,
+replaying the difference as transitions. It is reversible and its test is the
+existing conformance suite. It does not work, for a reason that is structural
+rather than fiddly:
+
+**Identity is minted on the models, and the canonical creates do not accept it.**
+`Run`, `NodeRun` and `Attempt` each carry `Field(default_factory=_id)`, and
+`create_run`, `create_node_run` and `create_attempt` take no id parameter — each
+constructs its entity and lets it mint. The executor, meanwhile, constructs those
+models itself and hands finished documents to `create()`/`update()`, so every id
+in a `DurableRunRecord` exists before the canonical store has seen it.
+
+An adapter would therefore need all three creates to accept externally-minted
+ids, purely so a document-shaped caller can keep identities it assigned first.
+That inverts identity ownership in the store that this ADR is making the system
+of record — the canonical store would be told what its identities are by its
+caller. A second mismatch sits behind it: the executor is a whole-document
+writer (`store.update(_replace_record(record, version=record.version + 1, ...))`)
+against a store that exposes only lifecycle-validated transitions.
+
+So the direction is the other one: **traversal obtains identity from the
+canonical store as it goes**, and the `DurableRunRecord` becomes something
+assembled from what the store returned plus the graph-specific state, rather
+than something the executor mints and then persists. Concretely that means the
+executor's construction sites — `traversal._new_run` and the NodeRun/Attempt
+creations — become store calls, which is more surgical than "rewrite the
+executor" and is the same change either way.
+
+`execution_store.py` is the asset here: it is already a `RunStore`-compatible
+view over durable records, so `AttemptExecutionService` speaks `RunStore`
+against graph work today. The Attempt half of the seam exists; what moves is
+where the identities come from.
+
 ## Consequences
 
 ### Positive
