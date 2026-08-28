@@ -32,7 +32,6 @@ async def wired():
         admitter,
         _templates,
         _schedules,
-        _node_templates,
     ) = await wire_execution_spine(None, workspace_id="test-workspace")
     configure_task_queue(admitter=admitter)
     try:

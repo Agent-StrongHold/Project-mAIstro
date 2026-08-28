@@ -40,7 +40,9 @@ class PgGraphTemplateStore:
                        (template_id, version, workspace_id, name, content_hash, payload)
                    VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)
                    ON CONFLICT (template_id, version) DO UPDATE
-                       SET payload = EXCLUDED.payload
+                       SET workspace_id = EXCLUDED.workspace_id,
+                           name         = EXCLUDED.name,
+                           payload      = EXCLUDED.payload
                        WHERE graph_templates.content_hash = EXCLUDED.content_hash
                    RETURNING template_id""",
                 template.template_id,
@@ -112,6 +114,18 @@ class PgNodeTemplateStore:
         GraphTemplate sibling records: on conflict this has to tell "already
         registered, same content" from "already registered, different content",
         and `DO NOTHING` returns no row either way.
+
+        **Every promoted column moves with the payload, not just the payload.**
+        `workspace_id`, `name` and `node_type` are copies of payload fields,
+        lifted out so a listing is an index scan rather than a scan of JSON --
+        and the content hash excludes `workspace_id` and includes the others
+        only as content. So re-registering identical content under a different
+        Workspace matched the predicate and updated the payload alone, leaving
+        the column behind: `get` then returned a template naming the new
+        Workspace while `list_for_workspace` still filed it under the old one,
+        and neither the SQLite nor the in-memory store agreed with either
+        (Codex, #563). A promoted column that can disagree with the payload it
+        was promoted from is worse than no column.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -119,7 +133,10 @@ class PgNodeTemplateStore:
                        (template_id, version, workspace_id, name, node_type, content_hash, payload)
                    VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb)
                    ON CONFLICT (template_id, version) DO UPDATE
-                       SET payload = EXCLUDED.payload
+                       SET workspace_id = EXCLUDED.workspace_id,
+                           name         = EXCLUDED.name,
+                           node_type    = EXCLUDED.node_type,
+                           payload      = EXCLUDED.payload
                        WHERE node_templates.content_hash = EXCLUDED.content_hash
                    RETURNING template_id""",
                 template.template_id,

@@ -16,6 +16,7 @@ comparison rather than a claim.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -31,38 +32,82 @@ from maistro.graph.templates import (
 WORKSPACE = "node-template-workspace"
 
 
+class _Backend:
+    """A backend, and the ability to open a SECOND store over the same state.
+
+    `reopen()` is what makes AC-12 checkable. The criterion is about provenance
+    surviving a restart, and a test holding one store instance cannot see the
+    difference between "persisted" and "still in the object I just put it in" --
+    which is exactly what the first version of this suite failed to distinguish
+    (Codex, #563). A durable backend hands back a new store over the same
+    database; the in-memory reference cannot, and says so.
+    """
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.durable = kind != "memory"
+        self._pg_pool: Any = None
+        self._path: Any = None
+        self._connections: list[Any] = []
+        self._memory: Any = None
+
+    async def store(self) -> Any:
+        if self.kind == "postgres":
+            from maistro.graph.pg_templates import PgNodeTemplateStore
+
+            return PgNodeTemplateStore(self._pg_pool)
+        if self.kind == "sqlite":
+            import aiosqlite
+
+            from maistro.graph.sqlite_templates import SqliteNodeTemplateStore
+
+            conn = await aiosqlite.connect(self._path)
+            self._connections.append(conn)
+            made = SqliteNodeTemplateStore(conn)
+            await made.ensure_schema()
+            return made
+        return self._memory
+
+    async def close(self) -> None:
+        # Closed rather than dropped: aiosqlite runs its connection on a
+        # non-daemon thread, and a live one blocks interpreter shutdown.
+        for conn in self._connections:
+            await conn.close()
+
+
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
-async def store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+async def backend(request: pytest.FixtureRequest, pg_pool: Any, tmp_path: Any) -> Any:
     """All three backends the spine can select.
 
     The PostgreSQL leg must actually run in CI rather than skip — #135's
     lesson, and the reason `MAISTRO_REQUIRE_PG_LEGS` exists: a skipped leg is
     untested, not passing, and the durable store is the only one where the
     JSONB round trip and the upsert predicate mean anything.
+
+    SQLite is a file rather than `:memory:` so a reopen is a real reopen. A
+    `:memory:` database lives inside its connection, so "open a second store"
+    would have meant "open an empty one" — which would have made the reload
+    test pass for the wrong reason on one backend and fail on the other.
     """
+    made = _Backend(request.param)
     if request.param == "postgres":
         if pg_pool is None:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-        from maistro.graph.pg_templates import PgNodeTemplateStore
+        made._pg_pool = pg_pool
+    elif request.param == "sqlite":
+        made._path = tmp_path / "node_templates.db"
+    else:
+        made._memory = InMemoryNodeTemplateStore()
+    try:
+        yield made
+    finally:
+        await made.close()
 
-        yield PgNodeTemplateStore(pg_pool)
-        return
-    if request.param == "sqlite":
-        import aiosqlite
 
-        from maistro.graph.sqlite_templates import SqliteNodeTemplateStore
-
-        # Closed rather than dropped: aiosqlite runs its connection on a
-        # non-daemon thread, and a live one blocks interpreter shutdown.
-        conn = await aiosqlite.connect(":memory:")
-        made = SqliteNodeTemplateStore(conn)
-        await made.ensure_schema()
-        try:
-            yield made
-        finally:
-            await conn.close()
-        return
-    yield InMemoryNodeTemplateStore()
+@pytest.fixture
+async def store(backend: Any) -> Any:
+    """The one store most of these tests need."""
+    return await backend.store()
 
 
 def _template(
@@ -124,25 +169,57 @@ async def test_the_content_hash_survives_the_round_trip(store: Any, request: Any
 
 
 @pytest.mark.ac("SPEC-081226-bb3a/AC-12")
-async def test_provenance_resolves_identically_after_a_reopen(store: Any, request: Any) -> None:
-    """AC-12, stated as the round trip it is about.
+async def test_provenance_resolves_identically_after_a_reopen(backend: Any, request: Any) -> None:
+    """AC-12, through an actual reopen rather than the same store object.
 
-    The Node is instantiated from the template held in memory; the template is
-    then read back out of the store, and the Node's recorded provenance must
-    still name it exactly — same id, same version, same hash.
+    The first version of this held one store instance and called `get()` on it,
+    which proves nothing about a restart: the in-memory leg would lose
+    everything, and the SQLite leg kept the same connection open. A marker that
+    promotes a criterion to `covered` while the test cannot fail for the reason
+    the criterion names is worse than no marker (Codex, #563).
+
+    So: register through one store, drop it, open a second over the same
+    database, and require the Node's recorded provenance to still name the
+    template exactly — same id, same version, same hash.
     """
+    if not backend.durable:
+        pytest.skip("the in-memory reference has no restart to survive; that is the point")
+
     template_id = _ids(request)
     template = _template(template_id=template_id)
-    await store.put(template)
+    writer = await backend.store()
+    await writer.put(template)
     node = template.instantiate()
+    del writer
 
-    reopened = await store.get(template_id, version=1)
+    reader = await backend.store()
+    reopened = await reader.get(template_id, version=1)
 
     assert reopened is not None
     assert node.source_template is not None
     assert node.source_template.template_id == reopened.template_id
     assert node.source_template.template_version == reopened.version
     assert node.source_template.template_hash == reopened.content_hash
+
+
+async def test_the_reference_keeps_provenance_within_one_process(store: Any, request: Any) -> None:
+    """The in-memory leg's half of the same property, unmarked.
+
+    It cannot answer AC-12 — there is no reopen — but the contract it defines
+    still has to hold, and leaving it untested because it cannot carry the
+    marker would drop the reference out of the comparison the durable stores
+    are measured against.
+    """
+    template_id = _ids(request)
+    template = _template(template_id=template_id)
+    await store.put(template)
+    node = template.instantiate()
+
+    found = await store.get(template_id, version=1)
+
+    assert found is not None
+    assert node.source_template is not None
+    assert node.source_template.template_hash == found.content_hash
 
 
 # ── versions ──────────────────────────────────────────────────────
@@ -218,6 +295,61 @@ async def test_the_refused_write_leaves_the_stored_version_intact(store: Any, re
     found = await store.get(template_id, version=1)
     assert found is not None
     assert found.parameters == {"model": "haiku"}
+
+
+async def test_two_concurrent_publishers_cannot_both_win(store: Any, request: Any) -> None:
+    """The conflict decision is one statement, not a read then a write.
+
+    `aiosqlite` serialises individual statements, not a read-then-write pair
+    spanning an `await`. So two coroutines publishing different content under
+    one `(template_id, version)` could both observe no row, and the second
+    `INSERT OR REPLACE` would overwrite the first silently — destroying the
+    immutable version this store exists to keep, without raising (Codex, #563).
+
+    Exactly one must win, and whichever loses must raise rather than be
+    absorbed. Which one wins is not the property; that only one does, is.
+    """
+    template_id = _ids(request)
+    first = _template(template_id=template_id, parameters={"model": "haiku"})
+    second = _template(template_id=template_id, parameters={"model": "opus"})
+
+    results = await asyncio.gather(store.put(first), store.put(second), return_exceptions=True)
+
+    refused = [r for r in results if isinstance(r, NodeTemplateConflict)]
+    accepted = [r for r in results if not isinstance(r, BaseException)]
+    assert len(accepted) == 1, results
+    assert len(refused) == 1, results
+
+    stored = await store.get(template_id, version=1)
+    assert stored is not None
+    assert stored.content_hash == accepted[0].content_hash
+
+
+async def test_re_registering_under_another_workspace_moves_every_column(
+    store: Any, request: Any
+) -> None:
+    """A promoted column may not disagree with the payload it was promoted from.
+
+    `workspace_id`, `name` and `node_type` are copies of payload fields, lifted
+    into columns so a listing is an index scan rather than a scan of JSON. The
+    content hash excludes `workspace_id`, so identical content under a
+    different Workspace matches the upsert predicate — and PostgreSQL updated
+    the payload alone, leaving the column behind. `get` then reported the new
+    Workspace while `list_for_workspace` still filed it under the old one, and
+    neither SQLite nor the reference agreed with either (Codex, #563).
+    """
+    template_id = _ids(request)
+    old_workspace = f"{WORKSPACE}-{template_id}-old"
+    new_workspace = f"{WORKSPACE}-{template_id}-new"
+    await store.put(_template(template_id=template_id, workspace_id=old_workspace))
+
+    await store.put(_template(template_id=template_id, workspace_id=new_workspace))
+
+    found = await store.get(template_id, version=1)
+    assert found is not None
+    assert found.workspace_id == new_workspace
+    assert [t.template_id for t in await store.list_for_workspace(new_workspace)] == [template_id]
+    assert await store.list_for_workspace(old_workspace) == []
 
 
 # ── listing ───────────────────────────────────────────────────────

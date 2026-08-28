@@ -49,6 +49,7 @@ from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
     wire_execution_spine,
+    wire_node_template_store,
 )
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
@@ -927,7 +928,6 @@ async def create_container(
         task_admitter,
         graph_template_store,
         schedule_store,
-        node_template_store,
     ) = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
@@ -940,6 +940,7 @@ async def create_container(
         # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
+    node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
