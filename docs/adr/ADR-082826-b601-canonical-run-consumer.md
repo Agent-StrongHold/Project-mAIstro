@@ -111,6 +111,10 @@ to the durable Graph execution path, and bridging a canonically admitted
   the tick a no-op.
 - **AC-5**: `ScheduleRunAdmitter` admits the Run `QUEUED` in the same insert
   that creates it.
+  <!-- ac-state: unproven AC-5 - the admitter has no production caller until
+       the live Hive scheduler moves onto it (#231); the behavior is tested,
+       and the module leaves the reachability baseline with that wiring -->
+
 - **AC-6**: `RunStore.list_by_status` returns only the requested status,
   oldest first, bounded by `limit`, on the reference store and the durable
   backends.
