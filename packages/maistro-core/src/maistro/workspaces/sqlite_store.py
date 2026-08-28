@@ -126,6 +126,7 @@ class SqliteWorkspaceStore:
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
+        """Return the Workspace, or ``None`` when no record has that id."""
         async with self._conn.execute(
             "SELECT payload FROM canonical_workspaces WHERE workspace_id = ?",
             (workspace_id,),
@@ -134,6 +135,7 @@ class SqliteWorkspaceStore:
         return Workspace.model_validate_json(row[0]) if row is not None else None
 
     async def update(self, workspace: Workspace) -> Workspace:
+        """Persist a changed Workspace and stamp ``updated_at``."""
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         cursor = await self._conn.execute(
             """UPDATE canonical_workspaces
@@ -153,6 +155,7 @@ class SqliteWorkspaceStore:
         return updated
 
     async def delete(self, workspace_id: str) -> None:
+        """Remove the Workspace, its memberships, and its Projects."""
         cursor = await self._conn.execute(
             "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
             (workspace_id,),
@@ -166,6 +169,7 @@ class SqliteWorkspaceStore:
             purge(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
+        """Workspaces the user is a member of, newest first."""
         async with self._conn.execute(
             """SELECT w.payload
                  FROM canonical_workspaces w
@@ -179,6 +183,7 @@ class SqliteWorkspaceStore:
         return [Workspace.model_validate_json(row[0]) for row in rows]
 
     async def list_memberships(self, workspace_id: str) -> list[WorkspaceMembership]:
+        """Every membership in the Workspace, ordered by (added_at, user_id)."""
         await self._require_workspace(workspace_id)
         async with self._conn.execute(
             """SELECT payload FROM canonical_workspace_memberships
@@ -195,6 +200,7 @@ class SqliteWorkspaceStore:
         *,
         user_id: str,
     ) -> WorkspaceMembership | None:
+        """One user's membership, or ``None`` when they are not a member."""
         await self._require_workspace(workspace_id)
         async with self._conn.execute(
             """SELECT payload FROM canonical_workspace_memberships
@@ -211,6 +217,7 @@ class SqliteWorkspaceStore:
         user_id: str,
         role: WorkspaceRole,
     ) -> WorkspaceMembership:
+        """Create or re-role a membership, refusing to strip the last owner."""
         await self._begin_immediate()
         try:
             await self._require_workspace(workspace_id)
@@ -236,6 +243,7 @@ class SqliteWorkspaceStore:
         return membership
 
     async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
+        """Drop a membership, refusing to strip the last owner."""
         await self._begin_immediate()
         try:
             await self._require_workspace(workspace_id)

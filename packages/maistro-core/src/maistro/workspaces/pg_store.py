@@ -36,7 +36,7 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
@@ -108,6 +108,7 @@ class PgWorkspaceStore:
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
+        """Return the Workspace, or ``None`` when no record has that id."""
         async with self._pool.acquire() as conn:
             payload = await conn.fetchval(
                 "SELECT payload FROM canonical_workspaces WHERE workspace_id = $1",
@@ -116,6 +117,7 @@ class PgWorkspaceStore:
         return model_of(Workspace, payload) if payload is not None else None
 
     async def update(self, workspace: Workspace) -> Workspace:
+        """Persist a changed Workspace and stamp ``updated_at``."""
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         async with self._pool.acquire() as conn:
             status = await conn.execute(
@@ -134,6 +136,7 @@ class PgWorkspaceStore:
         return updated
 
     async def delete(self, workspace_id: str) -> None:
+        """Remove the Workspace, its memberships, and its Projects."""
         async with self._pool.acquire() as conn:
             status = await conn.execute(
                 "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
@@ -148,6 +151,7 @@ class PgWorkspaceStore:
             purge(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
+        """Workspaces the user is a member of, newest first."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT w.payload
@@ -161,6 +165,7 @@ class PgWorkspaceStore:
         return [model_of(Workspace, row["payload"]) for row in rows]
 
     async def list_memberships(self, workspace_id: str) -> list[WorkspaceMembership]:
+        """Every membership in the Workspace, ordered by (added_at, user_id)."""
         async with self._pool.acquire() as conn:
             await self._require_workspace(conn, workspace_id)
             rows = await conn.fetch(
@@ -177,6 +182,7 @@ class PgWorkspaceStore:
         *,
         user_id: str,
     ) -> WorkspaceMembership | None:
+        """One user's membership, or ``None`` when they are not a member."""
         async with self._pool.acquire() as conn:
             await self._require_workspace(conn, workspace_id)
             payload = await conn.fetchval(
@@ -194,6 +200,7 @@ class PgWorkspaceStore:
         user_id: str,
         role: WorkspaceRole,
     ) -> WorkspaceMembership:
+        """Create or re-role a membership, refusing to strip the last owner."""
         async with self._pool.acquire() as conn, conn.transaction():
             await self._lock_workspace(conn, workspace_id)
             existing_payload = await conn.fetchval(
@@ -224,6 +231,7 @@ class PgWorkspaceStore:
         return membership
 
     async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
+        """Drop a membership, refusing to strip the last owner."""
         async with self._pool.acquire() as conn, conn.transaction():
             await self._lock_workspace(conn, workspace_id)
             role = await conn.fetchval(
@@ -243,6 +251,28 @@ class PgWorkspaceStore:
                 user_id,
             )
 
+    #: Two whole statements rather than one assembled from a fragment. The
+    #: assembled version was flagged by bandit (B608, string-based query
+    #: construction) and the finding was fair even though the only two values
+    #: it could interpolate were literals in this module: a reader has to
+    #: reconstruct the query to see that, and the next edit is one f-slot away
+    #: from being a real injection. Each statement is now readable as what
+    #: PostgreSQL receives.
+    _INSERT_MEMBERSHIP: Final = """
+        INSERT INTO canonical_workspace_memberships
+            (workspace_id, user_id, role, added_at, payload)
+        VALUES ($1, $2, $3, $4, $5)
+    """
+    _UPSERT_MEMBERSHIP: Final = """
+        INSERT INTO canonical_workspace_memberships
+            (workspace_id, user_id, role, added_at, payload)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (workspace_id, user_id) DO UPDATE
+            SET role = EXCLUDED.role,
+                added_at = EXCLUDED.added_at,
+                payload = EXCLUDED.payload
+    """
+
     async def _insert_membership(
         self,
         conn: Any,
@@ -250,19 +280,8 @@ class PgWorkspaceStore:
         *,
         on_conflict_update: bool = False,
     ) -> None:
-        conflict = (
-            """ON CONFLICT (workspace_id, user_id) DO UPDATE
-                   SET role = EXCLUDED.role,
-                       added_at = EXCLUDED.added_at,
-                       payload = EXCLUDED.payload"""
-            if on_conflict_update
-            else ""
-        )
         await conn.execute(
-            f"""INSERT INTO canonical_workspace_memberships
-                    (workspace_id, user_id, role, added_at, payload)
-                VALUES ($1, $2, $3, $4, $5)
-                {conflict}""",
+            self._UPSERT_MEMBERSHIP if on_conflict_update else self._INSERT_MEMBERSHIP,
             membership.workspace_id,
             membership.user_id,
             membership.role.value,
