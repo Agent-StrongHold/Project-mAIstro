@@ -15,6 +15,7 @@ can report on GitHub's synthetic merge-group SHA.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -97,6 +98,89 @@ class TestRendering:
     def test_a_job_without_a_name_is_listed_by_its_id(self, gate) -> None:
         rows = [("W", "job-id", "every PR")]
         assert "`job-id`" in gate.render(rows)
+
+
+class TestMergeQueueRatchet:
+    @staticmethod
+    def _write_contracts(tmp_path: Path, *, method: str = "SQUASH", max_merge: int = 1):
+        protection = tmp_path / "protection.json"
+        protection.write_text(
+            json.dumps(
+                {
+                    "branches": {
+                        "develop": {"required_status_checks": {"contexts": ["J"]}}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        queue = tmp_path / "queue.json"
+        queue.write_text(
+            json.dumps(
+                {
+                    "branches": {
+                        "develop": {
+                            "merge_method": method,
+                            "max_entries_to_merge": max_merge,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return protection, queue
+
+    def test_a_required_producer_without_merge_group_is_rejected(self, gate, tmp_path, monkeypatch):
+        protection, queue = self._write_contracts(tmp_path)
+        workflow = tmp_path / "w.yml"
+        workflow.write_text(
+            yaml.safe_dump({"name": "W", "on": {"pull_request": None}, "jobs": {"j": {"name": "J"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "PROTECTION", protection)
+        monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
+        assert any("no merge_group" in gap for gap in gate.merge_group_gaps([("W", "J", "every PR")]))
+
+    def test_squash_is_required(self, gate, tmp_path, monkeypatch):
+        protection, queue = self._write_contracts(tmp_path, method="MERGE")
+        workflow = tmp_path / "w.yml"
+        workflow.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "W",
+                    "on": {"merge_group": {"types": ["checks_requested"]}},
+                    "jobs": {"j": {"name": "J"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "PROTECTION", protection)
+        monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
+        assert "develop merge queue must use merge_method=SQUASH" in gate.merge_group_gaps(
+            [("W", "J", "every PR")]
+        )
+
+    def test_initial_rollout_is_one_pr_per_merge_group(self, gate, tmp_path, monkeypatch):
+        protection, queue = self._write_contracts(tmp_path, max_merge=2)
+        workflow = tmp_path / "w.yml"
+        workflow.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "W",
+                    "on": {"merge_group": {"types": ["checks_requested"]}},
+                    "jobs": {"j": {"name": "J"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "PROTECTION", protection)
+        monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
+        assert "develop merge queue must initially merge one PR per group" in gate.merge_group_gaps(
+            [("W", "J", "every PR")]
+        )
 
 
 class TestAgainstTheRealWorkflows:
