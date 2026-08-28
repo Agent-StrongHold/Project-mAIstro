@@ -20,6 +20,7 @@ from maistro.graph.durable_runs.executor import (
     run_durable_graph,
 )
 from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun
@@ -219,6 +220,23 @@ class TestSynthDepth:
             NodeResult(success=True, output=_SynthOut(success=True, dispatched=False)),
         )
         assert updated.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 3
+
+    async def test_dispatched_synth_reaches_hard_cap_for_next_nested_synth(self) -> None:
+        record = self._record_at_depth(depth=2)
+        spec = record.run.graph.materialize().nodes[0]
+        updated = _maybe_increment_synth_depth(
+            record,
+            spec,
+            NodeResult(success=True, output=_SynthOut(success=True, dispatched=True)),
+        )
+        assert updated.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 3
+
+        nested = await AgentSynthDagNode(max_depth=3).run(
+            {"objective": "nested work"},
+            _build_ctx(updated, "n1"),
+        )
+        assert nested.output.success is False
+        assert "recursion depth cap reached" in nested.output.error
 
     def test_refused_synth_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=False))
