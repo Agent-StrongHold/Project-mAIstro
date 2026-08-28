@@ -210,6 +210,12 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
     limited = await store.list_by_status(status, limit=1)
     assert [run.run_id for run in limited] == [older.run_id]
 
+    scoped = await store.list_by_status(status, limit=10, project_id=project_id)
+    assert [run.run_id for run in scoped[:2]] == [older.run_id, newer.run_id]
+    assert await store.list_by_status(status, limit=10, project_id="project-elsewhere") == []
+    with pytest.raises(ValueError):
+        await store.list_by_status(status, limit=0)
+
 
 @pytest.mark.ac("ADR-082826-b601/AC-6")
 async def test_list_by_status_conformance_on_the_reference_store(memory_spine: Any) -> None:
@@ -230,3 +236,194 @@ async def test_list_by_status_conformance_on_the_reference_store(memory_spine: A
     listed = await store.list_by_status(RunStatus.QUEUED, limit=10)
     assert [run.run_id for run in listed] == [older.run_id, newer.run_id]
     assert await store.list_by_status(RunStatus.QUEUED, limit=1) == listed[:1]
+
+
+# --- the tick's failure arms -------------------------------------------------
+
+
+class _UnbuildableTickNode(BaseNode[_TickIn, _TickOut]):
+    """Registered, so eligibility passes — but construction needs wiring the
+    consumer does not have. Resolving it is the infrastructure failure that
+    happens before any NodeRun exists."""
+
+    kind: ClassVar[str] = "test.consumer.unbuildable"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _TickIn
+    output_schema: ClassVar[type[BaseModel]] = _TickOut
+
+    def __init__(self) -> None:
+        raise RuntimeError("this kind needs wiring the consumer does not carry")
+
+    async def _execute(self, inputs: _TickIn, ctx: NodeContext) -> _TickOut:
+        raise AssertionError("never constructed")
+
+
+class _RawOutTickNode(BaseNode[_TickIn, _TickOut]):
+    """Hands back a plain-dict output — legal per NodeResult — so consumption
+    must persist it as-is rather than assuming a model_dump."""
+
+    kind: ClassVar[str] = "test.consumer.rawout"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _TickIn
+    output_schema: ClassVar[type[BaseModel]] = _TickOut
+
+    async def _execute(self, inputs: _TickIn, ctx: NodeContext) -> _TickOut:
+        return _TickOut(text="ignored")
+
+    async def run(self, inputs: Any, ctx: NodeContext) -> Any:
+        result = await super().run(inputs, ctx)
+        return result.model_copy(update={"output": {"text": "raw"}})
+
+
+for _extra in (_UnbuildableTickNode, _RawOutTickNode):
+    with contextlib.suppress(ValueError):
+        register_node(_extra)
+
+
+class _Proxy:
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def test_a_lost_claim_is_skipped_rather_than_failed() -> None:
+    """The QUEUED→RUNNING mutex race from the loser's side: skip, touch nothing."""
+    container = await _container()
+    run_id = await _admit_schedule_run(container)
+
+    class _ClaimVeto(_Proxy):
+        async def transition_run(self, run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+            if target is RunStatus.RUNNING:
+                raise RuntimeError("claimed by a concurrent tick")
+            return await self._inner.transition_run(run_id, target, **kwargs)
+
+    container.run_store = _ClaimVeto(container.run_store)  # type: ignore[assignment]
+
+    assert await container.execute_admitted_runs() == 0
+
+    run = await container.run_store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.QUEUED
+    assert await container.run_store.list_node_runs(run_id) == []
+
+
+async def test_infrastructure_failure_before_any_record_fails_the_claimed_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Execution dying before a NodeRun exists must not leave a RUNNING Run
+    indistinguishable from a crashed process: it terminalizes as FAILED."""
+    import logging
+
+    container = await _container()
+    run_id = await _admit_schedule_run(container, kind=_UnbuildableTickNode.kind)
+
+    with caplog.at_level(logging.WARNING):
+        executed = await container.execute_admitted_runs()
+
+    assert executed == 1
+    assert "failed during consumption" in caplog.text
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error == "consumption_error"
+    assert await container.run_store.list_node_runs(run_id) == []
+
+
+async def test_settlement_respects_a_run_that_left_records() -> None:
+    """With a NodeRun present, the parked/derived state is already the answer."""
+    container = await _container()
+    run_id = await _admit_schedule_run(container)
+    assert await container.execute_admitted_runs() == 1
+
+    await container._settle_unstarted_consumption(run_id)
+
+    run = await container.run_store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.COMPLETED
+
+
+async def test_settlement_failure_is_logged_never_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    container = await _container()
+
+    class _BrokenList(_Proxy):
+        async def list_node_runs(self, run_id: str) -> Any:
+            raise RuntimeError("store down")
+
+    container.run_store = _BrokenList(container.run_store)  # type: ignore[assignment]
+    with caplog.at_level(logging.WARNING):
+        await container._settle_unstarted_consumption("run-x")
+
+    assert "could not be settled" in caplog.text
+
+
+# --- the executor's own guards ----------------------------------------------
+
+
+async def test_a_nonpositive_timeout_is_refused() -> None:
+    from maistro.runs.consumption import ScheduleAttemptExecutor
+
+    container = await _container()
+    with pytest.raises(ValueError):
+        ScheduleAttemptExecutor(container.run_store, timeout_s=0)
+
+
+async def test_multi_node_run_is_refused_by_the_executor() -> None:
+    from maistro.runs.consumption import ScheduleAttemptExecutor
+    from maistro.runs.store import RunIntegrityError
+
+    container = await _container()
+    run_id = await _admit_schedule_run(container, nodes=2, workspace="ws-direct-multi")
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+
+    with pytest.raises(RunIntegrityError):
+        await ScheduleAttemptExecutor(container.run_store).execute(run)
+
+
+async def test_a_run_that_disappears_mid_consumption_is_an_integrity_error() -> None:
+    """Purged or archived out from under the consumer between the node's work
+    and the read-back: an integrity error, never an invented answer."""
+    from maistro.runs.consumption import ScheduleAttemptExecutor
+    from maistro.runs.model import TERMINAL_RUN_STATUSES
+    from maistro.runs.store import RunIntegrityError
+
+    container = await _container()
+    run_id = await _admit_schedule_run(container, workspace="ws-vanish")
+    claimed = await container.run_store.transition_run(run_id, RunStatus.RUNNING)
+
+    class _Vanishing(_Proxy):
+        async def get_run(self, run_id: str) -> Any:
+            run = await self._inner.get_run(run_id)
+            if run is not None and run.status in TERMINAL_RUN_STATUSES:
+                return None
+            return run
+
+    with pytest.raises(RunIntegrityError):
+        await ScheduleAttemptExecutor(_Vanishing(container.run_store)).execute(claimed)
+
+
+async def test_plain_dict_output_is_persisted_as_given() -> None:
+    container = await _container()
+    run_id = await _admit_schedule_run(container, kind=_RawOutTickNode.kind)
+
+    assert await container.execute_admitted_runs() == 1
+
+    (node_run,) = await container.run_store.list_node_runs(run_id)
+    assert node_run.status is RunStatus.COMPLETED
+    assert node_run.result == {"text": "raw"}
+
+
+async def test_created_runs_are_ineligible_even_when_offered_directly() -> None:
+    from maistro.runs.consumption import executable_by_consumer
+
+    container = await _container()
+    run_id = await _admit_schedule_run(
+        container, status=RunStatus.CREATED, workspace="ws-direct-created"
+    )
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert executable_by_consumer(run) is False
