@@ -24,8 +24,6 @@ history:
     date: 2026-05-29
   - status: Accepted
     date: 2026-05-29
-  - status: Accepted
-    date: 2026-08-27
 ---
 
 # ADR-095: Protected develop-to-main promotion model
