@@ -72,10 +72,10 @@ async def save(store: InvocationStore, item):
 
 def test_typed_browser_call_is_detected_but_construction_is_not(gate) -> None:
     source = '''
-from maistro.tools.browser import BrowserClient
 async def search():
-    client = BrowserClient()
     try:
+        from maistro.tools.browser import BrowserClient
+        client = BrowserClient()
         return await client.search_web("query", max_results=3)
     finally:
         await client.aclose()
