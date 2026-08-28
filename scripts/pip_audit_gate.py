@@ -11,6 +11,11 @@ Every entry below is a TRIAGED advisory on a transitive dependency with no
 upgrade available. An advisory that HAS a fix does not belong here — bump the
 dependency instead. Re-check entries whenever the dep tree moves.
 
+The final step also runs the direct-runtime-dependency usage ratchet. Keeping it
+behind this existing supply-chain entry point makes every workflow that audits
+the installed tree also prove that each declared production dependency is
+actually used or has a reviewed non-import runtime reason.
+
 Usage:  pip-audit --strict --format=json -r deps.txt > audit.json || true
         python scripts/pip_audit_gate.py audit.json
 """
@@ -19,6 +24,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+import check_direct_dependencies
 
 # (package, advisory id) -> why it is accepted. Keyed by the PAIR, not the
 # package: exempting a whole package would silently pass every FUTURE advisory
@@ -70,7 +77,7 @@ def main(argv: list[str]) -> int:
         for v in d["vulns"]:
             print(f"allowed: {d['name']}=={d['version']} {v['id']}")
     print(f"pip-audit OK ({len(vulnerable)} known, all triaged in ALLOWED)")
-    return 0
+    return check_direct_dependencies.main([])
 
 
 if __name__ == "__main__":
