@@ -54,6 +54,23 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "maistro-evolve/tests/",
     # --- what the loop reaches into -----------------------------------------
     "maistro/security/",
+    # The shared client is where the outbound guard is *installed*:
+    # `_guard_built_transports` wraps the real transports with
+    # `maistro.security.outbound.guarded`. The policy living under
+    # `maistro/security/` does not help if the installation can be deleted
+    # here, so protecting the policy without its installation left the egress
+    # boundary removable by a diff that never touches a protected path
+    # (Codex, #513). This module was previously *tolerated* on exactly that
+    # reasoning, which was true about where the policy is written and beside
+    # the point about where it takes effect.
+    "maistro/http.py",
+    # `SandboxSettings` lives here: `network_disabled`, the sandbox image, and
+    # the microVM kernel/rootfs defaults. The protected sandbox implementations
+    # read these values, so a candidate flipping `network_disabled` gives
+    # itself network access without touching any protected module. Tolerated
+    # before because it "makes no acceptance decision" -- correct, and not the
+    # question: it makes a containment decision (Codex, #513).
+    "maistro/config/settings.py",
     "maistro/tools/sandbox/",
     # Opening a pull request is a promotion path: it is how a candidate's diff
     # leaves the sandbox and reaches human reviewers, and a change here can

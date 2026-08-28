@@ -1,8 +1,6 @@
 {
-  "_comment": "Modules reachable from the promotion/execution path that deliberately do not escalate to adversarial review. Every entry needs a reason. See scripts/check-promotion-surface.py.",
+  "_comment": "Modules reachable from the promotion/execution path that deliberately do not escalate to adversarial review. Every entry needs a reason, and the reason must be about what the module DECIDES or INSTALLS, not only where a policy is written down: settings.py and http.py were tolerated here on reasons that were true and beside the point (Codex, #513). See scripts/check-promotion-surface.py.",
   "tolerated": {
-    "packages/maistro-core/src/maistro/config/settings.py": "The engine-wide settings object, imported by most of maistro-core. It carries no promotion threshold and makes no acceptance decision; protecting it would escalate the majority of ordinary core diffs, which is how escalation stops meaning anything.",
-    "packages/maistro-core/src/maistro/http.py": "The shared outbound HTTP client. Reached because the loop talks to a gateway, not because it decides anything about a candidate. Its own trust boundary is the outbound policy in maistro/security/, which does escalate.",
     "packages/maistro-core/src/maistro/quota/billing.py": "Token-cost accounting. It bounds what a run may spend; it cannot change whether a candidate is promoted or what score it receives.",
     "packages/maistro-core/src/maistro/quota/rate_profile.py": "Per-provider rate limits. Same reasoning as billing.py: a spend and pacing control, not an acceptance control.",
     "packages/maistro-core/src/maistro/quota/tracker.py": "Records token usage per provider per billing cycle. Reachable because every model call is metered; no promotion decision reads it.",
