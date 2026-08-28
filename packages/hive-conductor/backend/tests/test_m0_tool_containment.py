@@ -108,7 +108,7 @@ async def test_voice_is_conversational_only(monkeypatch: pytest.MonkeyPatch) -> 
     )
     monkeypatch.setattr(config, "get_settings", lambda: settings)
     monkeypatch.setattr(secrets, "litellm_api_key", lambda _settings: None)
-    monkeypatch.setattr(service, "build_llm_port", lambda: fake)
+    monkeypatch.setattr(voice, "build_llm_port", lambda: fake)
 
     async def forbidden_tool(*args, **kwargs):
         raise AssertionError("voice must not enter model-driven tool execution")

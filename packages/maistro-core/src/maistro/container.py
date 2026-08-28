@@ -38,7 +38,7 @@ from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -435,6 +435,13 @@ class Container:
         spine must not grow two ideas of what a parked Run means.
         """
         current = await self.run_store.get_run(run_id)
+        if current is not None and current.status in TERMINAL_RUN_STATUSES:
+            if current.status is target:
+                return
+            raise RunIntegrityError(
+                f"chat Run {run_id!r} already terminalized as {current.status.value!r}; "
+                f"cannot rewrite it as {target.value!r}"
+            )
         if (
             current is not None
             and current.status is RunStatus.WAITING
