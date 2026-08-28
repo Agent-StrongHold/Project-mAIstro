@@ -1,0 +1,65 @@
+name: m1-332-edit
+
+on:
+  push:
+    branches:
+      - chatgpt/m1-332-idempotent-chat-cancellation
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-332-idempotent-chat-cancellation
+      - name: Apply narrow cancellation patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          container = Path('packages/maistro-core/src/maistro/container.py')
+          text = container.read_text()
+          old = '''        try:\n            result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)\n        except BaseException as exc:\n            # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`\n            # verbatim to anyone holding the run_id, and a provider error's\n            # message carries the endpoint it called and can carry the key it\n            # sent — so recording it here would leak by a slower route what\n            # every response path already refuses to echo. The detail is in\n            # the log, which a run_id does not open.\n            await self._close_chat_run(run, error=failure_category(exc))\n            raise\n'''
+          new = '''        try:\n            result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)\n        except asyncio.CancelledError:\n            # Attempt reconciliation already owns cancellation and may have\n            # terminalized this Run as CANCELLED before control returns here.\n            # Observe the same outcome idempotently instead of translating a\n            # client disconnect into a second, contradictory FAILED decision.\n            await self._close_chat_run(run, cancelled=True)\n            raise\n        except BaseException as exc:\n            # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`\n            # verbatim to anyone holding the run_id, and a provider error's\n            # message carries the endpoint it called and can carry the key it\n            # sent — so recording it here would leak by a slower route what\n            # every response path already refuses to echo. The detail is in\n            # the log, which a run_id does not open.\n            await self._close_chat_run(run, error=failure_category(exc))\n            raise\n'''
+          if old not in text:
+              raise SystemExit('route_request cancellation insertion point not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    async def _close_chat_run(\n        self,\n        run: Run | None,\n        *,\n        error: str | None = None,\n        result: dict[str, Any] | None = None,\n    ) -> None:\n'''
+          new = '''    async def _close_chat_run(\n        self,\n        run: Run | None,\n        *,\n        error: str | None = None,\n        result: dict[str, Any] | None = None,\n        cancelled: bool = False,\n    ) -> None:\n'''
+          if old not in text:
+              raise SystemExit('_close_chat_run signature insertion point not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        if run is None:\n            return\n        target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED\n        try:\n'''
+          new = '''        if run is None:\n            return\n        if cancelled and (error is not None or result is not None):\n            raise ValueError("cancelled chat closure cannot carry error or result")\n        target = (\n            RunStatus.CANCELLED\n            if cancelled\n            else RunStatus.FAILED if error is not None else RunStatus.COMPLETED\n        )\n        try:\n'''
+          if old not in text:
+              raise SystemExit('_close_chat_run target insertion point not found')
+          text = text.replace(old, new, 1)
+          container.write_text(text)
+
+          tests = Path('packages/maistro-core/tests/test_container_chat_runs.py')
+          text = tests.read_text()
+          text = text.replace('from __future__ import annotations\n\nimport pytest\n', 'from __future__ import annotations\n\nimport asyncio\nimport logging\n\nimport pytest\n', 1)
+          text = text.replace('def __init__(self, *, raises: Exception | None = None) -> None:', 'def __init__(self, *, raises: BaseException | None = None) -> None:', 1)
+          anchor = '''async def test_the_turn_is_answered_even_when_admission_fails() -> None:\n'''
+          addition = '''async def test_cancelled_turn_observes_cancelled_run_without_false_terminalization_warning(\n    caplog: pytest.LogCaptureFixture,\n) -> None:\n    container = await _container()\n    container.conduit = _Conduit(raises=asyncio.CancelledError())\n\n    with caplog.at_level(logging.WARNING, logger="maistro.container"):\n        with pytest.raises(asyncio.CancelledError):\n            await container.route_request([{"role": "user", "content": "disconnect"}])\n\n    runs = [run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]\n    assert len(runs) == 1\n    assert runs[0].status is RunStatus.CANCELLED\n    assert "could not be terminalized" not in caplog.text\n\n\n'''
+          if anchor not in text:
+              raise SystemExit('test insertion point not found')
+          text = text.replace(anchor, addition + anchor, 1)
+          tests.write_text(text)
+          PY
+      - name: Remove one-shot editor and commit patch
+        shell: bash
+        run: |
+          rm .github/workflows/m1-332-edit.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/test_container_chat_runs.py .github/workflows/m1-332-edit.yml
+          git commit -m "Make chat cancellation terminalization idempotent (#332)"
+          git push origin HEAD:chatgpt/m1-332-idempotent-chat-cancellation
