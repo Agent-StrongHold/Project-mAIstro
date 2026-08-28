@@ -54,7 +54,11 @@ class _Row:
         return clone
 
 
-async def _fixture(*, template: bool = True, max_runs: int | None = None) -> tuple[Any, Any, Any]:
+async def _fixture(
+    *,
+    template: bool = True,
+    max_runs: int | None = None,
+) -> tuple[Any, Any, Any]:
     from maistro.graph.definitions import GraphTemplate, Node
     from maistro.graph.templates import InMemoryGraphTemplateStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -90,7 +94,12 @@ async def _fixture(*, template: bool = True, max_runs: int | None = None) -> tup
         schedule_store=schedules,
         project_scope_store=projects,
     )
-    row = _Row("s-1", "scheduled-template", project_id=root.project_id, max_runs=max_runs)
+    row = _Row(
+        "s-1",
+        "scheduled-template",
+        project_id=root.project_id,
+        max_runs=max_runs,
+    )
     return container, row, root
 
 
@@ -106,7 +115,9 @@ def _remove_row(row: Any) -> None:
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
-def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_two_live_runners_claim_one_occurrence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -142,7 +153,9 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(scenario())
 
 
-def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_persisted_template_survives_empty_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -170,7 +183,9 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
     asyncio.run(scenario())
 
 
-def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_template_keeps_occurrence_owed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -195,7 +210,9 @@ def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch)
     asyncio.run(scenario())
 
 
-def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_creation_failure_keeps_occurrence_owed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
