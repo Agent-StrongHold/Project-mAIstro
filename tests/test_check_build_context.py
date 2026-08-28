@@ -21,14 +21,23 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-build-context.py"
 
 
-@pytest.fixture(scope="module")
-def gate():
+def _load_gate():
     spec = importlib.util.spec_from_file_location("check_build_context", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+#: Loaded at import rather than in the fixture, so a parametrisation can be
+#: built from the real `MUST_DENY` instead of a hand-copied length.
+_GATE = _load_gate()
+
+
+@pytest.fixture(scope="module")
+def gate():
+    return _GATE
 
 
 @pytest.fixture
@@ -138,11 +147,18 @@ class TestTheTwoFilesMustAgree:
 
 
 class TestEverySecretPatternIsDenied:
-    @pytest.mark.parametrize("index", range(9))
-    def test_dropping_any_one_of_them_fails(self, gate, bench, index: int) -> None:
-        if index >= len(gate.MUST_DENY):
-            pytest.skip("MUST_DENY is shorter than this parametrisation")
-        dropped = gate.MUST_DENY[index][0]
+    """Over the real set, not a count someone typed (#510).
+
+    This was `range(9)` with a `pytest.skip` for indices past the end. When
+    `MUST_DENY` grew to 27 the skip never fired and nothing said so -- the test
+    simply stopped covering eighteen of the patterns, including every recursive
+    private-key form this change added. A parametrisation with a hand-copied
+    length silently under-tests the moment the thing it counts grows, and the
+    skip that was there to make it safe is what hid it.
+    """
+
+    @pytest.mark.parametrize("dropped", [pattern for pattern, _why in _GATE.MUST_DENY])
+    def test_dropping_any_one_of_them_fails(self, gate, bench, dropped: str) -> None:
         text = "\n".join(line for line in _complete(gate).splitlines() if line != dropped) + "\n"
         bench(text, text)
 

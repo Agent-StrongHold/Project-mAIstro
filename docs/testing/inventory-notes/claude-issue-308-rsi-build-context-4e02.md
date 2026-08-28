@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +40
+  tests/: +58
 ---
 # claude-issue-308-rsi-build-context-4e02
 
@@ -43,3 +43,22 @@ No test was removed. `_complete()` was reordered rather than rewritten: it now
 mirrors the real files' structure, because rule ORDER is part of what the gate
 checks and a helper that produced a passing-but-wrongly-ordered file could not
 express the exception tests at all.
+
+## Plus 18, from removing a suppression rather than adding a test
+
+The autonomous-merge admissibility check flagged an INTEGRITY finding on this
+branch: a `pytest.skip` in `tests/test_check_build_context.py`. It was mine,
+from the first round, and it was hiding something.
+
+`TestEverySecretPatternIsDenied` was parametrised `range(9)` with a skip for
+indices past the end of `MUST_DENY`. When `MUST_DENY` grew from 9 to 27 the
+skip never fired, so nothing said anything -- the test simply stopped covering
+eighteen patterns, including every recursive private-key form this change
+added to close a P1. A parametrisation built from a hand-copied length
+under-tests silently the moment the thing it counts grows, and the skip that
+was there to make that safe is exactly what kept it quiet.
+
+It now parametrises over the real `MUST_DENY`, which is why the count moves by
+eighteen: the same one test, finally applied to every pattern it claims to be
+about. The module is loaded at import for that, so the parametrisation can read
+the set rather than a number.
