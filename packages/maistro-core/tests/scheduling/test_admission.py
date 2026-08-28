@@ -22,6 +22,7 @@ import pytest
 from maistro.graph.definitions import GraphTemplate, Node
 from maistro.graph.templates import GraphTemplateNotFound, InMemoryGraphTemplateStore
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
@@ -585,3 +586,22 @@ class TestOneRunPerFiring:
         assert after is not None and before is not None
         assert after.last_fired_at == before.last_fired_at
         assert after.runs_so_far == before.runs_so_far
+
+
+class TestAdmissionState:
+    @pytest.mark.ac("ADR-082826-b601/AC-5")
+    async def test_the_run_is_queued_in_the_same_insert(self, harness) -> None:
+        """A schedule Run's admission is its submission (#251).
+
+        No caller holds a receipt that will queue it later, so a Run left
+        CREATED here was admitted work nobody would ever execute — and the
+        consumer tick deliberately never claims CREATED.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        run = await runs.get_run(result.run_ids[0])
+        assert run is not None
+        assert run.status is RunStatus.QUEUED
