@@ -1,0 +1,41 @@
+name: "Temporary #525 Suite Inventory Generator"
+
+on:
+  push:
+    branches: [chatgpt/tmp-525-suite-inventory]
+    paths:
+      - .github/workflows/tmp-suite-inventory-525.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - name: Install collection dependencies
+        run: |
+          uv sync --locked --extra dev --extra bootstrap
+          uv pip install --system -r packages/hive-conductor/backend/requirements.txt
+      - name: "Generate #525 inventory delta"
+        run: python scripts/check-suite-inventory.py --update --note 525-agentidentity-node-template
+      - name: Explain the inventory movement
+        run: |
+          cat >> docs/testing/inventory-notes/525-agentidentity-node-template.md <<'EOF'
+
+          The AgentIdentity-to-NodeTemplate projection slice adds focused maistro-core importer tests covering canonical Workspace ownership, explicit node-type selection, inert legacy-definition snapshots, provenance hashing, authority-state exclusion, and instantiated template provenance. This note records only the collected-node-ID movement.
+          EOF
+      - name: Commit generated note on temporary branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/testing/inventory-notes/525-agentidentity-node-template.md
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "Generate #525 suite inventory delta"
+          git push origin HEAD:chatgpt/tmp-525-suite-inventory
