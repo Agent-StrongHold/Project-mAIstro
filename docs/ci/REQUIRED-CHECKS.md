@@ -34,34 +34,53 @@ Runner cost for the check set is measured in
 
 ## One required check the table cannot list: `gates-ran`
 
-`.github/workflows/gates-ran.yml` produces a check named **`gates-ran`** that
-must be marked required alongside the table below, and it is **absent from the
-table by construction**. The generator walks workflows reachable from either a
-`pull_request:` or base-trusted `pull_request_target:` trigger; this one triggers
-on `workflow_run:`, because the question it asks — did every required check
-actually run on this head? — cannot be answered from inside any of the workflows
-being asked about. A job in `ci.yml` cannot see whether `quality.yml` ran.
+`.github/workflows/gates-ran.yml` evaluates the whole required set and publishes
+a Checks API result named **`gates-ran` directly onto the candidate SHA**. It is
+absent from the table by construction because the generator walks workflows
+reachable from either a `pull_request:` or base-trusted `pull_request_target:`
+trigger, while the evaluator uses `workflow_run:`. A job inside `ci.yml` cannot
+know whether `quality.yml` ran; the trusted workflow that wakes after sibling
+workflows complete can.
+
+The explicit publish step is load-bearing. A `workflow_run` job's own check is
+attached to the workflow-run execution, not to the PR or merge-group SHA being
+judged. Naming that job `gates-ran` is therefore not enough. The publisher uses
+`checks: write` to create the required context on
+`github.event.workflow_run.head_sha` after evaluating the checks on that exact
+commit.
 
 It exists because a check that never reports is not red, it is *absent*, and
 absence renders as an empty space where a tick would go. On
 [#242](https://github.com/Agent-StrongHold/Project-mAIstro/pull/242) a workflow
-pushed with the default `GITHUB_TOKEN` — which GitHub deliberately will not
-start further workflows for — and 32 runs each of CI and quality sat at
-`action_required` while the PR displayed its own workflow's green job. See
-[#262](https://github.com/Agent-StrongHold/Project-mAIstro/issues/262).
+pushed with the default `GITHUB_TOKEN`, which GitHub deliberately will not use
+to recursively start further workflows, and the gate set never reached the new
+head. See [#262](https://github.com/Agent-StrongHold/Project-mAIstro/issues/262).
 
-It also does not report on the pull request that introduces it. GitHub starts a
-`workflow_run` workflow from the **default branch** copy of the file, so
-`gates-ran` begins reporting only once it is on `develop` — its first real
-firing is on the next PR. Do not read its absence there as the check failing to
-work; read it as the reason the check had to exist.
+There is a deliberate bootstrap rule: **do not make `gates-ran` required live
+until the publisher is already on `develop` and a fresh PR proves the custom
+check appears on its actual head SHA.** GitHub loads `workflow_run` workflows
+from the default branch, so the PR introducing the publisher cannot prove the
+new publisher itself. Once that canary succeeds, add `gates-ran` to both the
+live required set and the checked-in protection contract. Requiring it earlier
+would leave every PR waiting on `Expected`.
 
-It does **not** cover the base-coupled checks (CodeQL's three `Analyze` rows and
-`Container scan + SBOM + cosign`). Those legitimately produce no run on a
-`develop`-based PR, so requiring them would paint every PR red for correct
-behaviour and the gate would be switched off within a day. The cost is that on a
-`main`-based PR nothing verifies CodeQL ran; that is the narrower gap, and it is
-recorded here rather than left to be discovered.
+The publisher accepts both `pull_request` and `merge_group` candidate heads, so
+the same completeness check can gate the merge queue after rollout. It does not
+include base-coupled checks that legitimately do not report on `develop`.
+
+## Merge-group coverage is part of the contract
+
+`develop` is being prepared for GitHub's merge queue. Every ordinary Actions
+check required on `develop` must also be able to report on
+`merge_group: checks_requested`, because the queue judges a synthetic SHA rather
+than the feature-branch head.
+
+`scripts/check-required-checks.py` now reads the reviewed `develop` required set
+and fails if one of its producer workflows lacks a usable `merge_group` trigger.
+It also checks `.github/merge-queue.json` for the initial `SQUASH`, one-PR-group
+policy. Synthetic contexts such as `gates-ran` are tested by their own publisher
+contract rather than being fabricated into this PR-job table. See
+[`MERGE-QUEUE.md`](MERGE-QUEUE.md) for the staged rollout.
 
 ## Scope: what decides whether a check runs
 
@@ -80,50 +99,37 @@ point of [#161](https://github.com/Agent-StrongHold/Project-mAIstro/issues/161):
   of these was removed in #161 except the deliberate exclusions named below; do
   not add another without recording why here.
 - **`job if:` on base_ref** — the same coupling one level down. The workflow
-  triggers on every PR, and the *job* declines to run unless the base matches:
+  triggers on every PR, and the *job* declines to run unless the base matches.
 
-  ```yaml
-  if: (github.event_name == 'pull_request' && github.base_ref == 'main') || …
-  ```
-
-  `security.yml`'s container scan does exactly this, which is why the gate reads
-  job conditions and not only triggers. A contract that stopped at the trigger
-  would have called that check "every PR" while it reported `skipped` on every
-  PR not based on `main`.
+`security.yml`'s container scan is the current job-level example. The workflow
+triggers on every PR, but that job is only a real required check on the branch
+where it executes.
 
 ### Resolved by #162: a check that reports `skipped`
 
 A job that declines to run still produces a check run, with conclusion
 `skipped`. Whether branch protection accepts that as satisfying a required check
 depends on configuration, so **a check that can report `skipped` must not be
-added to the required set without deciding that explicitly**. Today that is
-`Container scan + SBOM + cosign`, observed skipping on PR #167.
+added to the required set without deciding that explicitly**.
 
-**Decided:** required on `main`, not on `develop`. Its job `if:` tests
-`base_ref == 'main'`, so on a `main`-based PR it runs and reports for real,
-and on any other base it never runs — which is precisely where the `skipped`
-ambiguity lives. Requiring it only where it executes removes the question
-instead of answering it. See [`BRANCH-PROTECTION.md`](BRANCH-PROTECTION.md).
+**Decided:** `Container scan + SBOM + cosign` is required on `main`, not on
+`develop`. Its PR job condition targets `main`, and its merge-group condition is
+also main-only. The initial queue rollout is `develop` only; CodeQL and the other
+release-tier details must be proven before a future `main` queue is enabled.
 
 ### Resolved by #162: paths-filtered checks and "Expected"
 
-A required check whose workflow does not trigger never reports, and classic
-branch protection leaves the PR waiting on an `Expected` status forever. So a
+A required check whose workflow does not trigger never reports, and protection
+leaves the candidate waiting on an `Expected` status forever. So a
 **paths-filtered check must not be added to the required set as-is.**
 
-**Decided:** both paths-filtered checks were fixed rather than left advisory,
-so the `Runs on` column above no longer contains a `paths` row at all.
-`Registry CI` lost its filter (it validates the ADR → spec → AC chain, the fifth
-of #160's five mandates, and its filter had grown to match nearly every PR
-anyway); `Cage Guard` now runs on every PR and passes unless the diff touches
-`cage/` or `eval/` — it previously had no success path at all, so it could not
-have been required under any configuration. Reasoning in
-[`BRANCH-PROTECTION.md`](BRANCH-PROTECTION.md).
+**Decided:** both formerly paths-filtered checks were fixed rather than left
+advisory. `Registry CI` lost its filter, and `Cage Guard` runs on every candidate
+and passes unless the diff touches `cage/` or `eval/`.
 
 A future `paths:`-filtered check reintroduces the hazard, so the rule stands:
 make the job always run and early-exit, or record it as advisory in
-`.github/branch-protection.json`. `scripts/check-branch-protection.py` will not
-let it be silently neither.
+`.github/branch-protection.json`.
 
 ## The checks
 
@@ -168,8 +174,8 @@ let it be silently neither.
 
 | Workflow | Why it is not on every PR |
 |---|---|
-| CodeQL Advanced | Deep dataflow analysis on `main` and a schedule. PRs are covered by `security.yml`'s SAST job (bandit + semgrep + gitleaks), which runs on every PR and is fast enough to gate on. Running CodeQL per-push on a stack costs far more than it finds there. |
-| security → `Container scan + SBOM + cosign` | Builds and scans the container image; gated to `main`-based PRs and the schedule by a job `if:`. Image-layer CVEs move with the base image, not with a feature branch, so per-PR scanning on a stack re-reports the same findings at 30 minutes a run. |
+| CodeQL Advanced | Deep dataflow analysis on `main` and a schedule. PRs are covered by `security.yml`'s SAST job. Before `main` gets a merge queue, CodeQL must also be proven on `merge_group`. |
+| security → `Container scan + SBOM + cosign` | Builds and scans the container image; required only for the release-tier path. It is merge-group-aware for `main`, but the initial queue rollout remains `develop` only. |
 | Mutation | Long-running and sampled; it is a trend instrument, not a merge gate. |
 | Formal Conformance (nightly) | The per-PR `Formal Conformance` job is the gate; the nightly is a deeper sweep. |
 
@@ -177,9 +183,7 @@ let it be silently neither.
 
 Draft PRs run the full set, deliberately. Skipping jobs on drafts would save
 runner time, but a skipped job still produces a check run, and a required check
-that reports `skipped` rather than `success` behaves differently across branch
-protection configurations. Introducing that ambiguity into the required set
-would reintroduce, in a new spelling, exactly the "the tick means different
-things on different PRs" problem #161 removed. Cost is managed by the
-`concurrency` groups instead: every workflow that runs on PRs cancels its own
-superseded runs, so a branch pushed ten times in an hour costs one run, not ten.
+that reports `skipped` rather than `success` behaves differently across
+protection configurations. Cost is managed by the concurrency groups instead:
+superseded PR and merge-group runs cancel so repeated candidate updates do not
+pile up runner work.
