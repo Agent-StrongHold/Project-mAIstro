@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-m1-convergence-freeze.py"
 MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
@@ -154,12 +156,35 @@ class TestTheBaseRevisionIsResolvedNotAssumed:
         assert module._fetched_base("develop") == "FETCH_HEAD"
         assert fetched == [["git", "fetch", "--no-tags", "--depth=1", "origin", "develop"]]
 
-    def test_the_repositorys_own_base_resolves(self) -> None:
-        """Against the real clone rather than a fake: the helper has to name a
-        revision `git` will actually accept."""
-        resolved = _fetched_base("HEAD")
+    def test_a_remote_ref_this_clone_has_is_returned_without_fetching(self) -> None:
+        """Against the real clone, on the branch that needs no network.
 
-        assert _rev_exists(resolved)
+        Never `_fetched_base("HEAD")`: `origin/HEAD` is absent in plenty of
+        checkouts, so that would send this unconditional test down the fetch
+        path and fail the whole root suite in any clone with no `origin` or an
+        unreachable one -- while the live PR gate it belongs to is not even
+        active. So it names a remote ref this clone actually has, and skips
+        when there is none to name.
+        """
+        listed = subprocess.run(
+            [
+                "git",
+                "for-each-ref",
+                "--count=1",
+                "--format=%(refname:strip=3)",
+                "refs/remotes/origin",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        base_ref = listed.stdout.strip()
+        if not base_ref:
+            pytest.skip("this clone has no origin refs, so there is no no-fetch case to cover")
+
+        assert _fetched_base(base_ref) == f"origin/{base_ref}"
+        assert _rev_exists(f"origin/{base_ref}")
 
 
 class _FakeSubprocess:

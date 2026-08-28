@@ -270,3 +270,31 @@ class TestTheValidatorIsFoundWhereverTheWrapperRuns:
         _completed, calls = _run(fake_docker, "code", __cwd=str(elsewhere))
 
         assert _env_flags(calls)["RSI_GENOME_MODELS"] == "code"
+
+
+class TestTheSingleValuedFallbackIsRefusedOnTheHost:
+    def test_a_comma_separated_fallback_starts_no_container(self, fake_docker: Path) -> None:
+        """`--local-fallback-model` takes one model. The in-container CLI
+        refuses a list -- but only after `/run/gateway.env` is mounted, which
+        is the wrong side of the boundary this validation exists to hold."""
+        completed, calls = _run(
+            fake_docker, "code", MAISTRO_RSI_LOCAL_FALLBACK_MODEL="local-a,local-b"
+        )
+
+        assert completed.returncode == 64
+        assert "expected one model identifier" in completed.stderr
+        assert [call for call in calls if call[:1] == ["run"]] == []
+
+    def test_one_fallback_model_still_reaches_the_container(self, fake_docker: Path) -> None:
+        _completed, calls = _run(
+            fake_docker, "code", MAISTRO_RSI_LOCAL_FALLBACK_MODEL=" qwen2.5-coder:7b "
+        )
+
+        assert _env_flags(calls)["RSI_LOCAL_FALLBACK_MODEL"] == "qwen2.5-coder:7b"
+
+    def test_the_emergency_roster_is_still_a_list(self, fake_docker: Path) -> None:
+        """Only the single-valued flag gained `--single`; widening it to the
+        roster variables would refuse legitimate configuration."""
+        _completed, calls = _run(fake_docker, "code", MAISTRO_RSI_EMERGENCY_MODELS="a/b,c/d")
+
+        assert _env_flags(calls)["RSI_EMERGENCY_MODELS"] == "a/b,c/d"

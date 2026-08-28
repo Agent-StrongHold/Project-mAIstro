@@ -133,17 +133,33 @@ def main(argv: list[str] | None = None) -> int:
     """Validate a roster for a shell caller: canonical form on stdout, or exit 1.
 
     `tools/run_rsi_isolated.sh` runs this before it mounts the gateway
-    credentials, so a refusal happens while nothing sensitive is in reach.
+    credentials, so a refusal happens while nothing sensitive is in reach. It
+    runs the FILE, not `-m maistro_rsi.model_identifiers`: `-m` initialises the
+    package, whose `__init__` imports `coordinator` and third-party
+    dependencies, and the wrapper's whole premise is that the host needs
+    nothing but Docker. This module imports only the standard library so that
+    stays true.
     """
     parser = argparse.ArgumentParser(
         prog="python -m maistro_rsi.model_identifiers",
         description="Validate a comma-separated model roster before it reaches a command line.",
     )
     parser.add_argument("--roster", required=True, help="comma-separated model identifiers")
+    parser.add_argument(
+        "--single",
+        action="store_true",
+        help="the value names ONE model; a comma-separated list is refused",
+    )
     arguments = parser.parse_args(argv)
 
     try:
-        print(canonical_roster(arguments.roster))
+        canonical = canonical_roster(arguments.roster)
+        if arguments.single and canonical.count(",") >= 1:
+            raise InvalidModelIdentifier(
+                f"expected one model identifier, got {canonical.count(',') + 1}: "
+                f"{arguments.roster!r}"
+            )
+        print(canonical)
     except InvalidModelIdentifier as refusal:
         print(f"refusing model roster: {refusal}", file=sys.stderr)
         return 1

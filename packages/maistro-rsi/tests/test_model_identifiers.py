@@ -184,3 +184,64 @@ class TestTheShellFacingCommand:
         main(["--roster", " code , gemini/flash "])
 
         assert capsys.readouterr().out.strip() == "code,gemini/flash"
+
+    def test_single_refuses_a_list(self, capsys) -> None:
+        """`--local-fallback-model` takes one model. Accepting a list on the
+        host and refusing it in-container would move the refusal to AFTER the
+        gateway credentials are mounted (#305/#309)."""
+        assert main(["--roster", "local-a,local-b", "--single"]) == 1
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == ""
+        assert "expected one model identifier, got 2" in captured.err
+
+    def test_single_accepts_one(self, capsys) -> None:
+        assert main(["--roster", " qwen2.5-coder:7b ", "--single"]) == 0
+        assert capsys.readouterr().out.strip() == "qwen2.5-coder:7b"
+
+    def test_single_still_refuses_a_hostile_value(self) -> None:
+        assert main(["--roster", "x'; id", "--single"]) == 1
+
+
+class TestTheModuleNeedsNothingInstalled:
+    """The wrapper's premise is that the host needs only Docker and a gateway.
+    Running the validator through `-m` would initialise the package, whose
+    `__init__` imports `coordinator` and third-party dependencies -- so a valid
+    roster would exit 64 on exactly the host this script is written for.
+    """
+
+    def test_it_imports_only_the_standard_library(self) -> None:
+        import ast
+        import sys
+        from pathlib import Path as _Path
+
+        source = _Path(__file__).resolve().parents[1] / "src/maistro_rsi/model_identifiers.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+
+        roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                roots.add(node.module.split(".")[0])
+
+        assert roots <= set(sys.stdlib_module_names), roots
+
+    def test_it_runs_as_a_file_without_importing_its_package(self) -> None:
+        """The invocation `tools/run_rsi_isolated.sh` actually uses."""
+        import subprocess
+        import sys
+        from pathlib import Path as _Path
+
+        source = _Path(__file__).resolve().parents[1] / "src/maistro_rsi/model_identifiers.py"
+        completed = subprocess.run(
+            [sys.executable, str(source), "--roster", "code, gemini/flash"],
+            capture_output=True,
+            text=True,
+            check=False,
+            # No PYTHONPATH: the package is not importable, and must not need to be.
+            env={"PATH": "/usr/bin:/bin"},
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "code,gemini/flash"

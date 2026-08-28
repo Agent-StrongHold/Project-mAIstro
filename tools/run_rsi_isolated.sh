@@ -51,19 +51,29 @@ EVOLVE_GOAL="${7:-Do substantive test-first work: finish contracted spec accepta
 # The grammar and its limits live in maistro_rsi.model_identifiers, which is
 # testable in a way a shell regex is not; this only calls it.
 # Rooted at the script rather than at $PWD: the validator has to be findable
-# from wherever the wrapper was invoked, and a PYTHONPATH that silently misses
-# would turn "refuse the roster" into "skip the check".
+# from wherever the wrapper was invoked, and a path that silently misses would
+# turn "refuse the roster" into "skip the check".
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_PATHS="packages/maistro-core/src:packages/maistro-evolve/src:packages/maistro-rsi/src:packages/maistro-bootstrap/src"
-HOST_PYTHONPATH="${REPO_ROOT}/packages/maistro-core/src:${REPO_ROOT}/packages/maistro-evolve/src:${REPO_ROOT}/packages/maistro-rsi/src:${REPO_ROOT}/packages/maistro-bootstrap/src"
+# The FILE, not `python3 -m maistro_rsi.model_identifiers`. `-m` initialises the
+# package first, and `maistro_rsi/__init__` imports `coordinator` and its
+# third-party dependencies -- so on a host with only this script's documented
+# prerequisites (Docker and a gateway) `-m` fails before Docker ever starts and
+# a perfectly valid roster exits 64. The module imports only the standard
+# library precisely so running it by path needs nothing installed.
+VALIDATOR="${REPO_ROOT}/packages/maistro-rsi/src/maistro_rsi/model_identifiers.py"
 validate_roster() {
-    # $1 = label for the error, $2 = raw roster. Echoes the canonical form.
-    local label="$1" raw="$2" canonical
+    # $1 = label for the error, $2 = raw roster, $3 = "single" to refuse a list.
+    # Echoes the canonical form.
+    local label="$1" raw="$2" mode="${3:-}" canonical
+    local -a flags=(--roster "$raw")
     if [[ -z "$raw" ]]; then
         return 0
     fi
-    if ! canonical="$(PYTHONPATH="$HOST_PYTHONPATH" python3 -m maistro_rsi.model_identifiers \
-        --roster "$raw" 2>&1)"; then
+    if [[ "$mode" == single ]]; then
+        flags+=(--single)
+    fi
+    if ! canonical="$(python3 "$VALIDATOR" "${flags[@]}" 2>&1)"; then
         echo "error: $label rejected -- $canonical" >&2
         exit 64
     fi
@@ -72,7 +82,12 @@ validate_roster() {
 
 GENOME_MODELS="$(validate_roster GENOME_MODELS "$GENOME_MODELS")"
 EMERGENCY_MODELS="$(validate_roster MAISTRO_RSI_EMERGENCY_MODELS "${MAISTRO_RSI_EMERGENCY_MODELS:-}")"
-LOCAL_FALLBACK_MODEL="$(validate_roster MAISTRO_RSI_LOCAL_FALLBACK_MODEL "${MAISTRO_RSI_LOCAL_FALLBACK_MODEL:-}")"
+# `--single`: the downstream flag takes one model. Accepting a list here and
+# refusing it in-container would move the refusal to AFTER the gateway
+# credentials are mounted, which is the boundary this validation exists to sit
+# in front of.
+LOCAL_FALLBACK_MODEL="$(validate_roster \
+    MAISTRO_RSI_LOCAL_FALLBACK_MODEL "${MAISTRO_RSI_LOCAL_FALLBACK_MODEL:-}" single)"
 
 IMAGE="${MAISTRO_RSI_IMAGE:-maistro-rsi-runner:latest}"
 # The LiteLLM gateway is published to host-loopback only (compose maps
