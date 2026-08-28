@@ -29,21 +29,18 @@ DISPOSITIONS = frozenset(
     {"MIGRATE_TO_GOVERNED_INVOCATION", "RETIRE", "INTENTIONAL_LIBRARY/INFRASTRUCTURE"}
 )
 
-# Direct model endpoint fragments. Matching is against the URL expression of the
-# HTTP call itself, never against arbitrary text elsewhere in the module.
+# Match model URLs at the HTTP call itself, never endpoint text elsewhere.
 _MODEL_ENDPOINTS = ("/chat/completions", "/completions", "/v1/responses")
 _HTTP_EFFECT_METHODS = frozenset({"post", "stream", "send", "request"})
 
-# Imported function calls that are already semantic model-effect helpers. These
-# still bypass Capability -> Provider -> Binding -> Invocation when called from
-# product code, even though the raw HTTP call is one layer down.
+# Semantic helpers whose call itself is a model effect.
 _MODEL_FUNCTIONS = {
     "maistro.agents.pm_llm_call.maistro_llm_call": "model-helper",
 }
 
-# Typed clients whose public calls have effect semantics. Constructors and
-# cleanup methods are intentionally absent: constructing/importing a client is
-# not usage, and aclose() is lifecycle cleanup rather than a product effect.
+# Typed clients whose public calls have product effect semantics. Constructors
+# and cleanup are intentionally absent: importing/constructing a client is not
+# usage, and aclose() is lifecycle cleanup rather than a product effect.
 _TYPED_EFFECT_METHODS: dict[str, dict[str, tuple[str, str]]] = {
     "maistro.tools.browser.BrowserClient": {
         "search_web": ("TOOL_EFFECT", "browser.search_web"),
@@ -62,18 +59,17 @@ _TYPED_EFFECT_METHODS: dict[str, dict[str, tuple[str, str]]] = {
     },
 }
 
-# Product-level tool wrappers. These are included because the call itself causes
-# the effect; treating only the wrapper's internal HTTP as inventory would hide
-# which shipped product path actually invokes it.
+# Product-level wrappers are included because these calls identify the shipped
+# caller that causes the effect, rather than only the wrapper's internal HTTP.
 _FUNCTION_EFFECTS: dict[str, tuple[str, str]] = {
     "services.tool_executor.web_search": ("TOOL_EFFECT", "hive.web_search"),
     "services.tool_executor.browse_url": ("TOOL_EFFECT", "hive.browse_url"),
     "services.tool_executor.clarify": ("MODEL_EFFECT", "hive.clarify"),
 }
 
-# Path/scope-specific calls for protocols whose runtime object type cannot be
-# recovered from Python's AST. These are deliberately explicit rather than
-# treating every ``send``/``execute``/``invoke`` as an effect.
+# Runtime object types cannot always be recovered from Python's AST. These
+# entries are deliberately exact path/scope/callee triples rather than fuzzy
+# ``send``/``execute``/``invoke`` matching.
 _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
     (
         "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
@@ -124,6 +120,7 @@ class Site:
 @dataclass
 class Scope:
     qualname: str
+    aliases: dict[str, str]
     strings: dict[str, ast.expr]
     objects: dict[str, str]
 
@@ -142,18 +139,38 @@ def _production_python_files(root: Path = ROOT) -> list[Path]:
     return sorted(set(files))
 
 
-def _import_aliases(tree: ast.Module) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                aliases[alias.asname or alias.name.split(".")[0]] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return aliases
+class _ScopeImportCollector(ast.NodeVisitor):
+    """Collect imports in one lexical scope, including conditional imports."""
+
+    def __init__(self) -> None:
+        self.aliases: dict[str, str] = {}
+
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        for alias in node.names:
+            self.aliases[alias.asname or alias.name.split(".")[0]] = alias.name
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        if not node.module:
+            return
+        for alias in node.names:
+            if alias.name != "*":
+                self.aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        return
+
+
+def _scope_aliases(body: list[ast.stmt]) -> dict[str, str]:
+    collector = _ScopeImportCollector()
+    for statement in body:
+        collector.visit(statement)
+    return collector.aliases
 
 
 def _dotted(node: ast.expr) -> str | None:
@@ -174,30 +191,55 @@ def _resolve_symbol(node: ast.expr, aliases: dict[str, str]) -> str | None:
     return ".".join([resolved, *tail]) if tail else resolved
 
 
+class _ScopeBindingCollector(ast.NodeVisitor):
+    """Collect simple strings and typed client constructions in one scope."""
+
+    def __init__(self, aliases: dict[str, str]) -> None:
+        self.aliases = aliases
+        self.strings: dict[str, ast.expr] = {}
+        self.objects: dict[str, str] = {}
+
+    def _record(self, targets: list[ast.expr], value: ast.expr | None) -> None:
+        if value is None:
+            return
+        names = [target.id for target in targets if isinstance(target, ast.Name)]
+        if not names:
+            return
+        if isinstance(value, (ast.Constant, ast.JoinedStr, ast.BinOp, ast.Name)):
+            for name in names:
+                self.strings[name] = value
+        if isinstance(value, ast.Call):
+            symbol = _resolve_symbol(value.func, self.aliases)
+            if symbol in _TYPED_EFFECT_METHODS:
+                for name in names:
+                    self.objects[name] = symbol
+
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        self._record(list(node.targets), node.value)
+        self.generic_visit(node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        self._record([node.target], node.value)
+        if node.value is not None:
+            self.generic_visit(node.value)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        return
+
+
 def _scope_bindings(
     body: list[ast.stmt], aliases: dict[str, str]
 ) -> tuple[dict[str, ast.expr], dict[str, str]]:
-    strings: dict[str, ast.expr] = {}
-    objects: dict[str, str] = {}
+    collector = _ScopeBindingCollector(aliases)
     for statement in body:
-        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            continue
-        value = statement.value
-        if value is None:
-            continue
-        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-        names = [target.id for target in targets if isinstance(target, ast.Name)]
-        if not names:
-            continue
-        if isinstance(value, (ast.Constant, ast.JoinedStr, ast.BinOp, ast.Name)):
-            for name in names:
-                strings[name] = value
-        if isinstance(value, ast.Call):
-            symbol = _resolve_symbol(value.func, aliases)
-            if symbol in _TYPED_EFFECT_METHODS:
-                for name in names:
-                    objects[name] = symbol
-    return strings, objects
+        collector.visit(statement)
+    return collector.strings, collector.objects
 
 
 def _string_parts(
@@ -228,9 +270,9 @@ def _http_url(call: ast.Call) -> ast.expr | None:
     func = call.func
     if not isinstance(func, ast.Attribute) or func.attr not in _HTTP_EFFECT_METHODS:
         return None
-    for kw in call.keywords:
-        if kw.arg == "url":
-            return kw.value
+    for keyword in call.keywords:
+        if keyword.arg == "url":
+            return keyword.value
     if func.attr == "request":
         return call.args[1] if len(call.args) >= 2 else None
     return call.args[0] if call.args else None
@@ -254,9 +296,9 @@ def _callee_text(call: ast.Call) -> str:
 class _Visitor(ast.NodeVisitor):
     def __init__(self, path: str, tree: ast.Module) -> None:
         self.path = path
-        self.aliases = _import_aliases(tree)
-        strings, objects = _scope_bindings(tree.body, self.aliases)
-        self.scopes = [Scope("<module>", strings, objects)]
+        aliases = _scope_aliases(tree.body)
+        strings, objects = _scope_bindings(tree.body, aliases)
+        self.scopes = [Scope("<module>", aliases, strings, objects)]
         self.raw: list[tuple[str, str, str, int, str]] = []
 
     @property
@@ -269,10 +311,11 @@ class _Visitor(ast.NodeVisitor):
             if self.scope.qualname == "<module>"
             else f"{self.scope.qualname}.{node.name}"
         )
-        local_strings, local_objects = _scope_bindings(node.body, self.aliases)
+        aliases = {**self.scope.aliases, **_scope_aliases(node.body)}
+        local_strings, local_objects = _scope_bindings(node.body, aliases)
         strings = {**self.scope.strings, **local_strings}
         objects = {**self.scope.objects, **local_objects}
-        self.scopes.append(Scope(qualname, strings, objects))
+        self.scopes.append(Scope(qualname, aliases, strings, objects))
         for statement in node.body:
             self.visit(statement)
         self.scopes.pop()
@@ -298,11 +341,10 @@ class _Visitor(ast.NodeVisitor):
         path_rule = _PATH_CALLS.get((self.path, self.scope.qualname, callee))
         if path_rule is not None:
             return path_rule
-
         if _is_model_http_call(call, self.scope.strings):
             return "MODEL_EFFECT", "openai-compatible-http"
 
-        symbol = _resolve_symbol(call.func, self.aliases)
+        symbol = _resolve_symbol(call.func, self.scope.aliases)
         if symbol in _MODEL_FUNCTIONS:
             return "MODEL_EFFECT", _MODEL_FUNCTIONS[symbol]
         if symbol in _FUNCTION_EFFECTS:
@@ -326,7 +368,6 @@ def analyze_source(source: str, path: str = "example.py") -> list[Site]:
     visitor = _Visitor(path, tree)
     visitor.visit(tree)
 
-    # Stable occurrence is scoped to semantic identity rather than line number.
     counts: dict[tuple[str, str, str], int] = {}
     sites: list[Site] = []
     for qualname, category, entry_point, line, callee in visitor.raw:
