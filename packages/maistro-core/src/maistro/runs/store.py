@@ -272,6 +272,14 @@ class RunStore(Protocol):
 
     async def has_runs_in_project(self, project_id: str) -> bool: ...
 
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]: ...
+
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
@@ -669,6 +677,32 @@ class InMemoryRunStore:
         rule with a foreign key; this is the reference store's equivalent.
         """
         return any(run.project_id == project_id for run in self._runs.values())
+
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first.
+
+        The query a canonical consumer needs to find admitted work (#251),
+        mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface. Oldest-first, so a bounded tick drains a
+        backlog fairly instead of starving what arrived first.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.status is status and (project_id is None or run.project_id == project_id)
+            ),
+            key=lambda run: (run.created_at, run.run_id),
+        )
+        return [run.model_copy(deep=True) for run in matching[:limit]]
 
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)

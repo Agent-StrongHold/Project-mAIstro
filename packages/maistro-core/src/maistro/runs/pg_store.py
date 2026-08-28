@@ -461,6 +461,33 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first (#251).
+
+        Mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface; oldest-first so a bounded consumer tick
+        drains a backlog fairly. Non-terminal payloads are never offloaded to
+        the archive, so the rows read back whole.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        sql = "SELECT payload FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += " AND project_id = $2"
+            params.append(project_id)
+        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
+        params.append(limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [Run.model_validate(decode_payload(row["payload"])) for row in rows]
+
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.
 
