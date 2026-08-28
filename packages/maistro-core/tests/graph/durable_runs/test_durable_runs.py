@@ -650,27 +650,51 @@ async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
 
 
 async def test_synth_dag_with_failed_subgraph_still_increments_depth_for_the_next_node(
-    mem_store: DurableRunStore, monkeypatch: pytest.MonkeyPatch
+    mem_store: DurableRunStore,
 ) -> None:
     """Contrast with the refusal case above: here the synth node actually
-    dispatches its sub-graph via `run_graph` -- but the sub-graph's own
-    execution fails. That's a real spawn attempt, not a declined one, so
-    depth must still burn a level for whatever runs next."""
+    dispatches its sub-graph as a canonical child Run (#520) -- but the
+    child's own execution fails. That's a real spawn attempt, not a declined
+    one, so depth must still burn a level for whatever runs next."""
     from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
-    from maistro.graph.types import HyperagentOutput
+    from maistro.graph.synth import SynthRequest, SynthResult
+    from maistro.graph.types import GraphConfig
     from maistro.security.dag_shape.proportionality import ProportionalityVerdict
 
     class _AlwaysJustified:
         async def judge(self, shape: Any) -> ProportionalityVerdict:
             return ProportionalityVerdict(justified=True, reason="fine")
 
-    async def _failing_run_graph(*args: Any, **kwargs: Any) -> HyperagentOutput:
-        return HyperagentOutput(success=False, final_answer="sub-graph blew up")
+    class _FailingChildIn(BaseModel):
+        pass
 
-    monkeypatch.setattr("maistro.graph.executor.run_graph", _failing_run_graph)
+    class _FailingChildOut(BaseModel):
+        pass
 
-    async def fake_llm_call(messages: list[dict[str, str]], **kwargs: Any) -> str:
-        return '{"summary": "ok", "subtasks": [], "estimated_files": []}'
+    class _FailingChildNode(BaseNode):
+        kind: ClassVar[str] = "test.synth_child_that_fails"
+        kind_category: ClassVar = "sync.transform"
+        input_schema: ClassVar[type[BaseModel]] = _FailingChildIn
+        output_schema: ClassVar[type[BaseModel]] = _FailingChildOut
+
+        async def _execute(self, inputs: _FailingChildIn, ctx: NodeContext) -> _FailingChildOut:
+            raise RuntimeError("sub-graph blew up")
+
+    with contextlib.suppress(ValueError):
+        register_node(_FailingChildNode)
+
+    class _FailingChildSynthesizer:
+        async def synthesize(self, request: SynthRequest) -> SynthResult:
+            config = GraphConfig(
+                nodes=[_FailingChildNode.kind],
+                edges=[],
+                entry=_FailingChildNode.kind,
+            )
+            return SynthResult(
+                graph_config=config,
+                rationale="one failing step",
+                synthesized_kinds=[_FailingChildNode.kind],
+            )
 
     captured_depths: list[int] = []
 
@@ -693,7 +717,9 @@ async def test_synth_dag_with_failed_subgraph_still_increments_depth_for_the_nex
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
             return AgentSynthDagNode(
-                llm_call=fake_llm_call, proportionality_judge=_AlwaysJustified()
+                synthesizer=_FailingChildSynthesizer(),
+                proportionality_judge=_AlwaysJustified(),
+                run_store=InMemoryDurableRunStore(),
             )
         return _CaptureDepthNode()
 
