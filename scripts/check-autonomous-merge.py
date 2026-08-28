@@ -58,6 +58,7 @@ YELLOW_PATTERNS = (
     "**/package.json",
     "alembic/**",
     "**/migrations/**",
+    "packages/maistro-core/src/maistro/container.py",
     "**/security/**",
     "**/auth/**",
     "**/auth.py",
