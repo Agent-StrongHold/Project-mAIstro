@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +67
+  packages/maistro-core/tests: +69
 ---
 # claude-issue-516-durable-workspace-store-5ae0
 
@@ -26,3 +26,34 @@ The PostgreSQL legs are collected either way — `pytest.skip` happens at run
 time, not collection time — so the node-id count is the same with and without a
 server, and this number does not move when the `postgres` job runs the same
 files with `MAISTRO_REQUIRE_PG_LEGS=1`.
+
+## Revised after Codex review (+2, 69 total)
+
+Two node IDs added in `tests/workspaces/test_wiring.py`, and the existing
+tests there rewritten rather than extended -- because they were asserting the
+defect.
+
+Every test in that file paired an `InMemoryProjectScopeStore` with a SQLite or
+PostgreSQL Workspace store and asserted the result was correct. That pairing
+*is* the split #516's acceptance criteria forbid -- "so a deployment cannot end
+up with its Workspaces in one database and their Root Projects in another" --
+and one test asserted the silent fallback by name
+(`test_an_unmigrated_postgres_pool_falls_back_and_says_so`). The suite encoded
+the behaviour the criterion prohibits, which is why the criterion could be
+claimed as met.
+
+Each backend is now exercised against its own Project store, and the two new
+tests assert that an unhonourable pairing is *refused*: PostgreSQL Projects
+with no pool, and SQLite Projects with no connection. The unmigrated-pool test
+survives with its assertion inverted, from "falls back and says so" to
+"is refused rather than split".
+
+One fixture mistake worth recording, because it is the same shape as the one
+in the JSONB verification. The refusal tests first used hand-written doubles
+named `_PgProjectStoreDouble` and `_SqliteProjectStoreDouble`; the selector
+reads the backend from the class-name prefix, and a leading underscore does not
+match `Pg`. So all three refusal tests passed the selector a store it
+classified as in-memory and asserted a refusal that could never come -- they
+failed with DID NOT RAISE, which is the only reason it was caught. They now use
+the real `PgProjectScopeStore` and `SqliteProjectScopeStore`, which construct
+without a live connection and cannot drift from what the selector sees.

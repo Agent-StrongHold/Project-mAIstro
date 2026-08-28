@@ -8,14 +8,19 @@ up in different databases — which is the failure the "same backend decision"
 requirement is really about. A Workspace whose Root Project lives somewhere
 else is a Workspace whose Runs cannot be filed.
 
-Backend order is the one every other store follows: PostgreSQL when the
-deployment has one and it is migrated, SQLite for a homelab, in-memory
-otherwise. The PostgreSQL probe exists for the same reason
-`_spine_is_migrated`'s does — a caller-supplied pool has been through no
-startup preflight and may legitimately hold only the tables that caller cared
-about — and it warns rather than falling back silently, because a durable pool
-that ends up with in-memory Workspaces is the shape of #122 and saying so is
-the whole difference.
+That sentence was true of the intent and false of the code (Codex, #516). The
+Workspace backend was chosen by an *independent* probe of `pg_pool` for the
+019 tables, so a caller-supplied pool holding only the spine tables selected
+PostgreSQL Projects and fell through to SQLite Workspaces, and a pool holding
+only the Workspace tables produced the inverse. Both split a Workspace from its
+own Root Project across two databases, which is exactly what the docstring
+promised could not happen.
+
+The backend is now read from `project_store` itself, which *is* the selected
+backend, and a deployment that cannot honour it is refused rather than split.
+Refusing is the harder behaviour and the correct one: a split pair is not
+recoverable by restarting with the right configuration, because the rows are
+already in two places.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import logging
 from typing import Any, Final
 
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.types.errors import ConfigError
 from maistro.workspaces.store import WorkspaceStore
 
 logger = logging.getLogger(__name__)
@@ -53,19 +59,53 @@ async def _workspaces_are_migrated(pg_pool: Any) -> bool:
     return False
 
 
+def _backend_of(project_store: ProjectScopeStore) -> str:
+    """Which relational backend the Project scope store already committed to.
+
+    Read from the object rather than re-derived from configuration: the store
+    is the decision. Matched on the class name so that neither PostgreSQL nor
+    aiosqlite has to be importable to ask the question — this runs during
+    container construction, where the unselected backend's driver may be
+    absent.
+    """
+    name = type(project_store).__name__
+    if name.startswith("Pg"):
+        return "postgres"
+    if name.startswith("Sqlite"):
+        return "sqlite"
+    return "memory"
+
+
 async def wire_workspace_store(
     conn: Any,
     *,
     project_store: ProjectScopeStore,
     pg_pool: Any = None,
 ) -> WorkspaceStore:
-    """Return the Workspace store matching the selected relational backend.
+    """Return the Workspace store on the Project store's own backend.
 
     `project_store` is passed rather than resolved: it is the store the
     Workspace's Root Project is created in, and every implementation provisions
     that Root Project as part of `create`.
     """
-    if pg_pool is not None and await _workspaces_are_migrated(pg_pool):
+    backend = _backend_of(project_store)
+
+    if backend == "postgres":
+        if pg_pool is None:
+            msg = (
+                "Projects are stored in PostgreSQL but no pool reached the Workspace "
+                "store, so Workspaces would persist somewhere else. Pass the same pool "
+                "the Project scope store uses (#516)."
+            )
+            raise ConfigError(msg)
+        if not await _workspaces_are_migrated(pg_pool):
+            msg = (
+                "Projects are stored in PostgreSQL but this database is missing the "
+                "canonical Workspace tables, so a Workspace and its Root Project would "
+                "land in different databases. Run `alembic upgrade head` against it "
+                "(#516)."
+            )
+            raise ConfigError(msg)
         # No ensure_schema: these tables come from `alembic/versions/019`. A
         # store that quietly created its own would be a second schema owner and
         # a second thing to keep in step — the defect migration 003 left behind
@@ -74,7 +114,14 @@ async def wire_workspace_store(
 
         return PgWorkspaceStore(pg_pool, project_store=project_store)
 
-    if conn is not None:
+    if backend == "sqlite":
+        if conn is None:
+            msg = (
+                "Projects are stored in SQLite but no connection reached the Workspace "
+                "store, so Workspaces would be in-process and lost on restart while "
+                "their Root Projects survive (#516)."
+            )
+            raise ConfigError(msg)
         from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
         sqlite_store = SqliteWorkspaceStore(conn, project_store=project_store)
