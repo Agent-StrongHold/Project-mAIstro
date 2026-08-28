@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 19.6054
+    "design_coverage": 19.4688
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,9 +540,9 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 19.6054,
+    "percent": 19.4688,
     "decisions": 122,
-    "decisions_scoring_zero": 96,
+    "decisions_scoring_zero": 97,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
@@ -1088,8 +1088,8 @@
         "id": "ADR-081226-bb3a",
         "declared_status": "Accepted",
         "criteria": 12,
-        "reachable": 2,
-        "percent": 16.6667
+        "reachable": 0,
+        "percent": 0.0
       },
       {
         "id": "ADR-081226-e626",
@@ -4676,9 +4676,9 @@
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 10,
-        "covered": 0,
+        "covered": 2,
         "passing": 0,
-        "reachable": 2
+        "reachable": 0
       },
       "tier": "declared",
       "criteria": [
@@ -4759,7 +4759,7 @@
           "scenario": [
             "Publishing a version keeps the old one addressable"
           ],
-          "rung": "reachable"
+          "rung": "covered"
         },
         {
           "id": "SPEC-081226-bb3a/AC-8",
@@ -4816,7 +4816,7 @@
           "scenario": [
             "Templates and provenance survive restart"
           ],
-          "rung": "reachable"
+          "rung": "covered"
         }
       ]
     },
