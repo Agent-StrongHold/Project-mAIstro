@@ -14,20 +14,18 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+  # A merge queue evaluates a synthetic commit containing the current base plus
+  # the queued candidate(s). Every required CI job must report on that SHA, not
+  # merely on the feature-branch head that was green before it entered the queue.
+  merge_group:
+    types: [checks_requested]
 
-# Supersede in-flight runs for the same PR instead of letting them pile up.
-# Every push to a PR previously left the prior run's jobs burning runners —
-# including this workflow's own 20-minute `hive-conductor-e2e-ui` — which is
-# what left later jobs sitting `queued` for tens of minutes.
-#
-# Cancellation is scoped to pull_request on purpose: pushes to main/integration/
-# develop must run to completion, because ADR-095's branch model relies on
-# knowing whether a given commit on a protected branch was green. A cancelled
-# run reports neither success nor failure, so cancelling those would erase that
-# record rather than just saving time.
+# Supersede in-flight runs for the same PR or merge-group candidate instead of
+# letting them pile up. Protected-branch pushes still run to completion because
+# their pass/fail record is durable evidence about that exact branch SHA.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 permissions:
   contents: read
