@@ -128,6 +128,15 @@ class TestItRefusesToGuess:
         path.write_text(json.dumps([_run("x")]), encoding="utf-8")
         assert check._load(path) == [_run("x")]
 
+    def test_unreadable_input_writes_a_fail_closed_json_verdict(self, check, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        verdict = tmp_path / "verdict.json"
+        assert check.main(["--check-runs", str(bad), "--json-output", str(verdict)]) == 1
+        payload = json.loads(verdict.read_text(encoding="utf-8"))
+        assert payload["ok"] is False
+        assert payload["error"]
+
 
 class TestTheRequiredSet:
     def test_it_reads_the_existing_contract(self, check):
@@ -155,6 +164,26 @@ class TestTheRequiredSet:
             check.main(["--check-runs", str(_payload(tmp_path, runs)), "--require-complete"]) == 0
         )
 
+    def test_success_writes_the_machine_readable_verdict(self, check, tmp_path):
+        runs = [_run(name) for name in check.required_check_names()]
+        verdict = tmp_path / "verdict.json"
+        assert (
+            check.main(
+                [
+                    "--check-runs",
+                    str(_payload(tmp_path, runs)),
+                    "--require-complete",
+                    "--json-output",
+                    str(verdict),
+                ]
+            )
+            == 0
+        )
+        payload = json.loads(verdict.read_text(encoding="utf-8"))
+        assert payload["ok"] is True
+        assert payload["error"] is None
+        assert sorted(payload["ran"]) == sorted(check.required_check_names())
+
     def test_one_missing_check_fails_the_real_contract(self, check, tmp_path, capsys):
         names = check.required_check_names()
         runs = [_run(name) for name in names[1:]]
@@ -168,8 +197,8 @@ class TestTheRequiredSet:
 
 class TestTheWorkflowItself:
     def test_it_passes_the_write_safety_guard(self):
-        """The gate added beside it in the same change. A new workflow that
-        tripped it would be a poor advertisement."""
+        """Publishing a check is visible merge evidence, not an invisible write
+        to the candidate tree, so the workflow-write guard must remain green."""
         proc = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "check-workflow-write-safety.py")],
             capture_output=True,
@@ -196,6 +225,13 @@ class TestTheWorkflowItself:
         producers = {workflow for workflow, _name, _scope in module.collect()}
 
         assert producers - triggers == set(), "a producer workflow is not a trigger"
+
+    def test_it_publishes_the_required_context_on_the_candidate_sha(self):
+        text = (ROOT / ".github" / "workflows" / "gates-ran.yml").read_text(encoding="utf-8")
+        assert "checks: write" in text
+        assert "name: 'gates-ran'" in text
+        assert "head_sha: process.env.HEAD_SHA" in text
+        assert "github.event.workflow_run.event == 'merge_group'" in text
 
 
 class TestTheReport:
