@@ -50,6 +50,14 @@ _VALID_DEPENDENCY_CATEGORIES = frozenset(
 )
 _EXCLUDED_PARTS = frozenset({"tests", "test", "mutants", "build", "dist", ".venv"})
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
+# Some wheels do not expose distribution->top-level-module metadata consistently
+# across uv sync shapes. These distribution/import spellings are stable package API,
+# so keep the mapping deterministic rather than making the verdict environment-dependent.
+_DISTRIBUTION_IMPORT_OVERRIDES: dict[str, frozenset[str]] = {
+    "argon2-cffi": frozenset({"argon2"}),
+    "pillow": frozenset({"PIL"}),
+    "pyyaml": frozenset({"yaml"}),
+}
 
 # (package, advisory id) -> why it is accepted. Keyed by the PAIR, not the
 # package: exempting a whole package would silently pass every FUTURE advisory
@@ -211,9 +219,10 @@ def import_names_for(
     distributions: dict[str, frozenset[str]],
 ) -> frozenset[str]:
     """Resolve import names, using conventional underscore spelling as fallback."""
-    mapped = distributions.get(dependency)
-    if mapped:
-        return mapped
+    mapped = distributions.get(dependency, frozenset())
+    override = _DISTRIBUTION_IMPORT_OVERRIDES.get(dependency, frozenset())
+    if mapped or override:
+        return frozenset(mapped | override)
     return frozenset({dependency.replace("-", "_")})
 
 

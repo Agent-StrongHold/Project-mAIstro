@@ -63,6 +63,20 @@ def test_discover_uses_distribution_to_import_mapping(gate, tmp_path) -> None:
     assert usages[0].unused == frozenset()
 
 
+def test_known_distribution_import_aliases_do_not_depend_on_installed_metadata(gate) -> None:
+    expected = {
+        "argon2-cffi": "argon2",
+        "pillow": "PIL",
+        "pyyaml": "yaml",
+    }
+    for dependency, import_name in expected.items():
+        assert import_name in gate.import_names_for(dependency, {})
+        assert import_name in gate.import_names_for(
+            dependency,
+            {dependency: frozenset({"metadata_only_name"})},
+        )
+
+
 def test_local_workspace_distribution_mapping_beats_editable_metadata_gap(gate, tmp_path) -> None:
     core = tmp_path / "packages" / "core"
     (core / "src" / "shared_ns").mkdir(parents=True)
