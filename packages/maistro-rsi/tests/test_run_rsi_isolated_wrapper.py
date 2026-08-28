@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -28,7 +27,14 @@ WRAPPER = ROOT / "tools" / "run_rsi_isolated.sh"
 #: comment out the remainder so the rest of the line does not break.
 DEMONSTRATED_PAYLOAD = "x'; cat /run/gateway.env #"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="the wrapper is a bash script")
+#: No `skipif` on `bash` being present. The autonomous-merge integrity check
+#: flagged the one that used to be here, and it was right: a suppression that
+#: silently removes 24 injection regressions on a host that happens to lack an
+#: interpreter is the shape of a suite that shrinks without anyone deciding to
+#: shrink it. This repository's own posture elsewhere is that a skipped leg is
+#: untested rather than passing -- `MAISTRO_REQUIRE_PG_LEGS` exists to say so.
+#: Without `bash`, the wrapper under test cannot run at all, so these fail
+#: loudly on the missing interpreter, which is the honest report.
 
 
 @pytest.fixture
