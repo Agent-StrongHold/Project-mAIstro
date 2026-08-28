@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -199,31 +198,54 @@ def resolve_test_profile(name: str) -> TestProfile:
     return profile
 
 
-def _isolation_available() -> bool:
-    """Whether the container isolation backend can actually run a candidate.
+#: Whether this process can run an RSI cleanup loop with candidate code
+#: contained. It cannot, and saying so here is the point (#305).
+#:
+#: `LocalRsiConfig.isolation="container"` sandboxes only the builders agent's
+#: edits; `LocalRsiLoop._run_tests` then runs the test command against the
+#: edited worktree ON THE HOST. An argument vector is not an isolation
+#: boundary: `python -m pytest` over a candidate-edited tree imports that
+#: tree's `conftest.py`, its test modules, and any plugin it declares, so
+#: candidate-authored code executes as the Conductor process whether or not a
+#: shell parsed the command.
+#:
+#: `tools/run_rsi_isolated.sh` is the supported isolated path precisely because
+#: it puts the WHOLE loop — agent, git, tests, coverage — inside an ephemeral
+#: container. Its own header says so: "`maistro_rsi --isolation container` only
+#: sandboxes the agent's *edits* and then runs the tests back on the host;
+#: running the whole loop in-container closes that gap."
+#:
+#: So the HTTP path fails closed. Dispatching a run into that wrapper is real
+#: work with its own design — where the container runs, how reports come back,
+#: how it is cancelled — and is tracked in #509; until it exists, an
+#: unattested backend must stop the run rather than quietly be the host.
+IN_PROCESS_ISOLATION_AVAILABLE: Final = False
 
-    Two questions, both required: the code is importable, and a container
-    runtime is on PATH. Either alone would attest something that is not the
-    claim — an importable class with no daemon behind it runs nothing.
+
+def _isolation_available() -> bool:
+    """Whether a backend that contains the WHOLE loop is wired in this process.
+
+    Deliberately not "is the builders container sandbox importable and is
+    docker on PATH". Both can be true while the test command still runs on the
+    host, and an attestation that answers a narrower question than the one
+    being asked is worse than none — it reads as containment to every caller.
     """
-    try:
-        import maistro_bootstrap.builders.container_sandbox  # noqa: F401
-    except Exception:
-        return False
-    return shutil.which("docker") is not None
+    return IN_PROCESS_ISOLATION_AVAILABLE
 
 
 def require_isolation() -> str:
     """The isolation backend an HTTP run must use, or `RsiPolicyError`.
 
     Unavailable isolation stops the run. The alternative — falling back to the
-    host backend — is precisely the state this issue is about, and it is worse
-    arriving silently than it was arriving by design.
+    host — is precisely the state this issue is about, and it is worse arriving
+    silently than it was arriving by design.
     """
     if not _isolation_available():
         raise RsiPolicyError(
-            "container isolation is unavailable (the builders container sandbox or "
-            "the docker runtime is missing), and an RSI run will not fall back to "
-            "executing candidate code on the host"
+            "this deployment cannot run an RSI cleanup loop with candidate code "
+            "contained: the in-process loop executes the test command against the "
+            "edited worktree on the host, and an argument vector is not an "
+            "isolation boundary. Use tools/run_rsi_isolated.sh, which runs the "
+            "whole loop inside an ephemeral container"
         )
     return REQUIRED_ISOLATION

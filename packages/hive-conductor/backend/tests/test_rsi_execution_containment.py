@@ -211,15 +211,49 @@ class TestIsolationFailsClosed:
 
         assert policy.REQUIRED_ISOLATION == "container"
 
-    def test_unavailable_isolation_is_an_error_not_a_downgrade(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_this_process_does_not_claim_containment_it_cannot_provide(self) -> None:
+        """The load-bearing assertion of the whole change.
+
+        `isolation="container"` sandboxes only the builders agent's edits; the
+        loop then runs the test command against the edited worktree on the
+        host. `python -m pytest` over a candidate-edited tree imports that
+        tree's conftest, its test modules and any plugin it declares, so an
+        argument vector is not an isolation boundary. Attesting on "is the
+        sandbox importable and is docker on PATH" would answer a narrower
+        question than the one being asked, and read as containment to every
+        caller.
+        """
         from services import rsi_execution_policy as policy
 
-        monkeypatch.setattr(policy, "_isolation_available", lambda: False)
+        assert policy.IN_PROCESS_ISOLATION_AVAILABLE is False
+        assert policy._isolation_available() is False
 
-        with pytest.raises(policy.RsiPolicyError, match="isolation"):
+    def test_unavailable_isolation_is_an_error_not_a_downgrade(self) -> None:
+        from services import rsi_execution_policy as policy
+
+        with pytest.raises(policy.RsiPolicyError, match="isolation boundary"):
             policy.require_isolation()
+
+    def test_the_refusal_names_the_path_that_does_contain(self) -> None:
+        """A refusal that leaves the operator with no way to run the loop
+        invites the workaround. The isolated wrapper is the answer, so the
+        error says so."""
+        from services import rsi_execution_policy as policy
+
+        with pytest.raises(policy.RsiPolicyError, match=r"run_rsi_isolated\.sh"):
+            policy.require_isolation()
+
+    def test_an_available_backend_would_yield_the_required_isolation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other side of the gate, so this is a gate rather than a
+        hard-coded refusal: when a contained backend is wired, the same call
+        returns it."""
+        from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(policy, "IN_PROCESS_ISOLATION_AVAILABLE", True)
+
+        assert policy.require_isolation() == policy.REQUIRED_ISOLATION
 
 
 class TestTheProfileListingIsTheHonestAnswer:
@@ -505,27 +539,6 @@ class TestTheProfileOverlay:
         assert policy._overlay_profiles() == {}
 
 
-class TestIsolationAttestation:
-    def test_both_halves_are_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An importable class with no daemon behind it runs nothing, and a
-        daemon with no adapter is not reachable. Either alone attests something
-        that is not the claim."""
-        from services import rsi_execution_policy as policy
-
-        monkeypatch.setattr(policy.shutil, "which", lambda _name: None)
-
-        assert policy._isolation_available() is False
-
-    def test_an_available_backend_yields_the_required_isolation(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from services import rsi_execution_policy as policy
-
-        monkeypatch.setattr(policy, "_isolation_available", lambda: True)
-
-        assert policy.require_isolation() == policy.REQUIRED_ISOLATION
-
-
 class TestAValidRequestStartsARunWithTheResolvedPolicy:
     """The success path. Every test above asserts a refusal, and a route that
     refused *everything* would satisfy all of them -- so this is the one that
@@ -538,7 +551,7 @@ class TestAValidRequestStartsARunWithTheResolvedPolicy:
         from services import rsi_execution_policy as policy
         from services.rsi import RunState, get_rsi_service
 
-        monkeypatch.setattr(policy, "_isolation_available", lambda: True)
+        monkeypatch.setattr(policy, "IN_PROCESS_ISOLATION_AVAILABLE", True)
 
         configs: list[dict] = []
 
@@ -622,3 +635,87 @@ class TestAValidRequestStartsARunWithTheResolvedPolicy:
         assert response.status_code == 400
         assert "requires repo_path" in response.json()["detail"]
         assert started == []
+
+
+class TestTheCallerCannotAimTheLoopsWrites:
+    """`repo_path` was not the only host path in the request. The loop WRITES
+    to `work_root` and `report_dir`, and `export_promotions(..., clear=True)`
+    DELETES `*.patch` and `manifest.json` under the export child -- so
+    containing the repository while forwarding these verbatim left three doors
+    open beside the one being shut.
+    """
+
+    @pytest.mark.parametrize("field", ["work_root", "report_dir", "export_dir"])
+    def test_a_caller_supplied_output_directory_is_refused(
+        self, admin_client, authorized_repo: Path, tmp_path: Path, field: str
+    ) -> None:
+        response = admin_client.post(
+            "/v1/rsi/runs",
+            json={
+                "mode": "cleanup",
+                "repo_path": str(authorized_repo),
+                "test_profile": "pytest",
+                field: str(tmp_path / "anywhere"),
+            },
+        )
+
+        assert response.status_code == 400
+        assert field in response.json()["detail"]
+
+    def test_it_is_refused_rather_than_ignored(
+        self, admin_client, authorized_repo: Path, tmp_path: Path
+    ) -> None:
+        """Silently substituting a different directory would mislead a caller
+        who named one and then went looking for their reports there."""
+        response = admin_client.post(
+            "/v1/rsi/runs",
+            json={
+                "mode": "cleanup",
+                "repo_path": str(authorized_repo),
+                "test_profile": "pytest",
+                "report_dir": "/tmp/somewhere-else",
+            },
+        )
+
+        assert response.status_code == 400
+        assert not (tmp_path / "anywhere").exists()
+
+    def test_the_service_derives_them_under_its_own_working_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """And they are derived from the run id, so two runs cannot collide on
+        the same reports directory."""
+        import maistro_rsi.local_loop as local_loop
+
+        seen: list[object] = []
+
+        class _Loop:
+            def __init__(self, config: object, **_kw: object) -> None:
+                seen.append(config)
+
+            def run(self) -> object:
+                raise AssertionError("the loop must not start in this test")
+
+        monkeypatch.setattr(local_loop, "LocalRsiLoop", _Loop)
+        monkeypatch.setattr(local_loop, "make_builders_apply_patch", lambda **_kw: None)
+
+        import asyncio
+
+        from services.rsi import RunState, _RsiService
+
+        run = RunState(
+            run_id="derived",
+            mode="cleanup",
+            config={
+                "repo_path": str(tmp_path),
+                "test_argv": ["python", "-m", "pytest"],
+                "isolation": "container",
+            },
+        )
+        with pytest.raises(AssertionError, match="must not start"):
+            asyncio.run(_RsiService()._drive_cleanup(run))
+
+        config = seen[0]
+        assert "derived" in config.work_root
+        assert config.report_dir.startswith(config.work_root)
+        assert config.export_patches.startswith(config.report_dir)

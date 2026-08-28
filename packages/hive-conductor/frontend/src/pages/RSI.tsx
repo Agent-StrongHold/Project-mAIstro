@@ -55,6 +55,7 @@ export default function RSI() {
   const [profiles, setProfiles] = useState<TestProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [startError, setStartError] = useState("");
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [reviews, setReviews] = useState<{ kept: Review[]; flagged: Review[] }>({
     kept: [],
@@ -129,6 +130,7 @@ export default function RSI() {
 
   const startRun = async () => {
     if (!repoPath || !testProfile) return;
+    setStartError("");
     setBusy(true);
     try {
       const resp = await fetch(`${API}/runs`, {
@@ -151,6 +153,12 @@ export default function RSI() {
         const run = await resp.json();
         setSelectedRun(run.run_id);
         await refresh();
+      } else {
+        // The backend refuses a run it cannot contain (#305). Showing the
+        // refusal beats a button that appears to do nothing: the operator
+        // needs to know the isolated wrapper is the way to run this.
+        const body = await resp.json().catch(() => ({}));
+        setStartError(body.detail || `start refused (${resp.status})`);
       }
     } finally {
       setBusy(false);
@@ -266,6 +274,11 @@ export default function RSI() {
         <button onClick={startRun} disabled={busy || !repoPath || !testProfile} className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           <Play className="h-4 w-4" />{busy ? "Starting…" : "Start run"}
         </button>
+        {startError && (
+          <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            {startError}
+          </p>
+        )}
       </section>
 
       {/* runs list */}

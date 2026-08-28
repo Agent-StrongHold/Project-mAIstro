@@ -75,7 +75,15 @@ def _enclosing_symbol(tree: ast.AST, lineno: int) -> str:
 
 
 def shell_calls(source: str) -> list[str]:
-    """Every enclosing symbol that passes a truthy `shell=` keyword."""
+    """Every enclosing symbol that passes a `shell=` this gate cannot rule out.
+
+    Governs every `shell=` expression EXCEPT a literal `False`, rather than
+    matching only a literal `True`. `shell=ENABLE_SHELL` and `shell=not False`
+    enable a shell at runtime and would have passed a literal-only check
+    undeclared, which is the exact hole this gate exists to close. Anything the
+    gate cannot evaluate to `False` by reading it is governed; a caller who
+    means "no shell" writes `shell=False` and is not asked for a ledger entry.
+    """
     tree = ast.parse(source)
     found: list[str] = []
     for node in ast.walk(tree):
@@ -85,7 +93,8 @@ def shell_calls(source: str) -> list[str]:
             if keyword.arg != "shell":
                 continue
             value = keyword.value
-            if isinstance(value, ast.Constant) and value.value is True:
+            literally_off = isinstance(value, ast.Constant) and value.value is False
+            if not literally_off:
                 found.append(_enclosing_symbol(tree, node.lineno))
     return found
 

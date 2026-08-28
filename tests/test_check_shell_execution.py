@@ -79,6 +79,20 @@ class TestItFindsTheCallsThatMatter:
 
         assert gate.shell_calls(source) == []
 
+    @pytest.mark.parametrize(
+        "expression",
+        ["ENABLE_SHELL", "not False", "bool(flag)", "cfg.shell", "True if x else False"],
+    )
+    def test_a_shell_value_the_gate_cannot_read_as_False_is_governed(
+        self, gate, expression: str
+    ) -> None:
+        """Matching only a literal `True` left the hole open: `shell=ENABLE_SHELL`
+        enables a shell at runtime and would have passed undeclared. Anything
+        the gate cannot evaluate to False by reading it is governed."""
+        source = f"def runner():\n    subprocess.run(cmd, shell={expression})\n"
+
+        assert gate.shell_calls(source) == ["runner"]
+
     def test_no_shell_keyword_at_all_is_not_a_finding(self, gate) -> None:
         source = "def runner():\n    subprocess.run(argv)\n"
 

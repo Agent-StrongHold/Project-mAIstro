@@ -146,8 +146,12 @@ class _RsiService:
         # checkpoints + promotion review records without the second — which
         # left the patch-review page permanently empty. Allocate both the way
         # the CLI path does.
-        work_root = cfg.get("work_root") or tempfile.mkdtemp(prefix=f"rsi-{run.run_id}-")
-        report_dir = cfg.get("report_dir") or str(Path(work_root) / "reports")
+        # Derived, never taken from the request (#305). These are directories
+        # the loop writes to and, for the export child, deletes from; a caller
+        # who could name them could aim those writes at anything writable.
+        work_root = tempfile.mkdtemp(prefix=f"rsi-{run.run_id}-")
+        report_dir = str(Path(work_root) / "reports")
+        export_dir = str(Path(report_dir) / "export")
         genome_models = [
             m.strip() for m in (cfg.get("genome_models") or "").split(",") if m.strip()
         ]
@@ -183,7 +187,7 @@ class _RsiService:
             coverage_source=cfg.get("coverage_source") or ".",
             coverage_pytest_args=cfg.get("coverage_pytest_args") or "",
             report_dir=report_dir,
-            export_patches=cfg.get("export_dir"),
+            export_patches=export_dir,
             # Tournament settings: the UI shows working roster/scout controls,
             # so not forwarding them meant every run silently executed with
             # different settings than the operator chose.

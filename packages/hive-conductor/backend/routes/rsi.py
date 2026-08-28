@@ -41,6 +41,13 @@ class StartRunBody(BaseModel):
     fitness: bool = True
     coverage_source: str | None = None
     coverage_pytest_args: str | None = None
+    #: Accepted only to be refused. These three named host directories the
+    #: loop WRITES to and, for the export child, deletes `*.patch` and
+    #: `manifest.json` from -- so containing `repo_path` while forwarding these
+    #: verbatim left three doors open beside the one being shut (#305). They
+    #: are derived server-side now; a request that sets them is rejected rather
+    #: than silently ignored, because a caller who names an output directory
+    #: and gets a different one is being misled.
     work_root: str | None = None
     report_dir: str | None = None
     export_dir: str | None = None
@@ -138,6 +145,26 @@ async def start_run(body: StartRunBody) -> dict:
     if body.mode == "cleanup" and not body.repo_path:
         raise HTTPException(status_code=400, detail="cleanup mode requires repo_path")
 
+    caller_paths = [
+        name
+        for name, value in (
+            ("work_root", body.work_root),
+            ("report_dir", body.report_dir),
+            ("export_dir", body.export_dir),
+        )
+        if value is not None
+    ]
+    if caller_paths:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{', '.join(caller_paths)} is no longer accepted — the loop writes to "
+                f"these directories, and the export child has its *.patch files and "
+                f"manifest.json deleted on each promotion. They are derived from the "
+                f"run id under the server's own working root."
+            ),
+        )
+
     # Resolve every execution decision HERE, at the trust boundary, so what the
     # service receives is already the operator's policy rather than the
     # caller's description of it (#305).
@@ -161,9 +188,6 @@ async def start_run(body: StartRunBody) -> dict:
         "fitness": body.fitness,
         "coverage_source": body.coverage_source,
         "coverage_pytest_args": body.coverage_pytest_args,
-        "work_root": body.work_root,
-        "report_dir": body.report_dir,
-        "export_dir": body.export_dir,
         "genome_models": body.genome_models,
         "roster_size": body.roster_size,
         "scout": body.scout,
