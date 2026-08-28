@@ -170,7 +170,7 @@ def _matrix_rows(job: dict) -> list[dict]:
     for key, values in axes.items():
         if not isinstance(values, list):
             raise ContractError(f"matrix axis {key!r} is not a list")
-        combos = [{**combo, key: value} for combo in combos for key_value in [value]]
+        combos = [{**combo, key: value} for combo in combos for value in values]
     if include:
         extra = [dict(entry) for entry in include]
         combos = extra if combos == [{}] else combos + extra
