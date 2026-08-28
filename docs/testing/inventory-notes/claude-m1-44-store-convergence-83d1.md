@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +30
+  packages/maistro-core/tests: +36
 ---
 # claude-m1-44-store-convergence
 
@@ -39,11 +39,21 @@ a second physical identity; and one Run's lapsed lease is settled canonically
 in place, so its immediate retry is admissible without waiting for a global
 sweep.
 
-**`tests/graph/durable_runs/test_canonical_execution_store.py` (+6)** — the
-Attempt boundary after the delegation: creation happens once, in the store;
+**`tests/graph/durable_runs/test_canonical_execution_store.py` (+12)** — the
+Attempt boundary after the delegation. Creation happens once, in the store;
 the second-active-Attempt and terminal-NodeRun guards still refuse; lease
 renewal goes to the store that holds the lease; and an Attempt this aggregate
 never saw is reported as the disagreement it is rather than mirrored in.
+
+Then the edges of adoption and scoped reclaim, which are where getting it
+wrong is expensive rather than untidy: an unmirrored Attempt from a different
+request, or one that already settled, or two of them at once, are all refused
+rather than adopted — adoption repairs a single lost mirror write and nothing
+else. A holder that renewed between the projection and the sweep has its live
+work left alone and the stale projection repaired instead. An Attempt another
+recovery already settled is reported, not rewritten. And losing the settle
+race reports the winner rather than raising, because two recoveries observing
+one lapse is a normal event.
 
 **`tests/runs/test_lifecycle.py` (+4)** for `transition_path`: nothing to do,
 one legal edge, a walked multi-hop gap, and a refusal to invent an exit from a

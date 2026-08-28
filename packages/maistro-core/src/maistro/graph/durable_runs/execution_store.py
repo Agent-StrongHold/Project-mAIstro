@@ -446,10 +446,10 @@ class DurableRunExecutionStore:
         if not lease_is_expired(canonical, moment):
             return canonical, False
         lease = canonical.execution_lease
-        if lease is None:
-            raise RunIntegrityError(
-                f"expired canonical Attempt {canonical.attempt_id!r} has no execution lease"
-            )
+        # `lease_is_expired` above is false for a leaseless Attempt, so reaching
+        # here means there is one. Asserted rather than re-checked: a branch
+        # nothing can take is a branch nothing can test.
+        assert lease is not None
         settled = reclaim_attempt(canonical, at=moment)
         try:
             return await self._run_store.transition_attempt(
