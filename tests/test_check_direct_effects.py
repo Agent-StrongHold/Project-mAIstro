@@ -21,22 +21,22 @@ def gate():
 
 def test_model_http_call_is_a_site(gate) -> None:
     sites = gate.analyze_source(
-        '''
+        """
 async def ask(client):
     return await client.post(f"{base}/v1/chat/completions", json={})
-'''
+"""
     )
     assert [(s.category, s.entry_point) for s in sites] == [
-        ("MODEL_EFFECT", "openai-compatible-http")
+        ("MODEL_EFFECT", "openai-compatible-http"),
     ]
 
 
 def test_endpoint_text_elsewhere_does_not_turn_unrelated_http_into_effect(gate) -> None:
-    source = '''
+    source = """
 PUBLIC = "/v1/chat/completions"
 async def send_webhook(client):
     await client.post("https://example.com/webhook", json={})
-'''
+"""
     assert gate.analyze_source(source) == []
 
 
@@ -45,11 +45,11 @@ def test_sql_execute_is_not_an_effect(gate) -> None:
 
 
 def test_unrelated_http_client_code_is_not_an_effect(gate) -> None:
-    source = '''
+    source = """
 import httpx
 async def health(client: httpx.AsyncClient):
     return await client.get("https://example.com/health")
-'''
+"""
     assert gate.analyze_source(source) == []
 
 
@@ -62,16 +62,16 @@ def test_importing_governed_service_is_not_usage(gate) -> None:
 
 
 def test_events_invocation_store_is_not_capability_invocation(gate) -> None:
-    source = '''
+    source = """
 from maistro.events.invocations import InvocationStore
 async def save(store: InvocationStore, item):
     await store.append(item)
-'''
+"""
     assert gate.analyze_source(source) == []
 
 
 def test_typed_browser_call_is_detected_but_construction_is_not(gate) -> None:
-    source = '''
+    source = """
 async def search():
     try:
         from maistro.tools.browser import BrowserClient
@@ -79,7 +79,7 @@ async def search():
         return await client.search_web("query", max_results=3)
     finally:
         await client.aclose()
-'''
+"""
     sites = gate.analyze_source(source)
     assert len(sites) == 1
     assert sites[0].category == "TOOL_EFFECT"
@@ -87,11 +87,11 @@ async def search():
 
 
 def test_imported_model_helper_call_is_detected(gate) -> None:
-    source = '''
+    source = """
 from maistro.agents.pm_llm_call import maistro_llm_call
 async def run(messages):
     return await maistro_llm_call(messages)
-'''
+"""
     sites = gate.analyze_source(source)
     assert len(sites) == 1
     assert sites[0].category == "MODEL_EFFECT"
