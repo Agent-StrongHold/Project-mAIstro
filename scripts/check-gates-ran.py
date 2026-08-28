@@ -26,12 +26,20 @@ What counts as red
   "gates did not run" state AC-2 names, and the one that renders as empty.
 - **Non-executed** — a run record exists but its conclusion is
   `action_required`, `stale`, `skipped`, or `cancelled`. Presence alone is not
-  evidence that the required enforcement executed. This matters because GitHub
-  can treat a skipped required check as acceptable at the merge boundary.
+  evidence that the required enforcement executed. GitHub deliberately treats
+  a skipped required check as successful at the merge boundary, so the
+  aggregate must be stricter than branch protection here.
 - **Unfinished** — present but not `completed`. Red only under
-  `--require-complete`, which is how the `workflow_run`-triggered job asks the
-  question once the other workflows have finished. Without that flag an
+  `--require-complete`, which is how the `workflow_run`-triggered publisher asks
+  the question once another workflow has finished. Without that flag an
   in-progress check is fine: it ran, which is what this gate is about.
+
+Base-coupled checks
+-------------------
+CodeQL and the container scan are intentionally coupled to `main`. They are not
+required execution evidence on a `develop` PR, but they *are* evidence on a
+`main` promotion. Pass `--base-branch main` to include them. Any other base
+keeps them excluded, matching the generated required-check contract.
 
 A failure it must never produce
 -------------------------------
@@ -46,6 +54,7 @@ Usage
 -----
     python3 scripts/check-gates-ran.py --check-runs runs.json
     python3 scripts/check-gates-ran.py --check-runs runs.json --require-complete
+    python3 scripts/check-gates-ran.py --check-runs runs.json --require-complete --base-branch main
 
 `runs.json` is the body of `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`.
 The workflow fetches it; this script does no network I/O, so its logic is
@@ -69,12 +78,12 @@ REQUIRED_CHECKS_SCRIPT = REPO_ROOT / "scripts" / "check-required-checks.py"
 NON_EXECUTED = frozenset({"action_required", "stale", "skipped", "cancelled"})
 
 
-def required_check_names() -> list[str]:
-    """The contract `check-required-checks.py` already keeps honest.
+def required_check_names(*, base_branch: str | None = None) -> list[str]:
+    """Return the required execution-evidence set for one PR base.
 
-    Read from that script rather than restated here, for the reason its own
-    docstring gives: a name that lives in two places drifts in one of them, and
-    the drift is invisible because both sides keep reporting.
+    The source of truth is `check-required-checks.py`, not a second handwritten
+    list. Base-coupled checks are included only for `main`, which is the branch
+    whose contract actually requires CodeQL and the container scan.
     """
     spec = importlib.util.spec_from_file_location("check_required_checks", REQUIRED_CHECKS_SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
@@ -83,20 +92,11 @@ def required_check_names() -> list[str]:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     rows = module.collect()
-    # Base-coupled checks are excluded, and the exclusion is the difference
-    # between a gate people keep and one they switch off. CodeQL runs only on
-    # PRs based on `main`, so on a `develop` PR its three checks legitimately
-    # produce no run at all -- requiring them would paint every PR in the
-    # repository red for a reason that is correct behaviour. #161 named this
-    # class of check and `base_coupled` already identifies it, so this reads
-    # the same answer rather than inventing a second one.
-    #
-    # The cost is stated rather than hidden: on a `main`-based PR nothing here
-    # verifies CodeQL ran. That needs the base branch, which this script
-    # deliberately does not take (see the module docstring on network I/O), and
-    # it is the narrower gap.
-    excluded = {name for _workflow, name in module.base_coupled(rows)}
-    return sorted({name for _workflow, name, _scope in rows} - excluded)
+
+    names = {name for _workflow, name, _scope in rows}
+    if base_branch != "main":
+        names -= {name for _workflow, name in module.base_coupled(rows)}
+    return sorted(names)
 
 
 @dataclass
@@ -174,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also fail when a required check is present but has not finished",
     )
+    parser.add_argument(
+        "--base-branch",
+        help="PR base branch; `main` includes base-coupled release checks",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -184,7 +188,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    required = required_check_names()
+    # Preserve the zero-argument seam for tests and local callers while letting
+    # the trusted workflow supply the live PR base explicitly.
+    required = (
+        required_check_names(base_branch=args.base_branch)
+        if args.base_branch is not None
+        else required_check_names()
+    )
     if not required:
         print("FAIL: the required-check contract is empty; nothing to verify ran.")
         return 1
