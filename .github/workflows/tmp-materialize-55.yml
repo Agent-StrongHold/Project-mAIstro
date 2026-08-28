@@ -241,7 +241,7 @@ jobs:
 
           python scripts/check_direct_effects.py
           python scripts/check-model-egress.py
-          python -m pytest -q tests/test_check_direct_effects.py
+          python -m pytest -q --confcutdir=tests tests/test_check_direct_effects.py
 
           rm .github/workflows/tmp-materialize-55.yml
           git config user.name "github-actions[bot]"
