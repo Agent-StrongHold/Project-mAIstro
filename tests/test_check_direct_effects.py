@@ -55,8 +55,7 @@ async def health(client: httpx.AsyncClient):
 
 def test_importing_governed_service_is_not_usage(gate) -> None:
     source = (
-        "from maistro.capabilities.governed_invocation import "
-        "GovernedInvocationExecutionService\n"
+        "from maistro.capabilities.governed_invocation import GovernedInvocationExecutionService\n"
     )
     assert gate.analyze_source(source) == []
 

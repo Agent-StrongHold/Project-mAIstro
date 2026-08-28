@@ -339,9 +339,7 @@ def _is_model_http_call(
     if url is None:
         return False
     return any(
-        endpoint in part
-        for part in _string_parts(url, bindings)
-        for endpoint in _MODEL_ENDPOINTS
+        endpoint in part for part in _string_parts(url, bindings) for endpoint in _MODEL_ENDPOINTS
     )
 
 
@@ -445,10 +443,7 @@ def analyze_source(source: str, path: str = "example.py") -> list[Site]:
         key = (qualname, category, entry_point)
         occurrence = counts.get(key, 0) + 1
         counts[key] = occurrence
-        site_id = (
-            f"{path}::{qualname}::{category}:"
-            f"{entry_point}#{occurrence}"
-        )
+        site_id = f"{path}::{qualname}::{category}:{entry_point}#{occurrence}"
         sites.append(
             Site(
                 id=site_id,
@@ -476,9 +471,7 @@ def discover(root: Path = ROOT) -> dict[str, Site]:
             continue
         for site in analyze_source(source, rel):
             if site.id in found:
-                raise RuntimeError(
-                    f"duplicate direct-effect site identity: {site.id}"
-                )
+                raise RuntimeError(f"duplicate direct-effect site identity: {site.id}")
             found[site.id] = site
     return found
 
@@ -487,10 +480,7 @@ def _load_inventory(
     path: Path = INVENTORY,
 ) -> dict[str, dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return {
-        str(key): dict(value)
-        for key, value in payload.get("sites", {}).items()
-    }
+    return {str(key): dict(value) for key, value in payload.get("sites", {}).items()}
 
 
 def audit(
@@ -506,8 +496,7 @@ def audit(
         )
     for site_id in sorted(recorded.keys() - found.keys()):
         failures.append(
-            f"STALE {site_id} disappeared from code; remove or update its "
-            "inventory entry"
+            f"STALE {site_id} disappeared from code; remove or update its inventory entry"
         )
 
     for site_id in sorted(found.keys() & recorded.keys()):
@@ -523,17 +512,13 @@ def audit(
             expected = getattr(site, field)
             if entry.get(field) != expected:
                 failures.append(
-                    f"{site_id}: recorded {field}={entry.get(field)!r}, "
-                    f"discovered {expected!r}"
+                    f"{site_id}: recorded {field}={entry.get(field)!r}, discovered {expected!r}"
                 )
         disposition = str(entry.get("disposition", "")).strip()
         owner = str(entry.get("owner", "")).strip()
         rationale = str(entry.get("rationale", "")).strip()
         if disposition not in DISPOSITIONS:
-            failures.append(
-                f"{site_id}: disposition must be one of "
-                f"{sorted(DISPOSITIONS)}"
-            )
+            failures.append(f"{site_id}: disposition must be one of {sorted(DISPOSITIONS)}")
         if not owner:
             failures.append(f"{site_id}: owner is required")
         if not rationale:
@@ -583,36 +568,24 @@ def main(argv: list[str] | None = None) -> int:
     recorded = _load_inventory(INVENTORY)
     if "--update" in args:
         _write_inventory(found, recorded, INVENTORY)
-        print(
-            f"wrote {INVENTORY.relative_to(ROOT)} with "
-            f"{len(found)} discovered call site(s)"
-        )
+        print(f"wrote {INVENTORY.relative_to(ROOT)} with {len(found)} discovered call site(s)")
         return 0
 
     failures = audit(recorded, found)
     categories: dict[str, int] = {}
     for site in found.values():
         categories[site.category] = categories.get(site.category, 0) + 1
-    summary = (
-        ", ".join(
-            f"{name}={count}"
-            for name, count in sorted(categories.items())
-        )
-        or "none"
-    )
+    summary = ", ".join(f"{name}={count}" for name, count in sorted(categories.items())) or "none"
     print(f"direct-effect call sites: {len(found)} ({summary})")
     if failures:
         print(
-            "FAIL: direct-effect inventory does not match current production "
-            "call sites",
+            "FAIL: direct-effect inventory does not match current production call sites",
             file=sys.stderr,
         )
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
         return 1
-    print(
-        "Direct-effect inventory matches code and every site is dispositioned."
-    )
+    print("Direct-effect inventory matches code and every site is dispositioned.")
     return 0
 
 
