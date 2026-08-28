@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -35,6 +36,11 @@ def test_requirement_name_handles_extras_and_normalization(gate) -> None:
     assert gate.requirement_name("pydantic_settings >= 2") == "pydantic-settings"
 
 
+def test_requirement_name_rejects_unparseable_requirement(gate) -> None:
+    with pytest.raises(ValueError, match="cannot parse dependency requirement"):
+        gate.requirement_name("!!!")
+
+
 def test_imports_from_source_collects_static_and_literal_dynamic_imports(gate) -> None:
     source = """
 import httpx as client
@@ -48,12 +54,42 @@ __import__("sqlalchemy.ext.asyncio")
     )
 
 
+def test_literal_dynamic_import_ignores_nonliteral_and_unrelated_calls(gate) -> None:
+    source = """
+import importlib
+name = "yaml"
+importlib.import_module(name)
+load_plugin("json")
+"""
+    assert gate.imports_from_source(source) == frozenset({"importlib"})
+
+
 def test_production_imports_do_not_credit_test_only_usage(gate, tmp_path) -> None:
     package = _write_package(tmp_path, ["httpx"], "pass\n")
     tests = package / "tests"
     tests.mkdir()
     (tests / "test_http.py").write_text("import httpx\n")
     assert "httpx" not in gate.production_imports(package)
+
+
+def test_production_imports_reports_invalid_production_python(gate, tmp_path) -> None:
+    package = _write_package(tmp_path, [], "if:\n")
+    with pytest.raises(RuntimeError, match="cannot parse production Python"):
+        gate.production_imports(package)
+
+
+def test_installed_distribution_imports_inverts_and_normalizes_metadata(gate, monkeypatch) -> None:
+    monkeypatch.setattr(
+        gate.metadata,
+        "packages_distributions",
+        lambda: {"yaml": ["PyYAML"], "PIL.Image": ["Pillow"], "shared": ["A_B", "C-D"]},
+    )
+    assert gate.installed_distribution_imports() == {
+        "pyyaml": frozenset({"yaml"}),
+        "pillow": frozenset({"PIL"}),
+        "a-b": frozenset({"shared"}),
+        "c-d": frozenset({"shared"}),
+    }
 
 
 def test_discover_uses_distribution_to_import_mapping(gate, tmp_path) -> None:
@@ -77,6 +113,10 @@ def test_known_distribution_import_aliases_do_not_depend_on_installed_metadata(g
         )
 
 
+def test_import_name_fallback_uses_underscore_spelling(gate) -> None:
+    assert gate.import_names_for("demo-client", {}) == frozenset({"demo_client"})
+
+
 def test_local_workspace_distribution_mapping_beats_editable_metadata_gap(gate, tmp_path) -> None:
     core = tmp_path / "packages" / "core"
     (core / "src" / "shared_ns").mkdir(parents=True)
@@ -92,6 +132,30 @@ def test_local_workspace_distribution_mapping_beats_editable_metadata_gap(gate, 
     usages = gate.discover(tmp_path, {})
     app_usage = next(usage for usage in usages if usage.manifest.endswith("app/pyproject.toml"))
     assert app_usage.unused == frozenset()
+
+
+def test_local_import_roots_include_modules_and_hatch_wheel_mappings(gate, tmp_path) -> None:
+    package = tmp_path / "packages" / "demo"
+    (package / "src" / "demo_pkg").mkdir(parents=True)
+    (package / "src" / "feature.py").write_text("pass\n")
+    (package / "src" / ".hidden").mkdir()
+    manifest = package / "pyproject.toml"
+    manifest.write_text(
+        """[project]
+name = "demo-dist"
+version = "0.1.0"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/demo_pkg"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/legacy" = "legacy_ns"
+"""
+    )
+    roots = gate._local_import_roots(manifest)
+    assert {"demo_pkg", "feature", "legacy_ns"}.issubset(roots)
+    assert gate.local_distribution_imports(tmp_path)["demo-dist"] == roots
 
 
 def test_missing_disposition_for_unused_runtime_dependency_fails(gate, tmp_path) -> None:
@@ -179,3 +243,106 @@ def test_disposition_requires_category_owner_and_specific_rationale(gate, tmp_pa
     assert any("invalid/missing disposition category" in failure for failure in failures)
     assert any("missing an owner" in failure for failure in failures)
     assert any("too vague" in failure for failure in failures)
+
+
+def test_audit_rejects_disposition_for_unknown_manifest(gate) -> None:
+    dispositions = {
+        "packages/missing/pyproject.toml": {
+            "uvicorn": {
+                "category": "ENTRYPOINT_RUNTIME",
+                "owner": "#352",
+                "rationale": "The production container invokes the uvicorn console entry point directly.",
+            }
+        }
+    }
+    failures = gate.audit([], dispositions)
+    assert any("names no discovered production package" in failure for failure in failures)
+
+
+def test_load_dependency_ledger_requires_file_and_valid_schema(gate, tmp_path) -> None:
+    missing = tmp_path / "missing.json"
+    with pytest.raises(FileNotFoundError):
+        gate.load_dependency_ledger(missing)
+
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(json.dumps({"schema_version": 2, "exceptions": {}}))
+    with pytest.raises(ValueError, match="schema_version=1"):
+        gate.load_dependency_ledger(ledger)
+
+    ledger.write_text(json.dumps({"schema_version": 1, "exceptions": {"demo": {}}}))
+    assert gate.load_dependency_ledger(ledger) == {"demo": {}}
+
+
+def test_audit_direct_dependencies_handles_errors_failures_and_success(gate, monkeypatch) -> None:
+    def bad_discover():
+        raise ValueError("bad manifest")
+
+    monkeypatch.setattr(gate, "discover", bad_discover)
+    assert gate.audit_direct_dependencies() == 1
+
+    unused = gate.PackageUsage(
+        manifest="packages/demo/pyproject.toml",
+        dependencies=frozenset({"uvicorn"}),
+        imports=frozenset(),
+        import_names={"uvicorn": frozenset({"uvicorn"})},
+    )
+    monkeypatch.setattr(gate, "discover", lambda: [unused])
+    monkeypatch.setattr(gate, "load_dependency_ledger", lambda: {})
+    assert gate.audit_direct_dependencies() == 1
+
+    used = gate.PackageUsage(
+        manifest="packages/demo/pyproject.toml",
+        dependencies=frozenset({"httpx"}),
+        imports=frozenset({"httpx"}),
+        import_names={"httpx": frozenset({"httpx"})},
+    )
+    monkeypatch.setattr(gate, "discover", lambda: [used])
+    assert gate.audit_direct_dependencies() == 0
+
+
+def test_audit_pip_report_blocks_unknown_advisory_and_accepts_allowlisted(gate, tmp_path) -> None:
+    report = tmp_path / "audit.json"
+    report.write_text(
+        json.dumps(
+            {
+                "dependencies": [
+                    {
+                        "name": "demo",
+                        "version": "1.0",
+                        "vulns": [{"id": "CVE-2099-1", "fix_versions": ["1.1"]}],
+                    }
+                ]
+            }
+        )
+    )
+    assert gate.audit_pip_report(str(report)) == 1
+
+    report.write_text(
+        json.dumps(
+            {
+                "dependencies": [
+                    {
+                        "name": "ecdsa",
+                        "version": "0.19.2",
+                        "vulns": [{"id": "PYSEC-2026-1325", "fix_versions": []}],
+                    }
+                ]
+            }
+        )
+    )
+    assert gate.audit_pip_report(str(report)) == 0
+
+
+def test_main_validates_arguments_and_sequences_both_gates(gate, monkeypatch) -> None:
+    assert gate.main(["pip_audit_gate.py"]) == 2
+
+    calls: list[str] = []
+    monkeypatch.setattr(gate, "audit_pip_report", lambda path: calls.append(path) or 1)
+    monkeypatch.setattr(gate, "audit_direct_dependencies", lambda: calls.append("direct") or 0)
+    assert gate.main(["pip_audit_gate.py", "audit.json"]) == 1
+    assert calls == ["audit.json"]
+
+    calls.clear()
+    monkeypatch.setattr(gate, "audit_pip_report", lambda path: calls.append(path) or 0)
+    assert gate.main(["pip_audit_gate.py", "audit.json"]) == 0
+    assert calls == ["audit.json", "direct"]
