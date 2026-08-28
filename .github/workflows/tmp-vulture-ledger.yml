@@ -1,0 +1,33 @@
+name: Temporary Vulture Ledger Generator
+
+on:
+  push:
+    branches: [chatgpt/tmp-523-vulture-update]
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - name: Install pinned analyzer
+        run: uv pip install --system vulture==2.16
+      - name: Generate exact reviewed ledger
+        run: >-
+          python scripts/check-vulture-baseline.py --update
+          packages/*/src
+          --min-confidence 60
+          --exclude '*/third_party/*'
+      - name: Upload generated ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulture-baseline-523
+          path: quality/vulture-baseline.json
+          if-no-files-found: error
