@@ -25,6 +25,7 @@ contracts:
 tests:
   - packages/maistro-core/tests/runs/test_consumption.py
   - packages/maistro-core/tests/scheduling/test_admission.py
+  - packages/hive-conductor/backend/tests/test_scheduler_canonical_admission.py
 ac-modules:
   AC-1: maistro.container
   AC-2: maistro.container
@@ -110,11 +111,9 @@ to the durable Graph execution path, and bridging a canonically admitted
   `QUEUED → RUNNING` transition is the claim — and a drained backlog makes
   the tick a no-op.
 - **AC-5**: `ScheduleRunAdmitter` admits the Run `QUEUED` in the same insert
-  that creates it.
-  <!-- ac-state: unproven AC-5 - the admitter has no production caller until
-       the live Hive scheduler moves onto it (#231); the behavior is tested,
-       and the module leaves the reachability baseline with that wiring -->
-
+  that creates it. The shipped Hive scheduler now calls this boundary directly
+  (#231), with concurrent-runner and restart-safe target tests at the product
+  boundary.
 - **AC-6**: `RunStore.list_by_status` returns only the requested status,
   oldest first, bounded by `limit`, on the reference store and the durable
   backends.
@@ -124,8 +123,8 @@ to the durable Graph execution path, and bridging a canonically admitted
 ### Positive
 
 - The schedule producer's loop is closed: admitted work executes through the
-  same NodeRun/Attempt spine as tasks and chat, and #231 can move the live
-  Hive scheduler onto `ScheduleRunAdmitter` knowing its Runs will run.
+  same NodeRun/Attempt spine as tasks and chat, and the live Hive scheduler
+  uses `ScheduleRunAdmitter` rather than duplicating occurrence/cursor rules.
 - The claim/discovery surface (`list_by_status` + transition-as-mutex) is the
   reusable half: the next producer joins by allowlisting a source, not by
   building a fourth execution idea.
@@ -142,6 +141,6 @@ to the durable Graph execution path, and bridging a canonically admitted
 
 ### Neutral
 
-- Product wiring (which process runs the tick, on what cadence) is the
-  product's decision, tracked by #231 for Hive; this ADR fixes only what the
-  tick does when run.
+- Product wiring (which process runs the consumer tick, on what cadence) stays
+  a deployment concern. Hive's schedule admission itself is now canonical;
+  the core library still never self-starts background work on import.
