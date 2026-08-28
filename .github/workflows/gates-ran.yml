@@ -1,28 +1,30 @@
 name: Gates Ran
 
-# Did the gate set actually reach this commit? (#262 AC-2)
+# Did the gate set actually reach this candidate? (#262 AC-2)
 #
 # Every other workflow here asks whether the code is good. This workflow asks a
 # different question: did every required enforcement surface actually execute
-# on the exact head being considered for merge?
+# on the exact PR or merge-group SHA being considered for merge?
 #
-# `workflow_run`, not `pull_request`, is deliberate. A job inside ci.yml cannot
-# know whether quality.yml, Gate C, or another sibling workflow ran. Each
-# producer completion re-evaluates the same PR head, so an early evaluation may
-# be red while siblings are still running and the last completion settles the
-# aggregate verdict.
+# `workflow_run` is deliberate. A job inside ci.yml cannot know whether
+# quality.yml, Gate C, or another sibling workflow ran. Each producer completion
+# re-evaluates the same candidate, so an early evaluation may be red while
+# siblings are still running and the last completion settles the aggregate
+# verdict.
 #
-# There is one GitHub Actions wrinkle that is load-bearing here: a
-# `workflow_run` workflow itself runs from the default branch and its native job
-# check is therefore attached to the default-branch SHA, not the triggering PR
-# head. The required `gates-ran` context is consequently published explicitly
-# as a commit status on `github.event.workflow_run.head_sha`. The workflow code
-# and evaluator still come from the protected default branch, so a candidate PR
-# cannot rewrite the judge that evaluates itself.
+# A workflow_run workflow runs from the protected default branch and its native
+# job check is attached to that default-branch execution, not the candidate SHA.
+# The required `gates-ran` context is therefore published explicitly as a commit
+# status on the candidate. The publisher and evaluator still come from protected
+# default-branch code, so a candidate cannot rewrite the judge that evaluates
+# itself.
 #
-# This workflow does not run on the pull request that first installs a changed
-# default-branch copy. That bootstrap limitation is inherent to `workflow_run`;
-# once merged, the next producer completion uses the protected copy on develop.
+# PR producer runs expose the PR head directly. Merge-group producer runs expose
+# GitHub's synthetic queue SHA. The initial queue contract is develop-only, so a
+# merge_group whose workflow-run head branch is not under
+# `gh-readonly-queue/develop/` is refused rather than guessed. A future main
+# queue must extend this trusted resolver in the same reviewed change that adds
+# main merge-group coverage.
 
 on:
   workflow_run:
@@ -39,9 +41,8 @@ on:
       - "Autonomous Merge Safety"
     types: [completed]
 
-# Keyed by the head being judged rather than by the publisher's default-branch
-# SHA. `cancel-in-progress` stays false because each completion is new evidence;
-# queued evaluations converge on the latest check state for the same head.
+# Keyed by the candidate being judged. Each sibling completion is new evidence,
+# so do not cancel an earlier evaluation without a replacement verdict.
 concurrency:
   group: gates-ran-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
@@ -49,9 +50,6 @@ concurrency:
 permissions:
   checks: read
   contents: read
-  # The required gates-ran context must be attached to the PR head. A
-  # workflow_run job's native check cannot do that, so the trusted publisher
-  # writes exactly one named commit-status context and nothing else.
   statuses: write
 
 jobs:
@@ -59,41 +57,62 @@ jobs:
     name: gates-ran-publisher
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Standard PR producer runs carry the candidate head SHA. A
-    # pull_request_target producer is based on the protected base SHA, so it may
-    # wake this workflow but must not publish a verdict for that SHA.
-    if: github.event.workflow_run.event == 'pull_request'
+    # pull_request_target producers may wake this workflow, but their workflow
+    # run head is the protected base SHA rather than the candidate. Other
+    # candidate workflows will wake the publisher with the correct PR or queue
+    # SHA, so never publish a verdict for the trusted base by accident.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' ||
+      github.event.workflow_run.event == 'merge_group'
     steps:
-      - name: Resolve the PR head and base
+      - name: Resolve the candidate head and base
         id: target
         uses: actions/github-script@v7
         with:
           script: |
             const source = context.payload.workflow_run;
             const headSha = source.head_sha;
-            let prs = source.pull_requests || [];
+            let baseBranch;
 
-            // GitHub normally supplies the PR association on workflow_run. If
-            // it does not, resolve it from the exact triggering commit rather
-            // than guessing the base branch.
-            if (prs.length === 0) {
-              const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: headSha,
-              });
-              prs = response.data;
+            if (source.event === 'merge_group') {
+              const headBranch = source.head_branch || '';
+              const queuePrefix = 'gh-readonly-queue/develop/';
+              if (!headBranch.startsWith(queuePrefix)) {
+                core.setFailed(`unreviewed merge-group base for ${headSha}: ${headBranch || '<empty>'}`);
+                return;
+              }
+              baseBranch = 'develop';
+            } else {
+              let prs = source.pull_requests || [];
+
+              // GitHub normally supplies the PR association on workflow_run. If
+              // it does not, resolve it from the exact triggering commit rather
+              // than guessing the base branch.
+              if (prs.length === 0) {
+                const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: headSha,
+                });
+                prs = response.data;
+              }
+
+              const pr = prs.find(candidate => candidate.head?.sha === headSha) || prs[0];
+              if (!pr || !pr.base?.ref) {
+                core.setFailed(`cannot resolve a pull request/base for ${headSha}`);
+                return;
+              }
+              baseBranch = pr.base.ref;
             }
 
-            const pr = prs.find(candidate => candidate.head?.sha === headSha) || prs[0];
-            if (!pr || !pr.base?.ref) {
-              core.setFailed(`cannot resolve a pull request/base for ${headSha}`);
+            if (!/^[0-9a-f]{40}$/.test(headSha || '')) {
+              core.setFailed(`candidate SHA is missing or invalid: ${headSha || '<empty>'}`);
               return;
             }
 
             core.setOutput('head_sha', headSha);
-            core.setOutput('base_branch', pr.base.ref);
-            core.info(`evaluating ${headSha} for base ${pr.base.ref}`);
+            core.setOutput('base_branch', baseBranch);
+            core.info(`evaluating ${headSha} for base ${baseBranch} from ${source.event}`);
 
       # Explicitly use protected default-branch code. That is the security
       # advantage of workflow_run: the candidate cannot weaken its own judge.
@@ -109,9 +128,8 @@ jobs:
       - name: Install PyYAML
         run: pip install pyyaml
 
-      # Paginated deliberately: this repository already emits enough checks for
-      # the default GitHub page size to be unsafe evidence.
-      - name: Collect check runs for the head under review
+      - name: Collect check runs for the candidate under review
+        if: steps.target.outputs.head_sha != ''
         uses: actions/github-script@v7
         env:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
@@ -132,6 +150,7 @@ jobs:
 
       - name: Evaluate required execution evidence
         id: evaluate
+        if: steps.target.outputs.head_sha != ''
         continue-on-error: true
         env:
           BASE_BRANCH: ${{ steps.target.outputs.base_branch }}
@@ -142,9 +161,9 @@ jobs:
           --base-branch "$BASE_BRANCH"
 
       # Required checks are allowed by GitHub to be `skipped` and still satisfy
-      # branch protection. This explicit status is the stricter aggregate: it
-      # is green only when the evaluator saw real execution evidence.
-      - name: Publish gates-ran on the exact PR head
+      # branch protection. This explicit status is the stricter aggregate: it is
+      # green only when the evaluator saw real execution evidence.
+      - name: Publish gates-ran on the exact candidate head
         if: always() && steps.target.outputs.head_sha != ''
         uses: actions/github-script@v7
         env:
