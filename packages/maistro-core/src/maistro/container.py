@@ -377,6 +377,7 @@ class Container:
         """
         if self.chat_admitter is None:
             return None
+        run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -391,7 +392,23 @@ class Container:
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-        except Exception:
+        except Exception as exc:
+            # Once durable admission succeeded, this function owns the gap up
+            # to RUNNING. A failed QUEUED/RUNNING write must not leave a Run in
+            # a non-terminal state that no worker or sweeper owns. CREATED and
+            # QUEUED both permit CANCELLED, so compensation is deterministic and
+            # carries only the same sanitized category chat failures expose.
+            if run is not None:
+                try:
+                    current = await self.run_store.get_run(run.run_id)
+                    if current is not None and current.status not in TERMINAL_RUN_STATUSES:
+                        await self.run_store.transition_run(
+                            run.run_id,
+                            RunStatus.CANCELLED,
+                            error=failure_category(exc),
+                        )
+                except Exception:
+                    logger.exception("chat Run %s admission compensation failed", run.run_id)
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             return None
 

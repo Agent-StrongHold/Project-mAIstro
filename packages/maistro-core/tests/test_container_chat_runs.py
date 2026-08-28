@@ -16,7 +16,7 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import CHAT_SOURCE, SESSION_ID_KEY
+from maistro.runs.chat_admission import CHAT_SOURCE, INTERNAL_FAILURE, SESSION_ID_KEY
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.types.config import AgentConfig
 
@@ -121,6 +121,35 @@ async def test_the_turn_is_answered_even_when_admission_fails() -> None:
 
     assert len(conduit.calls) == 1
     assert "run_id" not in result
+
+
+@pytest.mark.parametrize("failed_target", [RunStatus.QUEUED, RunStatus.RUNNING])
+async def test_chat_admission_transition_failure_compensates_the_durable_run(
+    failed_target: RunStatus,
+) -> None:
+    container = await _container()
+    conduit = _Conduit()
+    container.conduit = conduit
+    original = container.run_store.transition_run
+
+    async def _fail_once(run_id, target, **kwargs):
+        if target is failed_target:
+            # Restore first so compensation uses the real transition path and
+            # this test models a one-write failure rather than a broken store.
+            container.run_store.transition_run = original  # type: ignore[method-assign]
+            raise RuntimeError(f"injected {target.value} write failure")
+        return await original(run_id, target, **kwargs)
+
+    container.run_store.transition_run = _fail_once  # type: ignore[method-assign]
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert len(conduit.calls) == 1
+    assert "run_id" not in result
+    runs = [run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]
+    assert len(runs) == 1
+    assert runs[0].status is RunStatus.CANCELLED
+    assert runs[0].error == INTERNAL_FAILURE
 
 
 async def test_no_chat_admitter_means_no_run_id_and_no_failure() -> None:
