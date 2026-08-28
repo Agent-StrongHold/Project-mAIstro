@@ -129,7 +129,7 @@ async def get_workspace(
 ) -> Workspace:
     await _require_membership(store, workspace_id, _user_id(auth))
     workspace = await store.get(workspace_id)
-    if workspace is None:  # pragma: no cover - membership implies identity
+    if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     return workspace
 
@@ -143,7 +143,7 @@ async def update_workspace(
 ) -> Workspace:
     await _require_owner(store, workspace_id, _user_id(auth))
     workspace = await store.get(workspace_id)
-    if workspace is None:  # pragma: no cover - owner membership implies identity
+    if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     updates: dict[str, object] = {}
     if body.name is not None:
