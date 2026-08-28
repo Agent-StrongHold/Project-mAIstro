@@ -20,6 +20,7 @@ from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
+from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
 from . import executor as traversal
@@ -44,6 +45,7 @@ async def run_durable_graph(
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
@@ -59,15 +61,30 @@ async def run_durable_graph(
     dispatching a sub-graph threads facts the child cannot derive — the
     recursion depth its own `synth_depth` cap enforces (#520) — without the
     parent's whole blackboard leaking across the Run boundary.
+
+    ``run_store`` converges the Run's identity onto the canonical spine (#44,
+    ADR-082826-d9f5): with it, the Run is the store's and this record carries a
+    projection of a row that exists; without it, the pre-convergence in-memory
+    mint is unchanged, so a caller with no spine wired still runs.
     """
-    run = traversal._new_run(
-        graph,
-        run_id=run_id,
-        actor_principal_id=actor_principal_id,
-        parent_run_id=parent_run_id,
-        parent_node_run_id=parent_node_run_id,
-        provenance=provenance,
-    )
+    if run_store is not None and run_id is None:
+        run = await traversal._new_run_canonically(
+            graph,
+            run_store=run_store,
+            actor_principal_id=actor_principal_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance=provenance,
+        )
+    else:
+        run = traversal._new_run(
+            graph,
+            run_id=run_id,
+            actor_principal_id=actor_principal_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance=provenance,
+        )
     state = GraphExecutionState(
         run_id=run.run_id,
         active_node_ids=(traversal._entry_node(graph),),

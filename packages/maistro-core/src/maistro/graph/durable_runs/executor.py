@@ -38,6 +38,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.store import RunStore
 
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
@@ -96,6 +97,39 @@ async def _checkpoint(
     return await store.update(_replace_record(record, version=record.version + 1, **updates))
 
 
+async def _new_run_canonically(
+    graph: Graph,
+    *,
+    run_store: RunStore,
+    actor_principal_id: str | None,
+    parent_run_id: str | None = None,
+    parent_node_run_id: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
+) -> Run:
+    """Obtain the Run from the canonical store, rather than minting one here.
+
+    The first of the three construction sites #44 converges (ADR-082826-d9f5).
+    Identity is the reason it has to be this direction: `Run`, `NodeRun` and
+    `Attempt` each mint their own id via `Field(default_factory=_id)`, and the
+    canonical creates take no id parameter — so a store asked to persist a
+    record built here would have to accept identities its caller assigned
+    first, which inverts ownership in the system of record. Asking the store
+    for the Run settles that: the id is the store's, and the copy inside the
+    `DurableRunRecord` is a projection of a row that already exists.
+
+    NodeRuns and Attempts still mint in-record; they are the next two sites.
+    """
+    run = await run_store.create_run(
+        graph,
+        actor_principal_id=actor_principal_id,
+        parent_run_id=parent_run_id,
+        parent_node_run_id=parent_node_run_id,
+        provenance={**dict(provenance or {}), "executor": "durable_graph"},
+    )
+    await run_store.transition_run(run.run_id, RunStatus.QUEUED)
+    return await run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+
 def _new_run(
     graph: Graph,
     *,
@@ -105,13 +139,14 @@ def _new_run(
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> Run:
-    """Create the canonical Run and initial GraphExecutionState for a graph launch.
+    """Mint the canonical Run in memory for a graph launch.
 
-    `provenance` is merged over the executor's own marker rather than
-    replacing it, so a caller records *why* the Run exists without erasing
-    *how* it ran. `executor` stays first so a caller cannot accidentally
-    reassign it -- a Run that claims a different executor than the one that
-    walked it would make the field worse than absent.
+    The pre-convergence path, kept for callers with no canonical store wired
+    (`run_store=None`). `provenance` is merged over the executor's own marker
+    rather than replacing it, so a caller records *why* the Run exists without
+    erasing *how* it ran. `executor` stays first so a caller cannot
+    accidentally reassign it -- a Run that claims a different executor than the
+    one that walked it would make the field worse than absent.
     """
     values: dict[str, object] = {
         "workspace_id": graph.workspace_id,
@@ -141,6 +176,7 @@ async def run_durable_graph(
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Start and execute a durable graph from its canonical entry frontier.
 
@@ -154,14 +190,28 @@ async def run_durable_graph(
     linkage survives only in an audit line beside the Run rather than on it
     (#145).
     """
-    run = _new_run(
-        graph,
-        run_id=run_id,
-        actor_principal_id=actor_principal_id,
-        parent_run_id=parent_run_id,
-        parent_node_run_id=parent_node_run_id,
-        provenance=provenance,
-    )
+    if run_store is not None and run_id is None:
+        # The converged path (#44): the store owns the identity. Skipped when
+        # the caller pinned a `run_id` — an already-admitted Run being executed
+        # is a different case, and creating a second one for it is the
+        # duplicate this convergence exists to remove.
+        run = await _new_run_canonically(
+            graph,
+            run_store=run_store,
+            actor_principal_id=actor_principal_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance=provenance,
+        )
+    else:
+        run = _new_run(
+            graph,
+            run_id=run_id,
+            actor_principal_id=actor_principal_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance=provenance,
+        )
     state = GraphExecutionState(
         run_id=run.run_id,
         active_node_ids=(_entry_node(graph),),
