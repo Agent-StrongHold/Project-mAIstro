@@ -26,7 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "direct-effect-call-sites.json"
 
 DISPOSITIONS = frozenset(
-    {"MIGRATE_TO_GOVERNED_INVOCATION", "RETIRE", "INTENTIONAL_LIBRARY/INFRASTRUCTURE"}
+    {
+        "MIGRATE_TO_GOVERNED_INVOCATION",
+        "RETIRE",
+        "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+    }
 )
 
 # Match model URLs at the HTTP call itself, never endpoint text elsewhere.
@@ -47,15 +51,39 @@ _TYPED_EFFECT_METHODS: dict[str, dict[str, tuple[str, str]]] = {
         "browse": ("TOOL_EFFECT", "browser.browse"),
     },
     "maistro.tools.atlassian.AtlassianMCPClient": {
-        "jira_get_my_issues": ("MCP_EFFECT", "atlassian.jira_get_my_issues"),
-        "jira_search_issues": ("MCP_EFFECT", "atlassian.jira_search_issues"),
+        "jira_get_my_issues": (
+            "MCP_EFFECT",
+            "atlassian.jira_get_my_issues",
+        ),
+        "jira_search_issues": (
+            "MCP_EFFECT",
+            "atlassian.jira_search_issues",
+        ),
         "jira_get_issue": ("MCP_EFFECT", "atlassian.jira_get_issue"),
-        "jira_create_issue": ("MCP_EFFECT", "atlassian.jira_create_issue"),
-        "jira_update_issue": ("MCP_EFFECT", "atlassian.jira_update_issue"),
-        "confluence_search": ("MCP_EFFECT", "atlassian.confluence_search"),
-        "confluence_get_page": ("MCP_EFFECT", "atlassian.confluence_get_page"),
-        "confluence_create_page": ("MCP_EFFECT", "atlassian.confluence_create_page"),
-        "confluence_update_page": ("MCP_EFFECT", "atlassian.confluence_update_page"),
+        "jira_create_issue": (
+            "MCP_EFFECT",
+            "atlassian.jira_create_issue",
+        ),
+        "jira_update_issue": (
+            "MCP_EFFECT",
+            "atlassian.jira_update_issue",
+        ),
+        "confluence_search": (
+            "MCP_EFFECT",
+            "atlassian.confluence_search",
+        ),
+        "confluence_get_page": (
+            "MCP_EFFECT",
+            "atlassian.confluence_get_page",
+        ),
+        "confluence_create_page": (
+            "MCP_EFFECT",
+            "atlassian.confluence_create_page",
+        ),
+        "confluence_update_page": (
+            "MCP_EFFECT",
+            "atlassian.confluence_update_page",
+        ),
     },
 }
 
@@ -80,7 +108,10 @@ _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
         "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
         "HarnessSessionManager.send_invocation",
         "invocation_service.invoke",
-    ): ("CANONICAL_INVOCATION", "GovernedInvocationExecutionService.invoke"),
+    ): (
+        "CANONICAL_INVOCATION",
+        "GovernedInvocationExecutionService.invoke",
+    ),
     (
         "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
         "HarnessSessionManager.start",
@@ -128,7 +159,8 @@ class Scope:
 def _production_python_files(root: Path = ROOT) -> list[Path]:
     """Return production Python under package src/backends, excluding tests."""
     files: list[Path] = []
-    for base in [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]:
+    bases = [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]
+    for base in bases:
         if not base.exists():
             continue
         for path in base.rglob("*.py"):
@@ -147,14 +179,17 @@ class _ScopeImportCollector(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            self.aliases[alias.asname or alias.name.split(".")[0]] = alias.name
+            key = alias.asname or alias.name.split(".")[0]
+            self.aliases[key] = alias.name
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if not node.module:
             return
         for alias in node.names:
-            if alias.name != "*":
-                self.aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+            if alias.name == "*":
+                continue
+            key = alias.asname or alias.name
+            self.aliases[key] = f"{node.module}.{alias.name}"
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         return
@@ -178,7 +213,8 @@ def _dotted(node: ast.expr) -> str | None:
         return node.id
     if isinstance(node, ast.Attribute):
         parent = _dotted(node.value)
-        return f"{parent}.{node.attr}" if parent else None
+        if parent:
+            return f"{parent}.{node.attr}"
     return None
 
 
@@ -188,7 +224,9 @@ def _resolve_symbol(node: ast.expr, aliases: dict[str, str]) -> str | None:
         return None
     head, *tail = dotted.split(".")
     resolved = aliases.get(head, head)
-    return ".".join([resolved, *tail]) if tail else resolved
+    if not tail:
+        return resolved
+    return ".".join([resolved, *tail])
 
 
 class _ScopeBindingCollector(ast.NodeVisitor):
@@ -199,7 +237,11 @@ class _ScopeBindingCollector(ast.NodeVisitor):
         self.strings: dict[str, ast.expr] = {}
         self.objects: dict[str, str] = {}
 
-    def _record(self, targets: list[ast.expr], value: ast.expr | None) -> None:
+    def _record(
+        self,
+        targets: list[ast.expr],
+        value: ast.expr | None,
+    ) -> None:
         if value is None:
             return
         names = [target.id for target in targets if isinstance(target, ast.Name)]
@@ -208,11 +250,13 @@ class _ScopeBindingCollector(ast.NodeVisitor):
         if isinstance(value, (ast.Constant, ast.JoinedStr, ast.BinOp, ast.Name)):
             for name in names:
                 self.strings[name] = value
-        if isinstance(value, ast.Call):
-            symbol = _resolve_symbol(value.func, self.aliases)
-            if symbol in _TYPED_EFFECT_METHODS:
-                for name in names:
-                    self.objects[name] = symbol
+        if not isinstance(value, ast.Call):
+            return
+        symbol = _resolve_symbol(value.func, self.aliases)
+        if symbol not in _TYPED_EFFECT_METHODS:
+            return
+        for name in names:
+            self.objects[name] = symbol
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self._record(list(node.targets), node.value)
@@ -234,7 +278,8 @@ class _ScopeBindingCollector(ast.NodeVisitor):
 
 
 def _scope_bindings(
-    body: list[ast.stmt], aliases: dict[str, str]
+    body: list[ast.stmt],
+    aliases: dict[str, str],
 ) -> tuple[dict[str, ast.expr], dict[str, str]]:
     collector = _ScopeBindingCollector(aliases)
     for statement in body:
@@ -250,7 +295,11 @@ def _string_parts(
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return (node.value,)
     if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
-        return _string_parts(bindings[node.id], bindings, seen | {node.id})
+        return _string_parts(
+            bindings[node.id],
+            bindings,
+            seen | {node.id},
+        )
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
         for value in node.values:
@@ -261,14 +310,18 @@ def _string_parts(
         return tuple(parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _string_parts(node.left, bindings, seen) + _string_parts(
-            node.right, bindings, seen
+            node.right,
+            bindings,
+            seen,
         )
     return ()
 
 
 def _http_url(call: ast.Call) -> ast.expr | None:
     func = call.func
-    if not isinstance(func, ast.Attribute) or func.attr not in _HTTP_EFFECT_METHODS:
+    if not isinstance(func, ast.Attribute):
+        return None
+    if func.attr not in _HTTP_EFFECT_METHODS:
         return None
     for keyword in call.keywords:
         if keyword.arg == "url":
@@ -278,7 +331,10 @@ def _http_url(call: ast.Call) -> ast.expr | None:
     return call.args[0] if call.args else None
 
 
-def _is_model_http_call(call: ast.Call, bindings: dict[str, ast.expr]) -> bool:
+def _is_model_http_call(
+    call: ast.Call,
+    bindings: dict[str, ast.expr],
+) -> bool:
     url = _http_url(call)
     if url is None:
         return False
@@ -305,12 +361,14 @@ class _Visitor(ast.NodeVisitor):
     def scope(self) -> Scope:
         return self.scopes[-1]
 
-    def _push_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
-        qualname = (
-            node.name
-            if self.scope.qualname == "<module>"
-            else f"{self.scope.qualname}.{node.name}"
-        )
+    def _push_scope(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    ) -> None:
+        if self.scope.qualname == "<module>":
+            qualname = node.name
+        else:
+            qualname = f"{self.scope.qualname}.{node.name}"
         aliases = {**self.scope.aliases, **_scope_aliases(node.body)}
         local_strings, local_objects = _scope_bindings(node.body, aliases)
         strings = {**self.scope.strings, **local_strings}
@@ -334,10 +392,22 @@ class _Visitor(ast.NodeVisitor):
         classification = self._classify(node, callee)
         if classification is not None:
             category, entry_point = classification
-            self.raw.append((self.scope.qualname, category, entry_point, node.lineno, callee))
+            self.raw.append(
+                (
+                    self.scope.qualname,
+                    category,
+                    entry_point,
+                    node.lineno,
+                    callee,
+                )
+            )
         self.generic_visit(node)
 
-    def _classify(self, call: ast.Call, callee: str) -> tuple[str, str] | None:
+    def _classify(
+        self,
+        call: ast.Call,
+        callee: str,
+    ) -> tuple[str, str] | None:
         path_rule = _PATH_CALLS.get((self.path, self.scope.qualname, callee))
         if path_rule is not None:
             return path_rule
@@ -350,13 +420,14 @@ class _Visitor(ast.NodeVisitor):
         if symbol in _FUNCTION_EFFECTS:
             return _FUNCTION_EFFECTS[symbol]
 
-        if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
-            object_type = self.scope.objects.get(call.func.value.id)
-            if object_type is not None:
-                rule = _TYPED_EFFECT_METHODS[object_type].get(call.func.attr)
-                if rule is not None:
-                    return rule
-        return None
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        if not isinstance(call.func.value, ast.Name):
+            return None
+        object_type = self.scope.objects.get(call.func.value.id)
+        if object_type is None:
+            return None
+        return _TYPED_EFFECT_METHODS[object_type].get(call.func.attr)
 
 
 def analyze_source(source: str, path: str = "example.py") -> list[Site]:
@@ -374,7 +445,10 @@ def analyze_source(source: str, path: str = "example.py") -> list[Site]:
         key = (qualname, category, entry_point)
         occurrence = counts.get(key, 0) + 1
         counts[key] = occurrence
-        site_id = f"{path}::{qualname}::{category}:{entry_point}#{occurrence}"
+        site_id = (
+            f"{path}::{qualname}::{category}:"
+            f"{entry_point}#{occurrence}"
+        )
         sites.append(
             Site(
                 id=site_id,
@@ -394,22 +468,35 @@ def discover(root: Path = ROOT) -> dict[str, Site]:
     for path in _production_python_files(root):
         rel = path.relative_to(root).as_posix()
         try:
-            source = path.read_text(encoding="utf-8", errors="replace")
+            source = path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
         except OSError:
             continue
         for site in analyze_source(source, rel):
             if site.id in found:
-                raise RuntimeError(f"duplicate direct-effect site identity: {site.id}")
+                raise RuntimeError(
+                    f"duplicate direct-effect site identity: {site.id}"
+                )
             found[site.id] = site
     return found
 
 
-def _load_inventory(path: Path = INVENTORY) -> dict[str, dict[str, Any]]:
+def _load_inventory(
+    path: Path = INVENTORY,
+) -> dict[str, dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return {str(key): dict(value) for key, value in payload.get("sites", {}).items()}
+    return {
+        str(key): dict(value)
+        for key, value in payload.get("sites", {}).items()
+    }
 
 
-def audit(recorded: dict[str, dict[str, Any]], found: dict[str, Site]) -> list[str]:
+def audit(
+    recorded: dict[str, dict[str, Any]],
+    found: dict[str, Site],
+) -> list[str]:
     failures: list[str] = []
     for site_id in sorted(found.keys() - recorded.keys()):
         site = found[site_id]
@@ -419,13 +506,20 @@ def audit(recorded: dict[str, dict[str, Any]], found: dict[str, Site]) -> list[s
         )
     for site_id in sorted(recorded.keys() - found.keys()):
         failures.append(
-            f"STALE {site_id} disappeared from code; remove or update its inventory entry"
+            f"STALE {site_id} disappeared from code; remove or update its "
+            "inventory entry"
         )
 
     for site_id in sorted(found.keys() & recorded.keys()):
         site = found[site_id]
         entry = recorded[site_id]
-        for field in ("path", "qualname", "category", "entry_point", "callee"):
+        for field in (
+            "path",
+            "qualname",
+            "category",
+            "entry_point",
+            "callee",
+        ):
             expected = getattr(site, field)
             if entry.get(field) != expected:
                 failures.append(
@@ -436,7 +530,10 @@ def audit(recorded: dict[str, dict[str, Any]], found: dict[str, Site]) -> list[s
         owner = str(entry.get("owner", "")).strip()
         rationale = str(entry.get("rationale", "")).strip()
         if disposition not in DISPOSITIONS:
-            failures.append(f"{site_id}: disposition must be one of {sorted(DISPOSITIONS)}")
+            failures.append(
+                f"{site_id}: disposition must be one of "
+                f"{sorted(DISPOSITIONS)}"
+            )
         if not owner:
             failures.append(f"{site_id}: owner is required")
         if not rationale:
@@ -471,7 +568,10 @@ def _write_inventory(
         ),
         "sites": sites,
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=False) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -483,24 +583,36 @@ def main(argv: list[str] | None = None) -> int:
     recorded = _load_inventory(INVENTORY)
     if "--update" in args:
         _write_inventory(found, recorded, INVENTORY)
-        print(f"wrote {INVENTORY.relative_to(ROOT)} with {len(found)} discovered call site(s)")
+        print(
+            f"wrote {INVENTORY.relative_to(ROOT)} with "
+            f"{len(found)} discovered call site(s)"
+        )
         return 0
 
     failures = audit(recorded, found)
     categories: dict[str, int] = {}
     for site in found.values():
         categories[site.category] = categories.get(site.category, 0) + 1
-    summary = ", ".join(f"{name}={count}" for name, count in sorted(categories.items())) or "none"
+    summary = (
+        ", ".join(
+            f"{name}={count}"
+            for name, count in sorted(categories.items())
+        )
+        or "none"
+    )
     print(f"direct-effect call sites: {len(found)} ({summary})")
     if failures:
         print(
-            "FAIL: direct-effect inventory does not match current production call sites",
+            "FAIL: direct-effect inventory does not match current production "
+            "call sites",
             file=sys.stderr,
         )
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
         return 1
-    print("Direct-effect inventory matches code and every site is dispositioned.")
+    print(
+        "Direct-effect inventory matches code and every site is dispositioned."
+    )
     return 0
 
 
