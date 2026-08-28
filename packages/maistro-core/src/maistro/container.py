@@ -417,11 +417,12 @@ class Container:
             return
         if cancelled and (error is not None or result is not None):
             raise ValueError("cancelled chat closure cannot carry error or result")
-        target = (
-            RunStatus.CANCELLED
-            if cancelled
-            else RunStatus.FAILED if error is not None else RunStatus.COMPLETED
-        )
+        if cancelled:
+            target = RunStatus.CANCELLED
+        elif error is not None:
+            target = RunStatus.FAILED
+        else:
+            target = RunStatus.COMPLETED
         try:
             await asyncio.shield(self._terminalize(run.run_id, target, result, error))
         except Exception:
