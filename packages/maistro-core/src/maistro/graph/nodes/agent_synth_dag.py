@@ -175,27 +175,48 @@ def _undispatchable_reason(
     retired GraphRun executor, not registered node kinds.
     """
     names = [str(node) for node in config.nodes]
+    return (
+        _unusable_kinds_reason(names, available_kinds)
+        or _unaddressable_topology_reason(names, config)
+        or _unscoped_reason(ctx)
+    )
+
+
+def _unusable_kinds_reason(names: list[str], available_kinds: list[str]) -> str | None:
+    """Kinds the registry cannot build, or the caller never allowed.
+
+    The allowlist is a boundary, not a hint: `available_kinds` is only ever
+    *described* to the synthesizer — `LLMDagSynthesizer` puts it in a prompt —
+    so a malformed or prompt-injected response can name any registered kind,
+    including external-I/O and delegation nodes, while the shape review
+    upstream judges width and cost rather than identity. An empty list means
+    the caller named no restriction and the registry is the only bound.
+    """
     unregistered = sorted({name for name in names if not _registered(name)})
     if unregistered:
         return f"synthesized kinds are not registered nodes: {', '.join(unregistered)}"
-    # The caller's allowlist is a boundary, not a hint. `available_kinds` is
-    # only ever *described* to the synthesizer — `LLMDagSynthesizer` puts it in
-    # a prompt — so a malformed or prompt-injected response can name any
-    # registered kind, including external-I/O and delegation nodes, and the
-    # shape review upstream judges width and cost rather than identity. An
-    # empty list means the caller named no restriction and the registry is the
-    # only bound.
-    if available_kinds:
-        allowed = set(available_kinds)
-        outside = sorted({name for name in names if name not in allowed})
-        if outside:
-            return f"synthesized kinds outside the requested allowlist: {', '.join(outside)}"
+    if not available_kinds:
+        return None
+    allowed = set(available_kinds)
+    outside = sorted({name for name in names if name not in allowed})
+    if outside:
+        return f"synthesized kinds outside the requested allowlist: {', '.join(outside)}"
+    return None
+
+
+def _unaddressable_topology_reason(names: list[str], config: GraphConfig) -> str | None:
+    """A shape whose entry cannot be named, reached, or invoked."""
     if len(set(names)) != len(names):
         return "duplicate node kinds cannot be addressed unambiguously by edges"
-    if str(config.entry) not in names:
-        return f"entry node {config.entry!s} is not among the synthesized nodes"
-    if _requires_inputs(str(config.entry)):
-        return f"entry node {config.entry!s} requires inputs a synthesized config cannot supply"
+    entry = str(config.entry)
+    if entry not in names:
+        return f"entry node {entry} is not among the synthesized nodes"
+    if _requires_inputs(entry):
+        return f"entry node {entry} requires inputs a synthesized config cannot supply"
+    return None
+
+
+def _unscoped_reason(ctx: NodeContext) -> str | None:
     if not ctx.workspace_id or not ctx.project_id:
         return "execution context carries no Workspace/Project scope"
     return None
@@ -387,9 +408,7 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
                 ),
             )
 
-        undispatchable = _undispatchable_reason(
-            synth.graph_config, ctx, inputs.available_kinds
-        )
+        undispatchable = _undispatchable_reason(synth.graph_config, ctx, inputs.available_kinds)
         if undispatchable is not None:
             return SynthDagOut(
                 success=True,
