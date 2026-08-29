@@ -1284,7 +1284,10 @@ async def _tool_create_dashboard_widget(
     config = args.get("config", {})
     tab_name = args.get("tab", "")
 
-    layout = dict(dashboard_layouts.load(user_id).layout)
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340).
+    layout = dict(dashboard_layouts.effective(user_id).layout)
     widget = {
         "id": widget_id,
         "type": widget_type,

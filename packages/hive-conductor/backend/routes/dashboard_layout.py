@@ -63,42 +63,16 @@ class DashboardLayout(BaseModel):
     expectedRevision: int | None = None
 
 
-# Users with pre-configured dashboard templates, offered on first read.
-_PRESETS: dict[str, str] = {
-    "demo": "pm-command-center",
-}
-
-
-def _preset_for(principal: str) -> dict | None:
-    """The template this principal starts from, if any.
-
-    Returned, not saved. Seeding used to write from inside the GET handler,
-    inside a bare `except`, which made a read depend on a write succeeding and
-    then hid it when it did not. The preset becomes durable when the user saves,
-    which is the first moment they have said anything about it.
-    """
-    preset = _PRESETS.get(principal)
-    if not preset:
-        return None
-    path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{preset}.json"
-    if not path.is_file():
-        return None
-    try:
-        return sanitize_dashboard_layout(json.loads(path.read_text()))
-    except (OSError, ValueError) as exc:
-        logger.warning("preset %s could not be read: %s", preset, exc)
-        return None
-
-
 @router.get("/layout")
 async def get_layout(request: Request) -> dict:
-    """This principal's stored layout, or its preset, or an empty one."""
+    """This principal's stored layout, or its preset, or an empty one.
+
+    `effective` rather than `load`, and the same call the chat widget tool
+    makes: two readers of "what is this user looking at" that answer differently
+    is how a widget added through chat replaced a preset instead of joining it.
+    """
     principal = _user_id(request)
-    record = dashboard_layouts.load(principal)
-    if record.revision == 0:
-        preset = _preset_for(principal)
-        if preset is not None:
-            return {**preset, "revision": 0}
+    record = dashboard_layouts.effective(principal)
     return {**record.layout, "revision": record.revision}
 
 

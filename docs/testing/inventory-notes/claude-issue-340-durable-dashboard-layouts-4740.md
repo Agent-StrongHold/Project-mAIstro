@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +22
+  packages/hive-conductor/backend/tests: +35
 ---
 # claude-issue-340-durable-dashboard-layouts-4740
 
@@ -42,3 +42,24 @@ because what they read no longer exists:
 
 `conftest.py`'s autouse isolation fixture stopped redirecting a path and started
 snapshotting the store, which is the same isolation one layer over.
+
+Thirteen more came from Codex's review of this PR, which found three real defects
+the first round missed:
+
+- the read-back went through the store's own dict, which `__setitem__` updates
+  *before* the backend, and `PersistedStore.put_raw` only queues its transaction
+  — so a full disk failed on the writer thread after the request had answered.
+  Four tests: a backend that never takes the write, one that does, the settle
+  before the read, and the unbacked store that has no row to read (#333 owns
+  the refusal for a deployment that asked for durability and did not get it).
+- the chat widget tool loaded the stored record, not the preset-backed layout
+  the `GET` route hands back, so a widget added by chat replaced every preset
+  widget. Three tests, one of them running the tool for real against the demo
+  preset.
+- `Dashboard.tsx`'s `saveTabs` never read the response, so the new 503 changed
+  nothing a user could see. One structural test over the page source: the
+  Conductor has no unit harness for it, and the e2e suite drives the built app.
+
+Two of the thirteen are the branch-arc half of the diff-coverage gate again: a
+backend with no writer queue to settle (PostgreSQL's, and any test double), and
+a durable row that is not JSON.
