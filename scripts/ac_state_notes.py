@@ -248,42 +248,36 @@ def load_notes(
     return [bridge], retired.origin, retired.base_sha
 
 
-def own_note(
-    *, base: str | None = None, notes_dir: Path | None = None, root: Path | None = None
-) -> Note | None:
-    """The note this candidate wrote: the one it added or changed since the base.
+def banked_bound(*, notes_dir: Path | None = None) -> Bounds:
+    """The bound the notes *in this tree* jointly support.
 
-    Identified by what the change did, not by the branch it was made on. CI
-    checks out a detached head, so `git rev-parse --abbrev-ref HEAD` answers
-    `HEAD` there and a filename derived from that name matches nothing — the
-    ratchet then read a banked improvement as unbanked and failed the branch
-    that had banked it.
+    The answer to "did you bank what you measured?", and the reason it is a
+    fold rather than one note: a stacked branch carries its parent's note as
+    well as its own, and both are new relative to the base the comparison is
+    read at. Asking which single note is "the candidate's" has no answer there,
+    and the rule that used to answer `None` made every stacked PR read as an
+    unbanked improvement -- the serialization #585 removed, reappearing one
+    level up (#609).
 
-    `_baseline.json` is excluded on purpose: it is the migration bridge, not any
-    branch's measurement, and a candidate that re-settles it after merging its
-    base has not thereby claimed the fold's numbers as its own.
-
-    Exactly one changed note is the candidate's. Zero means it has banked
-    nothing. More than one means it touched a note that is not its own, and the
-    strict comparison against the base fold — which is what `None` selects — is
-    the right answer to that as much as to the absent case.
+    Folding the worktree is safe because folding only ever *tightens*: `max` for
+    coverage, `min` for debt, so a note a candidate adds cannot loosen anything.
+    What a candidate could do is delete or weaken a merged note, and that is
+    caught by the other half of the comparison, which is folded at the base and
+    which nothing in the worktree can reach.
     """
     notes_dir = NOTES_DIR if notes_dir is None else notes_dir
-    root = ROOT if root is None else root
     if not notes_dir.is_dir():
-        return None
-    at_base = {
-        item.path.name: Note.parse(item.path.name, item.text or "")
-        for item in provenance().resolve_baseline_dir(notes_dir, base=base, root=root)
-    }
-    changed: list[Note] = []
-    for path in sorted(notes_dir.glob("*.json")):
-        if path.name == BASELINE_NAME:
-            continue
-        note = Note.parse(path.name, path.read_text(encoding="utf-8"))
-        if note.branch is not None and note != at_base.get(path.name):
-            changed.append(note)
-    return changed[0] if len(changed) == 1 else None
+        return Bounds(counters={}, notes=(), origin="empty", base_sha=None)
+    notes = [
+        Note.parse(path.name, path.read_text(encoding="utf-8"))
+        for path in sorted(notes_dir.glob("*.json"))
+    ]
+    return Bounds(
+        counters=fold(notes),
+        notes=tuple(note.name for note in notes),
+        origin="worktree",
+        base_sha=None,
+    )
 
 
 def bounds(
