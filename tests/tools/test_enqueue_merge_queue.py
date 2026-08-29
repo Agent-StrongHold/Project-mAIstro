@@ -64,19 +64,21 @@ def test_admissible_requires_both_exact_head_signals(enqueue: ModuleType) -> Non
 
 
 def test_latest_signal_wins(enqueue: ModuleType) -> None:
-    statuses = green_statuses() + [
+    statuses = [
+        *green_statuses(),
         {
             "context": "gates-ran",
             "state": "failure",
             "created_at": "2026-08-29T00:01:00Z",
-        }
+        },
     ]
-    checks = green_checks() + [
+    checks = [
+        *green_checks(),
         {
             "name": "autonomous-merge-admissibility",
             "conclusion": "failure",
             "completed_at": "2026-08-29T00:02:00Z",
-        }
+        },
     ]
 
     assert not enqueue.is_admissible(candidate(enqueue), statuses, green_checks())
