@@ -6,7 +6,7 @@ Covers:
 - Foundation.__init__: every flag starts False, every ref starts None
 - _init_vault: success path + exception swallowed → vault_available=False
 - _init_state: success path with PersistedStore + flush
-- _init_state: exception fallback → in-memory stores initialized
+- _init_state: exception degrades rather than falling back (#333)
 - _init_privilege: skipped when admin_public_key empty
 - _init_privilege: success path
 - _init_privilege: exception swallowed
@@ -44,6 +44,13 @@ def _reset_singleton():
     # Snapshot user data so we don't wipe the conftest's seeded testuser
     user_snapshot = dict(stores.users._data)
     yield
+    # `_init_state` can now degrade every store (#333). Left set, that would
+    # make the rest of the suite refuse writes for a failure it never had.
+    stores.restore_all()
+    from services import durability, settings_store
+
+    durability.reset()
+    settings_store.reset()
     f._singleton = prev
     # Restore persistence binding so subsequent tests see in-memory stores.
     stores._persisted = prev_persisted
@@ -120,6 +127,7 @@ def _StubSettings(tmp_path: Path) -> Any:
         conductor_vault_path="",
         conductor_identity_path="",
         conductor_state_db="",
+        conductor_durability="durable",
         conductor_admin_public_key="",
         conductor_user_public_key="",
     )
@@ -259,12 +267,19 @@ def test_init_state_success_wires_persisted_store(
     assert _state_flush_count[0] == 1
 
 
-def test_init_state_exception_falls_back_to_in_memory(
+@pytest.mark.ac("SPEC-082926-87bb/AC-2")
+def test_init_state_exception_degrades_rather_than_falling_back(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """This used to assert the fallback. The fallback is the defect (#333).
+
+    A durable deployment whose state fails now records the failure and refuses
+    writes; it does not quietly become an in-memory deployment reporting healthy.
+    """
     import types
 
+    from services import durability
     from services.foundation import Foundation
 
     broken = types.ModuleType("maistro.state")
@@ -277,7 +292,14 @@ def test_init_state_exception_falls_back_to_in_memory(
 
     fnd = Foundation()
     fnd._init_state(_StubSettings(tmp_path), tmp_path)
+
     assert fnd.state_available is False
+    recorded = durability.status()
+    assert recorded is not None
+    assert recorded.requested == "durable"
+    assert recorded.durable is False
+    assert recorded.writes_refused is True
+    assert "synthetic no" in (recorded.error or "")
 
 
 # --- _init_privilege ---------------------------------------------------

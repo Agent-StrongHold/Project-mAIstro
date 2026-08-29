@@ -73,40 +73,114 @@ class Foundation:
         cred_svc.init_credential_store(data_dir)
 
     def _init_state(self, settings: Settings, data_dir: Path) -> None:
+        """Open durable state, or record why this deployment does not have it.
+
+        The old body caught every exception here and fell through to in-memory
+        stores, so an unwritable path, a failed migration, a missing import and
+        a corrupt file were indistinguishable from each other and from a
+        deployment that wanted ephemeral state (#333). The mode is declared now,
+        and a failure in `durable` mode is recorded and degraded rather than
+        substituted.
+        """
+        from services import durability
+        from services.durability import StateStatus
+
+        mode = durability.read_mode(settings.conductor_durability)
+        if mode == "ephemeral":
+            self._start_ephemeral("ephemeral state was requested")
+            return
+
         db_path = settings.conductor_state_db or str(data_dir / "state.db")
         try:
-            from maistro.state import PersistedStore, State
-
-            self.state = State(db_path=db_path)
-            self.state_available = True
-            logger.info("State initialised: %s", db_path)
-
-            persisted = PersistedStore(self.state)
-            persisted.initialize()
-
             import stores
 
+            from maistro.state import PersistedStore, State
             from services.settings_store import PersistedSettingsRecordStore
             from services.settings_store import configure as configure_settings
 
+            self.state = State(db_path=db_path)
+            persisted = PersistedStore(self.state)
+            persisted.initialize()
+
+            # One attempt, all of it. A failure part-way used to leave some
+            # stores loaded from disk and some empty, both taking writes — two
+            # authorities for one dataset, with nothing saying so.
             stores.configure_persistence(persisted)
             stores.initialize_stores()
             configure_settings(PersistedSettingsRecordStore(persisted, self.state.flush))
             self.state.flush()
-            logger.info("Stores wired to SQLite persistence")
         except Exception as exc:
-            logger.warning("State unavailable (%s) — using in-memory stores", exc)
-            import stores
+            self._degrade_state(exc)
+            return
 
-            from services.settings_store import EphemeralSettingsRecordStore
-            from services.settings_store import configure as configure_settings
+        self.state_available = True
+        durability.record(
+            StateStatus(
+                requested="durable",
+                backend="sqlite",
+                durable=True,
+                writes_refused=False,
+            )
+        )
+        logger.info("State initialised: %s (durable)", db_path)
 
+    def _start_ephemeral(self, reason: str) -> None:
+        """In-memory stores, labelled as the declared choice they are."""
+        import stores
+
+        from services import durability
+        from services.durability import StateStatus
+        from services.settings_store import EphemeralSettingsRecordStore
+        from services.settings_store import configure as configure_settings
+
+        stores.restore_all()
+        stores.initialize_stores()
+        configure_settings(EphemeralSettingsRecordStore())
+        durability.record(
+            StateStatus(
+                requested="ephemeral",
+                backend="memory",
+                durable=False,
+                writes_refused=False,
+            )
+        )
+        logger.info("State is ephemeral by declaration (%s)", reason)
+
+    def _degrade_state(self, exc: BaseException) -> None:
+        """Record a durable deployment that did not get durable state.
+
+        Stores are seeded first and degraded second, so already-loaded and
+        seeded data still reads while nothing new is accepted. Refusing the
+        writes is also what makes a later restart safe: this process
+        accumulates nothing that could be written over the durable rows.
+        """
+        import stores
+
+        from services import durability
+        from services.durability import StateStatus
+        from services.settings_store import RefusingSettingsRecordStore
+        from services.settings_store import configure as configure_settings
+
+        reason = f"{type(exc).__name__}: {exc}"
+        self.state = None
+        self.state_available = False
+        try:
+            stores.restore_all()
             stores.initialize_stores()
-            # Explicitly, so the settings surface reports `durable: false`
-            # rather than letting an in-memory write wear the shape of a
-            # durable one (#334). Whether reaching this branch at all should be
-            # allowed is #333.
-            configure_settings(EphemeralSettingsRecordStore())
+        except Exception as seed_exc:  # pragma: no cover - seeding is in-memory
+            logger.error("seeding degraded stores failed: %s", seed_exc)
+        stores.degrade_all(reason)
+        configure_settings(RefusingSettingsRecordStore(reason))
+        durability.record(
+            StateStatus(
+                requested="durable",
+                backend="none",
+                durable=False,
+                writes_refused=True,
+                error=reason,
+            )
+        )
+        logger.error("durable state was required and is unavailable: %s", reason)
 
     def _init_privilege(self, settings: Settings, data_dir: Path) -> None:
         if not settings.conductor_admin_public_key:

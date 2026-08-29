@@ -63,6 +63,7 @@ from routes import (
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
+from services.durability import StoreUnavailableError
 from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
 from services.settings_store import SettingsPersistenceError
 
@@ -266,6 +267,15 @@ def create_app() -> FastAPI:
     # headers land on every response, including early rejections from the
     # middlewares added above (e.g. 401s from AuthMiddleware).
     app.add_middleware(SecurityHeadersMiddleware)
+
+    # #333: a store that was promised durability and did not get it raises
+    # rather than accepting a write that only lives until the process does.
+    # Translated once, here, so no route has to enumerate it — and so a caller
+    # sees "the service cannot take this write" instead of a 500.
+    @app.exception_handler(StoreUnavailableError)
+    async def _store_unavailable(_request: Request, exc: StoreUnavailableError) -> JSONResponse:
+        logging.getLogger("hive.durability").error("write refused, no durable backing: %s", exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     # The 503 contract belongs to the settings *record*, not to one router.
     # `routes/settings.py` translated it locally, so `/v1/capabilities` — which
