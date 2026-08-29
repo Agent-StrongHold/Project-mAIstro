@@ -89,7 +89,14 @@ class SqliteGraphTemplateStore:
                ON CONFLICT (template_id, version) DO UPDATE
                    SET workspace_id = excluded.workspace_id,
                        name         = excluded.name,
-                       payload      = excluded.payload
+                       payload      = json_set(
+                                          excluded.payload,
+                                          '$.lifecycle',
+                                          COALESCE(
+                                              json_extract(graph_templates.payload, '$.lifecycle'),
+                                              'active'
+                                          )
+                                      )
                    WHERE graph_templates.content_hash = excluded.content_hash""",
             (
                 template.template_id,
@@ -153,15 +160,21 @@ class SqliteGraphTemplateStore:
             raise GraphTemplateNotFound(
                 f"no GraphTemplate {template_id!r} version {version} is registered"
             )
-        return "candidate" if row[0] == "candidate" else "active"
+        if row[0] == "candidate":
+            return "candidate"
+        if row[0] == "promoting":
+            return "promoting"
+        return "active"
 
     async def get(self, template_id: str, *, version: int | None = None) -> GraphTemplate | None:
         """Unversioned resolution returns the latest *active* version.
 
-        `IS NOT 'candidate'` rather than `= 'active'`: `json_extract` yields
-        NULL for a row written before the lifecycle existed, and every such row
-        is an active definition. SQLite's `IS NOT` compares NULL without
-        propagating it, which `!=` would.
+        `COALESCE(..., 'active') = 'active'`: `json_extract` yields NULL for a
+                row written before the lifecycle existed, and every such row *is* an
+                active definition, so a bare comparison would silently empty the
+                registry. Coalescing first keeps them and excludes both `candidate`
+                and the transitional `promoting` -- which an `IS NOT 'candidate'`
+                test would have let through.
         """
         if version is not None:
             cursor = await self._conn.execute(
@@ -172,7 +185,7 @@ class SqliteGraphTemplateStore:
             cursor = await self._conn.execute(
                 """SELECT payload FROM graph_templates
                    WHERE template_id = ?
-                     AND json_extract(payload, '$.lifecycle') IS NOT 'candidate'
+                     AND COALESCE(json_extract(payload, '$.lifecycle'), 'active') = 'active'
                    ORDER BY version DESC
                    LIMIT 1""",
                 (template_id,),
@@ -247,7 +260,14 @@ class SqliteNodeTemplateStore:
                    SET workspace_id = excluded.workspace_id,
                        name         = excluded.name,
                        node_type    = excluded.node_type,
-                       payload      = excluded.payload
+                       payload      = json_set(
+                                          excluded.payload,
+                                          '$.lifecycle',
+                                          COALESCE(
+                                              json_extract(node_templates.payload, '$.lifecycle'),
+                                              'active'
+                                          )
+                                      )
                    WHERE node_templates.content_hash = excluded.content_hash""",
             (
                 template.template_id,
@@ -302,7 +322,11 @@ class SqliteNodeTemplateStore:
             raise NodeTemplateNotFound(
                 f"no NodeTemplate {template_id!r} version {version} is registered"
             )
-        return "candidate" if row[0] == "candidate" else "active"
+        if row[0] == "candidate":
+            return "candidate"
+        if row[0] == "promoting":
+            return "promoting"
+        return "active"
 
     async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None:
         """Unversioned resolution returns the latest *active* version.
@@ -318,7 +342,7 @@ class SqliteNodeTemplateStore:
             cursor = await self._conn.execute(
                 """SELECT payload FROM node_templates
                    WHERE template_id = ?
-                     AND json_extract(payload, '$.lifecycle') IS NOT 'candidate'
+                     AND COALESCE(json_extract(payload, '$.lifecycle'), 'active') = 'active'
                    ORDER BY version DESC
                    LIMIT 1""",
                 (template_id,),

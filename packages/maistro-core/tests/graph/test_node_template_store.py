@@ -26,6 +26,7 @@ from maistro.graph.templates import (
     InMemoryNodeTemplateStore,
     NodeTemplateConflict,
     NodeTemplateNotFound,
+    PromotionApproval,
     promote_audited,
     require_node_template,
 )
@@ -412,6 +413,15 @@ class _RecordingAudit:
         self.entries.append((event, template_id, version))
 
 
+def _approval() -> PromotionApproval:
+    """The policy decision AC-11's third clause requires.
+
+    A required argument rather than a mutable field, so there is no state for
+    an idempotent `put` to overwrite and no default that could be permissive.
+    """
+    return PromotionApproval(approver="release-owner", reason="benchmarks cleared")
+
+
 async def _improve(store: Any, template_id: str, *, from_version: int) -> NodeTemplate:
     """An improvement path: propose a changed definition as a candidate.
 
@@ -478,7 +488,7 @@ async def test_an_improvement_produces_a_candidate_and_leaves_the_published_vers
 
     # "And promotion creates a new explicit version only after the policy gate"
     audit = _RecordingAudit()
-    await promote_audited(store, template_id, 2, audit=audit)
+    await promote_audited(store, template_id, 2, audit=audit, approval=_approval())
 
     promoted = await store.get(template_id)
     assert promoted is not None
@@ -504,7 +514,7 @@ async def test_promotion_does_not_change_the_content_hash(store: Any, request: A
     candidate = await _improve(store, template_id, from_version=1)
     node = candidate.instantiate(node_id="node-1")
 
-    await promote_audited(store, template_id, 2, audit=_RecordingAudit())
+    await promote_audited(store, template_id, 2, audit=_RecordingAudit(), approval=_approval())
 
     promoted = await store.get(template_id, version=2)
     assert promoted is not None
@@ -529,7 +539,7 @@ async def test_a_promotion_whose_commit_cannot_be_recorded_is_undone(
 
     audit = _RecordingAudit(fail_on="template_promotion_committed")
     with pytest.raises(RuntimeError, match="audit sink unavailable"):
-        await promote_audited(store, template_id, 2, audit=audit)
+        await promote_audited(store, template_id, 2, audit=audit, approval=_approval())
 
     assert await store.lifecycle_of(template_id, 2) == "candidate"
     current = await store.get(template_id)
@@ -545,7 +555,7 @@ async def test_a_sink_that_is_down_blocks_the_promotion_entirely(store: Any, req
 
     audit = _RecordingAudit(fail_on="template_promotion_attempt")
     with pytest.raises(RuntimeError, match="audit sink unavailable"):
-        await promote_audited(store, template_id, 2, audit=audit)
+        await promote_audited(store, template_id, 2, audit=audit, approval=_approval())
 
     assert await store.lifecycle_of(template_id, 2) == "candidate"
     assert audit.entries == []
@@ -556,7 +566,7 @@ async def test_promoting_a_version_that_does_not_exist_says_so(store: Any, reque
     await store.put(_template(template_id=template_id, version=1))
 
     with pytest.raises(NodeTemplateNotFound):
-        await promote_audited(store, template_id, 9, audit=_RecordingAudit())
+        await promote_audited(store, template_id, 9, audit=_RecordingAudit(), approval=_approval())
 
 
 async def test_a_template_whose_every_version_is_a_candidate_resolves_to_nothing(
@@ -577,3 +587,147 @@ async def test_a_template_whose_every_version_is_a_candidate_resolves_to_nothing
     assert await store.get(template_id) is None
     assert await store.get(template_id, version=1) is not None
     assert await store.versions(template_id) == [1]
+
+
+# ── the promotion gate's own failure modes (Codex, #589) ──────────
+
+
+async def test_re_registering_a_candidate_does_not_activate_it(store: Any, request: Any) -> None:
+    """The way a promotion could happen with no approval and no audit.
+
+    The content hash excludes `lifecycle`, so a caller that rebuilds the same
+    template without knowing about the field -- which is every caller written
+    before it existed -- submits identical content carrying the default
+    `"active"`. `put` sees a matching hash, treats it as idempotent, and used
+    to write the whole payload through. The stored lifecycle must survive.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    candidate = await _improve(store, template_id, from_version=1)
+
+    reconstructed = candidate.model_copy(update={"lifecycle": "active"})
+    assert reconstructed.content_hash == candidate.content_hash
+    await store.put(reconstructed)
+
+    assert await store.lifecycle_of(template_id, 2) == "candidate"
+    current = await store.get(template_id)
+    assert current is not None
+    assert current.version == 1
+
+
+async def test_re_registering_an_active_version_does_not_demote_it(
+    store: Any, request: Any
+) -> None:
+    """The same hole in the other direction."""
+    template_id = _ids(request)
+    original = _template(template_id=template_id, version=1)
+    await store.put(original)
+
+    await store.put(original.model_copy(update={"lifecycle": "candidate"}))
+
+    assert await store.lifecycle_of(template_id, 1) == "active"
+    assert await store.get(template_id) is not None
+
+
+async def test_a_promotion_is_not_observable_until_its_commit_is_recorded(
+    store: Any, request: Any
+) -> None:
+    """The claim the first version of this made and did not keep.
+
+    The durable stores commit `set_lifecycle` before the audit sink is asked
+    for the committed entry. Without a non-resolvable middle state, a
+    concurrent reader could resolve and instantiate a version that the audit
+    failure then rolls back. This asserts from the reader's side, at the
+    moment the sink is being called.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _improve(store, template_id, from_version=1)
+
+    seen: list[Any] = []
+
+    class _WatchingAudit:
+        def __init__(self) -> None:
+            self.entries: list[tuple[str, str, int]] = []
+
+        async def record(self, event: str, tid: str, ver: int) -> None:
+            if event == "template_promotion_committed":
+                # What any other task would see right now.
+                seen.append(await store.get(template_id))
+                seen.append(await store.lifecycle_of(template_id, 2))
+            self.entries.append((event, tid, ver))
+
+    await promote_audited(store, template_id, 2, audit=_WatchingAudit(), approval=_approval())
+
+    resolved, lifecycle = seen
+    assert lifecycle == "promoting"
+    assert resolved is not None
+    assert resolved.version == 1, "a mid-promotion version must not be what callers get"
+
+    # ...and it does become active once the entry is in.
+    assert await store.lifecycle_of(template_id, 2) == "active"
+
+
+async def test_a_cancelled_promotion_is_rolled_back(store: Any, request: Any) -> None:
+    """`asyncio.CancelledError` inherits from BaseException.
+
+    A task cancelled at a request timeout or a service shutdown would skip an
+    `except Exception` rollback and leave the version mid-promotion.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _improve(store, template_id, from_version=1)
+
+    class _CancellingAudit:
+        async def record(self, event: str, tid: str, ver: int) -> None:
+            if event == "template_promotion_committed":
+                raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await promote_audited(store, template_id, 2, audit=_CancellingAudit(), approval=_approval())
+
+    assert await store.lifecycle_of(template_id, 2) == "candidate"
+
+
+async def test_execution_refuses_a_candidate_even_when_its_version_is_named(
+    store: Any, request: Any
+) -> None:
+    """A Schedule pinning `template_version` to a candidate must not run it.
+
+    Exact-version access is the inspection door; `require_node_template` is
+    the execution door and answers for what may run.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _improve(store, template_id, from_version=1)
+
+    with pytest.raises(NodeTemplateNotFound, match="is candidate, not active"):
+        await require_node_template(store, template_id, version=2)
+
+    # Inspection still works, through the store rather than the execution door.
+    assert await store.get(template_id, version=2) is not None
+
+
+async def test_a_candidate_only_template_is_not_reported_as_unregistered(
+    store: Any, request: Any
+) -> None:
+    """ "Not registered" sent the admission path to diagnose the wrong thing.
+
+    The template and its versions exist; what is missing is a promotion, and
+    the message has to say so or the operator goes looking for a typo.
+    """
+    template_id = _ids(request)
+    await store.put(
+        _template(template_id=template_id, version=1).model_copy(update={"lifecycle": "candidate"})
+    )
+
+    with pytest.raises(NodeTemplateNotFound, match="has no active version"):
+        await require_node_template(store, template_id)
+
+
+async def test_an_approval_must_name_an_approver_and_a_reason(store: Any) -> None:
+    """Fail-closed at construction, so there is no unowned approval to pass."""
+    with pytest.raises(ValueError, match="approver"):
+        PromotionApproval(approver="  ", reason="benchmarks cleared")
+    with pytest.raises(ValueError, match="reason"):
+        PromotionApproval(approver="release-owner", reason="")

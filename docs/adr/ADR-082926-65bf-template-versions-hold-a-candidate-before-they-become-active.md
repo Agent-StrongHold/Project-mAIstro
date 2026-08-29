@@ -19,7 +19,7 @@ blocked-by: []
 contracts:
   - behavioral
 tests:
-  - packages/maistro-core/tests/graph/test_template_lifecycle.py
+  - packages/maistro-core/tests/graph/test_node_template_store.py
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -65,20 +65,36 @@ describes the second as a failure.
 active only through an explicit, audited promotion.**
 
 `NodeTemplate` and `GraphTemplate` gain
-`lifecycle: Literal["candidate", "active"]`, defaulting to `"active"`.
+`lifecycle: Literal["candidate", "promoting", "active"]`, defaulting to
+`"active"`.
 
-Two rules follow, and they are the whole decision:
+Three rules follow, and they are the whole decision:
 
-1. **Unversioned resolution returns the latest *active* version, never a
-   candidate.** This is the failure mode being guarded: a candidate silently
-   becoming what everyone gets. A caller naming an exact version still gets
-   exactly that version, candidate or not — inspecting a candidate is the
-   point of having one.
-2. **Promotion is a separate, audited operation**, not a `put`. It records an
-   attempt before the state change and a commit after, and compensates rather
-   than leaving an unaudited active version — the guarantees
-   `promote_audited` already makes, rather than a second weaker discipline
-   beside it.
+1. **No execution path resolves a non-active version.** Unversioned
+   resolution returns the latest `active` version; and `require_template` —
+   the door every execution goes through — refuses a named version that is
+   not active. Reading a candidate is still available through the store's
+   own `get`, which is the inspection door. Splitting the two is what stops a
+   `Schedule` pinning `template_version` to a candidate from running it.
+2. **Promotion is gated.** It takes a `PromotionApproval` naming an approver
+   and a reason, as a required argument rather than a mutable field: there is
+   no state for an idempotent `put` to overwrite and no default that could be
+   permissive. Recording that a thing happened is not deciding that it may.
+3. **Promotion is audited, in an order that makes the claim true.** Attempt
+   recorded → `promoting` → commit recorded → `active`. The transitional
+   state is load-bearing: the durable stores commit the row before the audit
+   sink is asked, so activating first would let a concurrent reader
+   instantiate a version the audit failure then rolls back. With
+   `promoting`, "active implies a committed entry" holds for every observer.
+   Compensation catches `BaseException` and is shielded, because
+   `CancelledError` is not an `Exception` and a cancelled rollback is not a
+   rollback.
+
+**An idempotent re-registration never moves the lifecycle.** Because the hash
+excludes `lifecycle`, a caller resubmitting identical content with the field's
+default hashes equal to a stored candidate; letting `put` write that through
+would activate it with no approval and no audit entry, and demote a promoted
+version just as quietly. `promote_audited` is the only thing that changes it.
 
 ### `lifecycle` is excluded from the content hash
 
@@ -151,8 +167,16 @@ consequences below rather than hidden.
   candidate and *does* refuse to serve one by default. A reader should not
   take AC-11's marker as evidence that Evolve proposes template versions
   today, and the test says so in its own docstring.
-- A third state in the resolution path is a third thing to get wrong. The
-  mitigation is that exactly one operation may change it.
+- Three states in the resolution path are three things to get wrong. The
+  mitigations are that exactly one operation may change the lifecycle, that
+  `put` cannot move it at all, and that both non-active states are excluded by
+  the same predicate rather than by two that must agree.
+- A promotion whose final activation fails leaves the version `promoting`:
+  audited as committed but not serving. That is the safe direction of the two
+  — a promotion that did not finish, rather than an unaudited active version —
+  and `lifecycle_of` reports it rather than hiding it. It does mean an
+  operator can find a stuck `promoting` version and must re-run the
+  promotion.
 - `lifecycle` is a nullable-shaped field in practice: rows written before it
   read back as `"active"` by default. That is the intended reading and not a
   migration, but it does mean the field cannot later be used to distinguish

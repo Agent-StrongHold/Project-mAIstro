@@ -48,7 +48,12 @@ class PgGraphTemplateStore:
                    ON CONFLICT (template_id, version) DO UPDATE
                        SET workspace_id = EXCLUDED.workspace_id,
                            name         = EXCLUDED.name,
-                           payload      = EXCLUDED.payload
+                           payload      = jsonb_set(
+                                          EXCLUDED.payload,
+                                          '{lifecycle}',
+                                          COALESCE(graph_templates.payload->'lifecycle', '"active"'::jsonb),
+                                          true
+                                      )
                        WHERE graph_templates.content_hash = EXCLUDED.content_hash
                    RETURNING template_id""",
                 template.template_id,
@@ -108,15 +113,21 @@ class PgGraphTemplateStore:
             raise GraphTemplateNotFound(
                 f"no GraphTemplate {template_id!r} version {version} is registered"
             )
-        return "candidate" if found == "candidate" else "active"
+        if found == "candidate":
+            return "candidate"
+        if found == "promoting":
+            return "promoting"
+        return "active"
 
     async def get(self, template_id: str, *, version: int | None = None) -> GraphTemplate | None:
         """Unversioned resolution returns the latest *active* version.
 
-        `IS DISTINCT FROM 'candidate'` rather than `= 'active'`, so a row
-        written before the lifecycle existed -- no key, so `->>` yields NULL --
-        still resolves. Every such row is an active definition, and `= 'active'`
-        would silently empty the registry.
+        `COALESCE(..., 'active') = 'active'` rather than a bare comparison: a
+                row written before the lifecycle existed has no key, so `->>` yields
+                NULL, and every such row *is* an active definition -- `= 'active'`
+                alone would silently empty the registry. Coalescing first keeps those
+                rows and excludes both `candidate` and the transitional `promoting`,
+                which a `!= 'candidate'` test would have let through.
         """
         async with self._pool.acquire() as conn:
             if version is not None:
@@ -129,7 +140,7 @@ class PgGraphTemplateStore:
                 payload = await conn.fetchval(
                     """SELECT payload FROM graph_templates
                        WHERE template_id = $1
-                         AND payload->>'lifecycle' IS DISTINCT FROM 'candidate'
+                         AND COALESCE(payload->>'lifecycle', 'active') = 'active'
                        ORDER BY version DESC
                        LIMIT 1""",
                     template_id,
@@ -195,7 +206,12 @@ class PgNodeTemplateStore:
                        SET workspace_id = EXCLUDED.workspace_id,
                            name         = EXCLUDED.name,
                            node_type    = EXCLUDED.node_type,
-                           payload      = EXCLUDED.payload
+                           payload      = jsonb_set(
+                                          EXCLUDED.payload,
+                                          '{lifecycle}',
+                                          COALESCE(node_templates.payload->'lifecycle', '"active"'::jsonb),
+                                          true
+                                      )
                        WHERE node_templates.content_hash = EXCLUDED.content_hash
                    RETURNING template_id""",
                 template.template_id,
@@ -256,7 +272,11 @@ class PgNodeTemplateStore:
             raise NodeTemplateNotFound(
                 f"no NodeTemplate {template_id!r} version {version} is registered"
             )
-        return "candidate" if found == "candidate" else "active"
+        if found == "candidate":
+            return "candidate"
+        if found == "promoting":
+            return "promoting"
+        return "active"
 
     async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None:
         """Unversioned resolution returns the latest *active* version.
@@ -274,7 +294,7 @@ class PgNodeTemplateStore:
                 payload = await conn.fetchval(
                     """SELECT payload FROM node_templates
                        WHERE template_id = $1
-                         AND payload->>'lifecycle' IS DISTINCT FROM 'candidate'
+                         AND COALESCE(payload->>'lifecycle', 'active') = 'active'
                        ORDER BY version DESC
                        LIMIT 1""",
                     template_id,

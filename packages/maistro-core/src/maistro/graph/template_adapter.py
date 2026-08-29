@@ -80,23 +80,29 @@ def snapshot_to_template(
     entry = _str_of(snapshot.get("entry_node"), snapshot.get("entry"))
     if entry:
         metadata["entry_node"] = entry
-    identity: dict[str, str] = {}
-    resolved_template_id = _str_of(template_id, snapshot.get("id"))
-    if resolved_template_id:
-        identity["template_id"] = resolved_template_id
-    return GraphTemplate(
-        **identity,
-        workspace_id=workspace_id,
-        version=version,
-        name=_str_of(snapshot.get("name"), snapshot.get("id")),
-        description=_str_of(snapshot.get("description")),
-        nodes=[_node_from_raw(dict(raw)) for raw in snapshot.get("nodes", [])],
-        edges=[
+    # Every field named, and `template_id` passed conditionally rather than
+    # splatted from a `dict[str, str]`. A splat tells a type checker that any
+    # keyword might receive a `str`, so every narrowly-typed field on
+    # GraphTemplate reports as possibly-wrong -- which is how adding
+    # `saved_from` and then `lifecycle` each made this call site newly
+    # unverifiable without anyone touching it. The dict was buying one
+    # optional argument at the cost of checking all of them.
+    fields: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "version": version,
+        "name": _str_of(snapshot.get("name"), snapshot.get("id")),
+        "description": _str_of(snapshot.get("description")),
+        "nodes": [_node_from_raw(dict(raw)) for raw in snapshot.get("nodes", [])],
+        "edges": [
             _edge_from_raw(dict(raw), index)
             for index, raw in enumerate(snapshot.get("edges", []), start=1)
         ],
-        metadata=metadata,
-    )
+        "metadata": metadata,
+    }
+    resolved_template_id = _str_of(template_id, snapshot.get("id"))
+    if resolved_template_id:
+        return GraphTemplate(template_id=resolved_template_id, **fields)
+    return GraphTemplate(**fields)
 
 
 def descriptor_to_template(

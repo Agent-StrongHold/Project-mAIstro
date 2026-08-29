@@ -115,13 +115,22 @@ class Graph(BaseModel):
         return _content_hash(self._snapshot_content())
 
 
-TemplateLifecycle = Literal["candidate", "active"]
+TemplateLifecycle = Literal["candidate", "promoting", "active"]
 """Whether a template version may be handed out as the current definition.
 
 ADR-082926-65bf. A candidate exists and is addressable by exact version, but
-unversioned resolution never returns one -- the guarded failure is a candidate
-silently becoming what everyone gets. Only an audited promotion moves a version
-from `candidate` to `active`.
+no *execution* path will resolve one -- the guarded failure is a candidate
+silently becoming what everyone runs. Only an audited, approved promotion moves
+a version to `active`.
+
+`promoting` is the transitional state a version occupies between its approval
+being recorded and its activation being recorded. It resolves exactly like
+`candidate` -- that is its whole purpose. The durable stores commit
+`set_lifecycle` before the audit sink is asked for the committed entry, so
+without a non-resolvable middle state a concurrent reader could instantiate a
+version that the audit failure then rolls back, and "no active version without
+a committed audit entry" would be a claim the implementation does not keep
+(Codex, #589).
 
 Excluded from the content hash for the mirror of the reason ADR-082926-d0dc
 excludes `saved_from`: two templates differing only in whether they have been
