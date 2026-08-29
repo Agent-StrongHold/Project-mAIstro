@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 594,
+    "criteria_declared": 595,
     "criteria_annotated": 214,
-    "markers_found": 305,
+    "markers_found": 306,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -1290,8 +1290,8 @@
       {
         "id": "ADR-082826-08f0",
         "declared_status": "Accepted",
-        "criteria": 6,
-        "reachable": 6,
+        "criteria": 7,
+        "reachable": 7,
         "percent": 100.0
       },
       {
@@ -13472,7 +13472,7 @@
       "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 6,
+      "own_criteria": 7,
       "own_detail": [
         {
           "id": "ADR-082826-08f0/AC-1",
@@ -13525,6 +13525,15 @@
           "module": "maistro.container",
           "covered_by": [
             "packages/maistro-core/tests/test_container_chat_runs.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-08f0/AC-7",
+          "claimed": false,
+          "module": "maistro.runs.recovery_events",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_recovery_events.py"
           ],
           "rung": "reachable"
         }
