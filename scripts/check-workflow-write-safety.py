@@ -29,9 +29,11 @@ Resolving a named generated file is fine — `git checkout --ours -- <path>` say
 which path, in the diff, where it can be read.
 
 **3. `--bank` (AC-4).** `design_coverage` is the repository's only ratchet
-*floor*, and `--bank` accepts a fall in it. `quality/ac-state-ceilings.json` says
-in its own comment: "Bank a reviewed state with --ratchet --bank and read the
-diff; never hand-edit a number to match a delta." A workflow cannot read a diff.
+*floor*, and `--bank` accepts a fall in it. The rule the retired
+`quality/ac-state-ceilings.json` stated in its own comment — "Bank a reviewed
+state with --ratchet --bank and read the diff; never hand-edit a number to
+match a delta" — is unchanged by #585 moving the bound into
+`quality/ac-state-notes/`. A workflow cannot read a diff.
 On PR #242 the fall was legitimate and exactly explainable as a denominator
 change, but the step could not tell that from a regression and neither could a
 reviewer reading only the result.

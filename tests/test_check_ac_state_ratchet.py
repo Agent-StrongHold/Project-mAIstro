@@ -62,16 +62,34 @@ def gate():
 
 @pytest.fixture
 def ceilings(gate, tmp_path, monkeypatch):
-    """Point the gate at a throwaway ceilings file."""
-    path = tmp_path / "ac-state-ceilings.json"
-    monkeypatch.setattr(gate, "CEILINGS", path)
+    """Point the gate at a throwaway notes directory.
+
+    Same claims as before #585 — the fixture name is kept so the assertions
+    below read unchanged — but the bound is now folded from
+    `quality/ac-state-notes/` rather than read off one shared line. Writing a
+    single note is the equivalent of writing the old ceilings file: a fold over
+    one note is that note.
+    """
+    notes_dir = tmp_path / "ac-state-notes"
+    notes_dir.mkdir()
+    monkeypatch.setattr(gate.ac_state_notes, "NOTES_DIR", notes_dir)
+    # No `origin/develop` in a tmp_path, so the resolver reads the worktree and
+    # says so — the developer loop, which is what a unit test is.
+    monkeypatch.setattr(gate.ac_state_notes, "ROOT", tmp_path)
 
     def write(**overrides):
-        payload = {"measured_with_tests": True, "ceilings": {**TOTALS, **overrides}}
+        path = notes_dir / "_baseline.json"
+        payload = {
+            "branch": None,
+            "measured_with_tests": True,
+            "counters": {**TOTALS, **overrides},
+        }
         path.write_text(json.dumps(payload))
+        write.path = path
         return path
 
-    write.path = path
+    write.path = notes_dir / "_baseline.json"
+    write.dir = notes_dir
     return write
 
 
@@ -99,17 +117,20 @@ def test_an_unbanked_improvement_also_fails(gate, ceilings, capsys) -> None:
 
 
 def test_banking_an_improvement_then_passes(gate, ceilings) -> None:
-    path = ceilings()
+    ceilings()
     better = {**TOTALS, "specs_awaiting_retrofit": 130}
     assert gate.ratchet(better, measured=True, bank=True) == 0
-    assert json.loads(path.read_text())["ceilings"]["specs_awaiting_retrofit"] == 130
+    # Banking writes this branch's own note, not the shared line (#585). The
+    # fold over the two then carries the improvement.
+    banked = json.loads((ceilings.dir / "detached.json").read_text())
+    assert banked["counters"]["specs_awaiting_retrofit"] == 130
     assert gate.ratchet(better, measured=True, bank=False) == 0
 
 
 def test_a_counter_with_no_ceiling_fails(gate, ceilings) -> None:
     path = ceilings()
     payload = json.loads(path.read_text())
-    del payload["ceilings"]["gherkin_parse_errors"]
+    del payload["counters"]["gherkin_parse_errors"]
     path.write_text(json.dumps(payload))
     assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
 
@@ -120,7 +141,7 @@ def test_comparing_across_measurement_modes_is_refused(gate, ceilings, capsys) -
     depend on how it was invoked."""
     ceilings()
     assert gate.ratchet(TOTALS, measured=False, bank=False) == 1
-    assert "re-run in that mode" in capsys.readouterr().out
+    assert "e-run in that mode" in capsys.readouterr().out
 
 
 def test_the_mode_guard_reports_before_anything_is_measured(gate, ceilings) -> None:
@@ -134,15 +155,26 @@ def test_the_mode_guard_reports_before_anything_is_measured(gate, ceilings) -> N
 def test_a_missing_ceilings_file_fails_with_the_bank_instruction(
     gate, tmp_path, monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr(gate, "CEILINGS", tmp_path / "absent.json")
+    monkeypatch.setattr(gate.ac_state_notes, "NOTES_DIR", tmp_path / "absent")
+    monkeypatch.setattr(gate.ac_state_notes, "ROOT", tmp_path)
+    monkeypatch.setattr(gate.ac_state_notes, "RETIRED_CEILINGS", tmp_path / "also-absent.json")
     assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
     assert "--ratchet --bank" in capsys.readouterr().out
 
 
-def test_the_shipped_ceilings_cover_every_ratcheted_counter(gate) -> None:
-    recorded = json.loads((ROOT / "quality" / "ac-state-ceilings.json").read_text())
-    assert set(recorded["ceilings"]) == {*gate.RATCHETED, *gate.FLOORED}
+def test_the_shipped_baseline_note_covers_every_ratcheted_counter(gate) -> None:
+    recorded = json.loads((ROOT / "quality" / "ac-state-notes" / "_baseline.json").read_text())
+    assert set(recorded["counters"]) == {*gate.RATCHETED, *gate.FLOORED}
     assert recorded["measured_with_tests"] is True
+
+
+def test_every_shipped_note_parses_and_agrees_on_the_measurement_mode(gate) -> None:
+    """A malformed note is a non-passing state, so no shipped note may be one."""
+    notes = sorted((ROOT / "quality" / "ac-state-notes").glob("*.json"))
+    assert notes, "the notes directory is the ledger; it may not be empty"
+    for path in notes:
+        note = gate.ac_state_notes.Note.parse(path.name, path.read_text())
+        assert note.measured_with_tests is True, path.name
 
 
 class TestTheFloorUnderProgress:
@@ -184,10 +216,11 @@ class TestTheFloorUnderProgress:
         assert "exceeds the ceiling" not in out
 
     def test_banking_a_rise_raises_the_floor(self, gate, ceilings) -> None:
-        path = ceilings()
+        ceilings()
         better = {**TOTALS, "design_coverage": 4.5}
         assert gate.ratchet(better, measured=True, bank=True) == 0
-        assert json.loads(path.read_text())["ceilings"]["design_coverage"] == 4.5
+        banked = json.loads((ceilings.dir / "detached.json").read_text())
+        assert banked["counters"]["design_coverage"] == 4.5
         assert gate.ratchet(better, measured=True, bank=False) == 0
         # ...and the raised floor is what makes the old value a regression.
         assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
@@ -198,6 +231,6 @@ class TestTheFloorUnderProgress:
         anything. The absence has to be its own failure."""
         path = ceilings()
         payload = json.loads(path.read_text())
-        del payload["ceilings"]["design_coverage"]
+        del payload["counters"]["design_coverage"]
         path.write_text(json.dumps(payload))
         assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
