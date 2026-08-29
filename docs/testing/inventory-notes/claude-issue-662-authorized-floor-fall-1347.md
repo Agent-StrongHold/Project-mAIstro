@@ -1,12 +1,21 @@
 ---
 inventory-delta:
-  tests/: +12
+  tests/: +14
 ---
 # claude-issue-662-authorized-floor-fall-1347
 
-All twelve are `tests/test_ac_state_authorized_floor.py`, the suite for
+All fourteen are `tests/test_ac_state_authorized_floor.py`, the suite for
 SPEC-082926-6f49: a grant read at the base revision may lower one AC-state
 floor to one named value. Nothing removed or moved.
+
+Twelve were the first push. Two more came from the diff-coverage gate, which
+found three branch arcs the suite reached along one side only —
+`_report_stale_grants` was only ever entered with nothing to report, and
+`_lowered` was only ever handed a counter the fold already carried. Both are
+real cases rather than arcs padded to satisfy a percentage: a spent grant has
+to *fail* the run that finds it, not merely be printed under a passing one, and
+a grant naming a counter no note measured must narrow nothing rather than
+inventing the key.
 
 They run against a real Git repository rather than a stubbed fold, for the
 reason `test_check_ac_state_ratchet.py` records at length: a fixture that points

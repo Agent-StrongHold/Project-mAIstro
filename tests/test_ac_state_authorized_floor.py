@@ -213,6 +213,27 @@ class TestAGrantOnlyLowers:
     def test_a_binding_grant_is_not_reported_as_spent(self, gate) -> None:
         assert gate._stale_grants({"design_coverage": 20.0}, {"design_coverage": 15.0}) == []
 
+    @pytest.mark.ac("SPEC-082926-6f49/AC-4")
+    def test_a_spent_grant_fails_the_run_that_finds_it(self, gate, repo, capsys) -> None:
+        """Reported has to mean *acted on*. A finding printed under a passing
+        run is a finding nobody reads, and the grant it names goes on sitting
+        in the file with an owner beside it."""
+        repo(20.0, grant_at_base="design_coverage@25.0", banked=20.0)
+
+        assert _run(gate, 20.0) == 1
+        out = capsys.readouterr().out
+        assert "authorized floor(s) the notes have overtaken" in out
+        assert "design_coverage" in out
+
+    def test_a_grant_cannot_conjure_a_counter_the_fold_does_not_carry(self, gate) -> None:
+        """`_lowered` narrows a comparison; it must never widen one.
+
+        A bound folded from notes that predate a counter does not carry it, and
+        inventing the key here would put a number into the comparison that no
+        note ever measured -- an authorized floor for a counter nobody has read.
+        """
+        assert gate._lowered({}, {"design_coverage": 15.0}) == {}
+
 
 class TestTheAuthorizedFloorIsAValueNotARange:
     @pytest.mark.ac("SPEC-082926-6f49/AC-5")
