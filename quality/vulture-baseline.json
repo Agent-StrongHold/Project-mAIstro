@@ -291,7 +291,6 @@
         "packages/maistro-core/src/maistro/resilience/fallback.py::unused attribute 'primary_restore_at'",
         "packages/maistro-core/src/maistro/resilience/fallback.py::unused variable 'primary_restore_at'",
         "packages/maistro-core/src/maistro/runs/model.py::unused variable 'accepted_at'",
-        "packages/maistro-core/src/maistro/runs/model.py::unused variable 'lease_epoch'",
         "packages/maistro-core/src/maistro/security/_types.py::unused variable 'account_disabled'",
         "packages/maistro-core/src/maistro/security/_types.py::unused variable 'allow_freetext'",
         "packages/maistro-core/src/maistro/security/_types.py::unused variable 'reasoning_trace'",

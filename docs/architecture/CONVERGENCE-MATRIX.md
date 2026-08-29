@@ -8,9 +8,9 @@ The convergence program has one execution identity — `Workspace/Project → Gr
 
 ## What the checker enforces
 
-`scripts/check-convergence-matrix.py` fails CI when the two tables disagree, module prefixes stop partitioning every production module, unreachable counts disagree with the reachability ratchet, a disposition leaves the fixed vocabulary, or a cited ADR/SPEC does not exist.
+`scripts/check-convergence-matrix.py` fails CI when the two tables disagree, module prefixes stop partitioning every production module, unreachable counts disagree with the reachability ratchet, a disposition leaves the fixed vocabulary, a cited ADR/SPEC does not exist, or an **ownership claim names a module that no product path reaches** (#378) — see [How to read an ownership cell](#how-to-read-an-ownership-cell-378) for the grammar those columns now follow. Fifteen such claims were in the table when that check was turned on, all of them now annotated with what is actually true.
 
-It deliberately **does not prove the prose ownership claims**. Reachability proves that code can be reached, not that an advertised control is active. M0 closes with the prose re-audited against current `develop`; future product-path changes that alter these claims must update this matrix in the same PR. Acceptance evidence names the fact that settles each row.
+It still **does not prove a prose ownership claim**. Reachability proves that code can be reached, not that an advertised control is active, and a cell that names no module at all — “OS file permissions”, “per-route” — says something no import graph can settle. That residue is counted rather than waved at: the ownership census is checked, so the number of unverifiable cells cannot grow unnoticed. Future product-path changes that alter these claims must update this matrix in the same PR; acceptance evidence names the fact that settles each row.
 
 ## Disposition vocabulary
 
@@ -26,40 +26,59 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 
 `Lifecycle owner` is the authoritative “what state is this work in” record today. `Persistence owner` is what survives restart. `Authorization owner` is what decides whether the work is allowed.
 
+### How to read an ownership cell (#378)
+
+The three owner columns have a grammar, and the checker holds them to it. A code span shaped like a module path — `` `runs.pg_store` `` — is a **claim**: it says that module owns this today. Cells abbreviate (`design.engine` for `maistro_design.engine`), so a claim is resolved against the row's own module prefixes first and must land on exactly one production module; a name that resolves to none, or to several, fails.
+
+A bare claim asserts a **current, reached** owner. To say anything else, annotate it in the parenthesis that follows:
+
+| Annotation | Means | Checked |
+|---|---|---|
+| *(none)* | Current owner, reached by some product path. | The module is not in the unreachable set. |
+| `(canonical)` | Current owner, and the canonical one for this concept. | As above. |
+| `(unreachable)` | Current owner in design, but **no product path reaches it**. | The module really is unreachable — a stale annotation on a wired module fails too. |
+| `(planned)` | A future owner, not a claim about today. | The row may not be `KEEP`; a subsystem still waiting for its owner is `CONNECT` or `MIGRATE`. |
+| `(delegated)` | This row reads another subsystem's owner rather than owning it. | Exempt from the single-lifecycle-owner rule below. |
+
+Three further rules follow from the columns' meanings. A `KEEP` column whose every owner is unreachable or planned owns nothing today, so it is not `KEEP`. A module may be the current, undelegated **lifecycle** owner of at most one subsystem — two rows claiming one work-state record is the contradiction the convergence program exists to remove. And a cell that opens with a declared absence (`—`, `n/a`, `none`, `itself`) may not also name a module.
+
+**What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 53 name a module, 73 declare there is no module owner, and 30 are prose the checker cannot reach.
+
+<!-- matrix:ownership-census claims=53 declared=73 prose=30 -->
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
 | Run / NodeRun / Attempt lifecycle | `maistro.runs`, `maistro.runtime` | Run, NodeRun, Attempt, ExecutionRuntime | itself (canonical) | `runs.pg_store` (canonical, #132), `runs.sqlite_store`, `runs.store` | caller-supplied `actor_principal_id` only |
 | Graph execution | `maistro.graph` | Graph, Node, GraphExecutionState | `graph.durable_runs.canonical_store` over `maistro.runs` + `graph.durable_runs.continuation` | `graph.durable_runs.stores` (document-shaped; kept for pre-convergence records) | — |
 | Request front door and DI | `maistro.conduit`, `maistro.container` | Request admission | none — Conduit decides and delegates, holds no state | — | container-wired Warden/Sentinel |
-| Task queue and runner | `maistro.tasks` | Admission receipt | `tasks.queue` + `tasks.status` (second universal lifecycle) | `TaskRecord` upsert, best-effort (ADR-018) | `security.task_policy` |
+| Task queue and runner | `maistro.tasks` | Admission receipt | `tasks.queue` + `tasks.status` (second universal lifecycle) | `TaskRecord` upsert, best-effort (ADR-018) | `security.task_policy` (unreachable) |
 | A2A delegation | `maistro.a2a` | Child Run | `a2a.lifecycle` worker pool (third universal lifecycle) | — | `a2a.guest_peers` trust tiers |
 | Recurrence / schedules | `maistro.scheduling` | Trigger definition → Run | canonical: `evaluate()` decides, the Run owns execution | `scheduling.store` + `scheduling.pg_store` (PostgreSQL, SQLite, in-memory) | schedule's `actor_principal_id` |
 | Repo tooling | `scripts` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
-| Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` + `builders.graph_executor` (fourth universal lifecycle) | `builders.logger` | — |
-| Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
+| Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` (unreachable) + `builders.graph_executor` (unreachable; fourth universal lifecycle) | `builders.logger` (unreachable) | — |
+| Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` (unreachable) |
 | Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc; `agents.pm_runner` emits its own events | `persistence.pg_agents` | `agents.intents` routing table only |
 | Capability / Provider / Binding / Invocation | `maistro.capabilities` | the canonical effect path | `capabilities.invocation` | `capabilities.invocation_store`, `approval_store` | `capabilities.governed_invocation` |
 | Model providers | `maistro.providers` | Provider implementations | n/a | — | — |
 | Router and classifier | `maistro.router`, `maistro.classifier` | Provider selection policy | n/a (pure decision) | — | — |
-| Tool execution | `maistro.tools` | Invocation | direct call sites | — | `tools.approval`, `tools.reversibility_registry` |
+| Tool execution | `maistro.tools` | Invocation | direct call sites | — | `tools.approval` (unreachable), `tools.reversibility_registry` (unreachable) |
 | Sandbox isolation | `maistro.sandbox` | ExecutionRuntime implementation | its own session records | — | — |
 | Skills, code registry, repertoire | `maistro.skills`, `maistro.code_registry`, `maistro.repertoire` | Capability supply chain | per-package registries | `skills.marketplace` stores | `code_registry` signing + trust tiers |
-| Credentials | `maistro.credentials` | Binding material | `credentials.pool` rotation state | encrypted per-user store | — |
-| Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` | — |
+| Credentials | `maistro.credentials` | Binding material | `credentials.pool` (unreachable) rotation state | encrypted per-user store | — |
+| Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` (unreachable) | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
 | Delivery gateway | `maistro.delivery` | Effect channel | its own send records | — | — |
 | Warden / Sentinel / Gate | `maistro.security` | trust boundary + policy decision point | `security.strikes` protocol-backed lockout state | audit durable via `persistence.pg_audit`; PostgreSQL deployments use `PgStrikeTracker`, non-PostgreSQL deployments use the in-memory tracker (#134/#217) | itself (canonical) |
 | Authentication and identity | `maistro.auth`, `maistro.identity` | Principal | n/a | service-key store | itself (canonical) |
 | Authorization, privilege, governance | `maistro.privilege`, `maistro.policy`, `maistro.governance` | Authorization decision | n/a | — | itself (canonical, ADR-068 partly unbuilt) |
 | Secrets vault | `maistro.vault` | Secret material | n/a | age-encrypted file | OS file permissions |
-| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.pg_learnings`/`pg_outcomes` on a `postgresql://` URL, `sqlite_*` on SQLite, in-memory otherwise; pgvector embeddings live on learning rows when configured | `memory.scopes`, `memory.exposure` |
+| Memory | `maistro.memory` | Learning, Episode, Outcome | n/a (domain state) | `persistence.pg_learnings`/`pg_outcomes` on a `postgresql://` URL, `sqlite_*` on SQLite, in-memory otherwise; pgvector embeddings live on learning rows when configured | `memory.scopes`, `memory.exposure` (unreachable) |
 | Sessions | `maistro.sessions` | Conversation history | `sessions.store` TTL pruning | `persistence.pg_sessions` on PostgreSQL, `sqlite_sessions` on SQLite, in-memory otherwise | session trust floor |
 | Archive tier | `maistro.archive` | Cold storage for records that are still authoritative | n/a (placement, not lifecycle) | object storage or a local directory; tombstone stays in PostgreSQL where required | inherits record scope |
 | Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — `pg_*` is wired for PostgreSQL; SQLite remains for homelab/local use | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
-| Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
+| Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (unreachable; in-memory) | — |
 | Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
 | Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` with a pool, else durable SQLite or in-memory; `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
@@ -71,12 +90,12 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Core CLI | `maistro.cli` | Client of the Conductor API | n/a (remote) | — | server-side |
 | Shared contracts and config | `maistro`, `maistro.types`, `maistro.protocols`, `maistro.constants`, `maistro.config`, `maistro.http` | Types and protocols | n/a | — | — |
 | Test scaffolding | `maistro.testing` | Test doubles | n/a | — | — |
-| maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` receipt plus canonical Run spine | inherited | `maistro.auth` + rate limiter |
-| Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` |
+| maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` (delegated) receipt plus canonical Run spine | inherited | `maistro.auth` + rate limiter |
+| Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` (unreachable) |
 | Agent Conductor services | `services` | Product services | `services.dag_run_store` — parallel run identity, event-derived, authoritative for current UI | `services.pg_store` | per-route |
-| Canvas ability | `maistro_canvas` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` claim/lease/reap state machine | `canvas.store` (PostgreSQL) | `maistro_canvas.auth` |
+| Canvas ability | `maistro_canvas` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` (unreachable) claim/lease/reap state machine | `canvas.store` (unreachable; PostgreSQL) | `maistro_canvas.auth` |
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
-| Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no universal work-state machine of its own | `evolve.serialize` | — |
+| Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no universal work-state machine of its own | `evolve.serialize` (unreachable) | — |
 | RSI autorun | `maistro_rsi` | Run per improvement cycle | `rsi.coordinator` orchestrates; result records, no universal work-state machine | `rsi.spec_tracker`, quarantine ledger | `rsi.quarantine` gate |
 | Turing self-model | `maistro_turing`, `maistro-turing-backend` | Optional cognitive Providers | `turing.runtime` actor + chat session; no universal work-state machine | backend DB via `TuringMemoryBridge` | backend `middleware.auth` |
 | ADR/spec registry CLI | `maistro_registry` | Governance tooling | n/a | filesystem | — |
@@ -95,7 +114,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/12` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `0/5` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
 | Recurrence / schedules | `services.scheduler` background loop | `1/7` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231); it still executes through `run_registered_dag`, whose `DurableRunStore` is disjoint from the canonical `RunStore` — #251 | #46, #62, #231, #251 |
-| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `19/60` | KEEP — the 41 rooted scripts are the gate set; the 18 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
+| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `19/60` | KEEP — the 41 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `3/10` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | ADR-071, ADR-052 | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
 | Builders pipeline | none | `15/15` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090, ADR-099 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
 | Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `1/15` | CONNECT — the Workspace store is wired and durable (#516); Project authorization is the remaining hop | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
@@ -104,7 +123,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no new direct caller escapes | #56 |
 | Router and classifier | `maistro.container.route_request` | `1/13` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
 | Tool execution | `services.tool_executor`, `maistro.container` | `9/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
-| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/9` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
+| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/12` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `12/22` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
 | Credentials | `routes.credentials`, `services.credential_store_v2` | `4/7` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
@@ -149,7 +168,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
 - Core scheduling owns occurrence identity and exact-one Run claims (#229), while the **live Hive scheduler** has not adopted that seam; #231 is the explicit remaining product migration.
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
-- The matrix checker proves structure, reachability counts and reference integrity. It cannot prove prose. That limitation is explicit rather than hidden; #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
+- The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 30 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
 ## Related
 
