@@ -75,6 +75,7 @@ SHIPPED = {
     "built_by": [".github/workflows/security.yml:containers"],
     "scanned_by": [".github/workflows/security.yml:containers"],
     "published_by": ".github/workflows/security.yml:containers",
+    "published_digest_verified": False,
 }
 
 
@@ -174,6 +175,60 @@ def test_a_retired_entry_must_name_a_successor_and_an_owner(gate, tmp_path, monk
     assert "RETIRED needs `removal_owner`" in out
 
 
+def test_a_shipped_entry_may_lack_jobs_behind_an_owned_exception(gate, tmp_path, monkeypatch):
+    """#346's AC-4. The sbx template is the real case: CI cannot build it from a
+    checkout, and calling it INTERNAL to dodge the requirement is what hid it."""
+    entry = {
+        "id": "demo",
+        "dockerfile": "Dockerfile",
+        "disposition": "DISTRIBUTED",
+        "rationale": "operator builds and may push it",
+        "built_by": [],
+        "scanned_by": [],
+        "coverage_exception": {
+            "owner": "@someone",
+            "issue": "#346",
+            "reason": "needs a preseed step CI does not run yet",
+        },
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_an_exception_without_an_owner_is_an_exemption(gate, tmp_path, monkeypatch, capsys):
+    """The cheapest thing to write must not be the thing that satisfies it."""
+    entry = {
+        "id": "demo",
+        "dockerfile": "Dockerfile",
+        "disposition": "DISTRIBUTED",
+        "rationale": "operator builds it",
+        "built_by": [],
+        "scanned_by": [],
+        "coverage_exception": {"owner": "", "issue": "", "reason": "later"},
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "needs `owner`" in out
+    assert "needs `issue`" in out
+
+
+def test_a_published_entry_must_state_whether_the_released_digest_was_scanned(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """The one thing job names cannot show.
+
+    security.yml scans a locally-built candidate tag; release.yml rebuilds and
+    publishes its own digest. Accepting the publisher job as proof would let
+    "the dependency set scanned is the dependency set shipped" read as verified
+    when nothing checks it.
+    """
+    entry = {key: value for key, value in SHIPPED.items() if key != "published_digest_verified"}
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "must state `published_digest_verified`" in capsys.readouterr().out
+
+
 def test_an_unknown_disposition_fails(gate, tmp_path, monkeypatch, capsys):
     entry = {**SHIPPED, "disposition": "PROBABLY_FINE"}
     tree = _tree(tmp_path, [entry], ["Dockerfile"])
@@ -195,3 +250,85 @@ def test_the_real_inventory_matches_the_real_repository(gate):
     nothing about the tree that ships.
     """
     assert gate.main() == 0
+
+
+# ── the gate's own edges ──────────────────────────────────────────
+
+
+def test_a_directory_named_dockerfile_is_not_an_image(gate, tmp_path, monkeypatch):
+    """`rglob` matches directories too, and a `Dockerfile.d/` would otherwise
+    read as an image nobody could build."""
+    tree = _tree(tmp_path, [SHIPPED], ["Dockerfile"])
+    (tree / "Dockerfile.d").mkdir()
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_vendored_trees_are_not_scanned(gate, tmp_path, monkeypatch):
+    """A Dockerfile inside node_modules or a virtualenv belongs to a dependency.
+    Demanding a disposition for it would make the gate unusable the first time
+    someone installs a package that ships one."""
+    tree = _tree(tmp_path, [SHIPPED], ["Dockerfile"])
+    (tree / "node_modules" / "pkg").mkdir(parents=True)
+    (tree / "node_modules" / "pkg" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_a_malformed_job_reference_says_what_shape_it_wanted(gate, tmp_path, monkeypatch, capsys):
+    entry = {**SHIPPED, "built_by": ["security.yml"]}
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "is not `<workflow path>:<job id>`" in capsys.readouterr().out
+
+
+def test_a_reference_to_a_workflow_that_does_not_exist_fails(gate, tmp_path, monkeypatch, capsys):
+    entry = {**SHIPPED, "built_by": [".github/workflows/gone.yml:containers"]}
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "gone.yml does not exist" in capsys.readouterr().out
+
+
+def test_a_shipped_entry_with_no_build_job_fails(gate, tmp_path, monkeypatch, capsys):
+    entry = {**SHIPPED, "built_by": []}
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "no `built_by` job and no `coverage_exception`" in capsys.readouterr().out
+
+
+def test_an_entry_with_no_dockerfile_key_fails(gate, tmp_path, monkeypatch, capsys):
+    entry = {"id": "nameless", "disposition": "INTERNAL", "rationale": "x"}
+    tree = _tree(tmp_path, [entry, SHIPPED], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "no `dockerfile`" in capsys.readouterr().out
+
+
+def test_the_same_dockerfile_listed_twice_fails(gate, tmp_path, monkeypatch, capsys):
+    """Two entries for one image means two dispositions, and the second would
+    silently lose — including if it were the stricter one."""
+    softer = {
+        "id": "demo-again",
+        "dockerfile": "Dockerfile",
+        "disposition": "INTERNAL",
+        "rationale": "second opinion",
+    }
+    tree = _tree(tmp_path, [SHIPPED, softer], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "listed twice" in capsys.readouterr().out
+
+
+def test_a_missing_inventory_file_fails(gate, tmp_path, monkeypatch, capsys):
+    tree = _tree(tmp_path, [SHIPPED], ["Dockerfile"])
+    (tree / "quality" / "image-inventory.json").unlink()
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "is missing" in capsys.readouterr().out
+
+
+def test_a_workflow_with_no_jobs_block_declares_no_jobs(gate, tmp_path, monkeypatch, capsys):
+    """The parser walks out of `jobs:` at the first unindented key. A file that
+    never enters it must yield nothing rather than matching on indentation
+    somewhere else in the document."""
+    tree = _tree(tmp_path, [SHIPPED], ["Dockerfile"])
+    (tree / ".github" / "workflows" / "security.yml").write_text(
+        "name: demo\non: [push]\nenv:\n  containers: not-a-job\n", encoding="utf-8"
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "declares no job 'containers'" in capsys.readouterr().out

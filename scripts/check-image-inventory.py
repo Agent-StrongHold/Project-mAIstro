@@ -122,15 +122,38 @@ def check_job_ref(ref: str, failures: list[str], where: str) -> None:
         failures.append(f"{where}: {rel} declares no job {job!r}")
 
 
+def check_exception(entry: dict[str, object], ident: str, failures: list[str]) -> bool:
+    """A shipped image may lack jobs only behind an owned, issue-scoped exception.
+
+    #346's AC-4 asks for exceptions that are "version-scoped, owned, expiring".
+    Owned and issue-scoped are what this can check from here; an exception with
+    no owner and no issue is not an exception, it is an exemption, and it would
+    let the cheapest thing to write -- nothing -- silently satisfy the gate.
+    """
+    raw = entry.get("coverage_exception")
+    if not isinstance(raw, dict):
+        return False
+    for field in ("owner", "issue", "reason"):
+        if not str(raw.get(field, "")).strip():
+            failures.append(
+                f"{ident}: `coverage_exception` needs `{field}`. "
+                "An exception nobody owns is an exemption"
+            )
+    return True
+
+
 def check_shipped(entry: dict[str, object], ident: str, failures: list[str]) -> None:
     """A PUBLISHED or DISTRIBUTED image names the jobs that build and scan it."""
     disposition = str(entry.get("disposition", ""))
     built = entry.get("built_by") or []
     scanned = entry.get("scanned_by") or []
-    if not built:
-        failures.append(f"{ident}: {disposition} but no `built_by` job")
-    if not scanned:
-        failures.append(f"{ident}: {disposition} but no `scanned_by` job")
+    excepted = check_exception(entry, ident, failures)
+    if not built and not excepted:
+        failures.append(f"{ident}: {disposition} but no `built_by` job and no `coverage_exception`")
+    if not scanned and not excepted:
+        failures.append(
+            f"{ident}: {disposition} but no `scanned_by` job and no `coverage_exception`"
+        )
     for ref in [*built, *scanned]:  # type: ignore[misc]
         check_job_ref(str(ref), failures, ident)
     if disposition != "PUBLISHED":
@@ -140,6 +163,17 @@ def check_shipped(entry: dict[str, object], ident: str, failures: list[str]) -> 
         failures.append(f"{ident}: PUBLISHED but no `published_by` job")
     else:
         check_job_ref(str(published), failures, ident)
+    # Recorded, not verified. security.yml scans a locally-built candidate tag
+    # and release.yml rebuilds independently, so the published digest is not
+    # provably the scanned one. Requiring the flag to be present and false
+    # keeps the gap stated where the claim would otherwise be read (#346 AC-5,
+    # Codex #593); flipping it to true will mean the check below has teeth.
+    if "published_digest_verified" not in entry:
+        failures.append(
+            f"{ident}: PUBLISHED must state `published_digest_verified`. "
+            "Whether the release publishes the digest that was scanned is the "
+            "one thing this gate cannot infer from job names"
+        )
 
 
 def check_unshipped(entry: dict[str, object], ident: str, failures: list[str]) -> None:
