@@ -59,8 +59,29 @@ def is_legacy_settings(current: SettingsModel) -> bool:
 
 
 def apply_default_settings_if_needed() -> SettingsModel:
-    import stores
+    """Repair pre-2026 placeholder settings at startup. Never on a read path.
 
-    if is_legacy_settings(stores.settings):
-        stores.settings = default_settings()
-    return stores.settings
+    This used to run on every ``GET /api/settings`` and rebind an in-memory
+    object. Now that the record is durable (ADR-082926-0b72) the repair is a
+    real write, so it belongs where it can be attempted once — ``main.py``'s
+    startup — rather than on a request a reader expects to be free of writes.
+
+    A store that refuses the repair does not fail startup. The stored values are
+    still readable and still the operator's; the placeholders they carry are a
+    cosmetic defect, and blocking boot over one would trade a small wrong value
+    for no Conductor at all. The failure is logged with the reason.
+    """
+    import logging
+
+    from services import settings_store
+
+    stored = settings_store.record()
+    if not is_legacy_settings(stored.values):
+        return stored.values
+    try:
+        return settings_store.save(default_settings()).values
+    except (settings_store.SettingsPersistenceError, settings_store.SettingsConflictError) as exc:
+        logging.getLogger("hive.settings_store").warning(
+            "legacy settings left in place; the repair write did not land (%s)", exc
+        )
+        return stored.values

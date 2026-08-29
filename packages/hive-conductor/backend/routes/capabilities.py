@@ -15,11 +15,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import stores
 from fastapi import APIRouter, HTTPException
 from models.schemas import CapabilitySetting
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from starlette.concurrency import run_in_threadpool
 
 from routes.audit import log_audit
 
@@ -96,12 +96,24 @@ async def patch_capability(slot: str, body: PatchCapabilityBody) -> dict[str, An
             detail=f"provider '{body.active_provider}' is not installed for slot '{slot}'",
         )
 
+    # Snapshot before mutating: the live registry and the durable record must
+    # not disagree. Changing the registry first and persisting second left the
+    # capability active after a failed request — the caller sees an error and
+    # the deployment runs with the change anyway, until restart (Codex, #334).
+    previous = _slot_state(reg, slot)
     if body.enabled is not None:
         reg.set_enabled(slot, body.enabled)
     if body.active_provider is not None:
         reg.activate(slot, body.active_provider)
 
-    _persist_slot(reg, slot)
+    try:
+        # Off the event loop: `_persist_slot` waits on `State.flush`, which is
+        # configured for up to ten seconds. Blocking here stalls every other
+        # request and websocket in the process for the duration.
+        await run_in_threadpool(_persist_slot, reg, slot)
+    except Exception:
+        _restore_slot(reg, slot, previous)
+        raise
     log_audit(
         "capability_patch",
         "system",
@@ -111,14 +123,44 @@ async def patch_capability(slot: str, body: PatchCapabilityBody) -> dict[str, An
     return await _slot_view(reg, slot)
 
 
+def _slot_state(reg: Any, slot: str) -> tuple[bool, str | None]:
+    """The registry's current state for one slot, enough to put it back."""
+    return reg.is_enabled(slot), reg.active_name(slot)
+
+
+def _restore_slot(reg: Any, slot: str, previous: tuple[bool, str | None]) -> None:
+    """Undo a live mutation whose durable write did not land.
+
+    Best-effort by necessity — there is nothing better to do if the restore
+    itself fails — but never silent: a registry left disagreeing with the record
+    is the state this whole path exists to prevent, so it is logged as an error.
+    """
+    enabled, provider = previous
+    try:
+        reg.set_enabled(slot, enabled)
+        if provider is not None:
+            reg.activate(slot, provider)
+    except Exception as exc:  # pragma: no cover - the registry does not raise here
+        logger.error("capability %s could not be restored after a failed persist: %s", slot, exc)
+
+
 def _persist_slot(reg: Any, slot: str) -> None:
-    """Mirror the live slot state into settings so toggles survive restart."""
-    caps = dict(stores.settings.capabilities)
+    """Mirror the live slot state into settings so toggles survive restart.
+
+    "Survive restart" is what the old body claimed and did not do: it rebound a
+    module attribute (#334). The write is durable now, and a store that will not
+    take it raises rather than leaving the registry and the record disagreeing
+    with each other in silence.
+    """
+    from services import settings_store
+
+    values = settings_store.current()
+    caps = dict(values.capabilities)
     caps[slot] = CapabilitySetting(
         enabled=reg.is_enabled(slot),
         active_provider=reg.active_name(slot),
     )
-    stores.settings = stores.settings.model_copy(update={"capabilities": caps})
+    settings_store.save(values.model_copy(update={"capabilities": caps}))
 
 
 # --- Approval inbox -----------------------------------------------------
