@@ -207,3 +207,22 @@ def test_the_survey_reports_across_records_and_changes_nothing() -> None:
     assert len(report.unrecoverable) == 1
     assert report.changed is False
     assert recoverable.attempts[0].result["output"] == {}
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
+def test_a_repaired_record_advances_its_version() -> None:
+    """`DurableRunStore.update` refuses a write that does not advance the version."""
+    record = _accepted_case()
+
+    repaired, _report = recover_typed_attempt_outputs(record)
+
+    assert repaired.version == record.version + 1
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
+def test_a_record_with_nothing_to_restore_keeps_its_version() -> None:
+    record = _accepted_case(produced={})
+
+    repaired, _report = recover_typed_attempt_outputs(record)
+
+    assert repaired.version == record.version

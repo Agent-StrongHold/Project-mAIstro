@@ -123,7 +123,13 @@ def recover_typed_attempt_outputs(
     )
     if not recovered:
         return record, report
-    return record.model_copy(update={"attempts": tuple(attempts)}), report
+    # A repaired row is a new version of that row, and `DurableRunStore.update`
+    # refuses a write that does not advance the version. Bumping here means a
+    # caller cannot write the repair back without saying so.
+    repaired = record.model_copy(
+        update={"attempts": tuple(attempts), "version": record.version + 1}
+    )
+    return repaired, report
 
 
 def _unrecoverable_reason(node_run: NodeRun | None, attempt: Attempt) -> str:

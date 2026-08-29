@@ -29,13 +29,16 @@ contracts:
 tests:
   - packages/maistro-core/tests/graph/durable_runs/test_typed_attempt_output.py
   - packages/maistro-core/tests/graph/durable_runs/test_typed_output_recovery.py
+  - packages/maistro-core/tests/cli/test_repair.py
 source:
   - packages/maistro-core/src/maistro/graph/nodes/base.py
   - packages/maistro-core/src/maistro/graph/durable_runs/repair.py
+  - packages/maistro-core/src/maistro/cli/_repair.py
 ac-modules:
   AC-1: maistro.graph.nodes.base
   AC-2: maistro.graph.durable_runs.stores
   AC-3: maistro.graph.durable_runs.repair
+  AC-4: maistro.cli._repair
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -104,9 +107,24 @@ written once, into the field this defect emptied — and nothing in the record
 tells an emptied output apart from an output that was genuinely `{}`.
 Inventing a value for a physical execution record is worse than an honest gap.
 
+A repaired record advances its `version`, because that is what it is: a new
+version of that row. `DurableRunStore.update` refuses a write that does not
+advance the version, so a caller cannot write a repair back without the row
+saying a repair happened.
+
+## The door
+
 Recovery does not run on its own. Rewriting stored execution history is an
-operator's decision, so it is a function an operator or a migration calls, and
-it returns what it changed.
+operator's decision, so `maistro repair` is where it happens, in two commands
+that are deliberately separate:
+
+- `maistro repair survey <db> <project>` reads and reports and writes nothing,
+  so an operator can see the damage before deciding anything.
+- `maistro repair apply <db> <project>` writes back the restorable ones, and
+  says how many outputs it had to leave empty.
+
+A repair nobody can invoke does not repair anything, which is why the library
+function alone would not have closed this.
 
 ## Acceptance Criteria
 
@@ -202,4 +220,42 @@ Feature: Attempt typed output serialization
     When they are surveyed
     Then the report counts one of each
     And neither record is modified
+
+  @AC-3
+  Scenario: A repaired record advances its version
+    Given a record whose accepted Attempt was written with an emptied output
+    When the record is passed to recovery
+    Then the repaired record's version is one higher
+
+  @AC-3
+  Scenario: A record with nothing to restore keeps its version
+    Given a record recovery cannot restore anything in
+    When the record is passed to recovery
+    Then the version is unchanged
+
+  @AC-4
+  Scenario: The survey command reports a recoverable output and writes nothing
+    Given a stored run whose accepted Attempt was written with an emptied output
+    When an operator surveys that project
+    Then the report says it is read-only
+    And the stored output is still empty
+
+  @AC-4
+  Scenario: The survey command says so when there is nothing to repair
+    Given a project with no emptied Attempt outputs
+    When an operator surveys that project
+    Then it says there are none
+
+  @AC-4
+  Scenario: The apply command writes the restored output back
+    Given a stored run whose accepted Attempt was written with an emptied output
+    When an operator applies the repair to that project
+    Then the stored output holds what the node produced
+
+  @AC-4
+  Scenario: The apply command reports what it had to leave empty
+    Given a stored run whose emptied Attempt no NodeRun accepted
+    When an operator applies the repair to that project
+    Then nothing is restored
+    And it says how many outputs stay empty
 ```
