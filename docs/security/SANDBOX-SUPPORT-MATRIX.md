@@ -18,7 +18,7 @@ untrusted code badly — it is a host on which untrusted code does not run.
 |---|---|---|---|---|
 | 1 | Hardware VM | *none yet* | `/dev/kvm` readable/writable **and** one of `firecracker`, `cloud-hypervisor`, `qemu-system-x86_64` on `PATH` | Detected, not implemented — see below |
 | 2 | User-space kernel | *none yet* | `runsc` on `PATH` | Detected, not implemented |
-| 3 | OS sandbox | `BubblewrapSandboxBackend` | `bwrap` on `PATH`; unprivileged user namespaces enabled | **Shipped** |
+| 3 | OS sandbox | `BubblewrapSandboxBackend` | `bwrap` on `PATH` **and able to build a namespace** — see below | **Shipped** |
 | — | Fake | `FakeSandboxBackend` | none | Dev/test only, never registered automatically |
 
 Tiers 1 and 2 are *probed* but have no backend. That is deliberate and is the
@@ -109,6 +109,14 @@ going through Python at all.
 - **A backend registered at a tier it does not declare** — `TierMismatchError`.
   A backend may be registered at a weaker tier than hoped for; it can never be
   relabelled into a stronger boundary.
+- **`bwrap` present but unable to isolate** — not reported as Tier 3.
+  Detection runs a functional probe (`--unshare-all` around `true`), not a
+  `which` check, because the two genuinely differ: Ubuntu 24.04 ships
+  `kernel.apparmor_restrict_unprivileged_userns=1`, and there `bwrap` is
+  installed and fails at `loopback: Failed RTM_NEWADDR: Operation not
+  permitted`. An operator seeing this note can enable unprivileged user
+  namespaces (`sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`) or
+  accept that the host has no Tier 3.
 - **`/dev/kvm` present but not openable** — not reported as Tier 1. This is the
   common container case, and reporting Tier 1 on the strength of a visible
   device node would fail at spawn, after the policy check meant to prevent it.

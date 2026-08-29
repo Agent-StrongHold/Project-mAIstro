@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +24
+  packages/maistro-core/tests: +26
 ---
 # claude-m2-76-real-isolation-backend
 
@@ -9,7 +9,7 @@ backend, and nothing assembled them (#76, ADR-093). Every property the ladder
 promises was therefore unfalsifiable in a shipped configuration: no caller
 built a selector, so no caller could be refused by one.
 
-**`tests/sandbox/test_real_backend.py` (+24)**, in three groups that are
+**`tests/sandbox/test_real_backend.py` (+26)**, in three groups that are
 deliberately not the same kind of test:
 
 *The fail-open the selector permitted.* `register("vm", FakeSandboxBackend())`
@@ -36,6 +36,16 @@ needing bubblewrap installed would leave them unverified on most machines.
 Whether `bwrap` isolates is the kernel's job, and is asserted where bubblewrap
 exists: real execution, the host filesystem invisible, a timeout that kills,
 and a network namespace with nothing but loopback in it.
+
+Detection is a **functional probe**, not a `which` check, and CI is what
+taught us the difference. `bwrap` installed cleanly on the runner and then
+failed at `loopback: Failed RTM_NEWADDR: Operation not permitted` — Ubuntu
+24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`, so the binary
+exists and cannot build the namespace. Reporting Tier 3 from the binary's
+existence puts a workload on a boundary that cannot be built, and the failure
+lands at spawn: after the policy check that existed to prevent it. Two tests
+cover it — a probe that fails, and a probe that cannot run at all — and the
+integration group now skips on *capability* rather than on binary presence.
 
 CI installs `bubblewrap` in `ci.yml`'s `test` job and `quality.yml`'s
 `coverage (no services)` job. Without that the six integration tests skip

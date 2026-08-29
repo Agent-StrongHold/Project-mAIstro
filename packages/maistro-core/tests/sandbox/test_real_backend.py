@@ -38,8 +38,14 @@ from maistro.sandbox.backends.fake import FakeSandboxBackend
 from maistro.sandbox.network import EgressGrant, EgressMode
 from maistro.sandbox.policy import WorkloadPolicy
 
-HAS_BWRAP = shutil.which("bwrap") is not None
-requires_bwrap = pytest.mark.skipif(HAS_BWRAP is False, reason="bubblewrap is not installed")
+#: Capability, not binary presence. A host can have `bwrap` on PATH and be
+#: unable to build the namespace with it -- Ubuntu 24.04 restricting
+#: unprivileged user namespaces is the case that taught us -- and a suite
+#: keyed on `which` would run the kernel assertions there and fail.
+HAS_BWRAP = detect_host_capabilities().supports("bubblewrap")
+requires_bwrap = pytest.mark.skipif(
+    HAS_BWRAP is False, reason="this host cannot build a bubblewrap sandbox"
+)
 
 
 def _caps(*tiers: str) -> HostCapabilities:
@@ -349,7 +355,7 @@ async def test_a_real_sandbox_has_no_network_by_default(tmp_path: Path) -> None:
 
 
 @requires_bwrap
-def test_a_real_host_reports_the_bubblewrap_tier() -> None:
+def test_a_host_that_can_isolate_reports_the_bubblewrap_tier() -> None:
     assert detect_host_capabilities().supports("bubblewrap")
 
 
@@ -360,3 +366,56 @@ def test_a_policy_asking_for_a_tier_nobody_registered_is_refused() -> None:
 
     with pytest.raises(NoSuitableBackendError, match="gvisor"):
         selector.select(policy)
+
+
+def test_a_present_binary_that_cannot_isolate_is_not_a_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gap a `which` check leaves, and it is not theoretical.
+
+    On a host restricting unprivileged user namespaces — Ubuntu 24.04 with
+    `kernel.apparmor_restrict_unprivileged_userns=1`, which is what GitHub's
+    runners ship — `bwrap` is installed and `--unshare-all` fails at
+    `loopback: Failed RTM_NEWADDR: Operation not permitted`. Reporting Tier 3
+    from the binary's existence puts a workload on a boundary that cannot be
+    built, and the failure lands at spawn: after the policy check that existed
+    to prevent exactly that.
+    """
+    import subprocess
+
+    from maistro.sandbox import detect
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        detect.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=b"",
+            stderr=b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n",
+        ),
+    )
+
+    caps = detect.detect_host_capabilities()
+
+    assert not caps.supports("bubblewrap")
+    assert "RTM_NEWADDR" in caps.notes["bubblewrap"]
+
+
+def test_a_probe_that_cannot_run_at_all_is_not_a_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that raises must read as "no", not propagate out of startup."""
+    from maistro.sandbox import detect
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("no exec")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _boom)
+
+    caps = detect.detect_host_capabilities()
+
+    assert not caps.supports("bubblewrap")
+    assert "could not run" in caps.notes["bubblewrap"]

@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,29 +84,110 @@ def _which(binary: str) -> str | None:
     return shutil.which(binary)
 
 
+#: How long the bubblewrap functional probe may take. It spawns `true` in a
+#: fresh namespace; a second is generous and bounds startup on a wedged host.
+PROBE_TIMEOUT_S = 5
+
+
+def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
+    """Whether `bwrap` can build the namespace this backend needs, here.
+
+    A `which` check is not enough, and the gap is not theoretical: on a host
+    that restricts unprivileged user namespaces -- Ubuntu 24.04 with
+    `kernel.apparmor_restrict_unprivileged_userns=1`, which is what GitHub's
+    runners ship -- the binary is present and `--unshare-all` fails at
+    `loopback: Failed RTM_NEWADDR: Operation not permitted`. Reporting Tier 3
+    from the binary's existence would put a workload on a boundary that cannot
+    be built, and the failure would arrive at spawn: after the policy check
+    that exists to prevent exactly that.
+
+    So the probe runs the same unshares the backend runs. What it proves is
+    narrow and deliberate -- that the namespace can be created, not that it
+    contains anything -- because that is the part hosts actually differ on.
+    """
+    truth = shutil.which("true")
+    if truth is None:  # pragma: no cover - a host without coreutils
+        return False, "no 'true' binary to probe with"
+
+    argv = [
+        bwrap,
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",  # nosec B108 — mount point inside the probe sandbox, not a host path
+    ]
+    for path in ("/usr", "/bin", "/lib", "/lib64"):
+        if Path(path).exists():
+            argv += ["--ro-bind", path, path]
+    argv += ["--", truth]
+
+    try:
+        completed = subprocess.run(  # nosec B603 — fixed argv, no shell, no user input
+            argv,
+            capture_output=True,
+            timeout=PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"bubblewrap probe could not run: {exc}"
+
+    if completed.returncode == 0:
+        return True, ""
+    detail = completed.stderr.decode(errors="replace").strip().splitlines()
+    return (
+        False,
+        f"bubblewrap cannot build an isolated namespace here: {detail[-1] if detail else completed.returncode}",
+    )
+
+
+def _probe_vm() -> tuple[bool, str]:
+    """Tier 1 needs KVM this process can open *and* a VMM to drive it."""
+    kvm_ok, kvm_note = _kvm_usable()
+    if not kvm_ok:
+        return False, kvm_note
+    if next((name for name in VMM_BINARIES if _which(name)), None) is None:
+        return False, f"{KVM_DEVICE} is usable but no VMM found on PATH ({', '.join(VMM_BINARIES)})"
+    return True, ""
+
+
+def _probe_gvisor() -> tuple[bool, str]:
+    if _which(GVISOR_BINARY) is None:
+        return False, f"{GVISOR_BINARY!r} is not on PATH"
+    return True, ""
+
+
+def _probe_bubblewrap() -> tuple[bool, str]:
+    bwrap = _which(BUBBLEWRAP_BINARY)
+    if bwrap is None:
+        return False, f"{BUBBLEWRAP_BINARY!r} is not on PATH"
+    return _bubblewrap_isolates(bwrap)
+
+
+#: One probe per tier, strongest first. A tier is present only when its probe
+#: says so, and absent tiers carry the probe's own reason.
+_PROBES: tuple[tuple[IsolationTier, Callable[[], tuple[bool, str]]], ...] = (
+    ("vm", _probe_vm),
+    ("gvisor", _probe_gvisor),
+    ("bubblewrap", _probe_bubblewrap),
+)
+
+
 def detect_host_capabilities() -> HostCapabilities:
     """Probe the host once and report the tiers it can really provide."""
     tiers: list[IsolationTier] = []
     notes: dict[IsolationTier, str] = {}
 
-    kvm_ok, kvm_note = _kvm_usable()
-    vmm = next((name for name in VMM_BINARIES if _which(name)), None)
-    if kvm_ok and vmm is not None:
-        tiers.append("vm")
-    elif not kvm_ok:
-        notes["vm"] = kvm_note
-    else:
-        notes["vm"] = f"{KVM_DEVICE} is usable but no VMM found on PATH ({', '.join(VMM_BINARIES)})"
-
-    if _which(GVISOR_BINARY):
-        tiers.append("gvisor")
-    else:
-        notes["gvisor"] = f"{GVISOR_BINARY!r} is not on PATH"
-
-    if _which(BUBBLEWRAP_BINARY):
-        tiers.append("bubblewrap")
-    else:
-        notes["bubblewrap"] = f"{BUBBLEWRAP_BINARY!r} is not on PATH"
+    for tier, probe in _PROBES:
+        available, why = probe()
+        if available:
+            tiers.append(tier)
+        else:
+            notes[tier] = why
 
     capabilities = HostCapabilities(tiers=tuple(tiers), notes=notes)
     logger.info(
