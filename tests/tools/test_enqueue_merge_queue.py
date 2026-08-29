@@ -118,3 +118,44 @@ def test_candidate_uses_current_pr_head(enqueue: ModuleType) -> None:
 
     assert parsed.number == 17
     assert parsed.head_sha == "current-head"
+
+    class RetargetedApi:
+        def __init__(self) -> None:
+            self.enqueued = False
+
+        def open_develop_prs(self):
+            return [
+                {
+                    "number": 17,
+                    "state": "open",
+                    "draft": False,
+                    "head": {"sha": "current-head"},
+                    "base": {"ref": "develop"},
+                }
+            ]
+
+        def pull_request(self, number: int):
+            assert number == 17
+            return {
+                "number": 17,
+                "state": "open",
+                "draft": False,
+                "head": {"sha": "current-head"},
+                "base": {"ref": "main"},
+            }
+
+        def statuses(self, sha: str):
+            assert sha == "current-head"
+            return green_statuses()
+
+        def admission_checks(self, sha: str):
+            assert sha == "current-head"
+            return green_checks()
+
+        def enqueue(self, candidate):
+            self.enqueued = True
+            return "accepted"
+
+    api = RetargetedApi()
+    assert enqueue.run(api) == 0
+    assert not api.enqueued
