@@ -48,6 +48,9 @@ from .types import DurableRunRecord
 
 NodeResolver = Callable[[str, Graph], BaseNode[Any, Any]]
 
+#: Ceiling on a node's declared retry budget (#548). See `_visit_budget`.
+MAX_NODE_VISITS = 8
+
 _DEPTH_INCREMENTING_KINDS = frozenset({"agent.synth_dag", "agent.spawn_harness"})
 _PREDICATE_NAMESPACE_ALIASES = {
     "plan": "plan",
@@ -856,6 +859,90 @@ async def _checkpoint_next_frontier(
     )
 
 
+def _visit_budget(spec: GraphNode) -> int:
+    """How many times this node may be attempted, from its own policy.
+
+    One by default, which is exactly today's behaviour: a graph that says
+    nothing about retries gets none. It is a node policy rather than an
+    executor setting because whether work is safe to repeat is a property of
+    the work -- a node with an external side effect and a node calling a tool
+    that can fail do not want the same answer, and one executor-wide number
+    would have to be wrong for one of them.
+
+    A non-positive or unparseable value is one try, not zero: refusing to run
+    the node at all is a stranger reading of "retries" than declining to repeat
+    it, and a typo in a policy must not silently skip work. The ceiling is not
+    a tuning knob -- a graph asking for a thousand tries has a bug, and
+    honouring it would turn one node into an unbounded loop inside a frontier
+    nothing else can see past.
+    """
+    try:
+        declared = int(spec.policies.get("max_attempts", 1))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(declared, MAX_NODE_VISITS))
+
+
+def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) -> bool:
+    """Whether this failed node has a try left, and is the kind that earns one.
+
+    A retry here is the node's **next visit** -- a new NodeRun, with its own
+    Attempt -- not a second Attempt under the one that just completed. The
+    distinction is the whole reason the Attempt firewall refuses to redispatch
+    a completed Attempt: completion means the physical work ran, side effects
+    and all. A node that ran and did not succeed is a *logical* failure, and
+    asking for it again is asking for another visit.
+
+    Transport failures never reach this decision. A 429 or a 5xx is the call
+    not landing rather than the work failing, and `maistro.resilience`
+    classifies and retries those beneath the Attempt, where repeating is safe
+    because nothing was accomplished yet.
+    """
+    visits = prior_state.visit_counts.get(item.node_id, 0)
+    return visits < _visit_budget(item.spec)
+
+
+def first_exhausted_failure(
+    prior_state: GraphExecutionState, failures: tuple[_FrontierItem, ...]
+) -> _FrontierItem | None:
+    """The failure with no visit left, if any -- the one that fails the Run.
+
+    All or nothing, deliberately. One node in a frontier with no budget left
+    fails the Run now rather than after its neighbours have spent theirs --
+    the Run is going to fail either way, and the extra work would be spent on
+    a result nobody will read.
+
+    Shared by both folds rather than written twice. Two spellings of "may this
+    node be tried again" is the shape of defect #44 exists to remove, at the
+    scale of one rule: they would agree today and diverge on whichever budget
+    question is asked next.
+    """
+    return next((item for item in failures if not _may_revisit_after(prior_state, item)), None)
+
+
+async def _fold_failures(
+    record: DurableRunRecord,
+    failures: tuple[_FrontierItem, ...],
+    *,
+    store: DurableRunStore,
+) -> DurableRunRecord:
+    """Fail the Run, or send back the nodes whose own policy says try again."""
+    exhausted = first_exhausted_failure(record.graph_state, failures)
+    if exhausted is not None:
+        return await _mark_failed(
+            record,
+            error_code=exhausted.result.error_code or "NodeFailure",
+            error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
+            store=store,
+        )
+    return await _checkpoint_next_frontier(
+        record,
+        tuple(item.node_id for item in failures),
+        (),
+        store=store,
+    )
+
+
 async def _fold_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -870,13 +957,7 @@ async def _fold_frontier(
         record = _maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:
-        first = failures[0]
-        return await _mark_failed(
-            record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
-            store=store,
-        )
+        return await _fold_failures(record, failures, store=store)
 
     halt_reason = _blackboard_halt_reason(record)
     if halt_reason is not None:
