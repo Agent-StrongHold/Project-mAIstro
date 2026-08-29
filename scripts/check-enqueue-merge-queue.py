@@ -61,9 +61,7 @@ def latest_check_conclusion(checks: list[dict[str, Any]], name: str) -> str | No
         return None
     latest = max(
         matches,
-        key=lambda item: str(
-            item.get("completed_at") or item.get("started_at") or ""
-        ),
+        key=lambda item: str(item.get("completed_at") or item.get("started_at") or ""),
     )
     conclusion = latest.get("conclusion")
     return str(conclusion) if conclusion is not None else None
