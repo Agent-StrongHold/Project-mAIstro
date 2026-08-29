@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -209,17 +209,19 @@ class SqliteGraphContinuationStore:
         limit: int = 100,
         project_id: str | None = None,
     ) -> list[str]:
-        clause = "WHERE status = ?"
-        params: list[Any] = [status.value]
-        if project_id is not None:
-            clause += " AND project_id = ?"
-            params.append(project_id)
-        params.append(limit)
-        cursor = await self._conn.execute(
-            f"SELECT run_id FROM graph_continuations {clause} "
-            "ORDER BY created_at ASC, run_id ASC LIMIT ?",
-            params,
-        )
+        if project_id is None:
+            cursor = await self._conn.execute(
+                "SELECT run_id FROM graph_continuations WHERE status = ? "
+                "ORDER BY created_at ASC, run_id ASC LIMIT ?",
+                (status.value, limit),
+            )
+        else:
+            cursor = await self._conn.execute(
+                "SELECT run_id FROM graph_continuations "
+                "WHERE status = ? AND project_id = ? "
+                "ORDER BY created_at ASC, run_id ASC LIMIT ?",
+                (status.value, project_id, limit),
+            )
         return [str(row[0]) for row in await cursor.fetchall()]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:

@@ -1,14 +1,14 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +8
 ---
 # claude-m1-44-canonical-durable-store
 
 `DurableRunStore` stops being a second system of record and becomes an
 interface over the canonical spine (#44, ADR-082826-d9f5). Two suites.
 
-**`tests/graph/durable_runs/test_canonical_durable_store.py` (+6)** —
+**`tests/graph/durable_runs/test_canonical_durable_store.py` (+8)** —
 `CanonicalDurableRunStore` writes a record's two halves to the two stores that
 own them and assembles reads from both:
 
@@ -22,7 +22,11 @@ own them and assembles reads from both:
 - a paused HITL frontier is answered and resumed through the projection, over
   an in-memory continuation store and over a SQLite one, because the
   continuation is the half that has to survive a restart;
-- an unknown run is absent rather than an empty record.
+- an unknown run is absent rather than an empty record;
+- and both continuation backends answer the two listing queries with the
+  same rows, in the same order, under the same limits. The status listing
+  scoped to a project is the branch with no other caller yet, so the SQLite
+  spelling of it is a query that has run rather than one that only parses.
 
 **`packages/hive-conductor/backend/tests/test_dag_agents.py` (+1)** — the
 defect at the surface that had it: a DAG the Conductor runs is findable on the
