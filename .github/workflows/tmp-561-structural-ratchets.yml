@@ -1,3 +1,4 @@
+# Second push activates the helper workflow after registration.
 name: tmp-561-structural-ratchets
 
 on:
