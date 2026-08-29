@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  tests/: +20
+  tests/: +31
 ---
 # claude-issue-345-contract-marker-4705
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
-One new file, twenty tests, nothing moved or deleted.
+One new file, thirty-one tests, nothing moved or deleted.
 
 `tests/test_check_contract_markers.py` covers `scripts/check-contract-markers.py`,
 which enters the repository under the `scripts/` diff-coverage root (#257) —
@@ -48,3 +48,36 @@ findings stays readable; it prints twenty and says how many it withheld.
 
 The entry point is at 98% now. The remaining line is the `if __name__ ==
 "__main__"` guard, which importing the module cannot reach by construction.
+
+Eleven more came from a Codex review that found three ways the scanner's
+reading of the tree was narrower than its own stated rule.
+
+`pytestmark` at module level was invisible, because the walk only visited
+function definitions. pytest applies it to every test the module collects, so
+it is evidence exactly as a decorator is — and the tree already held one such
+file, `test_scorer_contract.py`, whose `pytest.mark.contract` named no kind at
+all. That is an undefined kind the ledger had been silently not reporting.
+Fixed rather than banked: the file's own docstring says `contract /
+behavioral`, so the marker had simply lost its argument.
+
+A marker on a fixture, a nested function, or a method of a non-`Test` class
+counted as evidence, though pytest never runs any of them. That contradicts
+the rule the gate already enforces for statically skipped tests, for the same
+reason: evidence has to be able to run. Three parametrised cases cover the
+uncollectable shapes and one covers the `Test*` method that *is* collected, so
+the boundary is tested from both sides rather than only the exclusion.
+
+`tests:` entries written as `path.py::test_func` — the form
+`ADR-000-template.md` documents, so the sanctioned one — were looked up whole
+against a path-keyed index and never matched, flagging every template-compliant
+document as unproven. A node ID now resolves to the test it names rather than
+to the file around it, since a document pointing at one test is claiming that
+test is the evidence; four tests pin both directions and the plain-path form
+that must not regress.
+
+Worth recording: the ledger counts are unchanged at 171/202/2 after all three.
+The node-ID fix moves nothing today because no document yet uses the form — it
+unblocks the template rather than clearing a backlog. The collectability fix
+moving nothing is the more informative result: no document was being proven by
+a marker pytest would not run, so a false-evidence path closed without any
+document losing evidence it was relying on.

@@ -200,6 +200,196 @@ class TestRoundTrip:
         assert recorded["categories"]["undefined-marker-kind"]["disposition"].strip()
 
 
+_MODULE_MARKED = """
+import pytest
+
+pytestmark = [pytest.mark.contract("behavioral")]
+
+def test_it_behaves() -> None:
+    assert True
+"""
+
+_MODULE_MARKED_BARE = """
+import pytest
+
+pytestmark = [pytest.mark.contract]
+
+def test_it_behaves() -> None:
+    assert True
+"""
+
+_MARKED_FIXTURE = """
+import pytest
+
+@pytest.fixture
+@pytest.mark.contract("behavioral")
+def helper() -> None:
+    return None
+
+def test_it_behaves(helper) -> None:
+    assert True
+"""
+
+_MARKED_NESTED = """
+import pytest
+
+def test_it_behaves() -> None:
+    @pytest.mark.contract("behavioral")
+    def inner() -> None:
+        pass
+    assert True
+"""
+
+_MARKED_IN_PLAIN_CLASS = """
+import pytest
+
+class Helpers:
+    @pytest.mark.contract("behavioral")
+    def test_looks_like_one(self) -> None:
+        assert True
+"""
+
+_MARKED_IN_TEST_CLASS = """
+import pytest
+
+class TestThing:
+    @pytest.mark.contract("behavioral")
+    def test_it_behaves(self) -> None:
+        assert True
+"""
+
+_TWO_TESTS_ONE_MARKED = """
+import pytest
+
+@pytest.mark.contract("behavioral")
+def test_marked() -> None:
+    assert True
+
+def test_unmarked() -> None:
+    assert True
+"""
+
+
+class TestModuleLevelMarkers:
+    """`pytestmark` applies to every test the module collects, so it is evidence."""
+
+    def test_a_module_level_mark_proves_the_kind(self, impl, tmp_path) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MODULE_MARKED,
+        )
+
+        assert impl.collect(root) == []
+
+    def test_a_bare_module_level_mark_is_an_undefined_kind(self, impl, tmp_path) -> None:
+        """The case already in the tree: `pytestmark = [pytest.mark.contract]`.
+
+        It names no kind, so it proves none, and the empty kind is reported
+        rather than quietly counting as evidence for whatever was claimed.
+        """
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MODULE_MARKED_BARE,
+        )
+
+        categories = sorted(f.category for f in impl.collect(root))
+
+        assert "undefined-marker-kind" in categories
+        assert "declared-kind-unproven" in categories
+
+    def test_a_module_level_mark_on_a_skipped_test_proves_nothing(self, impl, tmp_path) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MODULE_MARKED.replace(
+                "def test_it_behaves", '@pytest.mark.skip(reason="x")\ndef test_it_behaves'
+            ),
+        )
+
+        assert [f.category for f in impl.collect(root)] == ["declared-kind-unproven"]
+
+
+class TestEvidenceMustBeCollectable:
+    """A marker pytest never runs is not evidence, however correctly spelled."""
+
+    @pytest.mark.parametrize(
+        ("name", "source"),
+        [
+            ("a fixture", _MARKED_FIXTURE),
+            ("a nested function", _MARKED_NESTED),
+            ("a method of a plain class", _MARKED_IN_PLAIN_CLASS),
+        ],
+    )
+    def test_an_uncollectable_marker_does_not_prove_a_kind(
+        self, impl, tmp_path, name: str, source: str
+    ) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=source,
+        )
+
+        assert [f.category for f in impl.collect(root)] == ["declared-kind-unproven"], name
+
+    def test_a_method_of_a_test_class_is_collectable(self, impl, tmp_path) -> None:
+        """The counterpart: `Test*` classes are collected, so they do prove."""
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MARKED_IN_TEST_CLASS,
+        )
+
+        assert impl.collect(root) == []
+
+
+class TestNodeIdsResolveToTheirOwnTest:
+    """`path.py::test_func` is the form the ADR template documents."""
+
+    def test_a_node_id_naming_a_marked_test_is_evidenced(self, impl, tmp_path) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py::test_marked]"),
+            test=_TWO_TESTS_ONE_MARKED,
+        )
+
+        assert impl.collect(root) == []
+
+    def test_a_node_id_naming_an_unmarked_test_is_not(self, impl, tmp_path) -> None:
+        """The file carries the marker; the *named* test does not.
+
+        A document pointing at one test is claiming that test is the evidence,
+        so answering from any marker in the file would prove the wrong thing.
+        """
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py::test_unmarked]"),
+            test=_TWO_TESTS_ONE_MARKED,
+        )
+
+        assert [f.category for f in impl.collect(root)] == ["declared-kind-unproven"]
+
+    def test_a_node_id_naming_no_test_at_all_is_not_evidence(self, impl, tmp_path) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py::test_absent]"),
+            test=_TWO_TESTS_ONE_MARKED,
+        )
+
+        assert [f.category for f in impl.collect(root)] == ["declared-kind-unproven"]
+
+    def test_the_plain_path_form_still_works(self, impl, tmp_path) -> None:
+        """Both forms are in use; neither may regress the other."""
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_TWO_TESTS_ONE_MARKED,
+        )
+
+        assert impl.collect(root) == []
+
+
 ENTRY = ROOT / "scripts" / "check-contract-markers.py"
 
 

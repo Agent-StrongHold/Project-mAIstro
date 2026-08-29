@@ -92,6 +92,10 @@ class Corpus:
 
     #: test path -> {kind marked on a test that can run}
     marks_by_path: dict[str, set[str]] = field(default_factory=dict)
+    #: "test path::function" -> {kind}, so a document naming one test by the
+    #: node ID the ADR template documents is answered by *that* test rather
+    #: than by any marker anywhere in the file.
+    marks_by_nodeid: dict[str, set[str]] = field(default_factory=dict)
     #: every marker argument seen, with one example location
     kinds_seen: dict[str, str] = field(default_factory=dict)
 
@@ -105,12 +109,35 @@ def _skipped(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def _marker_kinds(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    """Every `pytest.mark.contract(...)` argument on this test, "" when bare."""
+def _module_marker_kinds(tree: ast.Module) -> list[str]:
+    """Kinds applied to a whole file through `pytestmark`.
+
+    pytest applies these to every test the module collects, so a marker here
+    is evidence exactly as a decorator is. Reading only decorators missed
+    them, and the tree already contains one such file -- a bare
+    `pytestmark = [pytest.mark.contract]`, which is an undefined kind the
+    ledger was silently not reporting.
+    """
     kinds: list[str] = []
-    for decorator in node.decorator_list:
-        call = decorator if isinstance(decorator, ast.Call) else None
-        target = call.func if call is not None else decorator
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets
+        ):
+            continue
+        value = node.value
+        items = value.elts if isinstance(value, ast.List | ast.Tuple) else [value]
+        kinds.extend(_kinds_in(items))
+    return kinds
+
+
+def _kinds_in(expressions: list[ast.expr]) -> list[str]:
+    """Every `pytest.mark.contract(...)` argument among these, "" when bare."""
+    kinds: list[str] = []
+    for expression in expressions:
+        call = expression if isinstance(expression, ast.Call) else None
+        target = call.func if call is not None else expression
         if not isinstance(target, ast.Attribute) or target.attr != "contract":
             continue
         if call is None or not call.args:
@@ -119,6 +146,37 @@ def _marker_kinds(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
         first = call.args[0]
         kinds.append(first.value if isinstance(first, ast.Constant) else "")
     return kinds
+
+
+def _collectable_tests(
+    tree: ast.Module,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """The functions pytest would actually collect from this module.
+
+    Top-level `test_*` functions, plus `test_*` methods of `Test*` classes.
+    Not fixtures, helpers, nested functions, or methods of ordinary classes:
+    a marker on any of those is never executed as a test, so counting it as
+    evidence contradicts this gate's own rule that evidence must be able to
+    run -- the rule it already enforces for statically skipped tests.
+    """
+    found: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            if node.name.startswith("test"):
+                found.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            found.extend(
+                child
+                for child in node.body
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
+                and child.name.startswith("test")
+            )
+    return found
+
+
+def _marker_kinds(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Every `pytest.mark.contract(...)` argument on this test, "" when bare."""
+    return _kinds_in(node.decorator_list)
 
 
 def read_corpus(root: Path) -> Corpus:
@@ -131,13 +189,21 @@ def read_corpus(root: Path) -> Corpus:
         except (OSError, SyntaxError):
             continue
         rel = path.relative_to(root).as_posix()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        module_kinds = _module_marker_kinds(tree)
+        for kind in module_kinds:
+            corpus.kinds_seen.setdefault(kind, f"{rel}::pytestmark")
+        for node in _collectable_tests(tree):
+            nodeid = f"{rel}::{node.name}"
             for kind in _marker_kinds(node):
-                corpus.kinds_seen.setdefault(kind, f"{rel}::{node.name}")
-                if not _skipped(node):
-                    corpus.marks_by_path.setdefault(rel, set()).add(kind)
+                corpus.kinds_seen.setdefault(kind, nodeid)
+            # A module-level mark applies to every test the module collects,
+            # so it is evidence on each of them -- but a skipped test proves
+            # nothing regardless of where its marker came from.
+            if _skipped(node):
+                continue
+            for kind in [*module_kinds, *_marker_kinds(node)]:
+                corpus.marks_by_path.setdefault(rel, set()).add(kind)
+                corpus.marks_by_nodeid.setdefault(nodeid, set()).add(kind)
     return corpus
 
 
@@ -168,6 +234,23 @@ def collect(root: Path) -> list[Finding]:
     return findings
 
 
+def _kinds_for(listed: str, corpus: Corpus) -> set[str]:
+    """Kinds proven by one `tests:` entry, which may be a path or a node ID.
+
+    `docs/adr/ADR-000-template.md` documents the entry as
+    `path/to/test_file.py::test_func`, so the node-ID form is the *sanctioned*
+    one. Looking the whole string up in a path-keyed index missed every
+    template-compliant document, flagging it as unproven however correctly it
+    was marked.
+
+    A node ID is answered by the test it names, not by the file around it: a
+    document that points at one test is claiming that test is the evidence.
+    """
+    if "::" in listed:
+        return corpus.marks_by_nodeid.get(listed, set())
+    return corpus.marks_by_path.get(listed, set())
+
+
 def _doc_findings(doc: Path, directory: str, corpus: Corpus) -> list[Finding]:
     """What one document claims that its own listed tests do not carry."""
     front = _front_matter(doc)
@@ -182,7 +265,7 @@ def _doc_findings(doc: Path, directory: str, corpus: Corpus) -> list[Finding]:
         return [Finding("declares-contracts-without-tests", identity)]
     proven: set[str] = set()
     for listed in tests:
-        proven |= corpus.marks_by_path.get(str(listed), set())
+        proven |= _kinds_for(str(listed), corpus)
     return [
         Finding("declared-kind-unproven", f"{identity} [{kind}]")
         for kind in kinds
