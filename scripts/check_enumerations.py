@@ -62,6 +62,20 @@ SENSITIVE_ROOTS = (
     "packages/maistro-core/src/maistro/tools/sandbox/",
     "packages/maistro-core/src/maistro/graph/durable_runs/",
     "packages/maistro-rsi/src/maistro_rsi/sandbox/",
+    # The self-improvement machine, whole. #303 replaced the per-file entries
+    # for these two packages with directory patterns, because the per-file
+    # list kept falling behind new modules -- local_loop.py, merge.py and
+    # code_fixer.py were all unprotected while the files beside them were not.
+    "packages/maistro-rsi/src/maistro_rsi/",
+    "packages/maistro-evolve/src/maistro_evolve/",
+    # Their tests: a diff that edits the classifier and the tests pinning it
+    # in one change authorizes itself.
+    "packages/maistro-rsi/tests/",
+    "packages/maistro-evolve/tests/",
+    # The builders agent the loop drives, which executes candidate code.
+    "packages/maistro-bootstrap/src/maistro_bootstrap/builders/",
+    # Opening a pull request is how a candidate leaves the sandbox.
+    "packages/maistro-core/src/maistro/tools/git/",
     # The measurement surface: task corpora, graders, and the train/holdout
     # split the loop is scored against. Editing your own exam is a containment
     # failure even though it touches no sandbox or security code.
@@ -103,6 +117,11 @@ SENSITIVE_FILES = (
     # digests. A ratchet outside the surface it protects can be edited in the
     # same diff as the list it checks, and the build stays green.
     "scripts/check_enumerations.py",
+    "scripts/check-promotion-surface.py",
+    "tests/test_check_promotion_surface.py",
+    # The classifier itself, split out of quarantine.py by #303 so the static
+    # gate can consult the real matcher without the security stack installed.
+    "packages/maistro-rsi/src/maistro_rsi/sensitive_paths.py",
     "scripts/vendor_ifeval.py",
     "scripts/vendor_bfcl.py",
 )
