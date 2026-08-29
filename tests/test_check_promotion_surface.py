@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -20,6 +22,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-promotion-surface.py"
+
+#: `python -m pkg` in a workflow step, however the step quotes or wraps it.
+_DASH_M = re.compile(r"python\s+-m\s+([A-Za-z_][A-Za-z0-9_]*)")
+#: Which of those packages this gate is responsible for. Narrowed on purpose:
+#: `python -m pytest` and `python -m pip` are not promotion paths, and a test
+#: that demanded roots for them would be answered by widening the roots.
+_RSI_PACKAGES = {"maistro_rsi"}
 
 
 def _module() -> ModuleType:
@@ -104,6 +113,56 @@ class TestTheRepositoryPasses:
     def test_each_root_states_why_it_is_one(self, checker: ModuleType) -> None:
         for root, why in checker.PROMOTION_ROOTS.items():
             assert why.strip(), root
+
+    def test_every_installed_rsi_command_is_a_declared_root(self, checker: ModuleType) -> None:
+        """Derived from `[project.scripts]`, not restated from the constant.
+
+        An entry module is never *imported* by its own dependencies, so no
+        walk below it can produce it — the roots are the only place it can
+        enter. The broad `maistro_rsi/` pattern happens to protect these
+        today, which is exactly why their absence from the roots was invisible
+        (Codex, #513). Reading the packaging metadata means a console script
+        added later fails here instead of quietly relying on that pattern.
+        """
+        pyproject = ROOT / "packages" / "maistro-rsi" / "pyproject.toml"
+        scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
+        targets = {target.partition(":")[0] for target in scripts.values()}
+
+        assert targets, "no console scripts found; the derivation read the wrong table"
+        assert targets <= set(checker.PROMOTION_ROOTS)
+
+    def test_every_module_run_as_a_command_in_ci_is_a_declared_root(
+        self, checker: ModuleType
+    ) -> None:
+        """`python -m pkg` runs `pkg/__main__.py`, which is an entry module too.
+
+        `.github/workflows/rsi-harvest.yml` invokes `python -m maistro_rsi
+        harvest`, and that `__main__` opens the harvest pull request — a
+        promotion path by any reading.
+        """
+        invoked = {
+            f"{match.group(1)}.__main__"
+            for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+            for match in _DASH_M.finditer(workflow.read_text(encoding="utf-8"))
+            if match.group(1) in _RSI_PACKAGES
+        }
+
+        assert invoked, "no `python -m` invocation found; the derivation read nothing"
+        assert invoked <= set(checker.PROMOTION_ROOTS)
+
+    def test_the_conductor_rsi_surface_is_indexed(self, checker: ModuleType) -> None:
+        """The Conductor ships a flat backend, so `packages/*/src` never matched it.
+
+        Both production RSI entry points live there: `services/rsi.py`
+        constructs and runs `LocalRsiLoop`, and `routes/rsi.py` approves
+        candidate patches and applies them with `git am`. Neither could enter
+        the module index at all (Codex, #513) — and a module the index cannot
+        see is not merely unprotected, it is invisible to every finding this
+        gate produces.
+        """
+        modules = checker.index_modules()
+
+        assert {"services.rsi", "routes.rsi"} <= set(modules)
 
 
 class TestReachability:
@@ -213,6 +272,82 @@ class TestTheEvasions:
         assert tolerated == []
         assert len(findings) == 1
         assert "declared promotion root does not exist" in findings[0].detail
+
+    def test_a_relative_import_is_resolved_against_its_package(
+        self, tree: Path, checker: ModuleType
+    ) -> None:
+        """`from .wrapper import run` was discarded, taking the wrapper with it.
+
+        The reasoning for discarding was that a relative target "is reached
+        through the package's own file". It is not: a package's `__init__.py`
+        need not import its siblings, so the wrapper and everything reachable
+        only through it left the audit (Codex, #513).
+        """
+        src = tree / "packages" / "pkg" / "src"
+        _write(src / "loop" / "promote.py", "from .wrapper import run\n")
+        _write(src / "loop" / "wrapper.py", "from helper import util\n")
+
+        closure = checker.reachable(checker.PROMOTION_ROOTS, checker.index_modules())
+
+        # `helper.util` too: the wrapper's own imports have to be walked, or the
+        # wrapper is in the closure and everything behind it still is not.
+        assert {"loop.wrapper", "helper.util"} <= closure
+
+    def test_a_relative_import_in_a_package_initializer_resolves_against_itself(
+        self, tree: Path, checker: ModuleType
+    ) -> None:
+        """`__init__.py` *is* the package, so `.sibling` is a child of it.
+
+        Resolving it like a module inside the package would climb one level too
+        far and silently land in the parent, which is how a wrong answer looks
+        the same as no answer.
+        """
+        src = tree / "packages" / "pkg" / "src"
+        _write(src / "loop" / "__init__.py", "from .wrapper import run\n")
+        _write(src / "loop" / "wrapper.py", "")
+        _write(src / "wrapper.py", "raise AssertionError('the parent, not the child')\n")
+
+        closure = checker.reachable({"loop": "promotes"}, checker.index_modules())
+
+        assert "loop.wrapper" in closure
+        assert "wrapper" not in closure
+
+    def test_a_relative_import_that_climbs_past_the_top_level_resolves_to_nothing(
+        self, tree: Path, checker: ModuleType
+    ) -> None:
+        """Not importable, so there is nothing to resolve — and no wrong guess.
+
+        The walk must not invent a target here: a name assembled from an
+        over-climbed base would either miss or, worse, match an unrelated
+        top-level module.
+        """
+        src = tree / "packages" / "pkg" / "src"
+        _write(src / "loop" / "promote.py", "from ... import helper\n")
+
+        assert checker.reachable(checker.PROMOTION_ROOTS, checker.index_modules()) == {
+            "loop.promote"
+        }
+
+    def test_a_symlinked_package_directory_is_refused(
+        self, tree: Path, checker: ModuleType
+    ) -> None:
+        """`rglob` does not descend into directory symlinks.
+
+        So every module below one is absent from the index — and a module
+        absent from the index reads exactly like "not on the promotion path".
+        A candidate could import a wrapper through a symlinked package
+        directory and keep this gate green (Codex, #513). Refused rather than
+        followed: following needs cycle detection and would let a link out of
+        the repository decide what this gate audits.
+        """
+        src = tree / "packages" / "pkg" / "src"
+        _write(src / "elsewhere" / "wrapper.py", "")
+        (src / "linked").symlink_to(src / "elsewhere", target_is_directory=True)
+
+        with pytest.raises(checker.SymlinkedSourceDirectory) as raised:
+            checker.index_modules()
+
+        assert "linked" in str(raised.value)
 
 
 class TestTheLedgerIsCheckedBothWays:
