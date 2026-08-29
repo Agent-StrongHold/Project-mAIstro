@@ -770,9 +770,12 @@ jobs:
       # measurement.
       #
       # THE RATCHET says the repository did not get worse: ten debt counters
-      # against quality/ac-state-ceilings.json, each may only go down, and an
-      # unbanked improvement fails too so the ceiling cannot hold slack a later
-      # regression would spend.
+      # against a bound folded from quality/ac-state-notes/ at the base
+      # revision, each may only go down, and an unbanked improvement fails too
+      # so the ceiling cannot hold slack a later regression would spend. The
+      # bound moved off one shared line in #585 because that line was rewritten
+      # by every AC-proving PR and serialized the queue; the strictness is
+      # unchanged.
       #
       # THE MANDATE says this change proved what it claimed, in two halves.
       # The criterion half: zero tolerance on criteria the PR creates or newly
