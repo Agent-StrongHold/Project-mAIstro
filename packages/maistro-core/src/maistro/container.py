@@ -640,7 +640,22 @@ class Container:
         )
 
         queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
-        executor = ScheduleAttemptExecutor(self.run_store)
+        # The wired resolver, not the bare registry. `agent.delegate_remote`,
+        # `agent.spawn_harness` and `rsi.quota_pace_trigger` are all registered,
+        # so they pass eligibility either way; constructed bare they then fail,
+        # or compute against empty state, inside a Run that looks properly
+        # admitted. Building it per tick rather than per Run keeps the cost off
+        # the loop while still reading whatever this Container was wired with.
+        executor = ScheduleAttemptExecutor(
+            self.run_store,
+            node_resolver=build_node_resolver(
+                harness_adapters=self.harness_adapters,
+                usage_log=self.usage_log,
+                a2a_delegator=self.a2a_delegator,
+                guest_peers=self.guest_peers,
+                run_store=self.run_store,
+            ),
+        )
         executed = 0
         for run in queued:
             if not consumer_owns(run):

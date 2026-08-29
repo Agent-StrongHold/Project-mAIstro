@@ -15,6 +15,7 @@ from typing import Protocol, runtime_checkable
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import InvalidLifecycleTransition, latest_node_runs
 from maistro.runs.model import (
+    PAUSE_AWAITS_HUMAN,
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -29,6 +30,12 @@ from maistro.runs.model import (
 )
 from maistro.runs.recovery_events import RecoveryEventSink, recovery_event
 from maistro.runs.store import RunIntegrityError
+
+
+def _awaits_human(attempt: Attempt) -> bool:
+    """Whether a yielded Attempt recorded that it waits on a person."""
+    result = attempt.result
+    return isinstance(result, dict) and bool(result.get(PAUSE_AWAITS_HUMAN))
 
 
 class SupersededAttempt(RunIntegrityError):
@@ -195,6 +202,16 @@ class AttemptLifecycleReconciler:
             terminal = await self._cancel_node_run(node_run, attempt)
             await self._announce(persisted, terminal, cancellation)
             return terminal
+
+        if attempt.status is AttemptStatus.YIELDED:
+            # A pause, not a failure. The disposition is read off the persisted
+            # Attempt rather than passed in, so a process that restarts and
+            # reconciles this already-durable row lands on the same answer as
+            # the one that wrote it.
+            paused = await self._pause_node_run(node_run, persisted)
+            await self._park_run_if_inactive(paused.run_id)
+            await self._announce(persisted, paused, cancellation)
+            return paused
 
         parked = await self._park_node_run(node_run, attempt)
         await self._park_run_if_inactive(parked.run_id)
@@ -393,6 +410,25 @@ class AttemptLifecycleReconciler:
             RunStatus.WAITING,
             error=attempt.error,
         )
+
+    async def _pause_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:
+        """Park a yielded NodeRun as PAUSED when a human is what it waits for.
+
+        WAITING and PAUSED are both parked, and the difference is who is
+        expected to act: WAITING means a retry decision is owed by the system,
+        PAUSED that a person is. Collapsing the two would make a prompt nobody
+        can see indistinguishable from a provider being down -- the same
+        reading #230 removed one level up for cancellation.
+        """
+        if node_run.status in TERMINAL_RUN_STATUSES or node_run.status in {
+            RunStatus.WAITING,
+            RunStatus.PAUSED,
+        }:
+            return node_run
+        if node_run.status is not RunStatus.RUNNING:
+            raise RunIntegrityError("terminal Attempt requires a running logical NodeRun")
+        target = RunStatus.PAUSED if _awaits_human(attempt) else RunStatus.WAITING
+        return await self._store.transition_node_run(node_run.node_run_id, target)
 
     async def _cancel_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:
         """Terminalize a NodeRun whose Attempt was cancelled on request (#230).
