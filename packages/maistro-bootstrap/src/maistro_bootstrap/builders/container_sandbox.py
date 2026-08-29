@@ -212,8 +212,20 @@ class ContainerBuilderSandbox:
         return out
 
     def run_argv(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> str:
-        _, out = self._exec(argv, timeout=timeout)
-        return out
+        return self.run_argv_status(argv, timeout=timeout)[1]
+
+    def run_argv_status(
+        self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT
+    ) -> tuple[int, str]:
+        """Run ``argv`` in the container, returning its exit status and output.
+
+        `run_argv` discards the status, which is the right shape for an agent
+        tool: there the output *is* the answer. For a validation command the
+        answer is the status, and a caller that can only see output cannot tell
+        a pass from a failure that printed something — so the RSI loop runs its
+        candidate test vector through this instead (#305).
+        """
+        return self._exec(argv, timeout=timeout)
 
     def diff(self) -> str:
         _, out = self._exec(["git", "-C", _WORKDIR, "diff"])

@@ -389,17 +389,37 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
     return Scorecard(gates=gates, scores=scores)
 
 
-def _run(cmd: str, cwd: Path, timeout: int = 900) -> tuple[bool, str]:
+def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) -> tuple[bool, str]:
+    """Run the candidate's test command, preferring an argument vector (#305).
+
+    `argv` is what every non-terminal caller supplies: the Conductor resolves it
+    from server-side policy, and running a vector means no shell parses it.
+    `cmd` remains for the CLI, where an operator typed the command.
+
+    Joining a vector into a string for the shell path would be the wrong
+    fallback rather than a convenient one -- a token containing a space would
+    re-split into two arguments, so the thing that ran would not be the thing
+    the policy named.
+    """
     try:
-        # shell=True: `cmd` is operator-supplied test config, not agent/attacker input.
-        proc = subprocess.run(  # nosemgrep
-            cmd,
-            shell=True,  # nosemgrep
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        if argv:
+            proc = subprocess.run(
+                list(argv),
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        else:
+            # shell=True: the CLI path, where `cmd` is what an operator typed.
+            proc = subprocess.run(  # nosemgrep
+                cmd,
+                shell=True,  # nosemgrep
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"test command errored: {exc}"
     tail = (proc.stdout + proc.stderr).strip()[-200:]
@@ -591,6 +611,7 @@ def evaluate_candidate(
     timeout: int = 900,
     regression_judge_fn: Callable[[str, str], tuple[float, str]] | None = None,
     target: str = "",
+    test_argv: tuple[str, ...] = (),
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -608,7 +629,7 @@ def evaluate_candidate(
     tests = changed_test_paths(changed_files)
     all_py = [f for f in changed_files if f.endswith(".py")]
 
-    tests_passed, test_reason = _run(test_command, cwd, timeout)
+    tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv)
     cand_cov, missing = measure_coverage_detailed(
         cwd, source=coverage_source, pytest_args=coverage_pytest_args
     )

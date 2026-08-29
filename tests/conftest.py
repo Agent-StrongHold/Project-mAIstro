@@ -53,6 +53,28 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _default_ac_state_ratchet_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test opts into merge-group semantics explicitly, or gets none.
+
+    A merge-group CI job exports GITHUB_EVENT_NAME=merge_group to pytest itself,
+    and `check_ac_state_impl.in_merge_group()` reads exactly that. So any test
+    that drives the ratchet without pinning the event inherits the job's, runs
+    against the #620 carve-out it did not ask for, and fails only inside the
+    queue -- green on the pull request, red where it decides the merge.
+
+    This default was first written scoped to `test_check_ac_state_ratchet.py`
+    by name, which is what let it miss `test_ac_state_notes.py`: that module
+    drives the same `ratchet` from its own fixture, was never on the list, and
+    reddened the queue exactly as this docstring already predicted. A filename
+    allowlist cannot know about the next module, so there is no list any more.
+
+    Pinning is a floor, not a ceiling: a test wanting merge-group semantics sets
+    the event in its own body, which runs after this fixture and wins.
+    """
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+
+
+@pytest.fixture(autouse=True)
 def _reset_singletons() -> Iterator[None]:
     """Reset all global singletons between tests to prevent state leakage."""
     # Clear cached settings so test env vars are picked up

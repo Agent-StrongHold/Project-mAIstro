@@ -210,6 +210,45 @@ async def _checkpoint_advancement(
     )
 
 
+async def _fold_failures(
+    record: DurableRunRecord,
+    failures: tuple[traversal._FrontierItem, ...],
+    *,
+    prior_state: GraphExecutionState,
+    store: DurableRunStore,
+) -> DurableRunRecord:
+    """Fail the Run, or send back the nodes whose own policy says try again.
+
+    A failure with a visit left is not the Run's failure yet (#548). The retry
+    is the node's next visit -- a new NodeRun with its own Attempt -- because
+    the Attempt firewall rightly refuses to redispatch a completed Attempt:
+    completion means the physical work ran, side effects and all.
+
+    `prior_state` rather than `record.graph_state` because the accept above
+    already counted this visit; asking the pre-fold state keeps the budget
+    meaning "tries" rather than "tries minus the one being decided".
+
+    Which failures are out of budget is `traversal.first_exhausted_failure`,
+    the same rule the other fold asks -- not a second copy of it.
+    """
+    exhausted = traversal.first_exhausted_failure(prior_state, failures)
+    if exhausted is not None:
+        return await traversal._mark_failed(
+            record,
+            error_code=exhausted.result.error_code or "NodeFailure",
+            error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
+            store=store,
+        )
+    return await _checkpoint_advancement(
+        record,
+        prior_state,
+        (),
+        tuple(item.node_id for item in failures),
+        (),
+        store=store,
+    )
+
+
 async def fold_authoritative_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -225,11 +264,10 @@ async def fold_authoritative_frontier(
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:
-        first = failures[0]
-        return await traversal._mark_failed(
+        return await _fold_failures(
             record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
+            failures,
+            prior_state=prior_state,
             store=store,
         )
 

@@ -12,23 +12,35 @@ So the matrix is checked, not trusted:
    so a new subsystem package cannot land unclassified and no module is counted
    twice. This is what makes "covers every significant subsystem" verifiable
    rather than asserted.
-3. Each row's unreachable count is recomputed from the same import graph
-   `check-reachability.py` ratchets, so the matrix cannot claim a subsystem is
-   wired when the reachability gate says otherwise.
+3. Each row's unreachable *share* -- one of `none`, `few`, `some`, `most`, `all`
+   -- is recomputed from the same import graph `check-reachability.py` ratchets,
+   so the matrix cannot claim a subsystem is wired when the reachability gate
+   says otherwise. The share, not a transcribed `19/62`, because the denominator
+   is the subsystem's module count: any PR that adds a module anywhere used to
+   invalidate that cell for every other open PR, on a line none of them wrote
+   (#605, ADR-082926-061d). `--census` prints the exact counts.
 4. Every disposition comes from the fixed vocabulary.
 5. Every ADR/SPEC id cited resolves to a file in `docs/adr` or `docs/specs`, so a
    row cannot point at a decision that does not exist.
+6. Every module named as an owner in the Ownership table resolves to exactly one
+   production module and is reached by a product path (#378). A future or
+   unreached owner has to say so in the cell, and the annotation is checked in
+   both directions so it cannot go stale either. This is the claim a planning
+   surface most needs to get right -- the Ownership table's whole subject is
+   who owns each subsystem *today* -- and it was the one thing nothing checked.
 
-Run: `python scripts/check-convergence-matrix.py`
+Run: `python scripts/check-convergence-matrix.py` (`--census` for the exact counts)
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +57,41 @@ _DISPOSITION_COLUMNS = ("Unreachable", "Disposition", "Governing ADR/spec")
 
 _CODE_SPAN = re.compile(r"`([^`]+)`")
 _DECISION_ID = re.compile(r"\b(ADR|SPEC)-[0-9][0-9A-Za-z-]*")
-_UNREACHABLE_CELL = re.compile(r"^(\d+)\s*/\s*(\d+)$")
+#: The Unreachable cell's vocabulary, widest share last. Each entry is the word
+#: and the largest share it covers; `all` is exact and handled before the scan,
+#: so a subsystem one module short of wholly unreachable reads `most`.
+#: Boundaries are inclusive at the top: exactly a fifth is `few`, exactly a half
+#: is `some` (SPEC-082926-061d).
+SHARE_BANDS: tuple[tuple[str, float], ...] = (
+    ("none", 0.0),
+    ("few", 0.20),
+    ("some", 0.50),
+    ("most", 1.0),
+)
+
+SHARE_WORDS: tuple[str, ...] = (*(word for word, _ in SHARE_BANDS), "all")
+
+_UNREACHABLE_CELL = re.compile(rf"^({'|'.join(SHARE_WORDS)})$")
+
+
+def share_word(unreachable: int, total: int) -> str:
+    """The word the matrix must state for a subsystem, from the counts.
+
+    `total` of zero cannot happen for a row the partition check accepts -- a row
+    owning no module fails by name before this is reached -- but it is answered
+    rather than divided by, so a caller exploring the vocabulary gets `none`
+    instead of an exception.
+    """
+    if unreachable <= 0 or total <= 0:
+        return "none"
+    if unreachable >= total:
+        return "all"
+    fraction = unreachable / total
+    *narrower, (widest, _) = SHARE_BANDS
+    for word, ceiling in narrower:
+        if fraction <= ceiling:
+            return word
+    return widest
 
 
 def _load_reachability() -> object:
@@ -145,6 +191,280 @@ def _decision_exists(identifier: str) -> bool:
     )
 
 
+# --- ownership claims (#378) -------------------------------------------------
+#
+# Reachability proves a module *can* be reached. It says nothing about the
+# prose beside it, and the matrix was free to name a current owner that no
+# product path reaches -- which is the one claim a planning surface must not
+# get wrong, because the whole point of the Ownership table is "who owns this
+# today". Fifteen such claims were in the table when this was written.
+#
+# So each ownership cell now has a grammar. A code span shaped like a module
+# path is a CLAIM about a production module; anything else in the cell is
+# prose. A bare claim asserts a *current, reachable* owner. Annotations in the
+# parenthesis that follows say otherwise, and each of them is checked in both
+# directions so it cannot go stale the way the prose did.
+
+#: A code span shaped like a module path. `TaskRecord`, `evaluate()`,
+#: `postgresql://` and `quality/*.json` are prose about a non-module owner and
+#: are deliberately not claims -- see `_is_claim`.
+_MODULE_SPAN = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)+$")
+
+#: `—`, `n/a`, `none` and `itself` are the declared absences. A cell that opens
+#: with one of them is saying there is no module owner, so a claim in the same
+#: cell contradicts it.
+_ABSENCE = re.compile(r"^(—|n/a\b|none\b|itself\b)", re.IGNORECASE)
+
+_OWNERSHIP_COLUMNS = ("Lifecycle owner", "Persistence owner", "Authorization owner")
+
+#: What may follow a claim, and what each one licenses.
+_ANNOTATIONS = frozenset({"canonical", "unreachable", "planned", "delegated"})
+
+#: `<!-- matrix:ownership-census claims=53 declared=73 prose=30 -->`
+_CENSUS = re.compile(
+    r"<!--\s*matrix:ownership-census\s+claims=(\d+)\s+declared=(\d+)\s+prose=(\d+)\s*-->"
+)
+
+
+@dataclass(frozen=True)
+class Claim:
+    subsystem: str
+    column: str
+    span: str
+    module: str
+    annotations: frozenset[str]
+
+    @property
+    def current(self) -> bool:
+        """A planned owner is a future owner, and is not a claim about today."""
+        return "planned" not in self.annotations
+
+    def where(self) -> str:
+        return f"{self.subsystem}: {self.column} `{self.span}`"
+
+
+def _is_claim(span: str, modules: frozenset[str]) -> bool:
+    return bool(_MODULE_SPAN.match(span)) or span in modules
+
+
+def _annotations_after(cell: str, end: int) -> frozenset[str]:
+    """The first parenthesised group between this span and the next one.
+
+    Scoped to the first group deliberately: `(canonical, #132)` annotates the
+    span it follows, while a later `(ADR-018)` in the same cell annotates
+    something else. Reading the whole tail would let one span's annotation
+    silently license the next one's.
+    """
+    tail = cell[end:].split("`", 1)[0]
+    group = re.search(r"\(([^)]*)\)", tail)
+    if group is None:
+        return frozenset()
+    words = {word.strip(" .*_").lower() for word in re.split(r"[,;]", group.group(1))}
+    return frozenset(words & _ANNOTATIONS)
+
+
+def _resolve(span: str, prefixes: list[str], modules: frozenset[str]) -> list[str]:
+    """The production module a span names, resolved in three tiers.
+
+    Cells abbreviate: `runs.pg_store` for `maistro.runs.pg_store`,
+    `design.engine` for `maistro_design.engine`, `canvas.runner` for
+    `maistro_canvas.canvas.runner`. The row's own module prefixes are tried
+    first and an exact match second -- that order matters, because the Turing
+    row's `middleware.auth` means the Turing backend's, not the Conductor's,
+    and both exist.
+    """
+    for tier in (_scoped(span, prefixes), {span}, {f"maistro.{span}"}):
+        hits = sorted(tier & modules)
+        if hits:
+            return hits
+    return []
+
+
+def _scoped(span: str, prefixes: list[str]) -> set[str]:
+    candidates: set[str] = set()
+    head, _, rest = span.partition(".")
+    for prefix in prefixes:
+        for separator in (".", "::"):
+            candidates.add(f"{prefix}{separator}{span}")
+            # `design.engine` under prefix `maistro_design`: the writer used the
+            # product's short name for its package, so the head is the prefix.
+            if rest and (prefix.split(".")[-1] == head or prefix.endswith(f"_{head}")):
+                candidates.add(f"{prefix}{separator}{rest}")
+    return candidates
+
+
+def _claims(
+    header: list[str], rows: list[list[str]], modules: frozenset[str]
+) -> tuple[list[Claim], list[str], dict[str, int]]:
+    """Every claim in the ownership table, plus resolution failures and a census."""
+    module_column = header.index("Modules")
+    columns = [(name, header.index(name)) for name in _OWNERSHIP_COLUMNS if name in header]
+    claims: list[Claim] = []
+    failures: list[str] = []
+    census = {"claims": 0, "declared": 0, "prose": 0}
+
+    for row in rows:
+        prefixes = _CODE_SPAN.findall(row[module_column])
+        for name, index in columns:
+            cell = row[index]
+            if not cell:
+                failures.append(f"{row[0]}: {name} is empty; say `—` if there is no owner")
+                continue
+            found = _cell_claims(row[0], name, cell, prefixes, modules, failures)
+            claims.extend(found)
+            _count(census, cell, modules)
+            if found and _ABSENCE.match(cell):
+                failures.append(
+                    f"{row[0]}: {name} declares no owner but names "
+                    f"{', '.join(sorted(c.span for c in found))}"
+                )
+    return claims, failures, census
+
+
+def _count(census: dict[str, int], cell: str, modules: frozenset[str]) -> None:
+    """Census by grammar, not by outcome.
+
+    A cell counts as naming a module when it *contains* a module-shaped span,
+    whether or not that span resolves. Counting resolution instead would quietly
+    move a typo into the "prose we cannot check" bucket -- the one bucket that
+    is supposed to hold only cells nobody could check.
+    """
+    if any(_is_claim(span, modules) for span in _CODE_SPAN.findall(cell)):
+        census["claims"] += 1
+    elif _ABSENCE.match(cell):
+        census["declared"] += 1
+    else:
+        census["prose"] += 1
+
+
+def _cell_claims(
+    subsystem: str,
+    column: str,
+    cell: str,
+    prefixes: list[str],
+    modules: frozenset[str],
+    failures: list[str],
+) -> list[Claim]:
+    found: list[Claim] = []
+    for match in _CODE_SPAN.finditer(cell):
+        span = match.group(1)
+        if not _is_claim(span, modules):
+            continue
+        resolved = _resolve(span, prefixes, modules)
+        if not resolved:
+            failures.append(
+                f"{subsystem}: {column} names `{span}`, which is not a production module"
+            )
+            continue
+        if len(resolved) > 1:
+            failures.append(
+                f"{subsystem}: {column} `{span}` names {len(resolved)} production modules "
+                f"({', '.join(resolved)}); write the one you mean in full"
+            )
+            continue
+        found.append(
+            Claim(subsystem, column, span, resolved[0], _annotations_after(cell, match.end()))
+        )
+    return found
+
+
+def _claim_failures(
+    claims: list[Claim], unreachable: set[str], verdicts: dict[str, str]
+) -> list[str]:
+    failures: list[str] = []
+    failures.extend(_reachability_failures(claims, unreachable))
+    failures.extend(_planned_failures(claims, verdicts))
+    failures.extend(_keep_failures(claims, unreachable, verdicts))
+    failures.extend(_single_lifecycle_owner_failures(claims))
+    return failures
+
+
+def _reachability_failures(claims: list[Claim], unreachable: set[str]) -> list[str]:
+    """Both directions, so neither the claim nor its annotation can go stale."""
+    failures: list[str] = []
+    for claim in claims:
+        missing = claim.module in unreachable
+        annotated = "unreachable" in claim.annotations
+        if missing and not annotated and claim.current:
+            failures.append(
+                f"{claim.where()} as a current owner, but no product path reaches "
+                f"{claim.module}; mark it `(unreachable)` or `(planned)`, or wire it"
+            )
+        elif annotated and not missing:
+            failures.append(
+                f"{claim.where()} is marked `(unreachable)`, but {claim.module} is reached; "
+                "drop the annotation"
+            )
+    return failures
+
+
+def _planned_failures(claims: list[Claim], verdicts: dict[str, str]) -> list[str]:
+    return [
+        f"{claim.where()} is `(planned)` on a KEEP row; a subsystem still waiting for its "
+        "owner is CONNECT or MIGRATE, not KEEP"
+        for claim in claims
+        if "planned" in claim.annotations and verdicts.get(claim.subsystem) == "KEEP"
+    ]
+
+
+def _keep_failures(
+    claims: list[Claim], unreachable: set[str], verdicts: dict[str, str]
+) -> list[str]:
+    """A KEEP column whose every owner is unreachable or future owns nothing today."""
+    columns: dict[tuple[str, str], list[Claim]] = {}
+    for claim in claims:
+        columns.setdefault((claim.subsystem, claim.column), []).append(claim)
+    return [
+        f"{subsystem}: {column} is KEEP but every owner it names is unreachable or planned"
+        for (subsystem, column), found in sorted(columns.items())
+        if verdicts.get(subsystem) == "KEEP"
+        and all(not c.current or c.module in unreachable for c in found)
+    ]
+
+
+def _single_lifecycle_owner_failures(claims: list[Claim]) -> list[str]:
+    """Two subsystems cannot both own one module's work state.
+
+    `(delegated)` is how a row says it reads another subsystem's owner rather
+    than owning it -- maistro-server hands work to `maistro.tasks.queue`, it
+    does not own the queue's lifecycle.
+    """
+    owners: dict[str, list[str]] = {}
+    for claim in claims:
+        if claim.column != "Lifecycle owner" or not claim.current:
+            continue
+        if "delegated" in claim.annotations:
+            continue
+        owners.setdefault(claim.module, []).append(claim.subsystem)
+    return [
+        f"{module} is the lifecycle owner of {len(rows)} subsystems ({', '.join(sorted(rows))}); "
+        "one of them delegates -- mark it `(delegated)`"
+        for module, rows in sorted(owners.items())
+        if len(rows) > 1
+    ]
+
+
+def _census_failures(text: str, census: dict[str, int]) -> list[str]:
+    """The stated limitation is checked, so it cannot drift like the prose did."""
+    match = _CENSUS.search(text)
+    if match is None:
+        return [
+            "the ownership census marker is missing; add "
+            f"`<!-- matrix:ownership-census claims={census['claims']} "
+            f"declared={census['declared']} prose={census['prose']} -->`"
+        ]
+    keys = ("claims", "declared", "prose")
+    stated = dict(zip(keys, (int(group) for group in match.groups()), strict=True))
+    if stated != census:
+        return [
+            "the ownership census is stale: it says "
+            f"claims={stated['claims']} declared={stated['declared']} prose={stated['prose']}, "
+            f"the table has claims={census['claims']} declared={census['declared']} "
+            f"prose={census['prose']}"
+        ]
+    return []
+
+
 def audit(
     text: str,
     modules: list[str],
@@ -165,15 +485,7 @@ def audit(
 
     own_keys = [row[0] for row in own_rows]
     dis_keys = [row[0] for row in dis_rows]
-    if own_keys != dis_keys:
-        only_own = [key for key in own_keys if key not in set(dis_keys)]
-        only_dis = [key for key in dis_keys if key not in set(own_keys)]
-        if only_own:
-            failures.append(f"rows in the ownership table only: {', '.join(only_own)}")
-        if only_dis:
-            failures.append(f"rows in the disposition table only: {', '.join(only_dis)}")
-        if not only_own and not only_dis:
-            failures.append("both tables list the same subsystems in a different order")
+    failures.extend(_key_failures(own_keys, dis_keys))
 
     if "Modules" not in own_header:
         return [*failures, "ownership table has no 'Modules' column"]
@@ -185,8 +497,50 @@ def audit(
     failures.extend(prefix_failures)
     owners = _assign(modules, prefixes)
     failures.extend(_partition_failures(modules, prefixes, own_keys, owners))
+    verdicts = _verdicts(dis_header, dis_rows)
     failures.extend(_row_failures(dis_header, dis_rows, owners, unreachable, decision_exists))
+
+    failures.extend(_ownership_failures(text, own_header, own_rows, modules, unreachable, verdicts))
     return failures
+
+
+def _key_failures(own_keys: list[str], dis_keys: list[str]) -> list[str]:
+    if own_keys == dis_keys:
+        return []
+    only_own = [key for key in own_keys if key not in set(dis_keys)]
+    only_dis = [key for key in dis_keys if key not in set(own_keys)]
+    failures = []
+    if only_own:
+        failures.append(f"rows in the ownership table only: {', '.join(only_own)}")
+    if only_dis:
+        failures.append(f"rows in the disposition table only: {', '.join(only_dis)}")
+    if not failures:
+        failures.append("both tables list the same subsystems in a different order")
+    return failures
+
+
+def _ownership_failures(
+    text: str,
+    header: list[str],
+    rows: list[list[str]],
+    modules: list[str],
+    unreachable: set[str],
+    verdicts: dict[str, str],
+) -> list[str]:
+    missing = [name for name in _OWNERSHIP_COLUMNS if name not in header]
+    if missing:
+        return [f"ownership table is missing column(s): {', '.join(missing)}"]
+    claims, failures, census = _claims(header, rows, frozenset(modules))
+    return [
+        *failures,
+        *_claim_failures(claims, unreachable, verdicts),
+        *_census_failures(text, census),
+    ]
+
+
+def _verdicts(header: list[str], rows: list[list[str]]) -> dict[str, str]:
+    column = header.index("Disposition")
+    return {row[0]: (row[column].split() or [""])[0].strip("*_`") for row in rows}
 
 
 def _prefixes(rows: list[list[str]], column: int) -> tuple[dict[str, str], list[str]]:
@@ -224,6 +578,38 @@ def _partition_failures(
     return failures
 
 
+def _percent(part: int, whole: int) -> str:
+    return f"{100.0 * part / whole:.1f}%" if whole else "0.0%"
+
+
+def census(modules: list[str], unreachable: set[str], owners: dict[str, str]) -> list[str]:
+    """One line per subsystem: the exact counts behind the word in the matrix.
+
+    This is the answer to "but what is the actual number", which the matrix
+    deliberately no longer carries. Sorted by share, widest first, because the
+    question that brings someone here is almost always "what is worst".
+    """
+    totals: dict[str, int] = {}
+    misses: dict[str, int] = {}
+    for module in modules:
+        subsystem = owners.get(module)
+        if subsystem is None:
+            continue
+        totals[subsystem] = totals.get(subsystem, 0) + 1
+        misses[subsystem] = misses.get(subsystem, 0) + (module in unreachable)
+    width = max((len(name) for name in totals), default=0)
+    width = max(width, len("subsystem"))
+    rows = sorted(totals, key=lambda name: (-misses[name] / totals[name], name))
+    return [
+        f"{'subsystem':<{width}}  unreachable / total   share  word",
+        *(
+            f"{name:<{width}}  {misses[name]:>11} / {totals[name]:<5} "
+            f"{_percent(misses[name], totals[name]):>6}  {share_word(misses[name], totals[name])}"
+            for name in rows
+        ),
+    ]
+
+
 def _row_failures(
     header: list[str],
     rows: list[list[str]],
@@ -247,14 +633,18 @@ def _row_failures(
         spans = _CODE_SPAN.findall(row[unreachable_column])
         match = _UNREACHABLE_CELL.match(spans[0]) if spans else None
         if match is None:
-            failures.append(f"{key}: Unreachable cell must be `<unreachable>/<total>`")
+            failures.append(
+                f"{key}: Unreachable cell must be one of "
+                f"{', '.join(f'`{word}`' for word in SHARE_WORDS)}"
+            )
         elif key in totals:
-            stated = (int(match.group(1)), int(match.group(2)))
-            actual = (misses[key], totals[key])
+            stated = match.group(1)
+            actual = share_word(misses[key], totals[key])
             if stated != actual:
                 failures.append(
-                    f"{key}: Unreachable says {stated[0]}/{stated[1]}, code says "
-                    f"{actual[0]}/{actual[1]}"
+                    f"{key}: Unreachable says `{stated}`, code says `{actual}` "
+                    f"({misses[key]} of {totals[key]} modules, "
+                    f"{_percent(misses[key], totals[key])})"
                 )
         cell = row[disposition_column]
         verdict = cell.split()[0].strip("*_`") if cell.split() else ""
@@ -270,22 +660,40 @@ def _row_failures(
     return failures
 
 
-def main() -> int:
+CENSUS_COMMAND = "python scripts/check-convergence-matrix.py --census"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
     if not MATRIX.exists():
         print(f"FAIL: {MATRIX} is missing", file=sys.stderr)
         return 1
     text = MATRIX.read_text()
     modules = production_modules()
     unreachable = unreachable_modules()
+    if args == ["--census"]:
+        rows = parse_table(text, OWNERSHIP_MARKER)
+        prefixes, _ = _prefixes(rows[1:], rows[0].index("Modules"))
+        owners = _assign(modules, prefixes)
+        for line in census(modules, unreachable, owners):
+            print(line)
+        return 0
+    if args:
+        print(f"usage: {CENSUS_COMMAND.rsplit(' ', 1)[0]} [--census]", file=sys.stderr)
+        return 2
     failures = audit(text, modules, unreachable)
     if failures:
-        print(f"FAIL: {MATRIX.relative_to(ROOT)} does not match the code it describes\n")
+        # `os.path.relpath` rather than `Path.relative_to`: the latter raises when
+        # the matrix is outside the repo, which turned a reportable failure into a
+        # traceback the moment a test pointed the gate at a stand-in.
+        print(f"FAIL: {os.path.relpath(MATRIX, ROOT)} does not match the code it describes\n")
         for failure in failures:
             print(f"  - {failure}")
         print(
             "\nUpdate the matrix row (or the code) so the two agree. The matrix is the "
             "M0 planning surface; a stale row is a wrong plan."
         )
+        print(f"For the exact per-subsystem counts behind each word, run:\n  {CENSUS_COMMAND}")
         return 1
     subsystems = len(parse_table(text, OWNERSHIP_MARKER)) - 1
     print(

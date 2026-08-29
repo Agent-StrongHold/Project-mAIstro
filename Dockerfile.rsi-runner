@@ -21,7 +21,51 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 
 WORKDIR /workspace
-COPY . /workspace
+
+# An explicit allowlist, not `COPY . /workspace` (#308). Two ignore files stand
+# between this and the operator's `.env`, and they are the right defence -- but
+# a deny-list is a claim about everything that exists, re-made every time
+# someone adds a file. This is a claim about what the loop NEEDS, which is a
+# shorter list and a fixed one. A new top-level directory has to be named here
+# before it can reach an image that runs agent-authored code.
+#
+# scripts/check-build-context.py keeps this in agreement with the ignore files.
+COPY pyproject.toml uv.lock VERSION conftest.py alembic.ini /workspace/
+COPY packages /workspace/packages
+COPY scripts /workspace/scripts
+COPY tests /workspace/tests
+COPY formal /workspace/formal
+COPY tools /workspace/tools
+COPY quality /workspace/quality
+COPY alembic /workspace/alembic
+COPY agents /workspace/agents
+COPY templates /workspace/templates
+# The loop reads specs and ADRs: `spec_tracker` scores new acceptance criteria
+# and `check-ac-state` folds them, so a candidate that adds a criterion is
+# unscoreable without these.
+COPY docs /workspace/docs
+# CLAUDE.md and AGENTS.md are the agent's own instructions; the rest are read
+# by the doc-regression gate in the fitness scorecard.
+COPY CLAUDE.md AGENTS.md README.md CONTRIBUTING.md SECURITY.md /workspace/
+# `.gitignore` comes in with them, and it earns its place: the RUN below does
+# `git add -A` on a fresh repo, and `_run_variant` does the same on every
+# candidate. Without it, a `.pytest_cache/` or `.coverage.<host>.<pid>` the
+# agent's own test run produced is committed into the candidate and can be
+# carried out in a promotion patch (Codex, #510).
+COPY .gitattributes .python-version .gitignore /workspace/
+# Repository fixtures the scoped test command reads directly. Neither is
+# incidental: `tools/run_rsi_isolated.sh` runs `packages/maistro-rsi/tests`,
+# where `test_sandbox.py` reads `sbx/maistro-rsi/spec.yaml` and
+# `test_harvest_entry_point.py` reads `.github/workflows/rsi-harvest.yml`.
+# Absent, six tests fail with FileNotFoundError -- in the BASELINE run, which
+# every candidate is scored against, so every candidate is rejected on its
+# merits regardless of what it changed (Codex, #510).
+#
+# Both trees are on the RSI containment surface (`SENSITIVE_PATH_PATTERNS`
+# names `.github/` and `sbx/`), so a candidate may read them here and no patch
+# touching either can leave the loop.
+COPY sbx /workspace/sbx
+COPY .github /workspace/.github
 
 # The build context is a linked git worktree (its .git is a file pointing
 # outside the context), so bake a fresh, self-contained repo the loop can clone.
@@ -39,7 +83,23 @@ RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.
 
 # Install the workspace (maistro-core/evolve/rsi/bootstrap + their deps) plus the
 # fitness toolchain, so tests/coverage/lint gates all run in-container.
-RUN uv sync --python 3.12 --frozen || uv sync --python 3.12
+#
+# `--frozen` with no fallback. This used to be
+# `uv sync --python 3.12 --frozen || uv sync --python 3.12`, and the fallback
+# was the whole problem: `--frozen` fails precisely when uv.lock does not match
+# pyproject.toml, and the fallback answered that by re-resolving from scratch.
+# So the one build that most needed to fail -- lock drift -- was the one that
+# silently shipped a dependency set nobody declared, into the container where
+# agent-authored code runs (#351). A drifted lock is now a red build, which is
+# a `uv lock` away from fixed.
+RUN uv sync --python 3.12 --frozen
+
+# Left unpinned deliberately, and it is a known gap rather than an oversight:
+# these drift independently of uv.lock, so two RSI runs a month apart can
+# disagree about a fitness score for reasons no commit explains. Pinning them
+# means choosing versions and proving the image still builds, which needs a
+# Docker build this change cannot run -- so it is #348's to do alongside the
+# lock-enforced installs, not something to guess at here.
 RUN uv pip install coverage bandit radon interrogate vulture pylint
 
 CMD ["sleep", "infinity"]

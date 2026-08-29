@@ -23,7 +23,7 @@ and architecture docs may use either.
 |---------|------|
 | `maistro-core` | Shared substrate: graph, memory, security, types |
 | `maistro-server` | Control plane / production execution engine |
-| `maistro-sandbox-worker` | Isolated execution environment (owns KVM/container runtime) |
+| `maistro-sandbox-worker` | **Planned, not built (#81).** A separate service owning a KVM or gVisor runtime, which is what a Tier-1 or Tier-2 backend would need. Today isolation is in-process via `maistro.sandbox`; there is no such package and no such compose service. |
 | `maistro-evolve` | Self-improvement / benchmark evaluation |
 | `maistro-canvas` | Image generation pipeline |
 | `hive-conductor` | UI + BFF (not an execution engine in production) |

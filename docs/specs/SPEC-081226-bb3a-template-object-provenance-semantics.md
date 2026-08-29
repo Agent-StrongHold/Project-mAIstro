@@ -40,6 +40,7 @@ ac-modules:
   AC-8: maistro.personas.model
   AC-9: maistro.graph.definitions
   AC-10: maistro.graph.definitions
+  AC-11: maistro.graph.templates
   AC-12: maistro.graph.definitions
 layer: Foundation
 owners:

@@ -72,9 +72,9 @@ def test_patch_capability_activates_and_persists() -> None:
     assert r.json()["active_provider"] == "inbox"
 
     # Persisted into settings so it survives a restart.
-    import stores
+    from services import settings_store
 
-    assert stores.settings.capabilities["approval"].active_provider == "inbox"
+    assert settings_store.current().capabilities["approval"].active_provider == "inbox"
 
 
 def test_patch_unknown_slot_404() -> None:

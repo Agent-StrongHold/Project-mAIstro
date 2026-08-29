@@ -23,8 +23,10 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
+from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
+from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
-from maistro.graph.templates import GraphTemplateStore
+from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -49,6 +51,7 @@ from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
     wire_execution_spine,
+    wire_node_template_store,
 )
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
@@ -58,6 +61,8 @@ from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.store import WorkspaceStore
+from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
 if TYPE_CHECKING:
     import httpx
@@ -147,6 +152,11 @@ class Container:
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
+    #: Canonical Workspace identity and membership (#516). The Workspace the
+    #: scope tree above hangs off: `project_scope_store` has had a durable
+    #: backend since #132 while the thing its `workspace_id` names had none,
+    #: so the only Workspaces that survived a restart were the Conductor's own.
+    workspace_store: WorkspaceStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -162,6 +172,20 @@ class Container:
     #: of the spine is: a Container built directly, without `create_container`,
     #: still routes requests — it just cannot resolve a template.
     template_store: GraphTemplateStore | None = None
+    #: Durable home for reusable NodeTemplate definitions (#556). The
+    #: GraphTemplate half has had one since #145; without this one a Node's
+    #: `source_template` named a version nothing could resolve after a restart,
+    #: so SPEC-081226-bb3a AC-12 held for only one of the two template
+    #: families. Optional exactly as `template_store` is, and for the same
+    #: reason: a Container built directly still routes requests.
+    node_template_store: NodeTemplateStore | None = None
+    #: Durable graph execution over the canonical spine (#44). A
+    #: `DurableRunStore` in interface only: Run, NodeRuns and Attempts are the
+    #: `run_store`'s rows and the Graph continuation is persisted beside them,
+    #: so a graph Run resolves through `GET /v1/runs/{id}` and appears in
+    #: `list_by_status` like every other Run. Optional the same way the rest of
+    #: the spine is -- a Container built directly still routes requests.
+    graph_run_store: DurableRunStore | None = None
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -561,7 +585,15 @@ class Container:
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            reconciler = AttemptLifecycleReconciler(self.run_store)
+            # The Container's bus, so the sweep's dispositions land on the
+            # canonical Event stream rather than only in Run state (#462). A
+            # Container built without one still sweeps; the events are how the
+            # decision becomes inspectable, not how it is made.
+            reconciler = AttemptLifecycleReconciler(
+                self.run_store,
+                events=self.event_bus,
+                source="maistro.container.recover_abandoned_attempts",
+            )
             for attempt in reclaimed:
                 try:
                     await reconciler.reconcile(attempt)
@@ -920,6 +952,7 @@ async def create_container(
         task_admitter,
         graph_template_store,
         schedule_store,
+        graph_continuations,
     ) = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
@@ -932,6 +965,15 @@ async def create_container(
         # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
+    # The same `project_scope_store` object the spine just selected, not a
+    # second resolution of the same question: a Workspace whose Root Project is
+    # filed in another database is a Workspace whose Runs cannot be filed.
+    workspace_store = await wire_workspace_store(
+        db_pool,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
+    node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -942,6 +984,9 @@ async def create_container(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
         project_store=project_store,
+        # The same client #188 wires for durable memory similarity. Absent, the
+        # hybrid score is its lexical term alone rather than a second formula.
+        embedding_client=embeddings,
     )
 
     router = RouterEngine(quota_tracker)
@@ -1127,10 +1172,13 @@ async def create_container(
         episodic_store=episodic_store,
         project_store=project_store,
         project_scope_store=project_scope_store,
+        workspace_store=workspace_store,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
+        node_template_store=node_template_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
@@ -1315,6 +1363,10 @@ _REQUIRED_PG_TABLES: Final = (
     "security_strikes",
     "security_violations",
     "security_rate_limits",
+    # The canonical Workspace (#516). Same reasoning as the spine's tables: a
+    # `postgresql://` deployment that skipped `alembic upgrade head` should hear
+    # about it once, at startup, naming every table it lacks.
+    *WORKSPACE_PG_TABLES,
 )
 
 
