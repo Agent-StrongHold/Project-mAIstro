@@ -24,6 +24,12 @@ from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.types.config import AgentConfig
 
+#: SPEC-082926-d90e declares `contracts: [behavioral]`, and ADR-032 says a
+#: document claiming a contract kind names a test carrying that marker. It named
+#: these two files and neither carried one, so the claim had no evidence (#345).
+pytestmark = [pytest.mark.contract("behavioral")]
+
+
 RESUME_AT = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
 
 
