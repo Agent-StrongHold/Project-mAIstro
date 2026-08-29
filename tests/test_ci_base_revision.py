@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -53,7 +54,7 @@ def test_unsupported_event_fails_closed() -> None:
 
 
 def test_environment_resolver_reads_the_github_event_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     event = tmp_path / "event.json"
     event.write_text(json.dumps({"merge_group": {"base_sha": SHA_B}}), encoding="utf-8")
