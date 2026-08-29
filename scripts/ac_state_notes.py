@@ -30,7 +30,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
@@ -170,6 +170,10 @@ class Bounds:
     notes: tuple[str, ...]
     origin: Literal["base", "worktree", "empty"]
     base_sha: str | None
+    #: note name -> the mode it was banked in. Carried so a caller can refuse a
+    #: fold across measurement modes: the counters are incomparable, and only
+    #: the *run* knows which mode it is in, so the check cannot live here.
+    modes: dict[str, bool] = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -277,6 +281,7 @@ def banked_bound(*, notes_dir: Path | None = None) -> Bounds:
         notes=tuple(note.name for note in notes),
         origin="worktree",
         base_sha=None,
+        modes={note.name: note.measured_with_tests for note in notes},
     )
 
 
@@ -290,6 +295,7 @@ def bounds(
         notes=tuple(note.name for note in notes),
         origin=origin,
         base_sha=base_sha,
+        modes={note.name: note.measured_with_tests for note in notes},
     )
 
 

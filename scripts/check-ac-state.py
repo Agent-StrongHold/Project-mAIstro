@@ -1120,6 +1120,93 @@ RATCHETED = ac_state_notes.RATCHETED
 FLOORED = ac_state_notes.FLOORED
 
 
+def _report_movement(regressions: list[str], improvements: list[str], bound: Any) -> None:
+    """Print what moved, and what to do about it.
+
+    Split out of `ratchet` for the same reason as `_exact_target`: the function's
+    job is to decide, and two multi-paragraph remedies inline made the decision
+    hard to read — and pushed it past the complexity ceiling once the fold
+    gained its own refusals.
+    """
+    if regressions:
+        print("FAIL: the repository moved away from its recorded state\n")
+        for line in regressions:
+            print(f"  - {line}")
+        print(
+            "\nA ceiling exceeded: either prove the claim (add an **AC-N** id and a "
+            "@pytest.mark.ac test) or correct the document's status. The ceiling does not "
+            "move up.\nA floor undercut: design coverage fell, so a decision that was "
+            "proven no longer is — restore the evidence, or bank the fall with --bank and "
+            "justify it in the diff (retiring an ADR and accepting a new one both do this "
+            "legitimately; see ADR-082226-ff3c)."
+        )
+        print(f"\nThe bound was {bound.describe()}.")
+    if improvements:
+        print(
+            "FAIL: unbanked improvement — the recorded bound holds slack a regression could spend\n"
+        )
+        for line in improvements:
+            print(f"  - {line}")
+        print(
+            f"\nThe bound was {bound.describe()}.\n"
+            "Bank it: python scripts/check-ac-state.py --run-tests --ratchet --bank\n"
+            "That writes only quality/ac-state-notes/<your-branch>.json, so it "
+            "cannot conflict with another branch doing the same (#585)."
+        )
+
+
+def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | None]:
+    """The counters the exact comparison is read against, or why it cannot be.
+
+    Extracted from `ratchet` rather than inlined: the fold has two ways to
+    refuse, and putting them beside the comparison pushed `ratchet` past the
+    complexity ceiling — which is the gate noticing that "compare" had quietly
+    become "compare, and also decide whether comparing is allowed".
+
+    A branch with no notes at all falls back to the base fold, which is the old
+    exact-equality behaviour, along with the message telling it to bank.
+    """
+    try:
+        banked = _banked()
+    except (ac_state_notes.AcStateNoteError, RatchetProvenanceError) as exc:
+        # `bounds()` reads the notes as of the base and already succeeded, so a
+        # failure here is a note in *this tree* that will not parse — including
+        # `_baseline.json`, which the old one-note rule skipped and the fold
+        # does not. Read outside a handler it exited with a traceback instead of
+        # the gate's own diagnostic (Codex, #609).
+        return {}, f"FAIL: the banked AC-state fold could not be read: {exc}"
+    mismatch = _worktree_mode_mismatch(banked, measured)
+    if mismatch is not None:
+        return {}, mismatch
+    return (banked.counters if banked.counters else bound.counters), None
+
+
+def _worktree_mode_mismatch(banked: Any, run_tests: bool) -> str | None:
+    """The same refusal, for the notes the *worktree* fold reads.
+
+    `_mode_mismatch` validates the notes `load_notes()` returns from the merge
+    base. The fold folds every note in the candidate tree, and a stacked branch
+    carries notes the base has never seen — so a note banked without
+    `--run-tests` could be folded into a `--run-tests` target, mixing two
+    measurement modes this gate treats as incomparable everywhere else, in the
+    direction that can only loosen the bound (Codex, #609).
+
+    Checked here rather than inside `banked_bound` because the mode is the
+    *run's* property, not the notes': the same notes are correct for one
+    invocation and wrong for the other.
+    """
+    mismatched = [name for name, mode in banked.modes.items() if mode != run_tests]
+    if not mismatched:
+        return None
+    want = "with" if not run_tests else "without"
+    return (
+        f"FAIL: {len(mismatched)} note(s) in this tree were banked {want} --run-tests: "
+        f"{', '.join(sorted(mismatched))}. Re-run in that mode. The passing rung is "
+        "unreachable without it, so the counters are not comparable and folding "
+        "across both would be a bound nobody measured."
+    )
+
+
 def _mode_mismatch(run_tests: bool) -> str | None:
     """The refusal message for a wrong-mode ratchet, checked before measuring.
 
@@ -1343,37 +1430,15 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     #
     # A branch with no notes at all falls back to the base fold, which is the
     # old exact-equality behaviour, along with the message telling it to bank.
-    banked = _banked()
-    target = banked.counters if banked.counters else bound.counters
+    target, refusal = _exact_target(bound, measured)
+    if refusal is not None:
+        print(refusal)
+        return 1
     regressions, _ = _compare(bound.counters, totals)
     exact_regressions, improvements = _compare(target, totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
-    if regressions:
-        print("FAIL: the repository moved away from its recorded state\n")
-        for line in regressions:
-            print(f"  - {line}")
-        print(
-            "\nA ceiling exceeded: either prove the claim (add an **AC-N** id and a "
-            "@pytest.mark.ac test) or correct the document's status. The ceiling does not "
-            "move up.\nA floor undercut: design coverage fell, so a decision that was "
-            "proven no longer is — restore the evidence, or bank the fall with --bank and "
-            "justify it in the diff (retiring an ADR and accepting a new one both do this "
-            "legitimately; see ADR-082226-ff3c)."
-        )
-        print(f"\nThe bound was {bound.describe()}.")
-    if improvements:
-        print(
-            "FAIL: unbanked improvement — the recorded bound holds slack a regression could spend\n"
-        )
-        for line in improvements:
-            print(f"  - {line}")
-        print(
-            f"\nThe bound was {bound.describe()}.\n"
-            "Bank it: python scripts/check-ac-state.py --run-tests --ratchet --bank\n"
-            "That writes only quality/ac-state-notes/<your-branch>.json, so it "
-            "cannot conflict with another branch doing the same (#585)."
-        )
     if regressions or improvements:
+        _report_movement(regressions, improvements, bound)
         return 1
     print(
         f"OK: {len(RATCHETED)} debt counters sit exactly on their ceilings and "
