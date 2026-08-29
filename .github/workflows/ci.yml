@@ -109,6 +109,17 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # The same rule, in the two file types the Compose gate cannot read.
+      # `maistro-canvas/frontend` carried
+      # `postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders` twice -- once
+      # as an `os.environ.get` fallback, once as `alembic.ini`'s
+      # `sqlalchemy.url` -- for a database whose port that package's Compose
+      # profile publishes to the host (#432). Position, not value, is what is
+      # checked: a URL in a docstring or an error message is text about a URL,
+      # and only a connection *default* can be picked up by a process nobody
+      # configured.
+      - name: No connection default carries a literal credential
+        run: python3 scripts/check-connection-credentials.py
       # Four chat handlers read `stores.chat_sessions` as a global dictionary,
       # so any authenticated user could list, read, append to or delete any
       # other user's chat by id (#312). Nothing about the text of those
