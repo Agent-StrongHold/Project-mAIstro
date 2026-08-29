@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import {
@@ -171,6 +171,7 @@ export default function Agents() {
   const [intents, setIntents] = useState<IntentRow[]>(DEFAULT_INTENTS);
   const [editIntent, setEditIntent] = useState<string | null>(null);
 
+  const formId = useId();
   const [cName, setCName] = useState("");
   const [cDesc, setCDesc] = useState("");
   const [cModel, setCModel] = useState("gpt-4o");
@@ -639,17 +640,22 @@ export default function Agents() {
 
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create Agent" wide>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* `htmlFor`/`id`, not a bare <label> beside the control: an
+              unassociated label gives the field no accessible name, and a
+              placeholder is not one — it disappears the moment there is a
+              value. axe reported the <select> as nameless outright (#371's
+              scan of this dialog). */}
           <div>
-            <label style={lbl}>Name</label>
-            <input value={cName} onChange={(e) => setCName(e.target.value)} style={inp} placeholder="Agent name" />
+            <label style={lbl} htmlFor={`${formId}-name`}>Name</label>
+            <input id={`${formId}-name`} value={cName} onChange={(e) => setCName(e.target.value)} style={inp} placeholder="Agent name" />
           </div>
           <div>
-            <label style={lbl}>Description</label>
-            <textarea value={cDesc} onChange={(e) => setCDesc(e.target.value)} rows={3} style={{ ...inp, resize: "vertical" as const }} placeholder="What does this agent do?" />
+            <label style={lbl} htmlFor={`${formId}-description`}>Description</label>
+            <textarea id={`${formId}-description`} value={cDesc} onChange={(e) => setCDesc(e.target.value)} rows={3} style={{ ...inp, resize: "vertical" as const }} placeholder="What does this agent do?" />
           </div>
           <div>
-            <label style={lbl}>Model</label>
-            <select value={cModel} onChange={(e) => setCModel(e.target.value)} style={{ ...inp, height: 32 }}>
+            <label style={lbl} htmlFor={`${formId}-model`}>Model</label>
+            <select id={`${formId}-model`} value={cModel} onChange={(e) => setCModel(e.target.value)} style={{ ...inp, height: 32 }}>
               {MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
