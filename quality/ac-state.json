@@ -9,16 +9,16 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 178,
-    "specs_with_ac_heading": 170,
-    "specs_with_ac_ids": 32,
+    "specs": 179,
+    "specs_with_ac_heading": 171,
+    "specs_with_ac_ids": 33,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 600,
-    "criteria_annotated": 214,
-    "markers_found": 319,
+    "criteria_declared": 606,
+    "criteria_annotated": 220,
+    "markers_found": 325,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 238,
+    "gherkin_criteria": 244,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 0,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 21.3053
+    "design_coverage": 21.9349
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,8 +540,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 21.3053,
-    "decisions": 124,
+    "percent": 21.9349,
+    "decisions": 125,
     "decisions_scoring_zero": 96,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1310,6 +1310,13 @@
       },
       {
         "id": "ADR-082826-d9f5",
+        "declared_status": "Accepted",
+        "criteria": 6,
+        "reachable": 6,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082926-0b72",
         "declared_status": "Accepted",
         "criteria": 6,
         "reachable": 6,
@@ -5722,6 +5729,116 @@
           "form": "gherkin",
           "scenario": [
             "Effective values are observable"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082926-0b72",
+      "file": "docs/specs/SPEC-082926-0b72-conductor-settings-durability.md",
+      "layer": "Foundation",
+      "declared_status": "AC Defined",
+      "implements": [
+        "- maistro-engine#ADR-082926-0b72"
+      ],
+      "declares_non_measurable": false,
+      "declared_unproven": [],
+      "has_ac_heading": true,
+      "criteria_total": 6,
+      "annotated": 6,
+      "gherkin_criteria": 6,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 6
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082926-0b72/AC-1",
+          "claimed": false,
+          "module": "services.settings_store",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_settings_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Settings persist as one versioned envelope"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-0b72/AC-2",
+          "claimed": false,
+          "module": "routes.settings",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_settings_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A settings write is acknowledged only after a read-back",
+            "A write the store did not take is not acknowledged"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-0b72/AC-3",
+          "claimed": false,
+          "module": "services.settings_store",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_settings_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Secret material is refused rather than stored"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-0b72/AC-4",
+          "claimed": false,
+          "module": "routes.settings",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_settings_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A stale write is refused with the current value",
+            "An undeclared write is last-writer-wins by choice"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-0b72/AC-5",
+          "claimed": false,
+          "module": "services.settings_store",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_settings_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "Settings survive a restart",
+            "An older envelope migrates forward on read",
+            "A forward-version envelope is refused, not coerced",
+            "An invalid value never reaches the store"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-0b72/AC-6",
+          "claimed": false,
+          "module": "services.settings_store",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_settings_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A volatile preview value is labelled and never persisted",
+            "Clearing the overlay does not disturb the record"
           ],
           "rung": "reachable"
         }
@@ -13752,6 +13869,21 @@
           "rung": "reachable"
         }
       ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
+    },
+    {
+      "id": "ADR-082926-0b72",
+      "file": "docs/adr/ADR-082926-0b72-conductor-settings-are-durable-or-the-write-fails.md",
+      "declared_status": "Accepted",
+      "specs": [
+        "SPEC-082926-0b72"
+      ],
+      "measurable_specs": 1,
+      "own_criteria": 0,
+      "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
       "declared_unproven": [],
