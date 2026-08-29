@@ -30,7 +30,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
 | Run / NodeRun / Attempt lifecycle | `maistro.runs`, `maistro.runtime` | Run, NodeRun, Attempt, ExecutionRuntime | itself (canonical) | `runs.pg_store` (canonical, #132), `runs.sqlite_store`, `runs.store` | caller-supplied `actor_principal_id` only |
-| Graph execution | `maistro.graph` | Graph, Node, GraphExecutionState | `graph.durable_runs` over `maistro.runs` | `graph.durable_runs.stores` (in-memory + execution store) | — |
+| Graph execution | `maistro.graph` | Graph, Node, GraphExecutionState | `graph.durable_runs.canonical_store` over `maistro.runs` + `graph.durable_runs.continuation` | `graph.durable_runs.stores` (document-shaped; kept for pre-convergence records) | — |
 | Request front door and DI | `maistro.conduit`, `maistro.container` | Request admission | none — Conduit decides and delegates, holds no state | — | container-wired Warden/Sentinel |
 | Task queue and runner | `maistro.tasks` | Admission receipt | `tasks.queue` + `tasks.status` (second universal lifecycle) | `TaskRecord` upsert, best-effort (ADR-018) | `security.task_policy` |
 | A2A delegation | `maistro.a2a` | Child Run | `a2a.lifecycle` worker pool (third universal lifecycle) | — | `a2a.guest_peers` trust tiers |
@@ -90,7 +90,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
 | Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/23` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-081626-f383, ADR-082826-b601 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45, #251 |
-| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/60` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
+| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/64` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
 | Request front door and DI | `maistro.container.route_request` | `0/2` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/12` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `0/5` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |

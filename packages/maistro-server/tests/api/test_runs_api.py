@@ -30,6 +30,7 @@ async def wired():
         admitter,
         _templates,
         _schedules,
+        _continuations,
     ) = await wire_execution_spine(None, workspace_id="test-workspace")
     configure_task_queue(admitter=admitter)
     runs_api.configure_run_store(run_store)

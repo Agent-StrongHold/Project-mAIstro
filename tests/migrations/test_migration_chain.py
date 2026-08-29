@@ -72,6 +72,7 @@ EXPECTED_TABLES = frozenset(
         "design_projects",
         "episodic_memories",
         "event_log",
+        "graph_continuations",
         "graph_templates",
         "handler_invocations",
         "knowledge_nodes",

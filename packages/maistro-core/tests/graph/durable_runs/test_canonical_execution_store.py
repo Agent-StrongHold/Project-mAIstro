@@ -61,6 +61,7 @@ async def _bound_store() -> tuple[
     return store, run_store, execution_store, record, node_run.node_run_id
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_the_attempt_is_created_once_in_the_store_and_mirrored_here() -> None:
     store, run_store, execution_store, record, node_run_id = await _bound_store()
 
@@ -73,6 +74,7 @@ async def test_the_attempt_is_created_once_in_the_store_and_mirrored_here() -> N
     assert attempt.ordinal == 1
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_a_second_active_attempt_is_still_refused() -> None:
     """The guard survives the delegation: one physical execution per NodeRun
     at a time is the invariant, not an implementation detail of either store."""
@@ -83,6 +85,7 @@ async def test_a_second_active_attempt_is_still_refused() -> None:
         await execution_store.create_attempt(node_run_id)
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_the_records_own_precondition_still_fires_on_the_delegated_path() -> None:
     """The aggregate knows this Run is finished with the node before the
     canonical row does, so it is the one that has to refuse."""
@@ -98,6 +101,7 @@ async def test_the_records_own_precondition_still_fires_on_the_delegated_path() 
         await execution_store.create_attempt(node_run_id)
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_a_lease_renewal_goes_to_the_store_that_holds_the_lease() -> None:
     store, run_store, execution_store, record, node_run_id = await _bound_store()
     attempt = await execution_store.create_attempt(
@@ -122,6 +126,7 @@ async def test_a_lease_renewal_goes_to_the_store_that_holds_the_lease() -> None:
     assert persisted.attempts[0].execution_lease.expires_at == renewed.execution_lease.expires_at
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_settling_an_attempt_the_record_never_saw_is_a_disagreement() -> None:
     """An Attempt created straight on the spine is not in this aggregate, and
     mirroring it in silently would make the record claim a physical history it
@@ -133,6 +138,7 @@ async def test_settling_an_attempt_the_record_never_saw_is_a_disagreement() -> N
         await execution_store.transition_attempt(stranger.attempt_id, AttemptStatus.RUNNING)
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_an_attempt_under_a_node_run_this_record_does_not_have() -> None:
     _store, _run_store, execution_store, _record, _node_run_id = await _bound_store()
 
