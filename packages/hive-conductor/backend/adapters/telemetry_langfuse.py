@@ -1,5 +1,13 @@
 """OpenTelemetry tracing — exports to Langfuse via OTLP.
 
+Requires the `observability` extra (`pip install hive-conductor[observability]`,
+which pulls `maistro-core[observability]`). Nothing here imports the Langfuse
+SDK — the endpoint speaks OTLP — and the `langfuse` package was for a long time
+the only telemetry dependency this app declared, while the OpenTelemetry
+packages `_init_tracer` actually imports were declared nowhere (#514). Their
+absence is caught by the broad `except Exception` below and reported as
+`_tracer = None`, which is indistinguishable from "tracing is switched off".
+
 Env vars:
   OTEL_EXPORTER_OTLP_ENDPOINT  — Langfuse OTEL endpoint (e.g. https://cloud.langfuse.com/api/public/otel)
   OTEL_EXPORTER_OTLP_HEADERS   — "Authorization=Basic <base64(public_key:secret_key)>"

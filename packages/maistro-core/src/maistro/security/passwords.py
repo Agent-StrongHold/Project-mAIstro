@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from argon2 import PasswordHasher
+
+logger = logging.getLogger("maistro.security.passwords")
 
 _ARGON2_PREFIX = "$argon2"
 _BCRYPT_PREFIX = "$2"
@@ -47,7 +50,21 @@ def verify_password(plain: str, stored: str) -> bool:
     if stored.startswith(_BCRYPT_PREFIX):
         try:
             import bcrypt
-
+        except ImportError:
+            # bcrypt is `maistro-core[bcrypt]`, so a deployment with no legacy
+            # columns need not carry it (#514). ImportError was not caught
+            # here, and it is not a ValueError: absence turned a login against
+            # a legacy hash into a 500 from the route rather than a denial —
+            # the same "an error where a decision belonged" the Argon2 branch
+            # above was corrected for. Fail closed, and say why, because a
+            # silent False on a correct password is indistinguishable from a
+            # wrong one to the person who cannot log in.
+            logger.error(
+                "Cannot verify a legacy bcrypt hash: bcrypt is not installed. "
+                "Install maistro-core[bcrypt] to verify pre-Argon2id passwords."
+            )
+            return False
+        try:
             return bcrypt.checkpw(plain.encode(), stored.encode())
         except (ValueError, TypeError):
             return False

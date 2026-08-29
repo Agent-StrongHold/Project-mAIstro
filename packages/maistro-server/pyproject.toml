@@ -7,17 +7,19 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-    "maistro-core>=0.9.0",
+    # `[llm]` rather than a raw `fastmcp` pin: nothing under
+    # `src/maistro_server` imports fastmcp. It is reached through the
+    # maistro-core tool-server modules the API imports, and that package
+    # already expresses the requirement as an extra -- which maistro-rsi
+    # depends on for exactly this reason. A duplicate direct pin restated the
+    # requirement without naming what needs it, and carried its own range to
+    # drift from core's (#514).
+    "maistro-core[llm]>=0.9.0",
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.34,<1",
-    # fastmcp resolves at 3.x in the workspace lock, so the cap is <4 —
-    # the >=2.0 floor predates that major and is kept as the true minimum.
-    "fastmcp>=2.0,<4",
-    # Floor raised from >=2.60 to match hive-conductor, which declares the
-    # same dep: two packages in one workspace advertising different
-    # langfuse ranges is what makes a naive <3 cap look safe here when it
-    # would in fact make the workspace unsatisfiable (lock resolves 4.x).
-    "langfuse>=3.9.3,<5",
+    # langfuse was declared here and imported nowhere in `src/maistro_server`;
+    # unlike hive-conductor this package has no telemetry adapter aimed at a
+    # Langfuse OTLP endpoint either, so there is nothing to re-home (#514).
     "alembic>=1.14",
     "psycopg[binary]>=3.2",
 ]
