@@ -116,8 +116,12 @@ class BubblewrapSandboxBackend:
             "/proc",
             "--dev",
             "/dev",
+            # nosec B108 — this is the mount point *inside* the sandbox, not a
+            # host path being written to. `--tmpfs /tmp` is what stops the
+            # sandbox seeing the host's /tmp at all, so the finding is exactly
+            # inverted here: removing it is what would be insecure.
             "--tmpfs",
-            "/tmp",
+            "/tmp",  # nosec B108
         ]
         for path in _RO_BINDS:
             if Path(path).exists():
