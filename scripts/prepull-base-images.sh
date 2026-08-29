@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-pull the base images a Dockerfile needs, retrying the fetch (#204).
+# Pre-pull the external images a Dockerfile needs, retrying the fetch (#204).
 #
 # Why this exists
 # ---------------
@@ -28,10 +28,10 @@
 # Why the image list is derived, not written down
 # -----------------------------------------------
 # A hand-maintained list in the workflow rots the first time a Dockerfile gains
-# a stage, and rots silently: the missing image is simply pulled by `docker
-# build` instead, so the retry quietly stops covering it and nothing fails until
-# the next registry blip. Parsing the Dockerfiles means the list cannot drift
-# from what is actually built.
+# a stage or an external `COPY --from=...` source, and rots silently: the missing
+# image is simply pulled by `docker build` instead, so the retry quietly stops
+# covering it and nothing fails until the next registry blip. Parsing the
+# Dockerfiles means the list cannot drift from what is actually built.
 #
 # Usage:
 #   scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
@@ -49,17 +49,30 @@ usage() {
 	exit 2
 }
 
-# Every external base image the given Dockerfiles reference, deduplicated.
+# Every external image the given Dockerfiles reference, deduplicated.
 #
-# Skips the three things that are not pullable images:
+# Docker can introduce an external image in two places:
+#   * `FROM image [AS alias]`;
+#   * `COPY --from=image ...`, where `image` is not a prior stage alias/index.
+#
+# Skips things that are not pullable images:
 #   * `scratch`, which is the empty base and has no registry entry;
-#   * a reference to an earlier build stage (`FROM builder`), tracked via the
-#     `AS <alias>` names seen so far — pulling those would 404;
-#   * an unresolved build argument (`FROM ${BASE}`), which cannot be resolved
-#     without the build args. Reported on stderr rather than dropped in silence,
-#     since it means this script no longer covers that image.
+#   * a reference to an earlier build stage, tracked via `AS <alias>` and the
+#     numeric stage indexes seen so far;
+#   * an unresolved build argument, which cannot be resolved without build args.
+#     It is reported on stderr rather than dropped silently, since it means this
+#     script no longer covers that image.
 base_images() {
 	awk '
+		function emit_external(image, origin, low) {
+			low = tolower(image)
+			if (image ~ /\$/) {
+				print FILENAME ": cannot resolve " image " from " origin ", not pre-pulled" > "/dev/stderr"
+			} else if (low != "scratch" && !(low in stage) && !(image ~ /^[0-9]+$/)) {
+				print image
+			}
+		}
+
 		toupper($1) == "FROM" {
 			image = ""
 			alias = ""
@@ -68,15 +81,22 @@ base_images() {
 				if (image == "") { image = $i; continue }
 				if (toupper($i) == "AS" && i < NF) alias = tolower($(i + 1))
 			}
-			low = tolower(image)
-			if (image ~ /\$/) {
-				print FILENAME ": cannot resolve " image ", not pre-pulled" > "/dev/stderr"
-			} else if (low != "scratch" && !(low in stage)) {
-				print image
-			}
-			# Registered *after* the image is judged, so `FROM x AS builder`
+			emit_external(image, "FROM")
+			# Registered after the image is judged, so `FROM x AS builder`
 			# followed by `FROM builder` resolves in that order.
 			if (alias != "") stage[alias] = 1
+			stage_index++
+			next
+		}
+
+		toupper($1) == "COPY" {
+			for (i = 2; i <= NF; i++) {
+				if ($i ~ /^--from=/) {
+					image = $i
+					sub(/^--from=/, "", image)
+					emit_external(image, "COPY --from")
+				}
+			}
 		}
 	' "$@" | sort -u
 }
@@ -117,7 +137,7 @@ main() {
 	local images
 	images="$(base_images "$@")"
 	if [[ -z ${images} ]]; then
-		echo "::error::no base images found in: $*" >&2
+		echo "::error::no external images found in: $*" >&2
 		exit 1
 	fi
 
