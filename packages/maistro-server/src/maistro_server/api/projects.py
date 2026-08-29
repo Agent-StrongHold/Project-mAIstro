@@ -114,7 +114,9 @@ async def get_root_project(
     try:
         return await project_store.root_for_workspace(workspace_id)
     except ProjectNotFound as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        ) from exc
 
 
 @router.get("/{project_id}", response_model=Project)
