@@ -17,7 +17,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -74,7 +74,14 @@ class NodeResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     success: bool
-    output: dict[str, Any] | BaseModel | None = None
+    #: ``SerializeAsAny`` because the union member is bare ``BaseModel``, which
+    #: declares no fields. Without it Pydantic serializes a typed output through
+    #: that empty declared schema and the node's own fields are dropped -- so a
+    #: persisted Attempt said the node produced nothing (#566). Duck-typed
+    #: serialization writes the runtime model's real fields instead. Reading a
+    #: record back gives the mapping, not the original class: the envelope never
+    #: recorded which model it was, and inventing one here would be a guess.
+    output: dict[str, Any] | SerializeAsAny[BaseModel] | None = None
     latency_ms: int = 0
     error_code: str | None = None  # http status / exception class / "timeout"
     error_message: str | None = None
