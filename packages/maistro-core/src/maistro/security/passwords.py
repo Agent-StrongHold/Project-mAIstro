@@ -63,6 +63,14 @@ def verify_password(plain: str, stored: str) -> bool:
                 "Cannot verify a legacy bcrypt hash: bcrypt is not installed. "
                 "Install maistro-core[bcrypt] to verify pre-Argon2id passwords."
             )
+            # Denied at the same cost as every other denial (#667). Returning
+            # here directly answered in ~0 ms while an unknown username spends
+            # a decoy Argon2 verification at ~88 ms, so in a deployment with
+            # legacy rows and no bcrypt the response time told an attacker
+            # which usernames exist *and* have never been migrated. That is
+            # #366's enumeration oracle, reopened for exactly the accounts
+            # carrying the oldest hashes.
+            _spend_decoy_verification(plain)
             return False
         try:
             return bcrypt.checkpw(plain.encode(), stored.encode())
@@ -92,6 +100,18 @@ def _decoy_hash() -> str:
     return _DECOY_HASH
 
 
+def _spend_decoy_verification(plain: str) -> None:
+    """Pay one real Argon2 verification and discard the answer.
+
+    The unit of cost every denial in this module is measured against, named
+    once so its two callers cannot drift: `equal_cost_verify` spends it for an
+    account that does not exist, and the legacy branch above spends it for an
+    account whose hash cannot be checked here. A denial that skips it is a
+    denial that announces which kind of denial it was.
+    """
+    verify_password(plain, _decoy_hash())
+
+
 def equal_cost_verify(plain: str, stored: str | None) -> bool:
     """Verify `plain`, spending the same work whether or not the account exists.
 
@@ -116,7 +136,7 @@ def equal_cost_verify(plain: str, stored: str | None) -> bool:
     measurable across a network.
     """
     if stored is None:
-        verify_password(plain, _decoy_hash())
+        _spend_decoy_verification(plain)
         return False
     return verify_password(plain, stored)
 
