@@ -527,8 +527,15 @@ def unknown_baseline_entries(
 def _report_unknown_entries(unknown: list[tuple[str, str]]) -> None:
     print(f"\n{len(unknown)} baseline entry(ies) name NO module the graph knows:\n")
     for entry, suggestion in unknown:
-        hint = f" — did you mean {suggestion!r}?" if suggestion else ""
-        print(f"  {entry}{hint}")
+        # Two different faults, and they take opposite fixes. An entry that is
+        # some module's *report label* is a live module written the wrong way,
+        # and respelling it keeps the ratchet's grip. An entry matching nothing
+        # at all is a phantom -- the module was deleted or never existed -- and
+        # respelling it is impossible; it has to go.
+        print(
+            f"  {entry}"
+            + (f"  → rename to {suggestion!r}" if suggestion else "  (no such module — delete it)")
+        )
     print(
         "\nAn entry the walk cannot resolve never matches and never retires, and every\n"
         "gate that asks this baseline about a module reads 'not listed' for one that is\n"
