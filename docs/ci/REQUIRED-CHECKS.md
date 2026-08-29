@@ -84,7 +84,6 @@ wait forever for an `Expected` result.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
-| Autonomous Merge Safety | `autonomous-merge-admissibility` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |

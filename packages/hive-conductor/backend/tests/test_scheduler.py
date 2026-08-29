@@ -404,9 +404,11 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
             )
         )
 
-        from services.dag_agents import _run_store
+        # The fallback store, because this test boots no Container: with one,
+        # the Run is a row on the canonical spine instead (#44).
+        from services.dag_agents import _fallback_run_store
 
-        runs = [r.run for r in _run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-prov"]
         assert len(scheduled) == 1, "exactly one Run, and it names its schedule"
         provenance = scheduled[0].provenance
