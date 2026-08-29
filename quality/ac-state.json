@@ -4783,12 +4783,14 @@
           "id": "SPEC-081226-bb3a/AC-8",
           "claimed": false,
           "module": "maistro.personas.model",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/personas/test_catalog_membership.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Persona catalog membership mutates nothing"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-9",
@@ -4807,12 +4809,14 @@
           "id": "SPEC-081226-bb3a/AC-10",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_legacy_import_provenance.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Legacy definitions import with provenance"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-11",

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -13,11 +11,11 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.spec.agent_spec import AgentRole
 from maistro.graph.definitions import NodeTemplate
+from maistro.graph.import_provenance import SOURCE_IMPORT_PROVENANCE, import_provenance
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RECIPES_DIR = Path(__file__).parent / "yaml"
-SOURCE_IMPORT_PROVENANCE = "source_import_provenance"
 LEGACY_RECIPE_SNAPSHOT = "legacy_recipe_snapshot"
 
 
@@ -59,13 +57,12 @@ def agent_recipe_to_node_template(
         raise ValueError("node_type must be a non-empty string")
 
     snapshot = recipe.model_dump(mode="json")
-    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
-    provenance = {
-        "source_format": "agent_recipe",
-        "source_definition": "AgentRecipe",
-        "source_name": recipe.name,
-        "source_hash": hashlib.sha256(encoded).hexdigest(),
-    }
+    provenance = import_provenance(
+        snapshot,
+        source_format="agent_recipe",
+        source_definition="AgentRecipe",
+        source_name=recipe.name,
+    )
     return NodeTemplate(
         workspace_id=workspace_id,
         name=recipe.name,
