@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPatch } from "../lib/api";
-import { PageHeader } from "../components/shared";
+import { PageHeader, SecretField } from "../components/shared";
 
 type Settings = Record<string, unknown>;
 
@@ -83,7 +83,15 @@ export default function Settings() {
         <div className="card" style={{ borderLeft: "3px solid var(--danger)", marginBottom: 12, maxWidth: 400 }}>
           <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginBottom: 6 }}>ELEVATION REQUIRED to edit {elevatingFor}</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="input-field" type="password" placeholder="confirm password" value={elevPassword} onChange={(e) => setElevPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void elevateAndSave(elevatingFor); }} />
+            <SecretField
+              label={`Your password, to edit ${elevatingFor}`}
+              value={elevPassword}
+              onChange={setElevPassword}
+              autoComplete="current-password"
+              required
+              onKeyDown={(e) => { if (e.key === "Enter") void elevateAndSave(elevatingFor); }}
+              style={{ flex: 1 }}
+            />
             <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => void elevateAndSave(elevatingFor)}>elevate</button>
             <button className="btn" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => { setElevating(false); setElevatingFor(null); }}>cancel</button>
           </div>
