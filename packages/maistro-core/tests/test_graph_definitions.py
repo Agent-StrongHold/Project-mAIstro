@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.graph.definitions import Edge, Graph, GraphTemplate, Node, NodeTemplate
+from maistro.graph.definitions import (
+    Edge,
+    Graph,
+    GraphTemplate,
+    Node,
+    NodeTemplate,
+    TemplateProvenance,
+)
 
 
+@pytest.mark.ac("SPEC-081226-bb3a/AC-1")
 def test_node_template_instantiation_is_independent_and_records_exact_provenance() -> None:
     template = NodeTemplate(
         template_id="node-template",
@@ -25,6 +33,7 @@ def test_node_template_instantiation_is_independent_and_records_exact_provenance
     assert first.source_template.template_hash == template.content_hash
     assert second.source_template == first.source_template
 
+    before_edit = first.source_template.model_copy(deep=True)
     first.parameters["nested"]["temperature"] = 0.9
     first.binding_ids.append("filesystem")
 
@@ -33,9 +42,74 @@ def test_node_template_instantiation_is_independent_and_records_exact_provenance
     assert template.parameters["nested"]["temperature"] == 0.2
     assert template.binding_ids == ["search"]
 
+    # AC-1's second clause, and the half an "objects are independent" test
+    # naturally omits: editing the Node must not cost it the identity of the
+    # version it came from. Asserted *after* the edit, because before it the
+    # claim is about instantiation rather than about editing.
+    assert first.source_template == before_edit
+    assert first.source_template.template_version == 3
+    assert first.source_template.template_hash == template.content_hash
 
+
+@pytest.mark.ac("SPEC-081226-bb3a/AC-2")
 def test_template_change_does_not_retroactively_change_existing_node() -> None:
+    """AC-2 says *two* Nodes, and it means it.
+
+    One Node proves the copy is independent of the template object. Two prove
+    the property AC-2 actually names -- that publishing T@2 reaches none of the
+    objects already instantiated from T@1 -- because a mechanism that updated
+    live objects would have to reach both, and a test holding one cannot see
+    the difference between "not updated" and "there was only one".
+    """
     original = NodeTemplate(
+        template_id="node-template",
+        workspace_id="workspace-1",
+        version=1,
+        name="Coder",
+        node_type="agent",
+        # Nested on purpose. Pydantic rebuilds a top-level `dict[str, Any]`
+        # during validation, so a flat fixture is protected from aliasing by
+        # accident and this test would pass against a Node that shares its
+        # template's containers. The nested value is where sharing shows.
+        parameters={"model": "v1", "tuning": {"temperature": 0.2}},
+    )
+    first = original.instantiate(node_id="node-1")
+    second = original.instantiate(node_id="node-2")
+    before = [first.model_copy(deep=True), second.model_copy(deep=True)]
+
+    original.model_copy(deep=True, update={"version": 2, "parameters": {"model": "v2"}})
+
+    # Publishing via `model_copy` cannot reach anything by construction, so on
+    # its own the assertions below hold for a design that got this wrong. The
+    # stronger precondition is the one that makes them falsifiable: mutate the
+    # template object *in place*, which is the most aggressive form of "T
+    # changed" available, and require the Nodes still not to move. A design in
+    # which a Node aliased its template's containers, or resolved them lazily,
+    # fails here and passes without it.
+    original.parameters["tuning"]["temperature"] = 0.9
+    original.parameters["model"] = "v2-in-place"
+    original.binding_ids.append("leaked")
+    original.metadata["leaked"] = True
+
+    # "unchanged until an explicit update is invoked": whole-object equality,
+    # not a field spot-check, so a new field that did leak would fail here.
+    assert first == before[0]
+    assert second == before[1]
+    for node in (first, second):
+        assert node.parameters == {"model": "v1", "tuning": {"temperature": 0.2}}
+        assert node.source_template is not None
+        assert node.source_template.template_version == 1
+
+
+@pytest.mark.ac("SPEC-081226-bb3a/AC-3")
+def test_instantiation_binds_to_an_exact_version() -> None:
+    """Each Node materializes its own version's definition, and says which.
+
+    The hash is asserted, not just the version number: provenance that names a
+    version without pinning the content it had is what lets a redefined version
+    go unnoticed, and it is the pairing `Node.source_template` exists to carry.
+    """
+    v1 = NodeTemplate(
         template_id="node-template",
         workspace_id="workspace-1",
         version=1,
@@ -43,19 +117,29 @@ def test_template_change_does_not_retroactively_change_existing_node() -> None:
         node_type="agent",
         parameters={"model": "v1"},
     )
-    instance = original.instantiate(node_id="node-1")
+    v2 = v1.model_copy(deep=True, update={"version": 2, "parameters": {"model": "v2"}})
 
-    updated = original.model_copy(
-        deep=True,
-        update={"version": 2, "parameters": {"model": "v2"}},
-    )
+    from_v1 = v1.instantiate(node_id="node-1")
+    from_v2 = v2.instantiate(node_id="node-2")
 
-    assert instance.parameters == {"model": "v1"}
-    assert instance.source_template is not None
-    assert instance.source_template.template_version == 1
-    assert updated.instantiate().source_template.template_version == 2
+    # "each materializes its own version's definition"
+    assert from_v1.parameters == {"model": "v1"}
+    assert from_v2.parameters == {"model": "v2"}
+
+    # "and each carries that version and hash as provenance"
+    assert from_v1.source_template is not None
+    assert from_v2.source_template is not None
+    assert from_v1.source_template.template_version == 1
+    assert from_v2.source_template.template_version == 2
+    assert from_v1.source_template.template_hash == v1.content_hash
+    assert from_v2.source_template.template_hash == v2.content_hash
+    # Two versions with different content are two different hashes; without
+    # this the two assertions above would also hold if the hash ignored
+    # content entirely.
+    assert v1.content_hash != v2.content_hash
 
 
+@pytest.mark.ac("SPEC-081226-bb3a/AC-4")
 def test_graph_template_instantiation_allocates_independent_topology_and_scope() -> None:
     source = Node(node_id="source", node_type="agent", name="Source", parameters={"x": [1]})
     sink = Node(node_id="sink", node_type="transform", name="Sink")
@@ -89,22 +173,100 @@ def test_graph_template_instantiation_allocates_independent_topology_and_scope()
     assert second.edges[0].from_node in second_ids
     assert second.edges[0].to_node in second_ids
 
+    template_before = template.model_copy(deep=True)
     first.nodes[0].parameters["x"].append(2)
     first.metadata["labels"].append("changed")
+    # AC-4 names a Node *and an Edge*. The edge was the untested half: edges
+    # are remapped onto fresh ids during instantiation, so an aliased edge
+    # would be a different defect from an aliased node and would survive a
+    # test that only ever mutated nodes.
+    first.edges[0].condition = "always"
+    first.edges[0].metadata["touched"] = True
 
     assert second.nodes[0].parameters["x"] == [1]
     assert template.nodes[0].parameters["x"] == [1]
     assert second.metadata["labels"] == ["canonical"]
     assert template.metadata["labels"] == ["canonical"]
+    assert second.edges[0].condition is None
+    assert template.edges[0].condition is None
+    assert template.edges[0].metadata == {}
+    # "Then GT@1 is unchanged" -- the whole template, not the fields this test
+    # happened to poke.
+    assert template == template_before
 
 
+@pytest.mark.ac("SPEC-081226-bb3a/AC-5")
+def test_a_graph_template_version_pins_its_nested_node_templates() -> None:
+    """Updating a NodeTemplate cannot reach a GraphTemplate already published.
+
+    The pin is structural rather than enforced: `GraphTemplate.nodes` holds
+    `Node` snapshots, not NodeTemplate references, so there is no live edge for
+    an update to travel along. That is worth an executable assertion precisely
+    *because* it is structural -- the obvious "improvement" of storing
+    `(template_id, version)` and resolving it at instantiation would satisfy
+    every other criterion in this file while silently breaking this one, and
+    nothing else here would notice.
+
+    The comparison is the whole effective definition, modulo the identities
+    that are freshly allocated by design (AC-4 covers those), so a change
+    leaking in through any field fails this rather than only the ones a
+    spot-check thought to name.
+    """
+    node_template = NodeTemplate(
+        template_id="node-template",
+        workspace_id="workspace-1",
+        version=1,
+        name="Researcher",
+        node_type="agent",
+        parameters={"model": "v1"},
+    )
+    graph_template = GraphTemplate(
+        template_id="graph-template",
+        workspace_id="workspace-1",
+        version=1,
+        name="Pipeline",
+        nodes=[node_template.instantiate(node_id="researcher")],
+    )
+
+    def effective(graph):
+        """Everything the definition says, minus the freshly-allocated ids."""
+        return [node.model_dump(exclude={"node_id"}, mode="json") for node in graph.nodes]
+
+    before = effective(graph_template.instantiate(project_id="project-a"))
+
+    # The NodeTemplate moves on. A new version, because redefining version 1
+    # in place is refused by the store (AC-7) -- so this is the only shape the
+    # update can legitimately take.
+    node_template.model_copy(deep=True, update={"version": 2, "parameters": {"model": "v2"}})
+
+    after = effective(graph_template.instantiate(project_id="project-b"))
+
+    assert after == before
+    assert graph_template.nodes[0].parameters == {"model": "v1"}
+    # Still pinned to the version it was published against, not the latest.
+    assert after[0]["source_template"]["template_version"] == 1
+    assert after[0]["source_template"]["template_hash"] == node_template.content_hash
+
+
+@pytest.mark.ac("SPEC-081226-bb3a/AC-6")
 def test_objects_can_be_saved_as_new_workspace_wide_templates() -> None:
+    """All three clauses, including the one that had no field to bind to.
+
+    "Their provenance identifies the source Node" was unassertable until
+    ADR-082926-d0dc gave templates a `saved_from`: `TemplateProvenance` runs
+    object -> template, and nothing ran the other way. A template promoted out
+    of a live object was indistinguishable from one authored from nothing.
+    """
     node = Node(
         node_id="live-node",
         node_type="agent",
         name="Edited Coder",
-        parameters={"model": "new-model"},
+        parameters={"model": "new-model", "tuning": {"temperature": 0.4}},
+        source_template=TemplateProvenance(
+            template_id="upstream", template_version=2, template_hash="upstream-hash"
+        ),
     )
+    node_before = node.model_copy(deep=True)
     node_template = NodeTemplate.from_node(
         node,
         workspace_id="workspace-1",
@@ -138,6 +300,54 @@ def test_objects_can_be_saved_as_new_workspace_wide_templates() -> None:
     assert new_graph.source_template is not None
     assert new_graph.source_template.template_id == "saved-graph-template"
     assert new_graph.nodes[0].node_id != node.node_id
+
+    # "and their provenance identifies the source Node"
+    assert node_template.saved_from is not None
+    assert node_template.saved_from.object_kind == "node"
+    assert node_template.saved_from.object_id == "live-node"
+    assert node_template.saved_from.object_hash
+    # Lineage is a chain, not one hop: this template knows the Node it came
+    # from, and that the Node itself came from `upstream@2`.
+    assert node_template.saved_from.object_source_template == node.source_template
+
+    assert graph_template.saved_from is not None
+    assert graph_template.saved_from.object_kind == "graph"
+    assert graph_template.saved_from.object_id == "live-graph"
+
+    # "and the Node itself is unchanged" -- whole-object equality, after the
+    # save and after both instantiations, not a field spot-check.
+    assert node == node_before
+
+
+def test_saved_from_stays_out_of_the_content_hash() -> None:
+    """The load-bearing half of ADR-082926-d0dc.
+
+    Two templates saved from two *different* Nodes carrying identical content
+    are identical content. If `saved_from` reached the hash they would hash
+    differently, and AC-7's idempotent re-registration ("re-registering
+    identical content is a no-op") would start refusing them as redefinition
+    conflicts. Provenance about where content came from must not change what
+    the content is.
+    """
+    shared = {
+        "node_type": "agent",
+        "name": "Coder",
+        "parameters": {"model": "m", "tuning": {"temperature": 0.4}},
+    }
+    first = Node(node_id="node-a", **shared)
+    second = Node(
+        node_id="node-b",
+        source_template=TemplateProvenance(
+            template_id="elsewhere", template_version=7, template_hash="other-hash"
+        ),
+        **shared,
+    )
+
+    a = NodeTemplate.from_node(first, workspace_id="workspace-1", template_id="t-a")
+    b = NodeTemplate.from_node(second, workspace_id="workspace-2", template_id="t-b")
+
+    assert a.saved_from != b.saved_from
+    assert a.content_hash == b.content_hash
 
 
 def test_graph_requires_workspace_project_scope_and_unique_node_ids() -> None:

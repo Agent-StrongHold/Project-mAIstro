@@ -64,7 +64,7 @@ def _pause_metadata_after_answer(
     return metadata
 
 
-def _answer_record(
+def answer_record(
     record: DurableRunRecord,
     node_id: str,
     answer: dict[str, Any],
@@ -180,7 +180,7 @@ class InMemoryDurableRunStore:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
-            updated = _answer_record(record, node_id, answer)
+            updated = answer_record(record, node_id, answer)
             self._rows[run_id] = updated
             return _clone(updated)
 
@@ -320,7 +320,7 @@ class SqliteDurableRunStore:
             return await asyncio.to_thread(
                 _update_sync,
                 self,
-                _answer_record(current, node_id, answer),
+                answer_record(current, node_id, answer),
             )
 
 

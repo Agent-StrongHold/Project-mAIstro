@@ -85,6 +85,12 @@ UPSTREAM_FAILURE = "upstream_error"
 INTERNAL_FAILURE = "internal_error"
 TIMEOUT_FAILURE = "timeout"
 
+#: What a compensated Run records when admission persisted a pre-RUNNING state
+#: and then could not finish (#338). A category like the failure constants
+#: above, and for the same reason: the exception that interrupted admission is
+#: for the log, not for anyone holding the run_id.
+ADMISSION_INCOMPLETE = "admission_incomplete"
+
 
 def failure_category(exc: BaseException) -> str:
     """The failure a chat Run may record, with no provider detail in it.
@@ -316,6 +322,7 @@ class ChatRunAdmitter:
 
 
 __all__ = [
+    "ADMISSION_INCOMPLETE",
     "AGENT_SELECTION_KEY",
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
