@@ -42,81 +42,83 @@ def _under(path: str, *prefixes: str) -> bool:
     return any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in prefixes)
 
 
+def _classify_path(path: str, out: dict[str, bool]) -> None:
+    core = _under(path, "packages/maistro-core")
+    server = _under(path, "packages/maistro-server")
+    hive = _under(path, "packages/hive-conductor")
+
+    if _under(
+        path,
+        "alembic",
+        "tests/migrations",
+        "packages/maistro-core/tests/persistence",
+        "packages/maistro-core/tests/workspaces",
+    ) or (
+        core
+        and any(
+            token in path
+            for token in ("persistence", "workspace", "container", "storage", "run_store")
+        )
+    ):
+        out["postgres"] = True
+
+    if _under(path, "packages/maistro-core/tests/archive") or (core and "archive" in path):
+        out["object_storage"] = True
+
+    if (core and any(token in path for token in ("event", "durable"))) or _under(
+        path, "tests/events", "tests/durable_events"
+    ):
+        out["durable_events"] = True
+
+    if core and any(token in path for token in ("strike", "attempt", "execution", "run")):
+        out["strike_ladder"] = True
+
+    if hive or server or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
+        out["hive_e2e"] = True
+
+    if _under(path, "packages") and (
+        path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py")
+    ):
+        out["wheel_imports"] = True
+
+    # Every shipped image copies package sources; the RSI image additionally
+    # copies tests, scripts, docs, quality data, tools, templates, agents,
+    # formal assets, sbx and .github. Keep this list equal to Dockerfile
+    # COPY inputs rather than pretending a Dockerfile is the only input.
+    if (
+        path.startswith("Dockerfile")
+        or path.startswith(".dockerignore")
+        or path == "README.md"
+        or _under(
+            path,
+            "packages",
+            "alembic",
+            "scripts",
+            "tests",
+            "formal",
+            "tools",
+            "quality",
+            "agents",
+            "templates",
+            "docs",
+            "sbx",
+            ".github",
+        )
+    ):
+        out["docker_build"] = True
+
+
 def classify(paths: Iterable[str]) -> dict[str, bool]:
     """Return a run/skip decision for each expensive specialized CI leg."""
     changed = {PurePosixPath(p).as_posix().lstrip("./") for p in paths if p.strip()}
-    if not changed:
-        # Missing diff evidence is not permission to skip anything.
-        return {leg: True for leg in LEGS}
-    if changed & _GLOBAL:
-        return {leg: True for leg in LEGS}
+    if not changed or changed & _GLOBAL:
+        # Missing diff evidence is not permission to skip anything. Shared
+        # dependency or CI-contract changes likewise invalidate narrow scoping.
+        return dict.fromkeys(LEGS, True)
 
-    out = {leg: False for leg in LEGS}
+    out = dict.fromkeys(LEGS, False)
     for path in changed:
-        core = _under(path, "packages/maistro-core")
-        server = _under(path, "packages/maistro-server")
-        hive = _under(path, "packages/hive-conductor")
-
-        if _under(
-            path,
-            "alembic",
-            "tests/migrations",
-            "packages/maistro-core/tests/persistence",
-            "packages/maistro-core/tests/workspaces",
-        ) or (
-            core
-            and any(
-                token in path
-                for token in ("persistence", "workspace", "container", "storage", "run_store")
-            )
-        ):
-            out["postgres"] = True
-
-        if _under(path, "packages/maistro-core/tests/archive") or (core and "archive" in path):
-            out["object_storage"] = True
-
-        if (core and any(token in path for token in ("event", "durable"))) or _under(
-            path, "tests/events", "tests/durable_events"
-        ):
-            out["durable_events"] = True
-
-        if core and any(token in path for token in ("strike", "attempt", "execution", "run")):
-            out["strike_ladder"] = True
-
-        if hive or server or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
-            out["hive_e2e"] = True
-
-        if _under(path, "packages") and (
-            path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py")
-        ):
-            out["wheel_imports"] = True
-
-        # Every shipped image copies package sources; the RSI image additionally
-        # copies tests, scripts, docs, quality data, tools, templates, agents,
-        # formal assets, sbx and .github. Keep this list equal to Dockerfile
-        # COPY inputs rather than pretending a Dockerfile is the only input.
-        if (
-            path.startswith("Dockerfile")
-            or path.startswith(".dockerignore")
-            or path == "README.md"
-            or _under(
-                path,
-                "packages",
-                "alembic",
-                "scripts",
-                "tests",
-                "formal",
-                "tools",
-                "quality",
-                "agents",
-                "templates",
-                "docs",
-                "sbx",
-                ".github",
-            )
-        ):
-            out["docker_build"] = True
-
+        _classify_path(path, out)
     return out
 
 
