@@ -41,6 +41,31 @@ def build_llm_port() -> LLMPort:
     return HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant=s.llm_http_variant)
 
 
+def conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
+    """Return a request that cannot advertise or carry tool capabilities.
+
+    `ChatCompletionRequest` allows extra fields because several UIs attach
+    presentation metadata such as `tools_scope`. Those extras are intentionally
+    discarded at this trust boundary so a caller cannot smuggle a tool-enabled
+    mode into the raw LLM request. The user's messages/sampling controls remain
+    intact, and an omitted model resolves through the configured deployment
+    default just as it did before containment.
+
+    It lives beside `build_llm_port` rather than in a route module because two
+    routes need it: chat's `/complete` and `/stream`, and voice's `/intent`
+    (#440). A containment rule that each caller restates is a containment rule
+    that eventually differs between callers.
+    """
+    return ChatCompletionRequest(
+        messages=req.messages,
+        model=req.model or get_settings().chat_default_model,
+        stream=False,
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+        tools=None,
+    )
+
+
 def _get_program_context(user_id: str) -> dict[str, Any]:
     """Load the user's program context for system prompt injection."""
     try:
