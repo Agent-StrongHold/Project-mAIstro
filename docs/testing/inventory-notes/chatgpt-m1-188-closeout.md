@@ -11,4 +11,4 @@ This follow-up corrects ADR-082326-8194 from Proposed to Accepted with dated lif
 
 The real PostgreSQL behavioral suite remains `tests/migrations/test_memory_embeddings.py`; the four added root tests pin the decision contract in the always-run evidence session.
 
-The acceptance ledger was regenerated with `check-ac-state.py --run-tests --ratchet --bank` after those four criteria all reached `reachable`. The exact banked design-coverage floor is **17.9322% over 120 taken decisions**, with zero contradicted, unverifiable, or newly unproven completion claims.
+The acceptance ledger was regenerated with `check-ac-state.py --run-tests --ratchet --bank` after those four criteria all reached `reachable`. After merging current `develop` (#585's per-branch notes replaced the single `quality/ac-state.json` ratchet file), the exact banked design-coverage floor is **24.4201% over 129 taken decisions**, folded from `quality/ac-state-notes/chatgpt-m1-188-closeout.json`, with zero contradicted, unverifiable, or newly unproven completion claims.
