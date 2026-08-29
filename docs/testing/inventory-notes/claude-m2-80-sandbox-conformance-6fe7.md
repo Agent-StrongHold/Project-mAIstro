@@ -48,6 +48,18 @@ does not enforce `RLIMIT_NPROC` for a parent holding `CAP_SYS_ADMIN` or
 fail on a root developer container. It is recorded as best-effort in the
 support matrix instead, with the reason.
 
+**Two assertions were about the host's wording, not the sandbox, and CI caught
+them.** `unshare -Ur` is refused in a privileged container and *permitted* on an
+unprivileged runner — nesting is what unprivileged user namespaces are for — so
+asserting the refusal was asserting a property of the host. The test asserts
+what the nested namespace can reach instead: `/etc/passwd` still absent, `/usr`
+still read-only, which holds on both kinds of host and is the property this
+sandbox actually owns. `mount` likewise says "permission denied" in one and
+"must be superuser" in the other, so that test asserts a non-zero exit and an
+unchanged `/proc/self/mounts` rather than a string. Both were then verified by
+re-running the file as an unprivileged user, which reproduces the CI wording
+exactly.
+
 **Two cleanup assertions were vacuous and are fixed here.** They checked that
 `tmp_path / instance.id` no longer existed — but the backend's workdir comes
 from `mkdtemp(prefix=f"{id}-")`, so that path never existed in the first place
