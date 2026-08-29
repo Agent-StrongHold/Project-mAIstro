@@ -3,8 +3,14 @@ id: ADR-082326-8194
 title: "Embedding vectors live on the memory rows, at one declared dimension"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-23
+accepted: 2026-08-23
+history:
+  - status: Proposed
+    date: 2026-08-23
+  - status: Accepted
+    date: 2026-08-23
 substrate:
   - maistro-engine#ADR-082226-5104
 implements: []
@@ -15,6 +21,11 @@ blocked-by: []
 contracts:
   - boundary
 tests: []
+ac-modules:
+  AC-1: maistro.memory.vectors
+  AC-2: maistro.memory.vectors
+  AC-3: maistro.persistence.pg_learnings
+  AC-4: maistro.memory.learnings.durable_hybrid
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -129,6 +140,41 @@ a 1536-dimension column and discover it at the first `INSERT`.
    keeps fetching until the filtered set is full. `relaxed_order` over
    `strict_order` because strict re-sorts every batch to guarantee global
    distance order, at a cost, for a ranking that is already approximate.
+
+## Acceptance criteria
+
+```gherkin
+@AC-1
+Scenario: The durable memory vector width is one declared schema fact
+  Given the memory vector schema and its runtime constant
+  When the declared embedding width is inspected
+  Then both identify 1536 dimensions
+
+@AC-2
+Scenario: A mismatched embedding client is refused before a write
+  Given an embedding client whose dimension differs from the schema
+  When it is wired to durable memory
+  Then configuration fails with both dimensions named
+
+@AC-3
+Scenario: Scope and cosine similarity are enforced in the PostgreSQL query
+  Given a similarity-ranked learning read
+  When its SQL is built
+  Then organization scope and optional agent scope are predicates in the same query as cosine distance
+
+@AC-4
+Scenario: Durable learning vectors have both a producer and a consumer
+  Given a durable hybrid learning store
+  When a learning is stored and later searched
+  Then the row embedding is written and the PostgreSQL similarity reader is used
+```
+
+The acceptance tests above are deliberately small contract tests that run in the
+root evidence session. The existing PostgreSQL suite in
+`tests/migrations/test_memory_embeddings.py` remains the stronger behavioral
+proof: it applies the real migration, verifies `vector(1536)` and HNSW/cosine,
+checks PostgreSQL's query plan contains the scope filter, and exercises the
+producer/consumer path against a real pgvector database.
 
 ## Consequences
 
