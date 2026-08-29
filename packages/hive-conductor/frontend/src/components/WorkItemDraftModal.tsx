@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { labelForWorkType, type WorkItemType } from "../lib/pmCapabilities";
-import { useToast } from "./shared";
+import { Modal, useToast } from "./shared";
 import { useWorkspaces } from "../context/WorkspaceContext";
 
 type ClarifyingQuestion = {
@@ -297,6 +297,21 @@ export function WorkItemDraftModal({
   );
 }
 
+/**
+ * The shared `Modal`, wearing this file's old signature (#371).
+ *
+ * This used to be a private second modal: a fixed-position `<div>` carrying
+ * `role="dialog"` on the *backdrop* rather than on the panel, with no
+ * accessible name, no focus management and no Escape. Fixing the shared
+ * component could not reach it, because it was not a consumer — it was a
+ * duplicate. It is one now, so the dialog semantics arrive here with
+ * everything else.
+ *
+ * The wrapper stays because this component renders the shell from three
+ * places and is itself mounted only while open; `open` is therefore always
+ * true, and threading that constant through three call sites would say
+ * nothing.
+ */
 function ModalShell({
   title,
   onClose,
@@ -307,34 +322,9 @@ function ModalShell({
   children: ReactNode;
 }) {
   return (
-    <div
-      role="dialog"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.35)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onClick={onClose}
-    >
-      <div
-        className="card"
-        style={{ maxWidth: 520, width: "100%", maxHeight: "90vh", overflow: "auto", padding: 20 }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontFamily: "var(--hand)", fontSize: 20 }}>{title}</h2>
-          <button type="button" className="btn" onClick={onClose} style={{ fontSize: 9 }}>
-            Close
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
+    <Modal open onClose={onClose} title={title} wide>
+      {children}
+    </Modal>
   );
 }
 

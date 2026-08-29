@@ -10,7 +10,26 @@ from maistro.sandbox.policy import (
     UNTRUSTED_CODE,
     tier_satisfies,
 )
+from maistro.sandbox.protocol import SandboxProtocol
 from maistro.sandbox.selector import NoSuitableBackendError, SandboxSelector
+
+
+class _StubBackend(FakeSandboxBackend):
+    """A backend that declares the tier it is registered at.
+
+    These tests build multi-tier registries, and the old way to do that was
+    `register("vm", FakeSandboxBackend())` — which is the fail-open #76 closed:
+    a fake that satisfies `UNTRUSTED_CODE`. The scenarios are still the right
+    ones, so they keep them and stop borrowing the hole to set them up.
+    """
+
+    def __init__(self, tier: str) -> None:
+        super().__init__()
+        self.tier = tier
+
+
+def _backend(tier: str) -> SandboxProtocol:
+    return _StubBackend(tier)
 
 
 class TestTierSatisfies:
@@ -51,7 +70,7 @@ class TestSelectorFailClosed:
 
     def test_container_backend_refuses_vm_requirement(self):
         sel = SandboxSelector()
-        sel.register("container", FakeSandboxBackend())
+        sel.register("container", _backend("container"))
         with pytest.raises(NoSuitableBackendError):
             sel.select(UNTRUSTED_CODE)
 
@@ -65,31 +84,31 @@ class TestSelectorSelection:
 
     def test_vm_backend_accepts_untrusted_code(self):
         sel = SandboxSelector()
-        fake_vm = FakeSandboxBackend()
-        sel.register("vm", fake_vm)
+        vm_backend = _backend("vm")
+        sel.register("vm", vm_backend)
         tier, backend = sel.select(UNTRUSTED_CODE)
         assert tier == "vm"
-        assert backend is fake_vm
+        assert backend is vm_backend
 
     def test_strongest_available_is_chosen(self):
         sel = SandboxSelector()
-        sel.register("container", FakeSandboxBackend())
-        sel.register("vm", FakeSandboxBackend())
+        sel.register("container", _backend("container"))
+        sel.register("vm", _backend("vm"))
         # For a TRUSTED_TOOL (min_tier=container), the VM is still chosen (strongest)
         tier, _ = sel.select(TRUSTED_TOOL)
         assert tier == "vm"
 
     def test_container_satisfies_trusted_tool(self):
         sel = SandboxSelector()
-        sel.register("container", FakeSandboxBackend())
+        sel.register("container", _backend("container"))
         tier, _ = sel.select(TRUSTED_TOOL)
         assert tier == "container"
 
     def test_available_tiers_ordered_strongest_first(self):
         sel = SandboxSelector()
         sel.register("fake", FakeSandboxBackend())
-        sel.register("vm", FakeSandboxBackend())
-        sel.register("container", FakeSandboxBackend())
+        sel.register("vm", _backend("vm"))
+        sel.register("container", _backend("container"))
         assert sel.available_tiers == ["vm", "container", "fake"]
 
 
@@ -98,15 +117,15 @@ class TestNoSilentDowngrade:
 
     def test_no_downgrade_from_vm_to_container(self):
         sel = SandboxSelector()
-        sel.register("container", FakeSandboxBackend())
-        sel.register("bubblewrap", FakeSandboxBackend())
+        sel.register("container", _backend("container"))
+        sel.register("bubblewrap", _backend("bubblewrap"))
         # UNTRUSTED_CODE requires vm — having container+bubblewrap is NOT enough
         with pytest.raises(NoSuitableBackendError):
             sel.select(UNTRUSTED_CODE)
 
     def test_explicit_error_message_names_the_gap(self):
         sel = SandboxSelector()
-        sel.register("container", FakeSandboxBackend())
+        sel.register("container", _backend("container"))
         with pytest.raises(NoSuitableBackendError, match="requires min_tier='vm'"):
             sel.select(UNTRUSTED_CODE)
 
