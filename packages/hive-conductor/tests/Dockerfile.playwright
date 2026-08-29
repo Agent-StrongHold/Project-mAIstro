@@ -1,5 +1,7 @@
 FROM mcr.microsoft.com/playwright:v1.52.0-noble
 WORKDIR /tests
-RUN npm init -y && npm install @playwright/test@1.52.0 typescript
+# `@axe-core/playwright` is what makes the accessibility assertions in
+# `modal-a11y.spec.ts` a scan rather than a hand-written checklist (#371).
+RUN npm init -y && npm install @playwright/test@1.52.0 @axe-core/playwright@4.10.2 typescript
 COPY tests/e2e/ /tests/tests/e2e/
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]
