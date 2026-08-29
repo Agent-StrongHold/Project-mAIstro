@@ -20,7 +20,12 @@ from pydantic import BaseModel, Field
 from maistro.graph.harness import HarnessAdapter, HarnessRequest
 
 from . import register_node
-from .base import BaseNode, NodeContext, pause_until
+from .base import (
+    PAUSE_AWAITING_HARNESS,
+    BaseNode,
+    NodeContext,
+    pause_until,
+)
 
 
 class SpawnHarnessIn(BaseModel):
@@ -92,7 +97,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         )
         handle = await adapter.dispatch(request)
         pause_until(
-            "awaiting_harness",
+            PAUSE_AWAITING_HARNESS,
             metadata={
                 "handle_id": handle.handle_id,
                 "harness_type": handle.harness_type,

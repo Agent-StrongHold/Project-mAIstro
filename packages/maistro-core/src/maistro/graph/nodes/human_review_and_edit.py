@@ -15,7 +15,13 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_AWAITING_HUMAN_REVIEW,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+)
 
 
 class FieldEdit(BaseModel):
@@ -72,7 +78,7 @@ class HumanReviewAndEditNode(BaseNode[ReviewAndEditIn, ReviewAndEditOut]):
 
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(
-            "awaiting_human_review",
+            PAUSE_AWAITING_HUMAN_REVIEW,
             resume_at=resume_at,
             metadata={
                 "document": inputs.document,
