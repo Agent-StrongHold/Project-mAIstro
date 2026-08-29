@@ -14,8 +14,8 @@
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 596,
-    "criteria_annotated": 214,
-    "markers_found": 308,
+    "criteria_annotated": 215,
+    "markers_found": 309,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -4677,13 +4677,13 @@
       "declared_unproven": [],
       "has_ac_heading": true,
       "criteria_total": 12,
-      "annotated": 11,
+      "annotated": 12,
       "gherkin_criteria": 12,
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
-        "declared": 9,
-        "covered": 2,
+        "declared": 8,
+        "covered": 3,
         "passing": 0,
         "reachable": 1
       },
@@ -4806,13 +4806,15 @@
         {
           "id": "SPEC-081226-bb3a/AC-11",
           "claimed": false,
-          "module": null,
-          "covered_by": [],
+          "module": "maistro.graph.templates",
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_node_template_store.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Improvement produces candidates, never silent mutation"
           ],
-          "rung": "declared"
+          "rung": "covered"
         },
         {
           "id": "SPEC-081226-bb3a/AC-12",
@@ -13685,6 +13687,19 @@
       "gherkin_parse_errors": [],
       "declared_unproven": [],
       "tier": "reachable"
+    },
+    {
+      "id": "ADR-082926-65bf",
+      "file": "docs/adr/ADR-082926-65bf-template-versions-hold-a-candidate-before-they-become-active.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "unmeasured"
     },
     {
       "id": "ADR-082926-d0dc",
