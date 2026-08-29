@@ -44,8 +44,17 @@ class SandboxConfig:
     """What the sandbox needs to provide."""
 
     memory_mb: int = 256
+    #: A *rate*, enforced as a CPU-seconds budget over `timeout_s` (#80): a
+    #: quarter core for two minutes is thirty CPU-seconds, and a busy loop that
+    #: exceeds it is killed by the kernel rather than left to burn a core.
     cpu_cores: float = 1.0
     timeout_s: int = 120
+    #: Largest single file the sandbox may write. The workdir is on the host's
+    #: filesystem, so without this a workload fills the host's disk (#80).
+    max_file_mb: int = 512
+    #: Best-effort process ceiling. Set as `RLIMIT_NPROC`, which the kernel
+    #: does not enforce for a privileged parent -- see `resource_limits`.
+    max_processes: int = 128
     network: bool = False
     writable_paths: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)

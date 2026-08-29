@@ -556,7 +556,6 @@
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'process_cpu_seconds'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'scheduling_wait_seconds_last'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'scheduling_wait_seconds_total'",
-        "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'cpu_cores'",
         "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'isolation_tier'",
         "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'min_isolation'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'delay_seconds'",
