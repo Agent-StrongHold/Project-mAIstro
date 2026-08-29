@@ -136,7 +136,7 @@ async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
 async def _pg_continuation_store(pg_pool: Any) -> GraphContinuationStore:
     """The durable continuation store, or an in-memory one with a warning.
 
-    Same shape as `_pg_schedule_store` and for the same reason: `019` may not
+    Same shape as `_pg_schedule_store` and for the same reason: `021` may not
     have run on a caller-supplied pool, and `UndefinedTableError` on the first
     graph checkpoint is a worse answer than starting without the table and
     saying so. A durable pool that ends up with ephemeral graph continuations
@@ -152,7 +152,7 @@ async def _pg_continuation_store(pg_pool: Any) -> GraphContinuationStore:
 
     logger.warning(
         "graph_continuations table is absent; durable graph runs will not survive a "
-        "restart. Run alembic migration 019 to make them durable."
+        "restart. Run alembic migration 021 to make them durable."
     )
     return InMemoryGraphContinuationStore()
 

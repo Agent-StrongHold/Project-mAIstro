@@ -18,8 +18,8 @@ back from it.
 had, because two workers resuming one paused Run is exactly the race it
 existed to lose safely.
 
-Revision ID: 019
-Revises: 018
+Revision ID: 021
+Revises: 020
 Create Date: 2026-08-28
 """
 
@@ -29,8 +29,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "019"
-down_revision = "018"
+revision = "021"
+down_revision = "020"
 branch_labels = None
 depends_on = None
 
