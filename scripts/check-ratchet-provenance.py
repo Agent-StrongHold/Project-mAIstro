@@ -2,29 +2,28 @@
 """Fail when a quality/security ledger has no explicit provenance policy (#542, #319).
 
 The dangerous default is a checker reading both its measurement and its comparison
-ledger from the candidate tree.  This inventory makes provenance an explicit
+ledger from the candidate tree. This inventory makes provenance an explicit
 property of every Python checker that reads a JSON file under ``quality/``.
 
-The scan is intentionally structural rather than a grep: it resolves simple
-``Path`` expressions and module constants, so both ``ROOT / "quality" / ...``
-and ``QUALITY / ...`` are visible.  A new ledger consumer therefore fails until
-it is classified here and, for trusted-base ratchets, actually calls the shared
-``ratchet_provenance`` resolver.
+Large mature measurement scripts may delegate the trusted-base comparison to a
+small adapter instead of being rewritten wholesale. The adapter is part of the
+contract: it must itself use ``ratchet_provenance`` and this check executes every
+live delegated adapter in required CI, so delegation cannot become a paper-only
+classification.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
-# Candidate-authored files are specifications or evidence whose *change* is the
-# reviewed act.  Everything else under quality/*.json is presumed to be a
-# comparison oracle and therefore must be base-resolved.
 CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
@@ -38,9 +37,15 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ),
 }
 
-# AC state is folded from per-branch notes by ac_state_notes.py using
-# resolve_baseline_dir.  The generated state/output files are not comparison
-# oracles and are intentionally outside this JSON-consumer inventory.
+# (candidate-controlled consumer, ledger) -> trusted enforcement adapter.
+# This is for large, mature measurement code where rewriting the whole checker
+# just to split its oracle would create more risk than the provenance fix removes.
+TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
+    ("check_enumerations.py", "quality/enumeration-baseline.json"): (
+        "check-enumerations-provenance.py"
+    ),
+}
+
 SPECIAL_TRUSTED_CONSUMERS = {"ac_state_notes.py"}
 
 
@@ -57,11 +62,10 @@ def _join(left: str, right: str) -> str:
 
 
 def _expr_path(node: ast.AST, env: dict[str, str]) -> str | None:
-    """Resolve the small path-expression language used by repository checkers."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.Name):
-        if node.id == "ROOT":
+        if node.id in {"ROOT", "REPO"}:
             return "ROOT"
         return env.get(node.id)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -71,8 +75,6 @@ def _expr_path(node: ast.AST, env: dict[str, str]) -> str | None:
             return None
         return _join(left, right)
     if isinstance(node, ast.Call) and node.args:
-        # Path("quality/foo.json") is uncommon but valid and should not evade
-        # the inventory merely by changing construction syntax.
         if isinstance(node.func, ast.Name) and node.func.id in {"Path", "PurePath"}:
             return _expr_path(node.args[0], env)
     return None
@@ -84,8 +86,6 @@ def _module_paths(path: Path) -> set[str]:
     env: dict[str, str] = {}
     found: set[str] = set()
 
-    # Module constants are enough for these checkers; deliberately do not infer
-    # runtime values or execute candidate code while deciding whether it is safe.
     for statement in tree.body:
         if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
             continue
@@ -102,8 +102,6 @@ def _module_paths(path: Path) -> set[str]:
         if resolved and resolved.startswith("quality/") and resolved.endswith(".json"):
             found.add(resolved)
 
-    # Also catch direct expressions inside functions, e.g. a helper that opens
-    # ROOT / "quality" / "x.json" without first assigning a module constant.
     for node in ast.walk(tree):
         resolved = _expr_path(node, env)
         if resolved and resolved.startswith("quality/") and resolved.endswith(".json"):
@@ -132,12 +130,32 @@ def _uses_trusted_resolver(path: Path) -> bool:
     )
 
 
+def _adapter_problem(root: Path, adapter_name: str) -> str | None:
+    adapter = root / "scripts" / adapter_name
+    if not adapter.is_file():
+        return f"delegated trusted-base adapter {adapter_name} does not exist"
+    if not _uses_trusted_resolver(adapter):
+        return f"delegated adapter {adapter_name} does not use ratchet_provenance"
+    return None
+
+
 def violations(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     seen = consumers(root)
+    live_keys = {(c.script, c.ledger) for c in seen}
+    checked_adapters: set[str] = set()
+
     for consumer in sorted(seen):
         key = (consumer.script, consumer.ledger)
         if key in CANDIDATE_AUTHORED:
+            continue
+        adapter_name = TRUSTED_ADAPTERS.get(key)
+        if adapter_name is not None:
+            if adapter_name not in checked_adapters:
+                problem = _adapter_problem(root, adapter_name)
+                if problem:
+                    errors.append(problem)
+                checked_adapters.add(adapter_name)
             continue
         script = root / "scripts" / consumer.script
         if consumer.script in SPECIAL_TRUSTED_CONSUMERS or _uses_trusted_resolver(script):
@@ -147,18 +165,51 @@ def violations(root: Path = ROOT) -> list[str]:
             "without trusted-base resolution or a documented exception"
         )
 
-    # A documented exception that no longer has a matching consumer is stale.
-    # Stale policy is dangerous because a future consumer could inherit a reason
-    # that was written for a different implementation.
-    live_keys = {(c.script, c.ledger) for c in seen}
     for key, reason in sorted(CANDIDATE_AUTHORED.items()):
-        if key not in live_keys:
+        # Synthetic-tree tests intentionally contain only one checker. Staleness
+        # is meaningful on the repository inventory, not on such partial trees.
+        if root == ROOT and key not in live_keys:
             errors.append(f"stale provenance exception {key[0]} -> {key[1]}: {reason}")
     return errors
 
 
+def _load_module(path: Path, name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
+
+
+def run_delegated(root: Path = ROOT) -> list[str]:
+    """Execute each live delegated trusted-base gate once."""
+    live_keys = {(c.script, c.ledger) for c in consumers(root)}
+    failures: list[str] = []
+    for index, (key, adapter_name) in enumerate(sorted(TRUSTED_ADAPTERS.items())):
+        if key not in live_keys:
+            continue
+        adapter = root / "scripts" / adapter_name
+        try:
+            module = _load_module(adapter, f"_ratchet_adapter_{index}")
+            result = int(module.main())
+        except Exception as exc:
+            failures.append(f"{adapter_name}: could not execute: {type(exc).__name__}: {exc}")
+            continue
+        if result != 0:
+            failures.append(f"{adapter_name}: trusted-base gate returned {result}")
+    return failures
+
+
 def main() -> int:
     errors = violations(ROOT)
+    if not errors:
+        errors.extend(run_delegated(ROOT))
     if errors:
         print("FAIL: ratchet provenance inventory is incomplete", file=sys.stderr)
         for error in errors:
