@@ -20,7 +20,7 @@ def test_all_quality_policy_inputs_are_trusted() -> None:
     for path in (
         "quality/public-routes.json",
         "quality/security-resource-floors.json",
-        "quality/ac-state-ceilings.json",
+        "quality/ac-state-notes/_baseline.json",
         "quality/model-egress.json",
     ):
         result = mod.assess([cf(path)], "", head_ref="chatgpt/x")
