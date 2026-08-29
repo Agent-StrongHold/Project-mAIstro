@@ -141,6 +141,14 @@ class GitHubApi:
                 return result
             page += 1
 
+    def pull_request(self, number: int) -> dict[str, Any]:
+        data = self._request(
+            "GET",
+            f"/repos/{self._repository}/pulls/{number}",
+        )
+        assert isinstance(data, dict)
+        return data
+
     def statuses(self, sha: str) -> list[dict[str, Any]]:
         data = self._request(
             "GET",
@@ -186,7 +194,8 @@ class GitHubApi:
 def run(api: GitHubApi) -> int:
     enqueued = 0
     for raw_pr in api.open_develop_prs():
-        candidate = candidate_from_pr(raw_pr)
+        listed = candidate_from_pr(raw_pr)
+        candidate = candidate_from_pr(api.pull_request(listed.number))
         statuses = api.statuses(candidate.head_sha)
         checks = api.admission_checks(candidate.head_sha)
         if not is_admissible(candidate, statuses, checks):
