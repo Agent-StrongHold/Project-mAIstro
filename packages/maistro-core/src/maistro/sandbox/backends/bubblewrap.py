@@ -158,7 +158,16 @@ class BubblewrapSandboxBackend:
             # and never as an approximation of a scoped grant.
             argv += ["--share-net"]
         argv += ["--clearenv"]
-        for key, value in sorted(config.env.items()):
+        # The fence goes in with the environment rather than through a file or
+        # an argument: `--clearenv` means the sandbox starts with nothing, so
+        # these four variables are the only thing it knows about its own
+        # execution identity, which is what "only what it needs" looks like in
+        # practice. Backends differ in how they set environment; none of them
+        # need to know what a fence is.
+        env = dict(config.env)
+        if config.fence is not None:
+            env.update(config.fence.to_env())
+        for key, value in sorted(env.items()):
             argv += ["--setenv", key, value]
         return [*argv, "--", *command]
 
