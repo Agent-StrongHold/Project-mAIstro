@@ -79,6 +79,13 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # The same failure mode one layer out: a document naming a component that
+      # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
+      # in all four supported profiles and offered Kata and gVisor as backends;
+      # none of them exists, and it survived because nothing compared the prose
+      # to the tree (#81).
+      - name: Deployment docs name only components that exist
+        run: python3 scripts/check-deployment-claims.py
       # An accepted decision can retire a rule that is written down somewhere
       # else, and the retired phrasing then outlives it. `maistro-core`'s own
       # CLAUDE.md told agents "No `org_id` in core" long after ADR-068
@@ -119,6 +126,12 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # `Dockerfile.rsi-runner` copied the repository root into an image that
+      # then runs agent-authored code, and nothing denied `.env` (#308). The
+      # per-Dockerfile ignore is BuildKit-only, so two files have to agree or
+      # the protection depends on which builder ran.
+      - name: No secret reaches an image build context
+        run: python3 scripts/check-build-context.py
 
   postgres:
     # A real PostgreSQL, because the alternative was proving nothing. Every
@@ -646,6 +659,134 @@ jobs:
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
+      # The static gate above reads the ignore files. This one builds the
+      # actual RSI runner from a context carrying canary secrets and proves
+      # none is in any layer -- because the question is what Docker did, not
+      # what the rules say it should have (#308).
+      #
+      # The canaries are planted at the root AND under `packages/`, and one
+      # inside the re-included frontend bundle. Root-only planting is how a
+      # whole class of root-relative patterns passed this job while denying
+      # nothing below the context root (Codex, #510).
+      #
+      # `docker build` twice, once per builder: BuildKit honours
+      # Dockerfile.rsi-runner.dockerignore and the classic builder honours the
+      # root one, and the whole point is that neither route leaks.
+      - name: Canary secrets cannot reach the RSI runner image (BuildKit and classic)
+        run: |
+          set -euo pipefail
+          CANARY="rsi-canary-$(date +%s)-do-not-ship"
+          printf 'DB_PASSWORD=%s\nOPENAI_API_KEY=%s\n' "$CANARY" "$CANARY" > .env
+          printf '%s\n' "$CANARY" > rsi-canary.pem
+          mkdir -p rsi-reports && printf '%s\n' "$CANARY" > rsi-reports/previous-run.json
+
+          # The same secrets again, BELOW the context root. Docker matches
+          # relative to that root, so `*.p12` and `id_rsa*` denied the root
+          # copies and nothing else -- and this build copies the whole
+          # `packages` tree. A canary planted only at the root passed while an
+          # operator's `packages/*/id_rsa` rode into the image (Codex, #510).
+          #
+          # An existing package, not a new directory: `members = ["packages/*"]`
+          # makes every child of `packages/` a workspace member, and one
+          # without a pyproject.toml fails `uv sync` inside the build.
+          deep=packages/maistro-core
+          printf 'DB_PASSWORD=%s\n' "$CANARY" > "$deep/.env"
+          printf '%s\n' "$CANARY" > "$deep/.env.local"
+          printf '%s\n' "$CANARY" > "$deep/gateway.env"
+          printf '%s\n' "$CANARY" > "$deep/rsi-canary.pem"
+          printf '%s\n' "$CANARY" > "$deep/client.p12"
+          printf '%s\n' "$CANARY" > "$deep/client.pfx"
+          printf '%s\n' "$CANARY" > "$deep/id_rsa"
+          printf '%s\n' "$CANARY" > "$deep/id_ed25519"
+          printf '%s\n' "$CANARY" > "$deep/backup.age"
+          printf '%s\n' "$CANARY" > "$deep/.age-key.txt"
+          printf '%s\n' "$CANARY" > "$deep/recovery-phrase.txt"
+          mkdir -p "$deep/secrets" && printf '%s\n' "$CANARY" > "$deep/secrets/token"
+
+          # And one inside the generated bundle the ignore files deliberately
+          # re-include for the backend image. That exception is the only rule
+          # here that UNDOES a denial; a secret beneath it is what makes rule
+          # ORDER load-bearing rather than a detail.
+          bundle=packages/hive-conductor/frontend/dist
+          mkdir -p "$bundle" && printf 'API_KEY=%s\n' "$CANARY" > "$bundle/.env"
+
+          # A function rather than a long single-quoted trap: the paths are
+          # already in variables, and a cleanup nobody can read is a cleanup
+          # that leaves a canary in the checkout.
+          cleanup() {
+            rm -f .env rsi-canary.pem
+            rm -rf rsi-reports
+            rm -f "$deep"/.env "$deep"/.env.local "$deep"/gateway.env \
+                  "$deep"/rsi-canary.pem "$deep"/client.p12 "$deep"/client.pfx \
+                  "$deep"/id_rsa "$deep"/id_ed25519 "$deep"/backup.age \
+                  "$deep"/.age-key.txt "$deep"/recovery-phrase.txt "$bundle"/.env
+            rm -rf "$deep"/secrets
+          }
+          trap cleanup EXIT
+
+          # `-xdev` keeps the walk on the image's own filesystem, which is where
+          # every COPY lands. Without it the search descends into /proc and
+          # matches `/proc/self/cmdline` -- its own command line -- so the check
+          # reported a leak that was itself, and spent twenty minutes doing it.
+          #
+          # The needle crosses as an environment variable rather than inside the
+          # command for the same reason one level down: /proc/self/environ would
+          # carry it too, and the next person to drop `-xdev` should not get a
+          # second way to match nothing but themselves.
+          # Double-quoted with the expansion escaped, so `$NEEDLE` reaches the
+          # variable as text and the *container's* shell expands it. The
+          # single-quoted spelling meant the same thing and drew shellcheck
+          # SC2016 ("expressions don't expand in single quotes") -- which is
+          # exactly what was intended, but a lint you have to explain on every
+          # read is worse than a spelling that needs no explanation.
+          scan="find / -xdev -type f -exec grep -l \"\$NEEDLE\" {} + 2>/dev/null | head -20"
+
+          for builder in 1 0; do
+            echo "::group::DOCKER_BUILDKIT=$builder"
+            image="maistro-rsi-runner:canary-$builder"
+            DOCKER_BUILDKIT=$builder docker build -f Dockerfile.rsi-runner -t "$image" .
+
+            # Positive control, first: the same search, in the same image, over
+            # a canary that IS there. An absence check that cannot find a
+            # present secret passes for the wrong reason -- which is exactly the
+            # failure mode this job exists to rule out one level up.
+            control=$(docker run --rm -e NEEDLE="$CANARY" --entrypoint sh "$image" \
+              -c "printf '%s' \"\$NEEDLE\" > /image-scan-control; $scan")
+            # Containment rather than equality: if the image also leaks, the
+            # control run returns two paths, and that is the absence check's
+            # finding to report -- not a false "the scan is broken".
+            case "$control" in
+              *"/image-scan-control"*) ;;
+              *)
+                echo "::error::the filesystem scan cannot find a secret it was handed (DOCKER_BUILDKIT=$builder)"
+                exit 1
+                ;;
+            esac
+
+            # The filesystem the loop actually sees.
+            found=$(docker run --rm -e NEEDLE="$CANARY" --entrypoint sh "$image" -c "$scan")
+            if [ -n "$found" ]; then
+              echo "::error::the canary is in the image filesystem (DOCKER_BUILDKIT=$builder): $found"
+              exit 1
+            fi
+
+            # And the layers, because a file deleted in a later layer is still
+            # in the earlier one and still `docker save`-able.
+            docker save "$image" -o /tmp/canary.tar
+            if tar -xOf /tmp/canary.tar | grep -qa "$CANARY"; then
+              echo "::error::the canary is in an exported layer (DOCKER_BUILDKIT=$builder)"
+              exit 1
+            fi
+            rm -f /tmp/canary.tar
+
+            # And the build history, where a bad ARG or ENV would show.
+            if docker history --no-trunc "$image" | grep -qa "$CANARY"; then
+              echo "::error::the canary is in the image history (DOCKER_BUILDKIT=$builder)"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+          echo "ok: the canary reached neither filesystem, layers nor history, under either builder"
 
   workflow-lint:
     runs-on: ubuntu-latest
