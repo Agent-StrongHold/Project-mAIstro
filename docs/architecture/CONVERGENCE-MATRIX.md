@@ -8,7 +8,7 @@ The convergence program has one execution identity — `Workspace/Project → Gr
 
 ## What the checker enforces
 
-`scripts/check-convergence-matrix.py` fails CI when the two tables disagree, module prefixes stop partitioning every production module, unreachable counts disagree with the reachability ratchet, a disposition leaves the fixed vocabulary, a cited ADR/SPEC does not exist, or an **ownership claim names a module that no product path reaches** (#378) — see [How to read an ownership cell](#how-to-read-an-ownership-cell-378) for the grammar those columns now follow. Fifteen such claims were in the table when that check was turned on, all of them now annotated with what is actually true.
+`scripts/check-convergence-matrix.py` fails CI when the two tables disagree, module prefixes stop partitioning every production module, a row's unreachable share disagrees with the reachability ratchet, a disposition leaves the fixed vocabulary, a cited ADR/SPEC does not exist, or an **ownership claim names a module that no product path reaches** (#378) — see [How to read an ownership cell](#how-to-read-an-ownership-cell-378) for the grammar those columns now follow. Fifteen such claims were in the table when that check was turned on, all of them now annotated with what is actually true.
 
 It still **does not prove a prose ownership claim**. Reachability proves that code can be reached, not that an advertised control is active, and a cell that names no module at all — “OS file permissions”, “per-route” — says something no import graph can settle. That residue is counted rather than waved at: the ownership census is checked, so the number of unverifiable cells cannot grow unnoticed. Future product-path changes that alter these claims must update this matrix in the same PR; acceptance evidence names the fact that settles each row.
 
@@ -103,63 +103,75 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 
 ## Disposition and evidence
 
-`Unreachable` is `unreachable/total` production modules and is recomputed by the checker. `Dependencies` names convergence work that must land before the row reaches its target.
+`Unreachable` is the share of the subsystem's production modules that no entry point reaches, from a fixed vocabulary, recomputed by the checker from the same import graph and the same `quality/reachability-baseline.json` the reachability ratchet enforces:
+
+| | |
+|---|---|
+| `none` | none of them |
+| `few` | up to a fifth |
+| `some` | up to a half |
+| `most` | more than half, but not all |
+| `all` | every module in the subsystem |
+
+A share rather than the `19/62` this column used to carry, because the denominator is the subsystem's module count: any pull request that added a module anywhere invalidated the cell for every other open pull request, on a line none of them wrote (#605, ADR-082926-061d). For the exact counts behind each word, run `python scripts/check-convergence-matrix.py --census`.
+
+`Dependencies` names convergence work that must land before the row reaches its target.
 
 <!-- matrix:disposition -->
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
-| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `0/23` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-081626-f383, ADR-082826-b601 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45, #251 |
-| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `3/66` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
-| Request front door and DI | `maistro.container.route_request` | `0/2` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
-| Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/12` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
-| A2A delegation | `maistro.a2a` exported API; no shipped caller | `0/5` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
-| Recurrence / schedules | `services.scheduler` background loop | `1/7` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231); it still executes through `run_registered_dag`, whose `DurableRunStore` is disjoint from the canonical `RunStore` — #251 | #46, #62, #231, #251 |
-| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `21/65` | KEEP — the 43 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
-| Planning and wave orchestration | `maistro.orchestrator` exported API | `3/10` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | ADR-071, ADR-052 | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
-| Builders pipeline | none | `15/15` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090, ADR-099 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
-| Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `1/15` | CONNECT — the Workspace store is wired and durable (#516); Project authorization is the remaining hop | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
-| Agents | `maistro.container` factory; `services.agent_materialization` | `26/60` | MIGRATE — agents become Node implementations behind Providers | ADR-004, ADR-035 | agent invocation creates an Invocation record; per-agent event emission retired | #55, #56, #34 |
-| Capability / Provider / Binding / Invocation | `services.capabilities_wiring`, `routes.capabilities` | `2/31` | KEEP — canonical effect path, incompletely adopted | ADR-081226-6b46 | every shipped model/tool effect has an Invocation row | #55, #56, #57 |
-| Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no new direct caller escapes | #56 |
-| Router and classifier | `maistro.container.route_request` | `1/13` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
-| Tool execution | `services.tool_executor`, `maistro.container` | `9/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
-| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/12` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
-| Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `12/22` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
-| Credentials | `routes.credentials`, `services.credential_store_v2` | `4/7` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
-| Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
-| External integrations | exported API | `5/5` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from product route | #34 |
-| Delivery gateway | none | `5/5` | CONNECT | ADR-047 | delivery effect recorded as Invocation | #34, #57 |
-| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `10/58` | MIGRATE — core/server enforcement exists; Hive product-path coverage still incomplete | ADR-073, ADR-072, ADR-072726-0d6b | durable strikes on PostgreSQL are proven (#217); real Hive chat must prove Warden/Sentinel traversal | #66, #67, #74 |
-| Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `0/11` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id registration + bcrypt upgrade | #32 |
-| Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `3/9` | CONNECT — approver matrix partly unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | beyond-authority action resolves approver scope from policy | #60 |
-| Secrets vault | `maistro.cli`, installer | `0/1` | KEEP | SPEC-011 | round-trip encryption tests | — |
-| Memory | `routes.memory`, `maistro.container` | `9/24` | KEEP — domain state; provenance and archive policy still converge | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104, ADR-082226-d3dd | scoped pgvector recall is live; archive conformance passes; producing Run provenance/policy remain | #64, #133 |
-| Sessions | `routes.chat`, `maistro_server.api.ws` | `1/3` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on Run without owning lifecycle | #64 |
-| Archive tier | `maistro.container` when `archive_url` is set | `0/6` | KEEP — storage tier, not lifecycle | ADR-082226-f436, ADR-082226-5104 | filesystem + S3 conformance; archive-eligibility policy still open | #133 |
-| Relational persistence | `maistro.container` (both backends), Alembic | `0/14` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
-| Local state writer | `maistro.reactor`, CLI | `0/1` | KEEP | SPEC-010 | single-writer concurrency tests | — |
-| Ontology | none | `4/4` | CONNECT — accepted design, no consumer | ADR-036 | subsystem resolves semantic object through registry | #34 |
-| Portability / backup | none | `4/4` | CONNECT | ADR-081, ADR-101 | backup/restore preserves canonical correlated records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `2/12` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
-| Observability | `maistro_server` middleware, `adapters` Langfuse | `0/8` | KEEP | ADR-037, ADR-082, ADR-055 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
-| Resilience | `maistro.container`, `resilience.slo` | `3/9` | KEEP | ADR-038, ADR-066 | circuit/SLO primitives wired to real producers | #63 |
-| Collaboration | none | `3/3` | CONNECT | ADR-070426-3a1f | collaborative edit correlated to Run | #34 |
-| Reactor loop | `maistro.reactor` (installer-launched) | `0/1` | KEEP | SPEC-013, ADR-086 | loop timing tests | — |
-| Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
-| Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `5/16` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
-| Shared contracts and config | imported by every package | `1/46` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
-| Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
-| maistro-server HTTP app | `maistro_server.main` | `0/20` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
-| Agent Conductor HTTP surface | `main` (uvicorn) | `4/67` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | route registration + background loops | `15/64` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
-| Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `8/17` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
-| Open Design integration | `routes.design`, `services.design_service` | `1/18` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
-| Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `7/61` | MIGRATE — cycle is Run, battle is NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
-| RSI autorun | `maistro_rsi.cli`, `routes.rsi` | `4/36` | MIGRATE — cycles become Runs over authorized work source | ADR-088 | every RSI cycle has Run provenance; backlog through adapter | #50 |
-| Turing self-model | `maistro_turing.runtime`, turing backend `main` | `0/23` | MIGRATE — reachable paths only; cognition remains gated | ADR-081426-fb9f, ADR-070426-9f47 | reachable Turing execution carries Run/Invocation correlation | #54 |
-| ADR/spec registry CLI | `maistro_registry.cli` | `0/9` | KEEP — lifecycle relationships are now prospectively validated | ADR-031, ADR-062026-9b30, ADR-097 | strict registry validation + #239 lifecycle-evidence cases | #30, #239 |
-| Bootstrap installer | `maistro_bootstrap` console script | `0/20` | KEEP | ADR-020, ADR-033 | installer smoke tests | — |
+| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `none` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-081626-f383, ADR-082826-b601 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45, #251 |
+| Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `few` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
+| Request front door and DI | `maistro.container.route_request` | `none` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
+| Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `few` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
+| A2A delegation | `maistro.a2a` exported API; no shipped caller | `none` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
+| Recurrence / schedules | `services.scheduler` background loop | `few` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231); it still executes through `run_registered_dag`, whose `DurableRunStore` is disjoint from the canonical `RunStore` — #251 | #46, #62, #231, #251 |
+| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `some` | KEEP — the 43 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
+| Planning and wave orchestration | `maistro.orchestrator` exported API | `some` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | ADR-071, ADR-052 | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
+| Builders pipeline | none | `all` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090, ADR-099 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
+| Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `few` | CONNECT — the Workspace store is wired and durable (#516); Project authorization is the remaining hop | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
+| Agents | `maistro.container` factory; `services.agent_materialization` | `some` | MIGRATE — agents become Node implementations behind Providers | ADR-004, ADR-035 | agent invocation creates an Invocation record; per-agent event emission retired | #55, #56, #34 |
+| Capability / Provider / Binding / Invocation | `services.capabilities_wiring`, `routes.capabilities` | `few` | KEEP — canonical effect path, incompletely adopted | ADR-081226-6b46 | every shipped model/tool effect has an Invocation row | #55, #56, #57 |
+| Model providers | `maistro.container` provider wiring | `none` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no new direct caller escapes | #56 |
+| Router and classifier | `maistro.container.route_request` | `few` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
+| Tool execution | `services.tool_executor`, `maistro.container` | `some` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
+| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `none` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
+| Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `most` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
+| Credentials | `routes.credentials`, `services.credential_store_v2` | `most` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
+| Quota and billing | `routes.quotas`, `maistro.container` | `most` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
+| External integrations | exported API | `all` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from product route | #34 |
+| Delivery gateway | none | `all` | CONNECT | ADR-047 | delivery effect recorded as Invocation | #34, #57 |
+| Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `few` | MIGRATE — core/server enforcement exists; Hive product-path coverage still incomplete | ADR-073, ADR-072, ADR-072726-0d6b | durable strikes on PostgreSQL are proven (#217); real Hive chat must prove Warden/Sentinel traversal | #66, #67, #74 |
+| Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `none` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id registration + bcrypt upgrade | #32 |
+| Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `some` | CONNECT — approver matrix partly unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | beyond-authority action resolves approver scope from policy | #60 |
+| Secrets vault | `maistro.cli`, installer | `none` | KEEP | SPEC-011 | round-trip encryption tests | — |
+| Memory | `routes.memory`, `maistro.container` | `some` | KEEP — domain state; provenance and archive policy still converge | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104, ADR-082226-d3dd | scoped pgvector recall is live; archive conformance passes; producing Run provenance/policy remain | #64, #133 |
+| Sessions | `routes.chat`, `maistro_server.api.ws` | `some` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on Run without owning lifecycle | #64 |
+| Archive tier | `maistro.container` when `archive_url` is set | `none` | KEEP — storage tier, not lifecycle | ADR-082226-f436, ADR-082226-5104 | filesystem + S3 conformance; archive-eligibility policy still open | #133 |
+| Relational persistence | `maistro.container` (both backends), Alembic | `none` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
+| Local state writer | `maistro.reactor`, CLI | `none` | KEEP | SPEC-010 | single-writer concurrency tests | — |
+| Ontology | none | `all` | CONNECT — accepted design, no consumer | ADR-036 | subsystem resolves semantic object through registry | #34 |
+| Portability / backup | none | `all` | CONNECT | ADR-081, ADR-101 | backup/restore preserves canonical correlated records | #62, #34 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `few` | KEEP — canonical envelope, incompletely adopted | ADR-086, ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
+| Observability | `maistro_server` middleware, `adapters` Langfuse | `none` | KEEP | ADR-037, ADR-082, ADR-055 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
+| Resilience | `maistro.container`, `resilience.slo` | `some` | KEEP | ADR-038, ADR-066 | circuit/SLO primitives wired to real producers | #63 |
+| Collaboration | none | `all` | CONNECT | ADR-070426-3a1f | collaborative edit correlated to Run | #34 |
+| Reactor loop | `maistro.reactor` (installer-launched) | `none` | KEEP | SPEC-013, ADR-086 | loop timing tests | — |
+| Prompts and personas | `maistro.container`, `routes.agents` | `few` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
+| Codebase analysis | `maistro.tools` call sites | `none` | KEEP | ADR-065 | tool-level tests | — |
+| Core CLI | `maistro.cli` console script | `some` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
+| Shared contracts and config | imported by every package | `few` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
+| Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
+| maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
+| Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
+| Agent Conductor services | route registration + background loops | `some` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
+| Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `some` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
+| Open Design integration | `routes.design`, `services.design_service` | `few` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
+| Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is Run, battle is NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
+| RSI autorun | `maistro_rsi.cli`, `routes.rsi` | `few` | MIGRATE — cycles become Runs over authorized work source | ADR-088 | every RSI cycle has Run provenance; backlog through adapter | #50 |
+| Turing self-model | `maistro_turing.runtime`, turing backend `main` | `none` | MIGRATE — reachable paths only; cognition remains gated | ADR-081426-fb9f, ADR-070426-9f47 | reachable Turing execution carries Run/Invocation correlation | #54 |
+| ADR/spec registry CLI | `maistro_registry.cli` | `none` | KEEP — lifecycle relationships are now prospectively validated | ADR-031, ADR-062026-9b30, ADR-097 | strict registry validation + #239 lifecycle-evidence cases | #30, #239 |
+| Bootstrap installer | `maistro_bootstrap` console script | `none` | KEEP | ADR-020, ADR-033 | installer smoke tests | — |
 
 ## Current convergence boundary after M0
 
