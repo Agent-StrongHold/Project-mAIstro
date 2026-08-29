@@ -146,14 +146,37 @@ class _RsiService:
         # checkpoints + promotion review records without the second — which
         # left the patch-review page permanently empty. Allocate both the way
         # the CLI path does.
-        work_root = cfg.get("work_root") or tempfile.mkdtemp(prefix=f"rsi-{run.run_id}-")
-        report_dir = cfg.get("report_dir") or str(Path(work_root) / "reports")
+        # Derived, never taken from the request (#305). These are directories
+        # the loop writes to and, for the export child, deletes from; a caller
+        # who could name them could aim those writes at anything writable.
+        work_root = tempfile.mkdtemp(prefix=f"rsi-{run.run_id}-")
+        report_dir = str(Path(work_root) / "reports")
+        export_dir = str(Path(report_dir) / "export")
         genome_models = [
             m.strip() for m in (cfg.get("genome_models") or "").split(",") if m.strip()
         ]
+        # `test_argv` and `isolation` are resolved by routes/rsi.py against
+        # services.rsi_execution_policy before they reach here, and both are
+        # required (#305). Defaulting either would give an in-process caller a
+        # quieter version of the door the route just closed: an absent argv
+        # falls back to a shell command, an absent isolation falls back to the
+        # host. Refuse instead.
+        test_argv = tuple(cfg.get("test_argv") or ())
+        if not test_argv:
+            raise ValueError("an RSI run requires a policy-resolved test_argv")
+        isolation = cfg.get("isolation") or ""
+        if isolation != "container":
+            raise ValueError(
+                f"an RSI run requires container isolation, not {isolation!r} — "
+                "candidate code does not execute on the host"
+            )
         lc = LocalRsiConfig(
             repo_path=cfg["repo_path"],
-            test_command=cfg["test_command"],
+            # Kept only so logs and reports can name what ran; nothing executes
+            # it. `test_argv` is what the loop runs, without a shell.
+            test_command=" ".join(test_argv),
+            test_argv=test_argv,
+            isolation=isolation,
             work_root=work_root,
             max_cycles=int(cfg.get("cycles", 3)),
             model=cfg.get("model"),
@@ -164,7 +187,7 @@ class _RsiService:
             coverage_source=cfg.get("coverage_source") or ".",
             coverage_pytest_args=cfg.get("coverage_pytest_args") or "",
             report_dir=report_dir,
-            export_patches=cfg.get("export_dir"),
+            export_patches=export_dir,
             # Tournament settings: the UI shows working roster/scout controls,
             # so not forwarding them meant every run silently executed with
             # different settings than the operator chose.
@@ -175,10 +198,19 @@ class _RsiService:
         )
         run.report_dir = lc.report_dir
         run.export_dir = lc.export_patches
+        # `isolation` and `image` are load-bearing, not decoration: the factory
+        # defaults to "local" and builds a LocalWorktreeSandbox, so omitting
+        # them handed an HTTP-initiated run an agent that edits and executes on
+        # the host -- past the `isolation != "container"` refusal above, which
+        # only ever governed the loop's own sandbox (#305). An injected apply
+        # function wins over the one the loop would have built for itself, so
+        # this call site is the only place that decision is made.
         apply_fn = make_builders_apply_patch(
             objective=lc.objective or "",
             model=lc.model,
             max_agent_turns=lc.agent_turns_per_cycle,
+            isolation=lc.isolation,
+            image=lc.sandbox_image,
         )
         loop = LocalRsiLoop(lc, apply_patch=apply_fn)
         # run() is synchronous: driven inline it would block the event loop for
