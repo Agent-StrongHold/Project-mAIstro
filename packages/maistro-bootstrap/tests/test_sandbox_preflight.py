@@ -90,3 +90,90 @@ def test_the_environment_report_carries_the_sandbox_section(host) -> None:
     assert "sandbox" in report
     assert report["sandbox"]["authority"] == SANDBOX_AUTHORITY
     assert report["sandbox"]["sandbox_binary_present"] is False
+
+
+# --- what the operator is actually shown ---------------------------------
+
+
+def _env(*, present: bool, summary: str = "…") -> dict:
+    return {
+        "admin_hint": "running as root",
+        "virtualization": ["kvm"],
+        "sandbox": {"sandbox_binary_present": present, "summary": summary},
+    }
+
+
+def test_the_banner_says_what_can_isolate_next_to_what_cannot() -> None:
+    """The sandbox line sits beside the hypervisor inventory deliberately. The
+    two used to be conflated, and "kvm" on the Virtualization line reads as
+    "this host can isolate untrusted code" when the engine ships no VM backend
+    at all."""
+    from maistro_bootstrap.wizard import preflight_lines
+
+    lines = preflight_lines("docker", "docker is on PATH.", _env(present=True, summary="ready"))
+
+    assert any("Virtualization" in line and "kvm" in line for line in lines)
+    assert any("Sandbox" in line and "ready" in line for line in lines)
+
+
+def test_a_host_that_cannot_isolate_is_shown_in_warning_colour() -> None:
+    """Not decoration. On this host the engine will refuse to run a workload,
+    so the line is a refusal waiting to happen rather than a note — and it is
+    the only line in the banner that is."""
+    from maistro_bootstrap.wizard import preflight_lines
+
+    lines = preflight_lines("docker", "hint", _env(present=False, summary="install bubblewrap"))
+
+    assert [line for line in lines if line.startswith("[yellow]")] == [
+        "[yellow]Sandbox:[/yellow] install bubblewrap\n"
+    ]
+
+
+def test_a_host_that_can_isolate_is_not_shouted_about() -> None:
+    from maistro_bootstrap.wizard import preflight_lines
+
+    lines = preflight_lines("docker", "hint", _env(present=True))
+
+    assert not [line for line in lines if line.startswith("[yellow]")]
+
+
+def test_every_banner_line_is_printed(monkeypatch) -> None:
+    """`preflight_lines` is only worth testing if something shows the operator
+    what it returns. This is the seam between the two."""
+    from maistro_bootstrap import wizard
+
+    printed: list[str] = []
+    monkeypatch.setattr(wizard.console, "print", printed.append)
+
+    wizard.print_preflight("docker", "hint", _env(present=False, summary="install bubblewrap"))
+
+    assert printed == wizard.preflight_lines(
+        "docker", "hint", _env(present=False, summary="install bubblewrap")
+    )
+    assert len(printed) == 4
+
+
+def test_the_banner_is_shown_before_the_wizard_asks_anything(monkeypatch) -> None:
+    """Order matters: the sandbox line tells an operator whether this host can
+    run workloads at all, and it is worth nothing after they have answered
+    twenty questions. Stopping at the first prompt is what proves the banner
+    came first rather than merely appearing somewhere in the transcript."""
+    from maistro_bootstrap import wizard
+
+    printed: list[str] = []
+    monkeypatch.setattr(wizard.console, "print", lambda *a, **k: printed.append(a[0] if a else ""))
+    monkeypatch.setattr(wizard, "detect_container_runtime", lambda: ("docker", "hint"))
+    monkeypatch.setattr(wizard, "environment_report", lambda: _env(present=False, summary="none"))
+
+    class FirstPrompt(Exception):
+        pass
+
+    def _stop() -> None:
+        raise FirstPrompt
+
+    monkeypatch.setattr(wizard, "_stack_bringup", _stop)
+
+    with pytest.raises(FirstPrompt):
+        wizard.collect_answers_interactive()
+
+    assert any("Sandbox" in str(line) for line in printed)
