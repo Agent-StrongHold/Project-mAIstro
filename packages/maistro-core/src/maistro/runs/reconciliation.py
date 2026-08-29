@@ -10,7 +10,6 @@ a projected result authoritative for the logical NodeRun.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
@@ -22,11 +21,13 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     NodeRun,
     Run,
     RunStatus,
     evidence_values_equal,
 )
+from maistro.runs.recovery_events import RecoveryEventSink, recovery_event
 from maistro.runs.store import RunIntegrityError
 
 
@@ -47,31 +48,6 @@ class SupersededAttempt(RunIntegrityError):
             f"Attempt {attempt_id!r} is superseded by {current_attempt_id!r}; "
             "a stale worker cannot commit into a newer Attempt"
         )
-
-
-class CancellationCause(Enum):
-    """Why an Attempt is cancelled — the one thing its status cannot say (#230).
-
-    `AttemptStatus.CANCELLED` carries two meanings that need opposite logical
-    projections, and no amount of reading the persisted Attempt tells them
-    apart:
-
-    ``REQUESTED``
-        Someone asked this work to stop. The retry decision has been made and
-        it was *don't*, so the NodeRun is terminal.
-
-    ``RECOVERED``
-        A process died mid-Attempt and the physical record is being closed out
-        so a *fresh* Attempt can run — `_reconcile_orphaned_attempts`'s case.
-        The node is still owed, so it parks exactly as a failure does.
-
-    Two members, deliberately not three: this says why a cancellation happened,
-    not what state anything is in, and it must not become a second lifecycle
-    (`scripts/check-execution-lifecycles.py`).
-    """
-
-    REQUESTED = "requested"
-    RECOVERED = "recovered"
 
 
 @runtime_checkable
@@ -147,8 +123,16 @@ def _graph_has_cycle(run: Run) -> bool:
 class AttemptLifecycleReconciler:
     """Keep Run/NodeRun activity consistent with canonical physical Attempts."""
 
-    def __init__(self, store: AttemptLifecycleStore) -> None:
+    def __init__(
+        self,
+        store: AttemptLifecycleStore,
+        *,
+        events: RecoveryEventSink | None = None,
+        source: str = "maistro.runs.reconciliation",
+    ) -> None:
         self._store = store
+        self._events = events
+        self._source = source
 
     async def prepare_execution(self, node_run_id: str) -> NodeRun:
         """Put the containing Run and NodeRun in ``running`` before a physical try."""
@@ -201,17 +185,48 @@ class AttemptLifecycleReconciler:
             )
             settled = await self._accept_node_outcome(node_run, outcome)
             await self._settle_run_if_fully_observed(settled.run_id)
+            await self._announce(persisted, settled, cancellation)
             return settled
 
         if (
             attempt.status is AttemptStatus.CANCELLED
             and cancellation is CancellationCause.REQUESTED
         ):
-            return await self._cancel_node_run(node_run, attempt)
+            terminal = await self._cancel_node_run(node_run, attempt)
+            await self._announce(persisted, terminal, cancellation)
+            return terminal
 
         parked = await self._park_node_run(node_run, attempt)
         await self._park_run_if_inactive(parked.run_id)
+        await self._announce(persisted, parked, cancellation)
         return parked
+
+    async def _announce(
+        self,
+        attempt: Attempt,
+        node_run: NodeRun,
+        cancellation: CancellationCause,
+    ) -> None:
+        """Put the applied disposition on the canonical Event stream (#462).
+
+        After the write, not before: an event for a disposition that then
+        failed to persist would be worse than no event, because the one thing
+        a reader wants from it is that it describes what actually happened.
+
+        A caller with no sink reconciles exactly as it did. An unobservable
+        recovery is a real gap -- it is why this exists -- but a recovery that
+        refused to run because nothing was listening would be a worse one.
+        """
+        if self._events is None:
+            return
+        await self._events.emit(
+            recovery_event(
+                attempt=attempt,
+                node_run=node_run,
+                cancellation=cancellation,
+                source=self._source,
+            )
+        )
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
         """Persist an explicit domain interpretation of completed physical evidence.

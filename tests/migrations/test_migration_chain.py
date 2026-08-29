@@ -62,6 +62,11 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
+        # The Workspace those Projects and Runs belong to (#516). Their
+        # `workspace_id` columns were bare Text with nothing to reference
+        # until migration 019 gave the Workspace a table of its own.
+        "canonical_workspaces",
+        "canonical_workspace_memberships",
         "child_profiles",
         "design_outputs",
         "design_projects",
@@ -72,6 +77,11 @@ EXPECTED_TABLES = frozenset(
         "knowledge_nodes",
         "learnings",
         "memory_entries",
+        # The NodeTemplate half of the reusable-definition model (020). Its
+        # GraphTemplate sibling has been durable since 014; without this one a
+        # Node's `source_template` named a version nothing could resolve after a
+        # restart (#556).
+        "node_templates",
         "orgs",
         "outcomes",
         "prompts",

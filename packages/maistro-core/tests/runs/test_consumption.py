@@ -427,3 +427,105 @@ async def test_created_runs_are_ineligible_even_when_offered_directly() -> None:
     run = await container.run_store.get_run(run_id)
     assert run is not None
     assert executable_by_consumer(run) is False
+
+
+# --- #251 criterion 2: owned work this process can never run must not sit ----
+
+
+async def test_a_run_naming_an_unregistered_kind_fails_visibly() -> None:
+    """#251's second criterion. Eligibility used to exclude an unresolvable
+    kind *before* the claim, so the Run was never touched and sat QUEUED
+    forever — durable state claiming work nobody would ever do, which is the
+    defect the consumer exists to remove."""
+    from maistro.runs.consumption import UNRESOLVABLE_NODE_KIND
+
+    container = await _container()
+    run_id = await _admit_schedule_run(
+        container, kind="test.consumer.never_registered", workspace="ws-unresolvable"
+    )
+
+    executed = await container.execute_admitted_runs()
+
+    assert executed == 0  # nothing ran; the Run was disposed of, not executed
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error is not None
+    assert UNRESOLVABLE_NODE_KIND in run.error
+    assert "test.consumer.never_registered" in run.error
+
+
+async def test_a_multi_node_run_still_waits_rather_than_failing() -> None:
+    """ "Not yet" is not "never": traversal (#44/#34) will run this one, so
+    failing it here would destroy work that is legitimately owed."""
+    container = await _container()
+    run_id = await _admit_schedule_run(container, nodes=2, workspace="ws-multi-waits")
+
+    assert await container.execute_admitted_runs() == 0
+
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.QUEUED
+
+
+async def test_an_unowned_run_with_an_unregistered_kind_is_left_alone() -> None:
+    """Disposal is only for Runs this consumer owns. A foreign admission
+    source keeps its Run, unresolvable here or not."""
+    container = await _container()
+    run_id = await _admit_schedule_run(
+        container,
+        kind="test.consumer.never_registered",
+        source="task_queue",
+        workspace="ws-foreign-unresolvable",
+    )
+
+    assert await container.execute_admitted_runs() == 0
+
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.QUEUED
+
+
+async def test_two_ticks_do_not_both_dispose_of_one_unresolvable_run() -> None:
+    """The claim is the mutex for disposal exactly as it is for execution."""
+    container = await _container()
+    run_id = await _admit_schedule_run(
+        container, kind="test.consumer.never_registered", workspace="ws-unresolvable-race"
+    )
+
+    await asyncio.gather(
+        container.execute_admitted_runs(),
+        container.execute_admitted_runs(),
+    )
+
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+
+
+async def test_a_disposal_that_loses_its_claim_is_logged_never_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The concurrent-disposal case from the losing side.
+
+    Two ticks can only race here when the second still sees the Run listed;
+    once the first has disposed of it, the second's claim is refused by the
+    lifecycle table. That refusal is normal, not an error to propagate — a
+    tick that lost is finished, and the Run is already in the state it wanted.
+    """
+    import logging
+
+    container = await _container()
+    run_id = await _admit_schedule_run(
+        container, kind="test.consumer.never_registered", workspace="ws-lost-disposal"
+    )
+    # Dispose of it, exactly as the winning tick would.
+    await container._fail_unresolvable_run(run_id, "unresolvable_node_kind: x")
+
+    with caplog.at_level(logging.WARNING):
+        await container._fail_unresolvable_run(run_id, "unresolvable_node_kind: x")
+
+    assert "could not be settled" in caplog.text
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.FAILED

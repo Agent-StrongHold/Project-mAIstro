@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.service import RunExecutionService
-from maistro.runs.sources import SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
@@ -154,29 +154,64 @@ class ScheduleAttemptExecutor:
         )
 
 
-def executable_by_consumer(run: Run) -> bool:
-    """Whether the consumer tick may claim this Run.
+#: Error recorded on a Run the consumer owns and can never run.
+UNRESOLVABLE_NODE_KIND = "unresolvable_node_kind"
 
-    QUEUED plus an allowlisted source plus a single registered node. CREATED
-    is never eligible — it is a legitimate resting state for Runs that must
-    not execute here (delegation projections, unvetted ids).
+
+def consumer_owns(run: Run) -> bool:
+    """Whether this Run is the consumer's to dispose of at all.
+
+    QUEUED plus an allowlisted admission source. CREATED is never owned — it
+    is a legitimate resting state for Runs that must not execute here
+    (delegation projections, unvetted ids), and a source outside the
+    allowlist belongs to whoever admitted it.
+    """
+    return (
+        run.status is RunStatus.QUEUED
+        and run.provenance.get(ADMISSION_SOURCE) in CONSUMABLE_SOURCES
+    )
+
+
+def unresolvable_reason(run: Run) -> str | None:
+    """Why an owned Run can never execute here, or None when it merely waits.
+
+    The distinction is "never" against "not yet", and it decides whether
+    leaving the Run QUEUED is honest. A multi-node Run is owed to the durable
+    Graph traversal (#44/#34): it stays QUEUED because something will
+    eventually run it. A single node whose kind this process cannot resolve is
+    owed to nobody — no later tick makes an unregistered kind appear — so
+    leaving it QUEUED is the "admitted work nobody executes" state #251 exists
+    to remove, reproduced one level in.
     """
     from maistro.graph.nodes import list_kinds
 
-    if run.status is not RunStatus.QUEUED:
-        return False
-    if run.provenance.get("admission_source") not in CONSUMABLE_SOURCES:
-        return False
     nodes = run.graph.materialize().nodes
     if len(nodes) != 1:
+        return None
+    kind = nodes[0].node_type
+    if kind not in set(list_kinds()):
+        return f"{UNRESOLVABLE_NODE_KIND}: {kind}"
+    return None
+
+
+def executable_by_consumer(run: Run) -> bool:
+    """Whether the consumer tick can actually execute this Run.
+
+    Owned, single-node, and naming a kind this process can resolve.
+    """
+    if not consumer_owns(run):
         return False
-    return nodes[0].node_type in set(list_kinds())
+    nodes = run.graph.materialize().nodes
+    return len(nodes) == 1 and unresolvable_reason(run) is None
 
 
 __all__ = [
     "CONSUMABLE_SOURCES",
     "SCHEDULE_EXECUTOR_ID",
+    "UNRESOLVABLE_NODE_KIND",
     "ScheduleAttemptExecutor",
     "ScheduleExecutionFailed",
+    "consumer_owns",
     "executable_by_consumer",
+    "unresolvable_reason",
 ]

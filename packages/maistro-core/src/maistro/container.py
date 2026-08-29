@@ -24,7 +24,7 @@ from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
-from maistro.graph.templates import GraphTemplateStore
+from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -49,6 +49,7 @@ from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
     wire_execution_spine,
+    wire_node_template_store,
 )
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
@@ -58,6 +59,8 @@ from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.store import WorkspaceStore
+from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
 if TYPE_CHECKING:
     import httpx
@@ -147,6 +150,11 @@ class Container:
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
+    #: Canonical Workspace identity and membership (#516). The Workspace the
+    #: scope tree above hangs off: `project_scope_store` has had a durable
+    #: backend since #132 while the thing its `workspace_id` names had none,
+    #: so the only Workspaces that survived a restart were the Conductor's own.
+    workspace_store: WorkspaceStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -162,6 +170,13 @@ class Container:
     #: of the spine is: a Container built directly, without `create_container`,
     #: still routes requests — it just cannot resolve a template.
     template_store: GraphTemplateStore | None = None
+    #: Durable home for reusable NodeTemplate definitions (#556). The
+    #: GraphTemplate half has had one since #145; without this one a Node's
+    #: `source_template` named a version nothing could resolve after a restart,
+    #: so SPEC-081226-bb3a AC-12 held for only one of the two template
+    #: families. Optional exactly as `template_store` is, and for the same
+    #: reason: a Container built directly still routes requests.
+    node_template_store: NodeTemplateStore | None = None
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -561,7 +576,15 @@ class Container:
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            reconciler = AttemptLifecycleReconciler(self.run_store)
+            # The Container's bus, so the sweep's dispositions land on the
+            # canonical Event stream rather than only in Run state (#462). A
+            # Container built without one still sweeps; the events are how the
+            # decision becomes inspectable, not how it is made.
+            reconciler = AttemptLifecycleReconciler(
+                self.run_store,
+                events=self.event_bus,
+                source="maistro.container.recover_abandoned_attempts",
+            )
             for attempt in reclaimed:
                 try:
                     await reconciler.reconcile(attempt)
@@ -600,12 +623,27 @@ class Container:
         node then fails is parked by the reconciler (the recovery
         disposition's WAITING row), never silently retried by the next tick.
         """
-        from maistro.runs.consumption import ScheduleAttemptExecutor, executable_by_consumer
+        from maistro.runs.consumption import (
+            ScheduleAttemptExecutor,
+            consumer_owns,
+            executable_by_consumer,
+            unresolvable_reason,
+        )
 
         queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
         executor = ScheduleAttemptExecutor(self.run_store)
         executed = 0
         for run in queued:
+            if not consumer_owns(run):
+                continue
+            # Owned and impossible: no later tick makes an unregistered kind
+            # appear, so this Run is disposed of rather than left QUEUED
+            # forever. A multi-node Run reaches neither branch — it is owed to
+            # the durable Graph traversal (#44/#34) and waits for it.
+            unresolvable = unresolvable_reason(run)
+            if unresolvable is not None:
+                await self._fail_unresolvable_run(run.run_id, unresolvable)
+                continue
             if not executable_by_consumer(run):
                 continue
             try:
@@ -622,6 +660,22 @@ class Container:
                 await self._settle_unstarted_consumption(run.run_id)
             executed += 1
         return executed
+
+    async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:
+        """Terminalize an owned Run this process can never execute (#251).
+
+        Through the claim, not around it: `QUEUED` has no edge to `FAILED`,
+        and the `QUEUED -> RUNNING` transition is also the mutex that stops
+        two consumers disposing of the same Run twice. A concurrent tick that
+        loses the claim finds the Run already terminal and does nothing.
+        """
+        try:
+            await self.run_store.transition_run(run_id, RunStatus.RUNNING)
+            await self.run_store.transition_run(run_id, RunStatus.FAILED, error=reason)
+        except Exception:
+            logger.warning("unresolvable Run %s could not be settled", run_id, exc_info=True)
+            return
+        logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
 
     async def _settle_unstarted_consumption(self, run_id: str) -> None:
         """Terminalize a claimed Run whose execution never left a record behind.
@@ -901,6 +955,15 @@ async def create_container(
         # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
+    # The same `project_scope_store` object the spine just selected, not a
+    # second resolution of the same question: a Workspace whose Root Project is
+    # filed in another database is a Workspace whose Runs cannot be filed.
+    workspace_store = await wire_workspace_store(
+        db_pool,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
+    node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -1096,10 +1159,12 @@ async def create_container(
         episodic_store=episodic_store,
         project_store=project_store,
         project_scope_store=project_scope_store,
+        workspace_store=workspace_store,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
+        node_template_store=node_template_store,
         schedule_store=schedule_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
@@ -1284,6 +1349,10 @@ _REQUIRED_PG_TABLES: Final = (
     "security_strikes",
     "security_violations",
     "security_rate_limits",
+    # The canonical Workspace (#516). Same reasoning as the spine's tables: a
+    # `postgresql://` deployment that skipped `alembic upgrade head` should hear
+    # about it once, at startup, naming every table it lacks.
+    *WORKSPACE_PG_TABLES,
 )
 
 
