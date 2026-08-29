@@ -180,3 +180,24 @@ async def test_the_lease_sweep_announces_what_it_reclaimed() -> None:
     assert [event.payload["disposition"] for event in seen] == ["recovered_and_parked"]
     assert seen[0].source == "maistro.container.recover_abandoned_attempts"
     assert seen[0].payload["run_id"] == run_id
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-7")
+async def test_a_failed_attempt_parks_and_says_it_parked() -> None:
+    """The row a failure takes. It is not a cancellation, so the cause has
+    nothing to say about it — and reporting a failed Attempt as recovered
+    would claim a process died when the work simply did not succeed."""
+    store, _run_id, node_run_id = await _running_node()
+    attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
+    attempt = await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    attempt = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.FAILED, error="node raised"
+    )
+    sink = _RecordingSink()
+
+    parked = await AttemptLifecycleReconciler(store, events=sink).reconcile(attempt)
+
+    assert parked.status is RunStatus.WAITING
+    assert sink.events[0].payload["disposition"] == "parked"
+    assert sink.events[0].payload["attempt_status"] == AttemptStatus.FAILED.value
+    assert sink.events[0].payload["error"] == "node raised"
