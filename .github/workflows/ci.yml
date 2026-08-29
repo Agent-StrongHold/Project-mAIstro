@@ -867,6 +867,18 @@ jobs:
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
         run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin
+      # actionlint above shellchecks the `run:` blocks inside workflows. The
+      # standalone scripts under tools/ are not workflows and were linted by
+      # nobody, which is how `run_rsi_isolated.sh` came to interpolate a
+      # network-derived roster into a `bash -lc` payload (#309). All three are
+      # clean at this severity today, so the gate starts with no backlog.
+      #
+      # scripts/*.sh is deliberately not in scope: one of them carries a
+      # pre-existing SC2155 that is nothing to do with this, and a gate that
+      # arrives red teaches people to ignore it. Widening the glob is a
+      # one-line change once that warning is fixed.
+      - name: shellcheck the standalone scripts under tools/
+        run: /tmp/shellcheck-bin --severity=warning tools/*.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
