@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.runs.evidence_json import decode_payload
 from maistro.runs.model import RunStatus
 
 from .continuation import GraphContinuation
@@ -52,7 +53,13 @@ class PgGraphContinuationStore:
             )
         if row is None:
             return None
-        return GraphContinuation.model_validate_json(row["continuation"])
+        # `decode_payload` rather than `model_validate_json`: whether a JSONB
+        # column arrives as text or as a dict depends on how the caller built
+        # the pool. `maistro.persistence.get_pool` registers a JSON codec and
+        # hands back a dict; a bare `asyncpg.create_pool` hands back text, and
+        # #135's seam means both reach this store. Assuming either one is a
+        # store whose correctness depends on somebody else's constructor.
+        return GraphContinuation.model_validate(decode_payload(row["continuation"]))
 
     async def update(self, continuation: GraphContinuation) -> GraphContinuation:
         """Write only over a strictly older version.

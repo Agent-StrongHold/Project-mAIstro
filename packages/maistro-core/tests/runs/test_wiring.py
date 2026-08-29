@@ -287,3 +287,66 @@ async def test_without_a_pool_or_a_connection_schedules_are_in_memory() -> None:
         None, workspace_id="w1"
     )
     assert isinstance(schedules, InMemoryScheduleStore)
+
+
+async def test_a_pool_without_the_continuations_table_falls_back_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A deployment between 020 and 021 keeps its Runs and loses only durability
+    of the traversal half (#44).
+
+    Raising here would be worse than warning: the spine tables are present, so
+    the Runs themselves are durable, and refusing to start over a table added
+    later turns a partial migration into an outage. The warning is the part
+    that matters -- a durable pool with in-memory continuations loses every
+    paused HITL frontier on restart, and nothing else would say so.
+    """
+    import logging
+
+    from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
+    from maistro.runs.wiring import _pg_continuation_store
+
+    class _PoolAtRevision020:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return False
+
+    with caplog.at_level(logging.WARNING):
+        continuations = await _pg_continuation_store(_PoolAtRevision020())
+
+    assert isinstance(continuations, InMemoryGraphContinuationStore)
+    assert "graph_continuations" in caplog.text
+    assert "021" in caplog.text
+
+
+async def test_a_migrated_pool_gets_the_durable_continuation_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The other side of it, and the reason the warning above is a warning:
+    a migrated database must NOT be told to migrate."""
+    import logging
+
+    from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
+    from maistro.runs.wiring import _pg_continuation_store
+
+    class _PoolAtRevision021:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return True
+
+    with caplog.at_level(logging.WARNING):
+        continuations = await _pg_continuation_store(_PoolAtRevision021())
+
+    assert isinstance(continuations, PgGraphContinuationStore)
+    assert "alembic" not in caplog.text
+
+
+def test_the_spine_preflight_does_not_demand_the_continuations_table() -> None:
+    """A database at `020` must not lose its Runs over a table it never had.
+
+    The same reasoning `schedules` and `node_templates` carry, asserted for the
+    same reason: the tempting fix for a future "why aren't my graph runs
+    durable" is to add this table to that tuple, and that fix would drop every
+    pre-021 deployment to an in-memory spine.
+    """
+    from maistro.runs.wiring import SPINE_PG_TABLES
+
+    assert "graph_continuations" not in SPINE_PG_TABLES

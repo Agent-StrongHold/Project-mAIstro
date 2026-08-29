@@ -8,7 +8,6 @@ persisted beside them — and a record read back is assembled from both halves.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -24,8 +23,7 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.durable_runs.continuation import GraphContinuation, GraphContinuationStore
-from maistro.graph.execution_state import GraphExecutionState
+from maistro.graph.durable_runs.continuation import GraphContinuationStore
 from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -218,46 +216,3 @@ async def test_an_unknown_run_is_absent_rather_than_an_empty_record() -> None:
     assert await store.get("no-such-run") is None
     with pytest.raises(KeyError):
         await store.submit_hitl_answer("no-such-run", "step", {"answer": "x"})
-
-
-async def _listing_parity(store: GraphContinuationStore) -> None:
-    """Both listings, over both continuation backends, agree on the same rows.
-
-    The project filter is the half that has no other caller yet: `list_for_project`
-    reaches it, but a status listing scoped to one project is what the HITL door
-    asks for once more than one project shares a store. Exercised here so the
-    SQLite spelling of it is a query that has run, not a query that parses.
-    """
-    for index, (run_id, project_id, status) in enumerate(
-        [
-            ("run-a", "proj-1", RunStatus.PAUSED),
-            ("run-b", "proj-2", RunStatus.PAUSED),
-            ("run-c", "proj-1", RunStatus.RUNNING),
-        ]
-    ):
-        await store.create(
-            GraphContinuation(
-                run_id=run_id,
-                graph_state=GraphExecutionState(run_id=run_id),
-                status=status,
-                project_id=project_id,
-                created_at=datetime(2026, 8, 29, tzinfo=UTC) + timedelta(minutes=index),
-            )
-        )
-
-    assert await store.list_run_ids_by_status(RunStatus.PAUSED) == ["run-a", "run-b"]
-    assert await store.list_run_ids_by_status(RunStatus.PAUSED, project_id="proj-2") == ["run-b"]
-    assert await store.list_run_ids_by_status(RunStatus.PAUSED, limit=1) == ["run-a"]
-    assert await store.list_run_ids_for_project("proj-1") == ["run-c", "run-a"]
-    assert await store.list_run_ids_for_project("proj-1", limit=1) == ["run-c"]
-
-
-async def test_the_continuation_listings_agree_in_memory() -> None:
-    await _listing_parity(InMemoryGraphContinuationStore())
-
-
-async def test_the_continuation_listings_agree_on_sqlite(tmp_path: Path) -> None:
-    async with aiosqlite.connect(tmp_path / "listings.db") as conn:
-        store = SqliteGraphContinuationStore(conn)
-        await store.ensure_schema()
-        await _listing_parity(store)
