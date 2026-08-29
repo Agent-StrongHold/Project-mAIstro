@@ -392,11 +392,14 @@ def test_a_notes_module_that_fails_to_load_leaves_nothing_behind(
     """
     broken = tmp_path / "ac_state_notes.py"
     broken.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-    monkeypatch.setattr(gate, "_NOTES_SOURCE", broken)
+    # `gate` is the entry point, which re-exports by copying; the loader reads
+    # the implementation's own `_NOTES_SOURCE`, so that is what has to move.
+    impl = sys.modules["check_ac_state_impl"]
+    monkeypatch.setattr(impl, "_NOTES_SOURCE", broken)
     monkeypatch.delitem(sys.modules, "_ac_state_notes", raising=False)
 
     with pytest.raises(RuntimeError, match="boom"):
-        gate._load_notes_module()
+        impl._load_notes_module()
 
     assert "_ac_state_notes" not in sys.modules
 
