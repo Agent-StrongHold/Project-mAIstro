@@ -181,17 +181,16 @@ class ContextBuilder:
                 kept_ids=kept_ids,
             )
 
-        if context_assembly_policy is not None and budget_chars > 0:
-            budget_chars = await _apply_memory(
-                context_assembly_policy,
-                project_id=project_id,
-                run_id=run_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                query=user_text,
-                budget_chars=budget_chars,
-                system_parts=system_parts,
-            )
+        budget_chars = await _apply_memory(
+            context_assembly_policy,
+            project_id=project_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            query=user_text,
+            budget_chars=budget_chars,
+            system_parts=system_parts,
+        )
 
         result_messages = _assemble_messages(
             messages, system_parts, enable_cache_breakpoints=enable_cache_breakpoints
@@ -200,7 +199,7 @@ class ContextBuilder:
 
 
 async def _apply_memory(
-    policy: ContextAssemblyPolicy,
+    policy: ContextAssemblyPolicy | None,
     *,
     project_id: str,
     run_id: str,
@@ -223,7 +222,13 @@ async def _apply_memory(
     The block is rendered whole or not at all: `assemble` has already spent its
     own budget on whole memories, so slicing the result here would reintroduce
     the fragment that packing exists to prevent.
+
+    "No policy wired" and "no budget left" are answered here rather than at the
+    call site so `build`, which is already at the complexity ceiling, gains a
+    call and not a branch.
     """
+    if policy is None or budget_chars <= 0:
+        return budget_chars
     assembled = await policy.assemble(
         project_id=project_id,
         run_id=run_id,

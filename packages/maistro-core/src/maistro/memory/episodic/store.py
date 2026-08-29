@@ -12,6 +12,30 @@ from maistro.memory.scopes import build_scope_filter, matches_scope
 from maistro.memory.types import DecaySweep, EpisodicMemory
 
 
+def _selected(
+    memory: EpisodicMemory,
+    *,
+    scope_filters: list[tuple[str, str | None]],
+    no_scope_filter: bool,
+    min_weight: float,
+    project_id: str | None,
+) -> bool:
+    """Whether `list_by_scope` returns this memory.
+
+    A named predicate rather than four clauses inside the comprehension: the
+    scope axes gained `user_id` (#622) and the conditions carried the method
+    past the complexity ceiling, which is the linter noticing that "select"
+    had become a rule worth naming.
+    """
+    if memory.deleted:
+        return False
+    if not no_scope_filter and not matches_scope(memory, scope_filters):
+        return False
+    if memory.weight < min_weight:
+        return False
+    return not project_id or memory.project_id == project_id
+
+
 class InMemoryEpisodicStore:
     def __init__(self) -> None:
         self._memories: list[EpisodicMemory] = []
@@ -94,10 +118,13 @@ class InMemoryEpisodicStore:
         matched = [
             mem
             for mem in self._memories
-            if not mem.deleted
-            and (no_scope_filter or matches_scope(mem, scope_filters))
-            and mem.weight >= min_weight
-            and (not project_id or mem.project_id == project_id)
+            if _selected(
+                mem,
+                scope_filters=scope_filters,
+                no_scope_filter=no_scope_filter,
+                min_weight=min_weight,
+                project_id=project_id,
+            )
         ]
         matched.sort(key=lambda m: m.weight, reverse=True)
         return matched[:limit]

@@ -23,7 +23,7 @@ from maistro.memory.episodic.ranking import keyword_overlap, score
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
-from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
+from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
 from maistro.projects.store import InMemoryProjectStore
 from maistro.types.agent import AgentIdentity
 
@@ -74,6 +74,17 @@ class _StubEmbeddings:
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [await self.embed(t) for t in texts]
+
+
+def _outcome(error: str, project_id: str) -> Outcome:
+    """A failed outcome, which is what `get_experience_context` surfaces."""
+    return Outcome(
+        request_id="r1",
+        task_type="",
+        success=False,
+        error_type=error,
+        project_id=project_id,
+    )
 
 
 @pytest.fixture
@@ -323,3 +334,106 @@ class TestAssembledMemoryReachesThePrompt:
 class _EmptyPromptManager:
     async def get(self, name: str) -> str:
         return ""
+
+
+class TestLayer3SpendsItsBudgetOnWholeUnits:
+    """The same rule as Layer 1, on a layer that mixes one blob with a list."""
+
+    @pytest.mark.ac("SPEC-244/AC-3")
+    async def test_the_experience_text_is_included_whole_or_not_at_all(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        await policy.outcome_store.record(
+            _outcome("the deploy needs a database migration first", "p1")
+        )
+
+        generous = await policy.layer3("p1", budget_tokens=10_000)
+        stingy = await policy.layer3("p1", budget_tokens=1)
+
+        assert "migration" in generous
+        assert stingy == ""
+
+    @pytest.mark.ac("SPEC-244/AC-3")
+    async def test_wisdom_survives_a_budget_the_experience_text_already_spent(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        """WISDOM is above the always-include band, so it is present even once
+        the outcome text has taken the budget — the band outranks the budget,
+        and this is the layer where the two meet."""
+        await policy.outcome_store.record(_outcome("some experience", "p1"))
+        await policy.episodic_store.store(_mem("never deploy on a Friday", 0.95, "wisdom"))
+
+        text = await policy.layer3("p1", budget_tokens=2)
+
+        assert "never deploy on a Friday" in text
+
+    @pytest.mark.ac("SPEC-244/AC-3")
+    async def test_an_unnamed_budget_bounds_nothing(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        """A caller that named no budget is not a caller with a budget of zero.
+        Reading it as zero would silently drop the layer."""
+        await policy.outcome_store.record(_outcome("some experience", "p1"))
+        await policy.episodic_store.store(_mem("never deploy on a Friday", 0.95, "wisdom"))
+
+        text = await policy.layer3("p1")
+
+        assert "some experience" in text
+        assert "never deploy on a Friday" in text
+
+    @pytest.mark.ac("SPEC-244/AC-3")
+    async def test_no_wisdom_and_no_experience_is_an_empty_layer(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        assert await policy.layer3("p1", budget_tokens=10_000) == ""
+
+
+class TestTheMemoryBlockIsWholeOrAbsent:
+    """`_apply_memory`'s own edges (AC-3, AC-5)."""
+
+    @pytest.mark.ac("SPEC-244/AC-5")
+    async def test_no_policy_wired_adds_no_block(self) -> None:
+        messages, _ids = await ContextBuilder().build(
+            [{"role": "user", "content": "how do I deploy?"}],
+            AgentIdentity(name="agent-1", model="m", soul_prompt_name="none"),
+            prompt_manager=_EmptyPromptManager(),
+            agent_id="agent-1",
+        )
+
+        assert all("maistro:memory" not in str(m.get("content", "")) for m in messages)
+
+    @pytest.mark.ac("SPEC-244/AC-5")
+    async def test_an_empty_assembly_adds_no_block(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        """Nothing stored, so `assemble` returns "". An empty block would spend
+        budget and tell the model a memory section exists with nothing in it."""
+        messages, _ids = await ContextBuilder().build(
+            [{"role": "user", "content": "how do I deploy?"}],
+            AgentIdentity(name="agent-1", model="m", soul_prompt_name="none"),
+            prompt_manager=_EmptyPromptManager(),
+            context_assembly_policy=policy,
+            agent_id="agent-1",
+        )
+
+        assert all("maistro:memory" not in str(m.get("content", "")) for m in messages)
+
+    @pytest.mark.ac("SPEC-244/AC-3")
+    async def test_a_block_that_does_not_fit_is_dropped_rather_than_cut(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        """The always-include band can overspend `assemble`'s budget by design,
+        so the block handed back here may not fit the prompt's. It is dropped
+        whole — slicing it would reintroduce the fragment packing prevents."""
+        await policy.episodic_store.store(_mem("deploy " * 400, 0.95, "huge"))
+
+        messages, _ids = await ContextBuilder().build(
+            [{"role": "user", "content": "how do I deploy?"}],
+            AgentIdentity(name="agent-1", model="m", soul_prompt_name="none"),
+            prompt_manager=_EmptyPromptManager(),
+            context_assembly_policy=policy,
+            agent_id="agent-1",
+            system_token_budget=10,
+        )
+
+        assert all("maistro:memory" not in str(m.get("content", "")) for m in messages)

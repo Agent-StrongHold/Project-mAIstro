@@ -1,17 +1,18 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +13
+  packages/maistro-core/tests: +20
   packages/hive-conductor/backend/tests: +0
 ---
 # claude-issue-622-ranked-episodic-recall-9f21
 
-`packages/maistro-core/tests/memory/test_ranked_recall.py` (+13, new). Nothing
+`packages/maistro-core/tests/memory/test_ranked_recall.py` (+20, new). Nothing
 was deleted; three tests moved *within* `test_retrieval.py` in place — the class
 that exercised `ScoredEpisodicRetrieval._keyword_similarity` now exercises
 `ranking.keyword_overlap`, which is where that term lives once there is one of
 it. Same three cases, same file, so the count is unchanged there.
 
-The thirteen are six criteria and their controls. Every criterion that could be
+The twenty are six criteria, their controls, and the edges the coverage gate
+found afterwards. Every criterion that could be
 satisfied by a broken implementation has one:
 
 - **relevance over insertion order** (AC-1) — and the same assertion with the
@@ -51,3 +52,21 @@ now also asserts the assembly policy the Container selected is the one the
 agents receive. Its claim was already "Hive consumes what the Container
 selected"; this is one more wiring under the same claim, and its double gained
 the field, so the suite count is unchanged.
+
+**Seven of the twenty exist because the diff-coverage gate asked, not because a
+criterion did**, and they are worth having on their own terms:
+
+- Layer 3 mixes one blob (the outcome experience text) with a list (WISDOM
+  memories), and AC-3's whole-unit rule has to hold for both — the blob is
+  included whole or not at all, WISDOM still survives a budget the blob already
+  spent, an unnamed budget bounds nothing, and an empty layer is empty.
+- `_apply_memory`'s three exits: no policy wired, an assembly that came back
+  empty, and a block too large for the prompt's own budget. That last one is
+  real rather than defensive — the always-include band may overspend
+  `assemble`'s budget by design, so the block handed back can exceed the
+  prompt's, and it is dropped whole rather than cut.
+
+Two files also needed a complexity fix rather than a baseline entry: the scope
+predicate moved out of `list_by_scope`'s comprehension into a named `_selected`,
+and `_apply_memory` answers "no policy" and "no budget" itself so `build`, which
+was already at its ceiling, gained a call and not a branch.
