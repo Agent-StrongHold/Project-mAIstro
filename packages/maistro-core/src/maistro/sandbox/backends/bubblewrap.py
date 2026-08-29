@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import resource
 import shutil
 import time
 from pathlib import Path
@@ -41,6 +43,46 @@ _RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
 
 #: Exit code convention shared with the other backends: 124 is `timeout(1)`'s.
 TIMEOUT_EXIT_CODE = 124
+
+#: How much CPU time a workload may have beyond its wall-clock budget before
+#: the kernel stops it. `cpu_cores` is a *rate*, so the honest reading of
+#: "0.25 cores for 120 seconds" is 30 CPU-seconds; the grace covers process
+#: start-up, which is charged to the budget but is nobody's workload.
+_CPU_GRACE_SECONDS = 2
+
+
+def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
+    """The rlimits a sandbox running under `config` gets (#80).
+
+    `memory_mb` and `cpu_cores` were declared on `SandboxConfig` and applied by
+    nothing: a caller could ask for 256 MB and watch the workload allocate two
+    gigabytes. A budget the runtime ignores is worse than no budget, because
+    the caller believes it has one.
+
+    A pure function of the config so the numbers are assertable without
+    spawning anything -- the same reason `build_argv` is separate. Applied in
+    `exec` through `preexec_fn`, which runs between `fork` and `exec` and so
+    lands on `bwrap` itself; every process in the sandbox inherits it.
+
+    Measured through a real sandbox: `RLIMIT_AS` turns a 2 GB allocation into
+    `MemoryError`, `RLIMIT_FSIZE` stops `dd` at the limit, and `RLIMIT_CPU`
+    kills a busy loop. `RLIMIT_NPROC` is set too and is the one that may not
+    bite: the kernel does not enforce it for a parent holding `CAP_SYS_ADMIN`
+    or `CAP_SYS_RESOURCE`, so a Conductor running as root bounds a fork bomb
+    by the wall-clock timeout and the process-group kill instead. Set anyway,
+    because it costs nothing and is enforced wherever the process is not
+    privileged -- but not claimed as a guarantee. See
+    docs/security/SANDBOX-SUPPORT-MATRIX.md.
+    """
+    memory_bytes = max(config.memory_mb, 1) * 1024 * 1024
+    file_bytes = max(config.max_file_mb, 1) * 1024 * 1024
+    cpu_seconds = math.ceil(max(config.timeout_s, 1) * max(config.cpu_cores, 0.01))
+    return {
+        resource.RLIMIT_AS: (memory_bytes, memory_bytes),
+        resource.RLIMIT_FSIZE: (file_bytes, file_bytes),
+        resource.RLIMIT_CPU: (cpu_seconds + _CPU_GRACE_SECONDS,) * 2,
+        resource.RLIMIT_NPROC: (max(config.max_processes, 1),) * 2,
+    }
 
 
 class BubblewrapUnavailableError(RuntimeError):
@@ -178,10 +220,21 @@ class BubblewrapSandboxBackend:
         argv = self.build_argv(config, workdir, command)
         start = time.monotonic()
 
+        limits = resource_limits(config)
+
+        def apply_limits() -> None:  # pragma: no cover - runs in the child
+            for which, values in limits.items():
+                resource.setrlimit(which, values)
+
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Between fork and exec, so the limits are on `bwrap` and inherited
+            # by everything inside the sandbox. There is no bwrap flag for
+            # this and no way to set it from inside a boundary the workload
+            # controls.
+            preexec_fn=apply_limits,
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
