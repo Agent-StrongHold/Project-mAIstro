@@ -179,6 +179,7 @@ class Agent:
         prompt_manager: PromptManager,
         warden: Any,
         learning_store: LearningStore | None = None,
+        context_assembly_policy: Any = None,
         learning_extractor: Any = None,
         rca_extractor: Any = None,
         learning_promoter: Any = None,
@@ -199,6 +200,7 @@ class Agent:
         self._prompt_manager = prompt_manager
         self._warden = warden
         self._learning_store = learning_store
+        self._context_assembly_policy = context_assembly_policy
         self._learning_extractor = learning_extractor
         self._rca_extractor = rca_extractor
         self._learning_promoter = learning_promoter
@@ -317,7 +319,7 @@ class Agent:
         team_id = getattr(auth, "team_id", "")
 
         context_messages, injected_learning_ids = await self._build_context(
-            messages, org_id, team_id, trace
+            messages, org_id, team_id, trace, session_id
         )
 
         tool_defs: list[dict[str, Any]] | None = None
@@ -486,6 +488,7 @@ class Agent:
         org_id: str,
         team_id: str,
         trace: Any,
+        session_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[int]]:
         """Build the agent's prompt context, recording a trace span when on."""
         if not trace:
@@ -494,9 +497,11 @@ class Agent:
                 self.identity,
                 prompt_manager=self._prompt_manager,
                 learning_store=self._learning_store,
+                context_assembly_policy=self._context_assembly_policy,
                 agent_id=self.identity.name,
                 org_id=org_id,
                 team_id=team_id,
+                session_id=session_id or "",
             )
         with trace.span("prompt.build") as ps:
             ps.set_input({"message_count": len(messages)})
@@ -505,9 +510,11 @@ class Agent:
                 self.identity,
                 prompt_manager=self._prompt_manager,
                 learning_store=self._learning_store,
+                context_assembly_policy=self._context_assembly_policy,
                 agent_id=self.identity.name,
                 org_id=org_id,
                 team_id=team_id,
+                session_id=session_id or "",
             )
             ps.set_output(
                 {

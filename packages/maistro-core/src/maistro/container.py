@@ -984,6 +984,9 @@ async def create_container(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
         project_store=project_store,
+        # The same client #188 wires for durable memory similarity. Absent, the
+        # hybrid score is its lexical term alone rather than a second formula.
+        embedding_client=embeddings,
     )
 
     router = RouterEngine(quota_tracker)

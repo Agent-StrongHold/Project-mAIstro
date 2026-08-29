@@ -45,6 +45,10 @@ import structlog
 
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
+from maistro_rsi.contained_validation import (
+    ContainmentUnavailable,
+    run_validation_in_container,
+)
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
 
@@ -722,6 +726,21 @@ def make_builders_apply_patch(
     return apply
 
 
+class _NoHostExecSandbox(LocalSandbox):
+    """A `LocalSandbox` with host execution removed.
+
+    Reads and writes still work -- an apply function legitimately inspects and
+    edits the worktree, and under container isolation those edits are synced
+    back to it. Only `exec` is gone, because that is the one operation that
+    would put candidate-influenced work on the host shell (#305).
+    """
+
+    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
+        raise PermissionError(
+            "this run uses container isolation; commands do not execute on the host"
+        )
+
+
 # ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
@@ -732,8 +751,16 @@ class LocalRsiConfig:
     """Inputs for one capped local self-improvement run."""
 
     repo_path: str
+    #: The test command as a shell string. Kept for the CLI, where an operator
+    #: at a terminal types one and a shell is the thing they expect.
     test_command: str
     work_root: str
+    #: The same command as an argument vector. When set it WINS over
+    #: `test_command` and runs with no shell at all — which is what any caller
+    #: that did not come from a terminal must supply (#305). The Conductor's
+    #: HTTP route resolves it from server-side policy; nothing a request
+    #: carries reaches a command line.
+    test_argv: tuple[str, ...] = ()
     max_cycles: int = 3
     objective: str = _DEFAULT_OBJECTIVE
     # Explicit files to improve, one per cycle (rotated). When set, each cycle
@@ -1616,7 +1643,7 @@ class LocalRsiLoop:
         r = _VariantResult(branch=branch, cycle_dir=cdir, label=competitor.label, kind=kind)
         try:
             apply_fn = self._apply_for_competitor(competitor, objective, budget)
-            asyncio.run(apply_fn(LocalSandbox(cdir), str(cdir), None))
+            asyncio.run(apply_fn(self._sandbox_for(cdir), str(cdir), None))
             _git(cdir, "add", "-A")
             r.changed_files = self._changed_files(cdir)
             if not r.changed_files:
@@ -2128,6 +2155,7 @@ class LocalRsiLoop:
             cycle_dir,
             changed_files,
             test_command=self._config.test_command,
+            test_argv=self._config.test_argv,
             coverage_source=self._config.coverage_source,
             coverage_pytest_args=self._config.coverage_pytest_args,
             baseline_coverage=self._baseline_coverage(),
@@ -2205,21 +2233,89 @@ class LocalRsiLoop:
         )
         write_trace_note(self._baseline, sha, trace_note)
 
+    def _sandbox_for(self, cycle_dir: Path) -> MicroVmSandbox:
+        """The sandbox handed to the apply function for one cycle.
+
+        Under `isolation="container"` the builders factory opens its own
+        `ContainerBuilderSandbox` and never touches this object -- but "never
+        touches it" is a property of today's factory, not a guarantee, and the
+        thing being passed is a host-backed sandbox whose `exec` runs a string
+        through a shell. An apply function that used it would silently move
+        candidate execution back onto the host.
+
+        So under container isolation the argument is one that refuses (#305).
+        Nothing legitimate loses a capability; anything that reaches for host
+        execution gets an exception naming why instead of a shell.
+        """
+        if self._config.isolation == "container":
+            return _NoHostExecSandbox(cycle_dir)
+        return LocalSandbox(cycle_dir)
+
+    def _require_contained_signals(self) -> None:
+        """Refuse a configuration whose signals would execute on the host (#305).
+
+        `use_fitness` composes its Scorecard from signals that each run the
+        candidate's own code where the loop runs: `evaluate_candidate` invokes
+        the test vector, a coverage run, the red/green evidence replay and the
+        static tools, all with `cwd` pointing at the candidate worktree. Under
+        `isolation="container"` that is the same escape `_run_tests` just
+        closed, spread across six call sites instead of one.
+
+        Refused rather than silently downgraded to the bare test gate: a run
+        that scored a candidate on fewer signals than the operator asked for,
+        and said so nowhere, is how a promotion decision quietly changes
+        meaning. Containing those signals is #614.
+        """
+        if self._config.isolation == "container" and self._config.use_fitness:
+            raise ContainmentUnavailable(
+                "fitness scoring runs the candidate's coverage, red/green and "
+                "static-tool signals on the host, which container isolation "
+                "forbids (#614). Run with fitness disabled, or on the local "
+                "isolation an operator has chosen for their own machine."
+            )
+
     def _run_tests(self, cycle_dir: Path) -> bool:
-        # shell=True: the test command is operator-supplied config, not agent input.
-        proc = subprocess.run(  # nosemgrep
-            self._config.test_command,
-            shell=True,  # nosemgrep
-            cwd=str(cycle_dir),
-            capture_output=True,
-            text=True,
-            timeout=self._config.test_timeout,
-        )
+        if self._config.isolation == "container":
+            # `cycle_dir` holds the candidate's edits. An argument vector is not
+            # an isolation boundary: `python -m pytest` imports the candidate's
+            # test modules, its conftest, and any pytest plugin it declares, so
+            # `shell=False` decides only how the *first* command is parsed, not
+            # whose code runs afterwards (#305). Under container isolation the
+            # validation runs where the edits do.
+            return run_validation_in_container(
+                cycle_dir,
+                self._config.test_argv,
+                image=self._config.sandbox_image,
+                timeout=self._config.test_timeout,
+            )
+        if self._config.test_argv:
+            # No shell: the vector was chosen from server-side policy, and a
+            # metacharacter in any token stays a character in an argument.
+            proc = subprocess.run(
+                list(self._config.test_argv),
+                cwd=str(cycle_dir),
+                capture_output=True,
+                text=True,
+                timeout=self._config.test_timeout,
+            )
+        else:
+            # shell=True: the CLI path, where `test_command` is what an operator
+            # typed at a terminal. Every non-terminal caller supplies test_argv
+            # above instead -- see #305 for why that distinction is load-bearing.
+            proc = subprocess.run(  # nosemgrep
+                self._config.test_command,
+                shell=True,  # nosemgrep
+                cwd=str(cycle_dir),
+                capture_output=True,
+                text=True,
+                timeout=self._config.test_timeout,
+            )
         if proc.returncode != 0:
             logger.info("rsi_local_tests_failed", tail=(proc.stdout + proc.stderr)[-500:])
         return proc.returncode == 0
 
     def run(self) -> LocalRsiResult:
+        self._require_contained_signals()
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches
         # Review starts AFTER any resume commit: a resumed patch is already-
