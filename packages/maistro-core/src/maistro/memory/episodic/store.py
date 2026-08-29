@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from maistro.memory.episodic.ranking import rank
 from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
@@ -35,21 +36,11 @@ class InMemoryEpisodicStore:
             team_id=team_id,
             org_id=org_id,
         )
-        query_words = set(query.lower().split())
-        scored: list[tuple[float, EpisodicMemory]] = []
-
-        for mem in self._memories:
-            if mem.deleted:
-                continue
-            if not matches_scope(mem, scope_filters):
-                continue
-            mem_words = set(mem.content.lower().split())
-            overlap = len(mem_words & query_words)
-            if overlap > 0:
-                scored.append((overlap * mem.weight, mem))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [r[1] for r in scored[:limit]]
+        scoped = [m for m in self._memories if not m.deleted and matches_scope(m, scope_filters)]
+        # One formula, in ranking.py. This used to score `overlap_count *
+        # weight` -- a fourth spelling of ADR-080 part D that ranked
+        # differently from the other three (#622).
+        return rank(query, scoped, k=limit)
 
     async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
         for i, mem in enumerate(self._memories):
@@ -84,6 +75,7 @@ class InMemoryEpisodicStore:
         self,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
         team_id: str | None = None,
         org_id: str | None = None,
         project_id: str | None = None,
@@ -92,12 +84,13 @@ class InMemoryEpisodicStore:
     ) -> list[EpisodicMemory]:
         scope_filters = build_scope_filter(
             agent_id=agent_id,
+            user_id=user_id,
             team_id=team_id,
             org_id=org_id,
         )
-        # No agent/team/org filter given: project_id alone selects memories
+        # No agent/user/team/org filter given: project_id alone selects memories
         # (e.g. project changelog recall), independent of scope hierarchy.
-        no_scope_filter = not (agent_id or team_id or org_id)
+        no_scope_filter = not (agent_id or user_id or team_id or org_id)
         matched = [
             mem
             for mem in self._memories

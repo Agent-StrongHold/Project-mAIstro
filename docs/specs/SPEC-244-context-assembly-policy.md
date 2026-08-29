@@ -3,8 +3,13 @@ id: SPEC-244
 title: "ContextAssemblyPolicy — Layer 0-4 memory assembly (ADR-091)"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: AC Defined
 created: 2026-06-20
+history:
+  - status: Accepted
+    date: 2026-06-20
+  - status: AC Defined
+    date: 2026-08-29
 substrate:
   - maistro-engine#ADR-013
   - maistro-engine#ADR-016
@@ -22,6 +27,16 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/memory/test_context_assembly.py
+  - packages/maistro-core/tests/memory/test_ranked_recall.py
+source:
+  - packages/maistro-core/src/maistro/memory/context_assembly.py
+ac-modules:
+  AC-1: maistro.memory.context_assembly
+  AC-2: maistro.memory.episodic.retrieval
+  AC-3: maistro.memory.context_assembly
+  AC-4: maistro.memory.context_assembly
+  AC-5: maistro.agents.context_builder
+  AC-6: maistro.memory.episodic.ranking
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -132,18 +147,55 @@ needed on `EpisodicStore` — the policy filters the returned list itself).
 
 ## Acceptance criteria
 
-- [x] `ContextAssemblyPolicy` protocol exists in `maistro/protocols/memory.py` with
-      the exact method signatures from ADR-091.
-- [x] `DefaultContextAssemblyPolicy.layer1` excludes OBSERVATION/HYPOTHESIS-tier
-      memories (weight < 0.3) and includes REGRET/AFFIRMATION/WISDOM unconditionally.
-- [x] `DefaultContextAssemblyPolicy.layer3` includes only WISDOM-tier (weight ≥ 0.9)
-      episodic memories (project-scoped via `project_id`), plus `Outcome`
-      experience-context text (project-scoped via `project_id`).
-- [x] `layer2` and `layer4` return `""` unconditionally (documented placeholders).
-- [x] `assemble` concatenates layers in order 0,1,2,3,4; Layer 0 content is never
-      dropped even when `budget_tokens` is smaller than its length.
-- [x] `Container` exposes a `context_assembly_policy: ContextAssemblyPolicy` field
-      wired to `DefaultContextAssemblyPolicy` in `create_container()`.
+The prose checklist this section used to carry was true of the protocol and
+false of the behaviour: it claimed layer1 "includes REGRET/AFFIRMATION/WISDOM
+unconditionally" while `assemble` sliced the joined layer text by character, so
+an always-include memory could be dropped or halved by a budget it is exempt
+from. #622 made the claim true and restates it here in the form the AC gate
+reads, so it is checkable rather than asserted.
+
+```gherkin
+@AC-1
+Scenario: A prompt layer is assembled by relevance, not by insertion order
+  Given episodic memories whose store order differs from their relevance to the run
+  When Layer 1 is assembled for a run with a query
+  Then the memories present are the ones scoring highest for that query
+  And reversing the insertion order does not change the answer
+
+@AC-2
+Scenario: Ranked retrieval works against a store it did not construct
+  Given an episodic store that is not the in-memory implementation
+  When scored retrieval runs against it
+  Then it returns ranked memories through the EpisodicStore protocol
+  And the scope axes it was given reach the store rather than being applied afterwards
+
+@AC-3
+Scenario: The budget drops whole memories, never fragments
+  Given a token budget smaller than the assembled memories
+  When a layer is assembled
+  Then every memory in the result is present in full
+  And a budget that fits everything drops nothing
+
+@AC-4
+Scenario: The ADR-091 weight bands are invariants, not preferences
+  Given a memory at or above the always-include weight and a budget of zero
+  When Layer 1 is assembled
+  Then that memory is present
+  And a memory below the budget-include weight is absent however relevant it is
+
+@AC-5
+Scenario: The assembled context reaches the prompt
+  Given an agent whose context builder holds a context assembly policy
+  When it builds the system prompt for a turn
+  Then the assembled memory text is in that prompt
+  And model-authored memory content cannot close a delimiter block it does not own
+
+@AC-6
+Scenario: One ranking formula, on one scale
+  When a memory is scored
+  Then the score is the ADR-080 part D product of weight and the summed terms
+  And a bounded vector similarity can outrank a partial lexical match
+```
 
 ## Testing
 
