@@ -70,9 +70,9 @@ def test_patch_settings_sets_capabilities() -> None:
     assert g.json()["capabilities"]["infra_action"]["active_provider"] == "host_health"
 
     # Stored as validated CapabilitySetting models, not raw dicts (bridge reads these).
-    import stores
+    from services import settings_store
 
-    assert isinstance(stores.settings.capabilities["infra_action"], CapabilitySetting)
+    assert isinstance(settings_store.current().capabilities["infra_action"], CapabilitySetting)
 
 
 def test_patch_without_capabilities_leaves_existing_untouched() -> None:

@@ -413,14 +413,17 @@ class TestQuotas:
 
 
 class TestDataFiles:
-    def test_dashboard_layouts_json_valid(self):
-        path = Path(__file__).parent.parent / "data" / "dashboard_layouts.json"
-        data = json.loads(path.read_text())
-        assert isinstance(data, dict)
-        # Should have at least one user key with tabs
-        for _uid, layout in data.items():
-            assert "tabs" in layout
-            assert len(layout["tabs"]) > 0
+    def test_demo_dashboards_json_valid(self):
+        """`data/dashboard_layouts.json` was runtime state tracked in git, and
+        this test asserted its shape. #340 moved layouts into the store and
+        promoted the layout that file held to a shipped demo template, so the
+        integrity claim now belongs to the templates, which are image content."""
+        demos = Path(__file__).parent.parent / "data" / "demo_dashboards"
+        assert demos.is_dir()
+        for path in sorted(demos.glob("*.json")):
+            data = json.loads(path.read_text())
+            assert isinstance(data, dict), path.name
+            assert data.get("tabs") or data.get("widgets"), path.name
 
     def test_widget_examples_json_valid(self):
         path = Path(__file__).parent.parent / "data" / "widget_examples.json"
