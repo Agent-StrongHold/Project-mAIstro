@@ -37,6 +37,7 @@ ac-modules:
   AC-4: ac_state_notes
   AC-5: ac_state_notes
   AC-6: ac_state_notes
+  AC-7: ac_state_notes
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -158,4 +159,35 @@ Feature: AC-state per-branch notes
     Given a ratchet failure under the note scheme
     When the message is printed
     Then it names the folded bound, where it came from, and the exact bank command
+
+  @AC-7
+  Scenario: The candidate's own note is found on a detached head
+    Given a branch that banked a note
+    And a checkout with no branch name to report
+    When the candidate's own note is looked for
+    Then the note it banked is found
+
+  @AC-7
+  Scenario: A note whose filename no longer matches the branch is still found
+    Given a banked note and a branch renamed since
+    When the candidate's own note is looked for
+    Then the note it banked is found
+
+  @AC-7
+  Scenario: Re-settling the shared baseline is not banking a measurement
+    Given a candidate that only rewrites the migration baseline
+    When the candidate's own note is looked for
+    Then there is none, and the base fold judges it alone
+
+  @AC-7
+  Scenario: A candidate that touched two notes has no own note
+    Given a candidate that wrote more than one branch note
+    When the candidate's own note is looked for
+    Then there is none, and the base fold judges it alone
+
+  @AC-7
+  Scenario: A note already at the base is not the candidate's
+    Given a note that merged into the base before this branch was cut
+    When the candidate's own note is looked for
+    Then there is none, because the fold already carries it
 ```

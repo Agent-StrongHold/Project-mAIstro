@@ -1196,16 +1196,15 @@ def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str
 
 
 def _own_note() -> Any | None:
-    """This branch's own note from the worktree, or None if it has not banked.
+    """This candidate's own note from the worktree, or None if it has not banked.
 
     Read from the worktree on purpose, unlike the fold: this is the candidate's
     own record of what it measured, and the question it answers — "did you bank
-    what you measured?" — is only about the candidate.
+    what you measured?" — is only about the candidate. Found by what the change
+    did rather than by the branch name, because CI has no branch name to offer;
+    see `ac_state_notes.own_note`.
     """
-    path = ac_state_notes.note_path(ac_state_notes.current_branch())
-    if not path.is_file():
-        return None
-    return ac_state_notes.Note.parse(path.name, path.read_text(encoding="utf-8"))
+    return ac_state_notes.own_note()
 
 
 def _show_bounds() -> int:

@@ -234,3 +234,167 @@ class TestTheFloorUnderProgress:
         del payload["counters"]["design_coverage"]
         path.write_text(json.dumps(payload))
         assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
+
+
+# --- the paths that report rather than measure (#585) -------------------------
+#
+# Everything below is a failure mode of the *scheme*, not of the corpus: a note
+# directory that cannot be read, a fold with nothing in it, a maintenance
+# command run on an empty tree. Each one has to say what is wrong instead of
+# passing quietly, because a ratchet that answers "fine" when it could not read
+# its oracle is a ratchet that has stopped ratcheting.
+
+
+def _raise(exc: Exception):
+    def fail(*_args, **_kwargs):
+        raise exc
+
+    return fail
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_an_unreadable_note_stops_the_ratchet_rather_than_passing_it(
+    gate, ceilings, monkeypatch, capsys
+) -> None:
+    ceilings()
+    monkeypatch.setattr(
+        gate.ac_state_notes, "bounds", _raise(gate.ac_state_notes.AcStateNoteError("bad note"))
+    )
+
+    assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
+    assert "the AC-state bound could not be established: bad note" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_an_unreadable_note_stops_the_mode_check_too(gate, ceilings, monkeypatch, capsys) -> None:
+    """The mode guard runs before the bound is read, so it needs its own answer."""
+    ceilings()
+    monkeypatch.setattr(
+        gate.ac_state_notes,
+        "load_notes",
+        _raise(gate.ac_state_notes.AcStateNoteError("unreadable")),
+    )
+
+    assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
+    assert "the AC-state notes could not be read: unreadable" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_an_empty_fold_names_the_bank_command(gate, ceilings, capsys) -> None:
+    """No notes at the base is not "no ceiling"; it is "nothing to compare to"."""
+    assert gate.ratchet(TOTALS, measured=True, bank=False) == 1
+
+    out = capsys.readouterr().out
+    assert "nothing to compare against" in out
+    assert "--run-tests --ratchet --bank" in out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_show_bounds_prints_every_bounded_counter(gate, ceilings, capsys) -> None:
+    ceilings()
+
+    assert gate._show_bounds() == 0
+
+    out = capsys.readouterr().out
+    assert "design_coverage" in out and "floor" in out
+    assert "specs_awaiting_retrofit" in out and "ceiling" in out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_show_bounds_fails_when_the_fold_is_empty(gate, ceilings, capsys) -> None:
+    assert gate._show_bounds() == 1
+    assert "no notes at the base revision" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_show_bounds_reports_an_unreadable_note(gate, ceilings, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        gate.ac_state_notes, "bounds", _raise(gate.ac_state_notes.AcStateNoteError("bad note"))
+    )
+
+    assert gate._show_bounds() == 1
+    assert "the AC-state bound could not be established: bad note" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-4")
+def test_compact_on_a_missing_directory_is_a_no_op_not_a_failure(
+    gate, tmp_path, monkeypatch, capsys
+) -> None:
+    """Maintenance run before the scheme has any notes. Nothing to do is not
+    an error, and reporting it as one would train people to ignore it."""
+    monkeypatch.setattr(gate.ac_state_notes, "NOTES_DIR", tmp_path / "absent")
+
+    assert gate._compact() == 0
+    assert "does not exist" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-4")
+def test_compact_on_an_empty_directory_is_a_no_op_not_a_failure(gate, ceilings, capsys) -> None:
+    assert gate._compact() == 0
+    assert "no notes in" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-4")
+def test_compact_refuses_a_malformed_note_rather_than_folding_around_it(
+    gate, ceilings, capsys
+) -> None:
+    """Compaction rewrites the baseline. Skipping a note it cannot parse would
+    silently drop whatever bound that note was holding."""
+    ceilings()
+    (ceilings.dir / "broken.json").write_text("{ not json", encoding="utf-8")
+
+    assert gate._compact() == 1
+    assert "broken.json is not valid JSON" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_a_counter_no_note_carries_is_left_out_of_the_report(gate, ceilings, capsys) -> None:
+    """A fold over notes need not bound every counter — a counter nothing
+    measured has no bound, and printing one would invent it."""
+    (ceilings.dir / "_baseline.json").write_text(
+        json.dumps(
+            {
+                "branch": None,
+                "measured_with_tests": True,
+                "counters": {"design_coverage": 4.0},
+            }
+        )
+    )
+
+    assert gate._show_bounds() == 0
+
+    out = capsys.readouterr().out
+    assert "design_coverage" in out
+    assert "specs_awaiting_retrofit" not in out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_show_bounds_is_reachable_from_the_command_line(gate, ceilings) -> None:
+    ceilings()
+    assert gate.main(["--show-bounds"]) == 0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-4")
+def test_compact_is_reachable_from_the_command_line(gate, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(gate.ac_state_notes, "NOTES_DIR", tmp_path / "absent")
+    assert gate.main(["--compact"]) == 0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-6")
+def test_a_notes_module_that_fails_to_load_leaves_nothing_behind(
+    gate, tmp_path, monkeypatch
+) -> None:
+    """A half-initialised module left in `sys.modules` is worse than the error.
+
+    The next caller gets the cache hit and a module whose top level never
+    finished — an `AttributeError` three frames away from the real fault.
+    """
+    broken = tmp_path / "ac_state_notes.py"
+    broken.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "_NOTES_SOURCE", broken)
+    monkeypatch.delitem(sys.modules, "_ac_state_notes", raising=False)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        gate._load_notes_module()
+
+    assert "_ac_state_notes" not in sys.modules
