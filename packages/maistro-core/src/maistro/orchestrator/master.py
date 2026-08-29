@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from maistro.graph.definitions import Edge, Graph, Node as GraphNode
 from maistro.graph.durable_runs import DurableRunStore, InMemoryDurableRunStore, run_durable_graph
@@ -77,7 +77,7 @@ class _HandlerInput(BaseModel):
 
 class _HandlerOutput(BaseModel):
     result: str = ""
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class _HandlerNode(BaseNode[_HandlerInput, _HandlerOutput]):
@@ -161,9 +161,11 @@ class MasterOrchestrator:
         workspace_id: str = "master-orchestrator",
         project_id: str = "master-orchestrator",
     ) -> None:
-        # Retained as a compatibility hint only. Canonical Graph frontier
-        # execution owns concurrency; Master must not wrap it in a semaphore.
-        self._max_concurrent = max_concurrent_per_wave
+        # Kept in the public constructor for compatibility only. Concurrency is
+        # now a Graph-frontier concern; accepting the hint must not reintroduce
+        # a private semaphore or another execution authority.
+        if max_concurrent_per_wave < 1:
+            raise ValueError("max_concurrent_per_wave must be positive")
         self._max_retries = max(0, max_retries)
         self._security_gate = security_gate
         self._durable_store = durable_store or InMemoryDurableRunStore()
