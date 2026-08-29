@@ -110,6 +110,11 @@ optimizer_proposals: JsonStore = JsonStore("optimizer_proposals")
 # Task #27 — per-user, per-provider non-secret config (e.g. Airtable base_id).
 # Key shape: f"{user_id}:{provider_id}" → dict[str, str].
 user_provider_config: JsonStore = JsonStore("user_provider_config")
+#: One entry per principal, holding that principal's dashboard layout record.
+#: Here rather than beside the route because this is the boundary the
+#: deployment configures for durability (#340, ADR-082926-3b80); the route
+#: used to keep its own file inside the image.
+dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -137,6 +142,7 @@ _all_json_stores: list[JsonStore] = [
     eval_verdicts,
     optimizer_proposals,
     user_provider_config,
+    dashboard_layouts,
 ]
 
 
