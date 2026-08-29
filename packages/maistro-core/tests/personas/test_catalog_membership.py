@@ -52,17 +52,34 @@ async def test_catalog_membership_changes_leave_the_template_and_its_objects_alo
     variable, so this also covers a catalog that reached through to the
     registry -- which is the only way membership could reach template content
     at all, and would be invisible to a comparison against an in-hand object.
+
+    The baseline is deep-copied out of what the store returns rather than
+    held as the store returned it. Otherwise the baseline is only as fixed as
+    the store's own copy discipline, and a store handing out live objects
+    would move the baseline in step with the value under test -- comparing a
+    thing against itself and passing whatever happened.
+
+    The criterion says *each* add or removal leaves objects unchanged, so the
+    assertions run after the add and again after the removal. Checking only at
+    the end would pass an implementation that mutated on add and restored on
+    remove -- a violation with a tidy net effect, not a non-event.
     """
     store = InMemoryNodeTemplateStore()
     template = await store.put(_template())
     node = template.instantiate(node_id="node-1")
 
-    before_stored = await store.get("node-template", version=1)
+    stored = await store.get("node-template", version=1)
+    assert stored is not None
+    before_stored = stored.model_copy(deep=True)
     before_node = node.model_copy(deep=True)
     persona = _persona()
 
     persona.node_template_ids.append("node-template")
     persona.graph_template_ids.append("graph-template")
+
+    assert await store.get("node-template", version=1) == before_stored
+    assert node == before_node
+
     persona.node_template_ids.remove("node-template")
 
     assert await store.get("node-template", version=1) == before_stored
