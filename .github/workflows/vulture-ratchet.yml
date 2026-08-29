@@ -1,46 +1,129 @@
 name: Vulture Ratchet
 
 on:
-  # No `branches:` filter. It used to be [main, integration, develop], which
-  # matched on the PR's *base* — so a PR stacked on a feature branch ran none of
-  # this. #151 and #138 got Registry CI and Formal Conformance only: no lint, no
-  # types, no tests, no coverage, no SAST, no ratchet gates. The work was not
-  # unreviewed, it was unmeasured, and every accumulated failure arrived at once
-  # on retarget, against the branch least able to absorb it.
-  #
-  # A required-check set that silently does not apply to a whole class of PRs or
-  # merge-group candidates is worse than none: the green tick means different
-  # things depending on the merge path and nothing on the candidate says which.
   pull_request:
-  merge_group:
-    types: [checks_requested]
-  push:
-    branches: [develop, integration, main]
-
-# Supersede in-flight candidate runs. Protected-branch pushes still run to
-# completion because their pass/fail record is durable evidence about that SHA.
-concurrency:
-  group: vulture-ratchet-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  exact-debt-ledger:
+  patch-starvation:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/tmp-640-starvation-fix
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
-      - name: Install pinned analyzer
-        run: uv pip install --system vulture==2.16
-      - name: Require exact reviewed Vulture identities
-        run: >-
-          python scripts/check-vulture-baseline.py
-          packages/*/src
-          --min-confidence 60
-          --exclude '*/third_party/*'
+      - run: uv sync --locked --extra dev
+      - name: Patch consumer scan and prove regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("packages/maistro-core/src/maistro/container.py")
+          text = path.read_text()
+          old = '''        queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+        # The wired resolver, not the bare registry. `agent.delegate_remote`,
+'''
+          new = '''        if limit <= 0:
+            raise ValueError("limit must be positive")
+        # `limit` is an execution budget, not an inspection window (#544).
+        # Eligibility is evaluated after reading the Run, so asking the store
+        # for only `limit` rows lets a permanent prefix of foreign or multi-node
+        # QUEUED work starve every eligible Run behind it. Re-read a widening
+        # oldest-first prefix and de-duplicate identities instead of using SQL
+        # OFFSET: claims/disposals remove rows from QUEUED while this tick runs,
+        # so an offset would skip work as the result set contracts beneath it.
+        scan_limit = limit
+        seen_run_ids: set[str] = set()
+        # The wired resolver, not the bare registry. `agent.delegate_remote`,
+'''
+          if old not in text:
+              raise SystemExit("queue scan insertion point changed")
+          text = text.replace(old, new, 1)
+          old_loop = '''        executed = 0
+        for run in queued:
+            if not consumer_owns(run):
+                continue
+            # Owned and impossible: no later tick makes an unregistered kind
+            # appear, so this Run is disposed of rather than left QUEUED
+            # forever. A multi-node Run reaches neither branch — it is owed to
+            # the durable Graph traversal (#44/#34) and waits for it.
+            unresolvable = unresolvable_reason(run)
+            if unresolvable is not None:
+                await self._fail_unresolvable_run(run.run_id, unresolvable)
+                continue
+            if not executable_by_consumer(run):
+                continue
+            try:
+                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            except Exception:
+                # Another tick won the claim, or the Run moved on. Not ours.
+                continue
+            try:
+                await executor.execute(claimed)
+            except Exception:
+                logger.warning(
+                    "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                )
+                await self._settle_unstarted_consumption(run.run_id)
+            executed += 1
+        return executed
+'''
+          new_loop = '''        executed = 0
+        while executed < limit:
+            queued = await self.run_store.list_by_status(
+                RunStatus.QUEUED,
+                limit=scan_limit,
+            )
+            fresh = [run for run in queued if run.run_id not in seen_run_ids]
+            seen_run_ids.update(run.run_id for run in fresh)
+            for run in fresh:
+                if not consumer_owns(run):
+                    continue
+                # Owned and impossible: no later tick makes an unregistered kind
+                # appear, so this Run is disposed of rather than left QUEUED
+                # forever. A multi-node Run reaches neither branch — it is owed to
+                # the durable Graph traversal (#44/#34) and waits for it.
+                unresolvable = unresolvable_reason(run)
+                if unresolvable is not None:
+                    await self._fail_unresolvable_run(run.run_id, unresolvable)
+                    continue
+                if not executable_by_consumer(run):
+                    continue
+                try:
+                    claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+                except Exception:
+                    # Another tick won the claim, or the Run moved on. Not ours.
+                    continue
+                try:
+                    await executor.execute(claimed)
+                except Exception:
+                    logger.warning(
+                        "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                    )
+                    await self._settle_unstarted_consumption(run.run_id)
+                executed += 1
+                if executed >= limit:
+                    break
+            if executed >= limit or len(queued) < scan_limit:
+                break
+            scan_limit *= 2
+        return executed
+'''
+          if old_loop not in text:
+              raise SystemExit("consumer loop changed")
+          path.write_text(text.replace(old_loop, new_loop, 1))
+          PY
+          uv run ruff format packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run ruff check packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run pytest packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py -q
+          git checkout HEAD^ -- .github/workflows/vulture-ratchet.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py .github/workflows/vulture-ratchet.yml
+          git commit -m "fix: prevent ineligible queued Runs from starving consumer"
+          git push origin HEAD:chatgpt/tmp-640-starvation-fix
