@@ -158,10 +158,16 @@ class TestThePolicyMatchesWhatTheFrontEndLoads:
     being needed, shows up as a failure rather than as an unnoticed permission.
     """
 
-    def test_the_only_third_party_origins_are_the_font_hosts_index_html_names(self) -> None:
+    def test_the_production_policy_names_no_third_party_origin(self) -> None:
+        """Both sides of the claim, from the document rather than from a list.
+
+        Google Fonts was the only external origin and #377 self-hosted it away,
+        so the two sets are now empty — and they are still *derived*, because
+        the failure this guards against is the next CDN, not the last one.
+        """
         import re
 
-        from services.csp_policy import FONT_FILE_ORIGIN, FONT_STYLESHEET_ORIGIN, conductor_policy
+        from services.csp_policy import conductor_policy
 
         index_html = (_FRONTEND / "index.html").read_text(encoding="utf-8")
         wanted = {
@@ -175,7 +181,38 @@ class TestThePolicyMatchesWhatTheFrontEndLoads:
             if source.startswith("http")
         }
 
-        assert served == wanted == {FONT_STYLESHEET_ORIGIN, FONT_FILE_ORIGIN}
+        assert served == wanted == set()
+
+    def test_the_typefaces_the_themes_ask_for_are_shipped_with_the_app(self) -> None:
+        """A stack that names a family nothing serves silently falls through to
+        the system font — the page still renders, so no test would notice, and
+        the design intent is quietly gone. Each self-hosted family is asserted
+        against the dependency that ships it."""
+        import json
+
+        stacks = "".join(
+            path.read_text(encoding="utf-8") for path in (_FRONTEND / "src").rglob("*.css")
+        )
+        manifest = json.loads((_FRONTEND / "package.json").read_text(encoding="utf-8"))
+
+        for family, package in (
+            ("Inter Variable", "@fontsource-variable/inter"),
+            ("JetBrains Mono Variable", "@fontsource-variable/jetbrains-mono"),
+        ):
+            assert family in stacks, f"no stack asks for {family}"
+            assert package in manifest["dependencies"], f"{family} has no shipped source"
+
+    def test_nothing_imports_a_typeface_over_the_network(self) -> None:
+        """`@import url(https://...)` inside a stylesheet is the other way a
+        font host gets back in, and it would not appear in `index.html` for the
+        origin test above to catch."""
+        offenders = [
+            path.relative_to(_FRONTEND).as_posix()
+            for path in (_FRONTEND / "src").rglob("*.css")
+            if "@import url(http" in path.read_text(encoding="utf-8").replace(" ", "")
+        ]
+
+        assert offenders == []
 
     def test_nothing_in_the_frontend_injects_a_stylesheet_at_runtime(self) -> None:
         """`style-src` has no `'unsafe-inline'`, so a runtime `<style>` element
