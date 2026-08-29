@@ -1,1 +1,0 @@
-"""GitAgent directory export."""

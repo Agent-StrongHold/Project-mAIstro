@@ -46,19 +46,19 @@ class TestCreateDashboardWidgetTool:
 
     @pytest.mark.asyncio
     async def test_adds_widget_to_user_layout(self) -> None:
-        from routes.dashboard_layout import _LAYOUTS
+        from services import dashboard_layouts
         from services.chat_completion import _tool_create_dashboard_widget
 
         result = await _tool_create_dashboard_widget(
             {"type": "kpi", "title": "Layout Check"}, user_id="u-layout", jira_pat=None
         )
-        layout = _LAYOUTS["u-layout"]
+        layout = dashboard_layouts.load("u-layout").layout
         widgets = layout["tabs"][layout["activeTab"]]["widgets"]
         assert any(w["id"] == result["widget_id"] for w in widgets)
 
     @pytest.mark.asyncio
     async def test_creates_named_tab(self) -> None:
-        from routes.dashboard_layout import _LAYOUTS
+        from services import dashboard_layouts
         from services.chat_completion import _tool_create_dashboard_widget
 
         await _tool_create_dashboard_widget(
@@ -68,7 +68,7 @@ class TestCreateDashboardWidgetTool:
             {"type": "kpi", "title": "Second", "tab": "Ops"}, user_id="u-tabs", jira_pat=None
         )
         assert result["tab"] == "Ops"
-        tabs = _LAYOUTS["u-tabs"]["tabs"]
+        tabs = dashboard_layouts.load("u-tabs").layout["tabs"]
         ops = next(t for t in tabs if t["name"] == "Ops")
         assert any(w["title"] == "Second" for w in ops["widgets"])
 
@@ -118,3 +118,41 @@ class TestToolRegistry:
         names = [t["function"]["name"] for t in get_scoped_tools("dashboard_edit")]
         assert "create_dashboard_widget" in names
         assert "suggest_widgets" in names
+
+
+@pytest.mark.ac("SPEC-082926-3b80/AC-2")
+@pytest.mark.asyncio
+async def test_a_widget_that_could_not_be_saved_is_not_reported_as_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chat tool used to write inside `except Exception: pass` and return
+    `{"created": True}` regardless — so a user was told a widget existed when
+    nothing had been stored (#340)."""
+    from services import dashboard_layouts
+    from services.chat_completion import _tool_create_dashboard_widget
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise dashboard_layouts.LayoutPersistenceError("the store refused the write")
+
+    monkeypatch.setattr(dashboard_layouts, "save", refuse)
+
+    result = await _tool_create_dashboard_widget(
+        {"type": "kpi", "title": "Doomed"}, user_id="u-refused", jira_pat=None
+    )
+
+    assert result["created"] is False
+    assert "not saved" in result["error"]
+
+
+@pytest.mark.ac("SPEC-082926-3b80/AC-3")
+@pytest.mark.asyncio
+async def test_a_widget_with_no_principal_is_refused_rather_than_pooled() -> None:
+    """`user_id or "dev"` put every unidentified caller's widget in one layout."""
+    from services.chat_completion import _tool_create_dashboard_widget
+
+    result = await _tool_create_dashboard_widget(
+        {"type": "kpi", "title": "Homeless"}, user_id="", jira_pat=None
+    )
+
+    assert result["created"] is False
+    assert "principal" in result["error"]
