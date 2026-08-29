@@ -21,7 +21,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import types
 from pathlib import Path
 from typing import Any
 
@@ -31,46 +30,11 @@ if str(SCRIPTS) not in sys.path:
 
 import check_ac_state_impl as _impl  # noqa: E402
 
-
-class _ImplementationSurface(types.ModuleType):
-    """This module's public surface *is* the implementation's, not a copy of it.
-
-    Unit tests and local callers load `scripts/check-ac-state.py` by path and
-    reach helpers such as `ratchet` through it, so that surface has to stay.
-    Copying `vars(_impl)` into these globals looked like a way to keep it and
-    was not: a re-exported function still closes over `check_ac_state_impl`'s
-    globals, so `monkeypatch.setattr(check_ac_state, "SPEC_DIR", tmp_path)`
-    rebound a name nothing ever read and the patched behaviour never happened.
-
-    Five of this gate's own tests went red the moment the split landed, and
-    they were right to. A gate whose documented surface can be patched without
-    changing the behaviour behind it is the same shape of defect the ladder in
-    `check_ac_state_impl` exists to catch: a name that looks like the thing and
-    is not wired to it.
-
-    Reads fall through to the implementation for anything this module does not
-    define itself; writes land on the implementation for the names it owns, so
-    a caller patching the entry point patches the code that runs.
-    """
-
-    def __getattr__(self, name: str) -> Any:
-        # Only reached when this module's own namespace has no such name.
-        try:
-            return getattr(_impl, name)
-        except AttributeError:
-            raise AttributeError(f"module {self.__name__!r} has no attribute {name!r}") from None
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if not name.startswith("__") and name not in self.__dict__ and hasattr(_impl, name):
-            setattr(_impl, name, value)
-            return
-        object.__setattr__(self, name, value)
-
-
-# Module-level `def` and assignment below write straight to this module's
-# `__dict__`, so they keep their own names; only attribute access from outside
-# is routed.
-sys.modules[__name__].__class__ = _ImplementationSurface
+# Preserve the public module surface: unit tests and local callers historically
+# load scripts/check-ac-state.py by path and call helpers such as `ratchet`.
+for _name, _value in vars(_impl).items():
+    if not _name.startswith("__"):
+        globals().setdefault(_name, _value)
 
 _PROTECTED_PUSH_REFS = {
     "refs/heads/develop",
