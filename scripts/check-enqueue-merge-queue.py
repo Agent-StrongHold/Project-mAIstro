@@ -87,8 +87,9 @@ def merge_async_payload(candidate: Candidate) -> dict[str, str]:
 
 
 class GitHubApi:
-    def __init__(self, token: str, repository: str) -> None:
-        self._token = token
+    def __init__(self, read_token: str, queue_token: str, repository: str) -> None:
+        self._read_token = read_token
+        self._queue_token = queue_token
         self._repository = repository
 
     def _request(
@@ -96,6 +97,8 @@ class GitHubApi:
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        *,
+        token: str | None = None,
     ) -> Any:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
@@ -104,7 +107,7 @@ class GitHubApi:
             method=method,
             headers={
                 "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {token or self._read_token}",
                 "X-GitHub-Api-Version": API_VERSION,
                 "User-Agent": "maistro-merge-queue-controller",
             },
@@ -120,9 +123,7 @@ class GitHubApi:
             query = urllib.parse.urlencode(
                 {"state": "open", "base": BASE_BRANCH, "per_page": 100, "page": page}
             )
-            batch = self._request(
-                "GET", f"/repos/{self._repository}/pulls?{query}"
-            )
+            batch = self._request("GET", f"/repos/{self._repository}/pulls?{query}")
             assert isinstance(batch, list)
             result.extend(batch)
             if len(batch) < 100:
@@ -155,10 +156,11 @@ class GitHubApi:
                 "PUT",
                 f"/repos/{self._repository}/pulls/{candidate.number}/merge-async",
                 merge_async_payload(candidate),
+                token=self._queue_token,
             )
             return "accepted"
         except urllib.error.HTTPError as exc:
-            if exc.code in {200, 202, 409}:
+            if exc.code == 409:
                 return "already-requested"
             if exc.code == 400:
                 return "not-ready"
@@ -183,15 +185,19 @@ def run(api: GitHubApi) -> int:
 
 
 def main() -> int:
-    token = os.environ.get("GH_TOKEN", "")
+    read_token = os.environ.get("GH_TOKEN", "")
+    queue_token = os.environ.get("MERGE_QUEUE_TOKEN", "")
     repository = os.environ.get("GITHUB_REPOSITORY", "")
-    if not token:
+    if not read_token:
         print("GH_TOKEN is required", file=sys.stderr)
+        return 2
+    if not queue_token:
+        print("MERGE_QUEUE_TOKEN is required", file=sys.stderr)
         return 2
     if "/" not in repository:
         print("GITHUB_REPOSITORY must be owner/repo", file=sys.stderr)
         return 2
-    return run(GitHubApi(token, repository))
+    return run(GitHubApi(read_token, queue_token, repository))
 
 
 if __name__ == "__main__":
