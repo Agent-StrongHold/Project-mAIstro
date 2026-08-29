@@ -17,7 +17,11 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from maistro.graph.definitions import Edge, Graph, Node as GraphNode
-from maistro.graph.durable_runs import DurableRunStore, InMemoryDurableRunStore, run_durable_graph
+from maistro.graph.durable_runs import (
+    DurableRunStore,
+    InMemoryDurableRunStore,
+    run_durable_graph,
+)
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.runs.model import RunStatus
 
@@ -222,6 +226,7 @@ class MasterOrchestrator:
         for item in self._items.values():
             handler = self._handlers.get(item.agent_role)
             if handler is None:
+
                 async def _missing(_: WorkItem, *, role: str = item.agent_role) -> WorkItem:
                     raise RuntimeError(f"No handler for agent role: {role}")
 
@@ -275,7 +280,9 @@ class MasterOrchestrator:
             timestamps = [item.started_at for item in wave.items if item.started_at is not None]
             completed = [item.completed_at for item in wave.items if item.completed_at is not None]
             wave.started_at = min(timestamps) if timestamps else None
-            if wave.items and all(item.status in {"passed", "failed", "blocked", "skipped"} for item in wave.items):
+            if wave.items and all(
+                item.status in {"passed", "failed", "blocked", "skipped"} for item in wave.items
+            ):
                 wave.completed_at = max(completed) if completed else datetime.now(UTC)
 
     async def execute(self) -> OrchestratorResult:
