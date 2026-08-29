@@ -260,6 +260,11 @@ jobs:
           # bounded it. `|| true` tolerates a *failed* apt, not a wedged one.
           timeout 180 sudo apt-get update || true
           timeout 180 sudo apt-get install -y age || true
+          # bubblewrap is the Tier-3 sandbox backend (#76, ADR-093). Installed
+          # rather than skipped-around: its integration tests are the only place
+          # the isolation claim is checked against the kernel instead of against
+          # our own argv, and a suite where they always skip proves nothing.
+          timeout 180 sudo apt-get install -y bubblewrap || true
           if ! command -v age-keygen &> /dev/null; then
             echo "Installing age-keygen from source..."
             mkdir -p /tmp/age && cd /tmp/age

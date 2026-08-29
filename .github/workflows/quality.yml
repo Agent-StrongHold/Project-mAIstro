@@ -101,6 +101,15 @@ jobs:
       - name: install maistro-evolve
         run: uv pip install -e packages/maistro-evolve
 
+      # The Tier-3 sandbox backend (#76). Without it the bubblewrap
+      # integration tests skip, and the diff-coverage gate then measures a
+      # backend whose execution paths nothing ran -- the exact shape of the
+      # gap that gate exists to find.
+      - name: install bubblewrap
+        run: |
+          timeout 180 sudo apt-get update -qq || true
+          timeout 180 sudo apt-get install -y bubblewrap
+
       # ----- Pillar 1: coverage (line + branch ≥95% on touched files) -----
       # C2/#287: measured over the PyPI publish set (core, canvas, evolve, rsi,
       # bootstrap — the PyPI publish set),
