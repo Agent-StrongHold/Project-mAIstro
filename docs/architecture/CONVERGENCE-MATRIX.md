@@ -104,7 +104,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no new direct caller escapes | #56 |
 | Router and classifier | `maistro.container.route_request` | `1/13` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
 | Tool execution | `services.tool_executor`, `maistro.container` | `9/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
-| Sandbox isolation | none in shipped repo processes | `6/6` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
+| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/9` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `12/22` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
 | Credentials | `routes.credentials`, `services.credential_store_v2` | `4/7` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
@@ -128,7 +128,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Reactor loop | `maistro.reactor` (installer-launched) | `0/1` | KEEP | SPEC-013, ADR-086 | loop timing tests | — |
 | Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `5/15` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
+| Core CLI | `maistro.cli` console script | `5/16` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
 | Shared contracts and config | imported by every package | `1/46` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/20` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |

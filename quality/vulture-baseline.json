@@ -565,7 +565,6 @@
         "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'cpu_cores'",
         "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'isolation_tier'",
         "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'min_isolation'",
-        "packages/maistro-core/src/maistro/sandbox/protocol.py::unused variable 'writable_paths'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'delay_seconds'",
         "packages/maistro-core/src/maistro/security/auth_throttle.py::unused variable 'elevate'",
         "packages/maistro-core/src/maistro/security/content_security_policy.py::unused variable 'SELF'",
@@ -661,6 +660,7 @@
         "packages/maistro-core/src/maistro/cli/_install.py::unused function 'install_main'",
         "packages/maistro-core/src/maistro/cli/_launch.py::unused function 'launch_server'",
         "packages/maistro-core/src/maistro/cli/_launch.py::unused function 'launch_tui'",
+        "packages/maistro-core/src/maistro/cli/_sandbox.py::unused function 'sandbox_status'",
         "packages/maistro-core/src/maistro/cli/_security.py::unused function 'purge_sessions'",
         "packages/maistro-core/src/maistro/cli/_security.py::unused function 'rotate_credential_key'",
         "packages/maistro-core/src/maistro/cli/_upgrade.py::unused function 'upgrade_main'"
@@ -1192,7 +1192,6 @@
         "packages/maistro-core/src/maistro/runs/retention.py::unused method 'sweep_now'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused method 'sample_event_loop_lag'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused method 'sample_event_loop_lag'",
-        "packages/maistro-core/src/maistro/sandbox/backends/fake.py::unused class 'FakeSandboxBackend'",
         "packages/maistro-core/src/maistro/sandbox/selector.py::unused method 'build_config'",
         "packages/maistro-core/src/maistro/scheduling/admission.py::unused method 'admit_due'",
         "packages/maistro-core/src/maistro/scheduling/model.py::unused method '_normalise_timestamps'",

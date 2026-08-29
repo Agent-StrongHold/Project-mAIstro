@@ -19,6 +19,10 @@ class NoSuitableBackendError(Exception):
     """Raised when no registered backend meets the workload's minimum isolation."""
 
 
+class TierMismatchError(ValueError):
+    """Raised when a backend is registered at a tier it does not declare."""
+
+
 class SandboxSelector:
     """Registry of sandbox backends. Selects the best one for a given policy."""
 
@@ -26,7 +30,25 @@ class SandboxSelector:
         self._backends: dict[IsolationTier, SandboxProtocol] = {}
 
     def register(self, tier: IsolationTier, backend: SandboxProtocol) -> None:
-        """Register a backend at a given isolation tier."""
+        """Register a backend at a tier it declares it can actually provide.
+
+        The tier used to be whatever the caller passed, and nothing compared it
+        to the backend. `register("vm", FakeSandboxBackend())` was therefore a
+        legal way to make in-process `subprocess.run` satisfy `UNTRUSTED_CODE`,
+        whose entire stated reason is that model-generated code must run behind
+        a VM boundary. A fail-open of that shape defeats every check downstream
+        of it, because everything downstream trusts the tier.
+
+        So the backend declares its own tier and a mismatch is refused. A
+        caller may still register a weaker backend than it hoped for; it cannot
+        relabel one as stronger.
+        """
+        declared = getattr(backend, "tier", None)
+        if declared is not None and declared != tier:
+            raise TierMismatchError(
+                f"{type(backend).__name__} declares tier {declared!r} but was registered as "
+                f"{tier!r}; a backend cannot be relabelled into a stronger boundary"
+            )
         self._backends[tier] = backend
         logger.info("sandbox_backend_registered tier=%s backend=%s", tier, type(backend).__name__)
 
