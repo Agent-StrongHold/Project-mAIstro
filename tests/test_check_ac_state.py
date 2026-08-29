@@ -18,12 +18,25 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "check-ac-state.py"
+
+
+#: The measurement lives in `check_ac_state_impl`; `check-ac-state.py` is a thin
+#: entry point over it that adds the merge guard. These tests are about the
+#: measurement, and several of them monkeypatch what it reads -- `SPEC_DIR`,
+#: `_passing_in_root`. Patching the entry point cannot work: it re-exports by
+#: copying names into its own globals, and a re-exported function still closes
+#: over the implementation's, so the patch rebinds something nothing reads.
+#:
+#: Making the entry point proxy those writes was tried and is worse: the same
+#: file is loaded under four module names across this suite, and a shared
+#: implementation turns one test's patch into every other load's problem. The
+#: seam being tested is the implementation, so this names it.
+IMPL = ROOT / "scripts" / "check_ac_state_impl.py"
 
 
 @pytest.fixture(scope="module")
 def check():
-    spec = importlib.util.spec_from_file_location("check_ac_state", SCRIPT)
+    spec = importlib.util.spec_from_file_location("check_ac_state_impl_under_test", IMPL)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -1125,50 +1138,3 @@ class TestPassingPerRoot:
 
         monkeypatch.setattr(check.subprocess, "run", fake_run)
         assert check._passing_in_root(tmp_path) is None
-
-
-class TestTheEntryPointSurfaceIsWiredToTheImplementation:
-    """Patching the documented surface has to change the behaviour behind it.
-
-    `scripts/check-ac-state.py` became a thin entry point over
-    `scripts/check_ac_state_impl.py`, and preserved its public surface by
-    copying `vars(_impl)` into its own globals. A re-exported function still
-    closes over the *implementation's* globals, so a caller rebinding a name on
-    the entry point rebound something nothing read — and every one of this
-    file's own monkeypatching tests silently stopped testing what it names.
-
-    The class below is what those five failures were reporting, stated directly
-    so a future re-split cannot reintroduce it quietly. It is the same defect
-    the ladder in `check_ac_state_impl` exists to catch, one level up: a name
-    that looks like the thing and is not wired to it.
-    """
-
-    def test_patching_the_entry_point_reaches_the_code_that_runs(self, check, monkeypatch):
-        import check_ac_state_impl
-
-        sentinel = Path("/patched-by-the-entry-point")
-        monkeypatch.setattr(check, "SPEC_DIR", sentinel)
-
-        assert sentinel == check_ac_state_impl.SPEC_DIR
-
-    def test_the_entry_point_reads_through_to_the_implementation(self, check):
-        import check_ac_state_impl
-
-        assert check.RATCHETED is check_ac_state_impl.RATCHETED
-        assert check._is_reachable is check_ac_state_impl._is_reachable
-
-    def test_a_name_the_entry_point_owns_is_not_pushed_down(self, check, monkeypatch):
-        """`main` exists on both, and the entry point's is the merge guard. A
-        proxy that forwarded every write would replace the implementation's
-        `main` with the guard and recurse."""
-        import check_ac_state_impl
-
-        before = check_ac_state_impl.main
-        monkeypatch.setattr(check, "main", lambda argv: 0)
-
-        assert check_ac_state_impl.main is before
-
-    def test_an_unknown_name_is_still_an_attribute_error(self, check):
-        name = "not_a_real_name"
-        with pytest.raises(AttributeError, match=f"no attribute '{name}'"):
-            getattr(check, name)
