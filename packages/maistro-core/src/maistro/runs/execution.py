@@ -28,13 +28,18 @@ from maistro.runs.reconciliation import (
     CancellationCause,
 )
 from maistro.runs.store import RunIntegrityError
-from maistro.runtime import ExecutionCallable, ExecutionRuntime, RuntimeDeadlineExceeded
+from maistro.runtime import (
+    ExecutionCallable,
+    ExecutionPaused,
+    ExecutionRuntime,
+    RuntimeDeadlineExceeded,
+)
 
 AttemptReconciler = Callable[[Attempt], Awaitable[None]]
 AttemptContextFactory = Callable[[Attempt, Any], Any]
 
 
-class ExecutionYielded(Exception):
+class ExecutionYielded(ExecutionPaused):
     """The work paused rather than finishing or failing.
 
     A wait or HITL node that returns successfully with ``status="paused"`` has
@@ -46,6 +51,12 @@ class ExecutionYielded(Exception):
     Carrying the disposition on an exception rather than a return value is
     deliberate: it is the same seam `RuntimeDeadlineExceeded` uses, so the
     generic Runtime keeps knowing nothing about wait or HITL semantics.
+
+    It subclasses `ExecutionPaused` so that Runtime can count the pause without
+    learning what it waits on (#642). Runtime's broad `except Exception` had no
+    way to tell a deliberate stop from a crash, so every successful pause was
+    recorded as a failed execution -- the same defect this class fixes one level
+    up, in the record the migration decision is actually read from.
     """
 
     def __init__(self, *, awaits_human: bool = False, evidence: object = None) -> None:
