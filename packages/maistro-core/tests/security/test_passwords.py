@@ -147,3 +147,68 @@ class TestAnUnknownAccountCostsWhatAKnownOneCosts:
         passwords.equal_cost_verify("x", None)
         for guess in ["", "password", "x", passwords._DECOY_HASH or ""]:
             assert passwords.verify_password(guess, passwords._DECOY_HASH or "") is False
+
+
+class TestBcryptIsOptionalAndItsAbsenceIsADenial:
+    """bcrypt is `maistro-core[bcrypt]`, so its absence is a supported state.
+
+    It was previously installed only because `hive-conductor` happened to pin
+    it; `maistro-core` imports it and declared nothing, so any other consumer
+    with a pre-Argon2id column was verifying against a module nothing had
+    promised to install (#514). Making the ownership explicit also makes the
+    absent case real, and `verify_password` caught only `(ValueError,
+    TypeError)` — so a `ModuleNotFoundError` escaped the function and reached
+    the login route as a 500 rather than a denial.
+
+    A 500 on a *correct* password is not merely untidy: it is an oracle. The
+    caller learns the stored hash is legacy, which a denial does not tell them.
+    """
+
+    _LEGACY = "$2b$12$hmpbR.C6bkLEJ4d9PYzoqOthlZNKk.WOSjXnLxHpC0Y3S6sgdYfPq"
+
+    def _without_bcrypt(self, monkeypatch):
+        """Hide bcrypt from the import system, whatever is installed here."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name == "bcrypt":
+                raise ModuleNotFoundError("No module named 'bcrypt'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", blocked)
+        monkeypatch.delitem(__import__("sys").modules, "bcrypt", raising=False)
+
+    def test_a_correct_legacy_password_is_denied_rather_than_raising(self, monkeypatch) -> None:
+        """The password is right, so this is the case that used to raise."""
+        from maistro.security.passwords import verify_password
+
+        self._without_bcrypt(monkeypatch)
+
+        assert verify_password("testpass", self._LEGACY) is False
+
+    def test_the_denial_says_which_extra_is_missing(self, monkeypatch, caplog) -> None:
+        """Fail-closed and silent is indistinguishable, to the person locked
+        out, from a wrong password. The log is the only place the difference
+        can be recovered."""
+        import logging
+
+        from maistro.security.passwords import verify_password
+
+        self._without_bcrypt(monkeypatch)
+        with caplog.at_level(logging.ERROR, logger="maistro.security.passwords"):
+            verify_password("testpass", self._LEGACY)
+
+        assert "maistro-core[bcrypt]" in caplog.text
+
+    def test_argon2_verification_is_unaffected(self, monkeypatch) -> None:
+        """The control. bcrypt's absence must not touch the current algorithm,
+        which is the one every non-legacy account uses."""
+        from maistro.security.passwords import hash_password, verify_password
+
+        stored = hash_password("correct horse battery")
+        self._without_bcrypt(monkeypatch)
+
+        assert verify_password("correct horse battery", stored) is True
+        assert verify_password("wrong", stored) is False
