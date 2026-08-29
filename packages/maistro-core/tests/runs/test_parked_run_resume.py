@@ -14,6 +14,7 @@ from "did nothing".
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -348,3 +349,149 @@ class TestThePollDeadlineCanNowBeReached:
         assert result.status == "completed"
         assert result.output is not None
         assert result.output.timed_out is True
+
+
+class TestTheTickUnderStress:
+    async def test_two_ticks_resume_one_parked_run_once(self) -> None:
+        """The claim is the parked->RUNNING transition, exactly as the QUEUED
+        tick's claim is QUEUED->RUNNING. The transition table is the mutex, so
+        the loser skips rather than resuming the same NodeRun twice."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-8")
+
+        first, second = await asyncio.gather(
+            container.resume_parked_runs(),
+            container.resume_parked_runs(),
+        )
+
+        assert first + second == 1
+        assert _PollingPauseNode.reaches == 2
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert len(attempts) == 2
+
+    async def test_a_resume_that_fails_outright_leaves_the_run_parked(self, monkeypatch) -> None:
+        """Not RUNNING over a parked NodeRun. Nothing about the pause has
+        changed, so the honest record is the one the resume found, and the next
+        tick may try again."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-9")
+        parked_before = await container.run_store.get_run(run_id)
+        assert parked_before is not None
+
+        async def _boom(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("the resolver blew up before any Attempt existed")
+
+        monkeypatch.setattr("maistro.runs.consumption.ScheduleAttemptExecutor.resume", _boom)
+
+        await container.resume_parked_runs()
+
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        assert run.status is parked_before.status
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+        assert len(await container.run_store.list_attempts(node_run.node_run_id)) == 1
+
+    async def test_a_run_with_more_than_one_node_run_is_not_resumed(self) -> None:
+        """Two NodeRuns for a single-node Run means the node was restarted
+        somewhere, which is the state this tick exists to avoid creating.
+        Guessing which one to continue would compound it."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-10")
+        await container.run_store.create_node_run(run_id, node_id="n1")
+
+        assert await container.resume_parked_runs() == 0
+        assert _PollingPauseNode.reaches == 1
+
+
+class TestWhatCountsAsAReadablePause:
+    """`resumable_pause`'s refusals, each of which is a real durable state.
+
+    Direct rather than through the tick: every one of these is a row the tick
+    would have to be handed, and building five parked Runs to reach five guards
+    would test the fixture rather than the rule.
+    """
+
+    def _attempt(self, node_run: Any, result: Any, *, status: AttemptStatus) -> Any:
+        from maistro.runs.model import Attempt
+
+        return Attempt(
+            node_run_id=node_run.node_run_id,
+            ordinal=1,
+            status=status,
+            result=result,
+            finished_at=datetime.now(UTC),
+        )
+
+    def _parked_node_run(self, status: RunStatus = RunStatus.WAITING) -> Any:
+        from maistro.runs.model import NodeRun
+
+        return NodeRun(run_id="r", node_id="n1", ordinal=1, status=status)
+
+    def test_a_running_node_run_is_not_parked(self) -> None:
+        from maistro.runs.consumption import resumable_pause
+
+        node_run = self._parked_node_run(RunStatus.RUNNING)
+
+        assert resumable_pause(node_run, [], now=datetime.now(UTC)) is None
+
+    def test_a_parked_node_run_with_no_attempts_has_no_pause_to_read(self) -> None:
+        """A pause is a thing an Attempt recorded. Without one there is nothing
+        saying what this NodeRun waits for, and inventing an answer is worse
+        than leaving it visible."""
+        from maistro.runs.consumption import resumable_pause
+
+        assert resumable_pause(self._parked_node_run(), [], now=datetime.now(UTC)) is None
+
+    def test_a_yielded_attempt_whose_result_is_not_a_record_is_not_read(self) -> None:
+        """`result` is free-form on the model. A yielded Attempt carrying a bare
+        value says nothing about what it waits for."""
+        from maistro.runs.consumption import resumable_pause
+
+        node_run = self._parked_node_run()
+        attempt = self._attempt(node_run, "paused", status=AttemptStatus.YIELDED)
+
+        assert resumable_pause(node_run, [attempt], now=datetime.now(UTC)) is None
+
+    def test_a_pause_with_no_usable_resume_time_is_not_elapsed(self) -> None:
+        """Absent, or a value that is not a timestamp. Either way there is no
+        moment to compare against, and "no stated time" must not read as "any
+        time will do"."""
+        from maistro.runs.consumption import _pause_from_attempt
+
+        node_run = self._parked_node_run()
+        for raw in (None, 12345, "not-a-timestamp"):
+            attempt = self._attempt(
+                node_run,
+                {"paused_reason": PAUSE_WAITING_ON_JIRA_SUBTASKS, "resume_at": raw},
+                status=AttemptStatus.YIELDED,
+            )
+            pause = _pause_from_attempt(node_run, attempt)
+
+            assert pause is not None
+            assert pause.resume_at is None
+            assert pause.elapsed(datetime.now(UTC)) is False
+
+    def test_a_naive_resume_time_is_read_as_utc(self) -> None:
+        """A store that dropped the offset must not make the comparison raise;
+        UTC is what every writer here records."""
+        from maistro.runs.consumption import _pause_from_attempt
+
+        node_run = self._parked_node_run()
+        attempt = self._attempt(
+            node_run,
+            {
+                "paused_reason": PAUSE_WAITING_ON_JIRA_SUBTASKS,
+                "resume_at": datetime(2020, 1, 1, 12, 0).isoformat(),
+            },
+            status=AttemptStatus.YIELDED,
+        )
+
+        pause = _pause_from_attempt(node_run, attempt)
+
+        assert pause is not None
+        assert pause.resume_at == datetime(2020, 1, 1, 12, 0, tzinfo=UTC)
+        assert pause.elapsed(datetime.now(UTC)) is True

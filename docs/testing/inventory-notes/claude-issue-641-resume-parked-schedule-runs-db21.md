@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +12
+  packages/maistro-core/tests: +20
 ---
 # claude-issue-641-resume-parked-schedule-runs-db21
 
-Twelve added, none removed, none rewritten. All in
+Twenty added, none removed, none rewritten. All in
 `tests/runs/test_parked_run_resume.py`, the suite for SPEC-082926-a44e.
 
 Three of the twelve pin the classification table itself, and six exercise the
@@ -27,3 +27,17 @@ on any path — `wait_first_seen:<node_id>` was read and never written by
 anything but tests, so the node took its first-reach branch every time. Latent
 while nothing resumed; an unbounded poll the moment something does, which is
 why it is fixed here rather than filed.
+
+Eight of the twenty came from the diff-coverage gate, and one of them found a
+defect rather than an uncovered line. `_settle_unstarted_consumption` declines
+to act when a NodeRun exists — and on a resume path one always does, that being
+the premise — so a resume that failed before creating an Attempt left the Run
+claimed RUNNING over a NodeRun that was still parked. That is the same
+"claimed, with nothing running" state that helper exists to prevent, one
+variant across. The tick now re-parks instead, and
+`test_a_resume_that_fails_outright_leaves_the_run_parked` is that case.
+
+The other seven are `resumable_pause`'s refusals, tested directly rather than
+through the tick: each is a durable row the tick would have to be handed, and
+building seven parked Runs to reach seven guards would test the fixture rather
+than the rule.

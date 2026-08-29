@@ -792,9 +792,34 @@ class Container:
                 await executor.resume(claimed, pause)
             except Exception:
                 logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
-                await self._settle_unstarted_consumption(run.run_id)
+                await self._repark_after_failed_resume(run.run_id, pause.node_run_id)
             resumed += 1
         return resumed
+
+    async def _repark_after_failed_resume(self, run_id: str, node_run_id: str) -> None:
+        """Put a claimed Run back where the resume found it (#641).
+
+        `_settle_unstarted_consumption` is the wrong tool here and would be a
+        no-op: it declines to act when a NodeRun exists, and on this path one
+        always does -- that is the premise of resuming. Left alone, the Run
+        would sit RUNNING over a NodeRun that is still parked, which is exactly
+        the "claimed, with nothing running" state that helper exists to prevent,
+        one variant across.
+
+        Re-parking rather than failing, because nothing about the pause has
+        changed: the next tick may try again, and terminalizing would throw away
+        work over what is usually a transient error.
+        """
+        try:
+            node_run = await self.run_store.get_node_run(node_run_id)
+            if node_run is None or node_run.status not in {
+                RunStatus.WAITING,
+                RunStatus.PAUSED,
+            }:
+                return
+            await self.run_store.transition_run(run_id, node_run.status)
+        except Exception:
+            logger.warning("parked Run %s could not be re-parked", run_id, exc_info=True)
 
     async def _resumable_pause_for(self, run: Run, moment: datetime) -> ParkedPause | None:
         """The one parked NodeRun this Run can be resumed through, or None.
