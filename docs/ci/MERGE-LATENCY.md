@@ -97,8 +97,26 @@ the 14-minute clean pass, is the "before" that #654's evidence reuse and
 #655's scoped merge-group legs are meant to collapse; re-run this measurement
 after each slice lands and append the row here.
 
-Not attributed here: *why* candidates were ejected (flake, conflict, or a real
-failure) — the Actions API records the re-run, not the reason. The dequeue
-rate therefore bounds flake-plus-conflict cost without splitting it. And the
-residency figures understate true ready-to-merge latency by the pre-run queue
-wait, which grows exactly when the queue is busiest.
+The residency figures understate true ready-to-merge latency by the pre-run
+queue wait, which grows exactly when the queue is busiest.
+
+## Where the window's dequeues actually came from
+
+The script does not attribute ejections, but the window's failed runs were
+read job-by-job once, and the attribution is worth banking with the numbers:
+
+- **Nine candidates** (PRs 496, 589, 623, 627, 632; 15:27–16:49) failed in
+  `CI / test` at one step — `pytest tests/`, the root tree that carries the
+  AC-state merge-guard suites. That is the "develop is red inside the merge
+  queue, and only there" defect (#635, finished by #650/#652): the queue was
+  green again from 17:07, the moment the fix candidate went through.
+- **Three candidates** (PRs 639, 649; 20:36–20:49) failed in
+  `quality / Quality gate` at the **contract marker ledger** step — a gate PR
+  #639 itself introduces, failing in merge-group context only.
+
+No flake, no service failure, and no real code regression ejected a candidate
+in this window. Every dequeue traces to a ratchet or gate resolving its
+baseline differently inside the merge queue than on the PR head — the exact
+class of defect #647's centralized base resolution exists to close. For this
+window, the retry half of the multiplier was not noise to be amortized by
+evidence reuse; it was one fixable defect class, twice.
