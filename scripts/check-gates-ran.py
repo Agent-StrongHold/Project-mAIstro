@@ -211,7 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ok: all {len(required)} required check(s) ran on this head")
         return 0
 
-    heading = "PENDING: execution evidence is still arriving" if verdict.pending else "FAIL: the gate set did not reach this commit"
+    heading = (
+        "PENDING: execution evidence is still arriving"
+        if verdict.pending
+        else "FAIL: the gate set did not reach this commit"
+    )
     print(f"{heading}\n")
     if verdict.absent:
         print(f"  not present yet ({len(verdict.absent)}):")
