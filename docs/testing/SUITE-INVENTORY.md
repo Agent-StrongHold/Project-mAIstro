@@ -65,8 +65,10 @@ eighteen backend node IDs and one e2e case, the total barely moved and a reader
 checking only the number would have seen nothing. That is the case the notes
 exist for.
 
-`quality/ac-state.json` still conflicts the way this file used to, and for the
-same reason; regenerate it with
+`quality/ac-state.json` used to conflict the way this file did, and for the same
+reason. #585 gave it the same treatment: the bound is folded from per-branch
+notes under `quality/ac-state-notes/`, and the measurement itself is no longer
+committed. Regenerate it with
 `python3 scripts/check-ac-state.py --run-tests --ratchet`.
 
 The gate compares **counts, not node-ID sets** — a checked-in manifest of ~9,500

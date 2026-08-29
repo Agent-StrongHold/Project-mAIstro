@@ -15,7 +15,12 @@ class TestDashboardLayout:
         layout = {"widgets": [{"id": "w1", "type": "stat-score", "title": "Score", "size": "md"}]}
         r = authed_client.put("/v1/dashboard/layout", json=layout)
         assert r.status_code == 200
-        assert r.json() == {"ok": True}
+        body = r.json()
+        assert body["ok"] is True
+        # The revision is what makes `expectedRevision` usable (#340): a client
+        # that never sees one cannot claim one.
+        assert body["revision"] == 1
+        assert body["updatedAt"]
 
     def test_persists_across_gets(self, authed_client: Any) -> None:
         layout = {

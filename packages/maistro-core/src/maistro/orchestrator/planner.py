@@ -128,7 +128,12 @@ CONSOLIDATION_TEMPLATE = PlanTemplate(
         # Wave 1: Agents
         SubsystemDef("F1", "agents", "Port agents/base.py", "mason", ["A1"]),
         SubsystemDef("F2", "agents", "Port agents/factory.py", "mason", ["F1"]),
-        SubsystemDef("F3", "agents", "Port agents/identity.py", "mason", ["A1"]),
+        # Was "Port agents/identity.py" until #618 retired that module: it held a
+        # docstring and no code, so this task directed its Mason handler to
+        # recreate exactly what was being deleted. AgentIdentity is in
+        # types/agent.py, which nothing else in this plan names, and it is what
+        # K1 (persistence/pg_agents.py) depends on F3 for (Codex, #618).
+        SubsystemDef("F3", "agents", "Port types/agent.py (AgentIdentity)", "mason", ["A1"]),
         SubsystemDef(
             "F4", "agents", "Port strategies/{react,plan_execute,direct,delegate}", "mason", ["F1"]
         ),

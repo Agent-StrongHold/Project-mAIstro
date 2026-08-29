@@ -120,6 +120,10 @@ async def test_voice_is_conversational_only(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert result.intent == "conversation"
-    assert result.actions_taken == []
     assert result.reply == "safe conversation"
     assert fake.requests[0].tools is None
+    # The containment witness is the request carrying no tools, above. The
+    # response no longer restates it as an empty `actions_taken` (#440): a list
+    # that can only ever be empty cannot distinguish "nothing ran" from
+    # "nothing was recorded".
+    assert not hasattr(result, "actions_taken")

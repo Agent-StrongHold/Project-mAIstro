@@ -78,18 +78,23 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 @pytest.fixture(autouse=True)
-def _isolate_dashboard_layouts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Redirect layout persistence to tmp_path so tests never mutate the
-    checked-in data/dashboard_layouts.json."""
+def _isolate_dashboard_layouts():
+    """Give each test its own layout store.
+
+    There is no file to redirect any more (#340): layouts are a `JsonStore` in
+    `stores`, unbacked in tests, so isolation is restoring the dict rather than
+    pointing a path at tmp_path.
+    """
     import copy
 
-    from routes import dashboard_layout
+    import stores
 
-    monkeypatch.setattr(dashboard_layout, "_DB_PATH", tmp_path / "dashboard_layouts.json")
-    snapshot = copy.deepcopy(dashboard_layout._LAYOUTS)
+    snapshot = copy.deepcopy(dict(stores.dashboard_layouts.items()))
     yield
-    dashboard_layout._LAYOUTS.clear()
-    dashboard_layout._LAYOUTS.update(snapshot)
+    for key in list(stores.dashboard_layouts.keys()):
+        stores.dashboard_layouts.pop(key)
+    for key, value in snapshot.items():
+        stores.dashboard_layouts[key] = value
 
 
 @pytest.fixture(autouse=True)

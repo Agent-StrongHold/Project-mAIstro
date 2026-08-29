@@ -19,6 +19,177 @@ def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+#: Field names that identify live execution state unambiguously enough to
+#: reject on sight, per SPEC-081226-bb3a R12. A template is a definition; a
+#: Run/NodeRun/Attempt is one execution of it. A template that has absorbed a
+#: `run_id` or an `execution_lease` is a record of something that already
+#: happened, and instantiating it replays another execution's state.
+#:
+#: "Unambiguously" is the whole design of this set, and it is narrower than R12
+#: reads. See RUNTIME_STATE_UNENFORCEABLE below for what that costs and why the
+#: alternative is worse. `tests/graph/test_template_runtime_exclusion.py` pins
+#: every name here to a real field on the canonical execution models -- the set
+#: cannot drift from them, and the production module does not import them,
+#: because a reusable definition must not depend on the records that execute it.
+RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
+    {
+        # Run/NodeRun/Attempt identity
+        "run_id",
+        "node_run_id",
+        "attempt_id",
+        "parent_run_id",
+        "parent_node_run_id",
+        # the authorization identity of one execution, which must never be
+        # reused: a template carrying it would run later work as that principal
+        "actor_principal_id",
+        # lease, checkpoint and settled-outcome state -- compound names with no
+        # plausible reading as definition data
+        "execution_lease",
+        "lease_epoch",
+        "fencing_token",
+        "resume_checkpoint_id",
+        "accepted_outcome",
+        "retention_expires_at",
+    }
+)
+
+#: Execution-state fields R12 names that this check deliberately does NOT
+#: reject, because their names are ordinary words that legitimately appear in
+#: definition data.
+#:
+#: R12 forbids "terminal state, retry counters, and runtime
+#: cancellation/deadline state", and by name these are `status`, `ordinal`,
+#: `started_at`, `finished_at`, `deadline_at`, `expires_at`, `issued_at` and
+#: `holder`. Rejecting those keys anywhere in an open dict would refuse an HTTP
+#: node's `parameters={"expected_response": {"status": 200}}`, an output schema
+#: with a `status` property, a scheduled template's own `deadline_at`, or a
+#: parameter named `holder`. Worse than refusing new work: template content is
+#: revalidated when a durable store reconstructs it, so previously-valid
+#: persisted templates would stop loading after an upgrade and take their
+#: schedules with them.
+#:
+#: So this check enforces the half it can prove and states the half it cannot,
+#: rather than enforcing R12 by name and breaking stored data. Closing the
+#: residue needs structural detection or a reserved namespace, not a longer
+#: list; that is raised on #40 rather than narrowed away in silence.
+RUNTIME_STATE_UNENFORCEABLE: dict[str, str] = {
+    "status": "an ordinary field name: HTTP status, document status, job status",
+    "ordinal": "a position in any user-defined sequence, not only a retry count",
+    "started_at": "a schedule or content timestamp as often as an execution one",
+    "finished_at": "likewise",
+    "deadline_at": "a scheduled template's own deadline is definition data",
+    "expires_at": "a credential or cache TTL a template may legitimately define",
+    "issued_at": "likewise",
+    "holder": "an ordinary noun -- account holder, licence holder, lease holder",
+}
+
+#: Canonical execution-model fields that are not execution *state* at all, with
+#: the reason. R12 permits "defaults/policies that influence future execution"
+#: as definition data, and its forbidden list is four named categories rather
+#: than "every field of an execution record". Recorded here rather than left as
+#: an absence, because the next reader's question is why these are missing.
+RUNTIME_STATE_ADMITTED: dict[str, str] = {
+    "created_at": "record metadata, and a template has its own",
+    "updated_at": "record metadata, and a template has its own",
+    "result": "an output, not an identifier, terminal state, counter or deadline",
+    "metrics": (
+        "an output, like result and error; and a template may legitimately name "
+        "which metrics its executions should emit, which is definition data"
+    ),
+    "error": "an output, not an identifier, terminal state, counter or deadline",
+    "runtime_id": "an execution default R12 explicitly permits",
+    "executor_id": "an execution default R12 explicitly permits",
+    "workspace_id": "scope, which templates carry in their own right",
+    "project_id": "scope, which templates carry in their own right",
+    "node_id": "definition identity: a Node is the thing a template describes",
+    "graph": "the definition an execution names, not execution state",
+    "persona_id": "a definition-time binding, not execution state",
+    "provenance": "template provenance is TemplateProvenance, a distinct field",
+}
+
+
+class RuntimeStateInTemplate(ValueError):
+    """Live execution state was supplied as reusable template content (R12).
+
+    Raised rather than stripped when a template is constructed, because a caller
+    that did not intend to carry execution state wants to hear about it, and one
+    that did should say so by calling `separate_runtime_state` and keeping the
+    projection it returns.
+    """
+
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = paths
+        listed = ", ".join(paths)
+        super().__init__(
+            f"template content carries live execution state: {listed}. "
+            "A template is a definition; Run/NodeRun/Attempt state belongs to an "
+            "execution of it (SPEC-081226-bb3a R12). Use separate_runtime_state() "
+            "to split an execution record into a definition and its runtime "
+            "projection."
+        )
+
+
+def _runtime_state_paths(value: Any, *, path: str = "") -> list[str]:
+    """Every location under `value` whose key names live execution state."""
+
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            here = f"{path}.{key}" if path else str(key)
+            if key in RUNTIME_STATE_FIELDS:
+                found.append(here)
+            else:
+                found.extend(_runtime_state_paths(nested, path=here))
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            found.extend(_runtime_state_paths(nested, path=f"{path}[{index}]"))
+    return found
+
+
+def separate_runtime_state(content: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split content into what a template may keep and what it may not.
+
+    R13 requires an adapter to separate runtime fields before projecting an
+    execution-time record into a reusable template, rather than pretending the
+    record is already one. This is that separation, and it returns the runtime
+    half instead of discarding it so a caller can file it where it belongs.
+    """
+
+    definition: dict[str, Any] = {}
+    runtime: dict[str, Any] = {}
+    for key, value in content.items():
+        if key in RUNTIME_STATE_FIELDS:
+            runtime[key] = value
+            continue
+        # Lists are traversed because the validator traverses them. A helper
+        # the refusal message names, whose output the validator then rejects,
+        # is worse than no helper.
+        kept, removed = _split_value(value)
+        definition[key] = kept
+        if removed is not None:
+            runtime[key] = removed
+    return definition, runtime
+
+
+def _split_value(value: Any) -> tuple[Any, Any]:
+    """Split one value into what a template keeps and what it must not."""
+
+    if isinstance(value, dict):
+        kept_dict, removed_dict = separate_runtime_state(value)
+        return kept_dict, (removed_dict or None)
+    if isinstance(value, list):
+        kept_list: list[Any] = []
+        removed_list: list[Any] = []
+        found = False
+        for item in value:
+            kept_item, removed_item = _split_value(item)
+            kept_list.append(kept_item)
+            removed_list.append(removed_item)
+            found = found or removed_item is not None
+        return kept_list, (removed_list if found else None)
+    return value, None
+
+
 class TemplateProvenance(BaseModel):
     """Exact template revision from which a mutable object was instantiated."""
 
@@ -132,6 +303,13 @@ class NodeTemplate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     saved_from: SourceObjectProvenance | None = None
 
+    @model_validator(mode="after")
+    def _reject_runtime_state(self) -> NodeTemplate:
+        paths = _runtime_state_paths(self._reusable_content())
+        if paths:
+            raise RuntimeStateInTemplate(paths)
+        return self
+
     def _reusable_content(self) -> dict[str, Any]:
         # `saved_from` is excluded for a stronger reason than the identity
         # fields beside it (ADR-082926-d0dc). Two templates saved from two
@@ -211,6 +389,13 @@ class GraphTemplate(BaseModel):
         for edge in self.edges:
             if edge.from_node not in node_ids or edge.to_node not in node_ids:
                 raise ValueError(f"edge {edge.edge_id} references a node outside graph template")
+        # A GraphTemplate embeds its Nodes by value, so runtime state smuggled
+        # into one of them is template content just as surely as its own
+        # metadata is. `node_id` is definition identity and stays; the scan
+        # skips it because it is not in RUNTIME_STATE_FIELDS.
+        paths = _runtime_state_paths(self._reusable_content())
+        if paths:
+            raise RuntimeStateInTemplate(paths)
         return self
 
     def _reusable_content(self) -> dict[str, Any]:
@@ -306,11 +491,16 @@ class GraphTemplate(BaseModel):
 
 
 __all__ = [
+    "RUNTIME_STATE_ADMITTED",
+    "RUNTIME_STATE_FIELDS",
+    "RUNTIME_STATE_UNENFORCEABLE",
     "Edge",
     "Graph",
     "GraphTemplate",
     "Node",
     "NodeTemplate",
+    "RuntimeStateInTemplate",
     "SourceObjectProvenance",
     "TemplateProvenance",
+    "separate_runtime_state",
 ]
