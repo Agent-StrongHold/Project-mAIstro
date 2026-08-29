@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from scripts.ci_base_revision import (
     BaseRevisionError,
     resolve_base_revision,
@@ -34,7 +33,7 @@ def test_push_resolves_before_sha() -> None:
 def test_pull_request_does_not_fall_back_to_merge_group_base() -> None:
     payload = {"merge_group": {"base_sha": SHA_B}, "pull_request": {"base": {}}}
 
-    with pytest.raises(BaseRevisionError, match="pull_request.base.sha"):
+    with pytest.raises(BaseRevisionError, match=r"pull_request\.base\.sha"):
         resolve_base_revision("pull_request", payload)
 
 
