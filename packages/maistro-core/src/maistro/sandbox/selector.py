@@ -9,7 +9,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from maistro.sandbox.policy import _TIER_ORDER, IsolationTier, WorkloadPolicy, tier_satisfies
+from maistro.sandbox.network import resolve_grant
+from maistro.sandbox.policy import (
+    _TIER_ORDER,
+    IsolationTier,
+    WorkloadPolicy,
+    floor_for_mode,
+    tier_satisfies,
+)
 from maistro.sandbox.protocol import SandboxConfig, SandboxProtocol
 
 logger = logging.getLogger("maistro.sandbox.selector")
@@ -67,15 +74,31 @@ class SandboxSelector:
 
         Returns (tier, backend). Raises NoSuitableBackendError if nothing qualifies.
         """
+        required = policy.effective_min_tier
         for tier in _TIER_ORDER:
             if tier not in self._backends:
                 continue
-            if tier_satisfies(tier, policy.min_tier):
-                return tier, self._backends[tier]
+            if not tier_satisfies(tier, required):
+                continue
+            backend = self._backends[tier]
+            resolve_grant(
+                policy.egress,
+                backend_name=type(backend).__name__,
+                supports_scoped_egress=bool(getattr(backend, "supports_scoped_egress", False)),
+                sandbox_id="(pre-spawn)",
+            )
+            return tier, backend
 
         available = ", ".join(self.available_tiers) or "none"
+        floor = floor_for_mode(policy.mode)
+        because_mode = (
+            f" (raised from {policy.min_tier!r} by the {policy.mode or 'unstated'} mode floor)"
+            if required != policy.min_tier
+            else ""
+        )
         raise NoSuitableBackendError(
-            f"Workload requires min_tier={policy.min_tier!r} ({policy.reason}). "
+            f"Workload requires min_tier={required!r}{because_mode} ({policy.reason}). "
+            f"Mode floor is {floor!r}. "
             f"Available: {available}. No backend qualifies — execution refused."
         )
 
@@ -93,9 +116,13 @@ class SandboxSelector:
         memory_mb = min(int(overrides.get("memory_mb", policy.max_memory_mb)), policy.max_memory_mb)
         timeout_s = min(int(overrides.get("timeout_s", policy.max_timeout_s)), policy.max_timeout_s)
         network = bool(overrides.get("network", policy.network_allowed)) and policy.network_allowed
+        # The grant is never taken from overrides: it is the policy's, decided
+        # before the sandbox exists, so there is nothing for candidate code to
+        # widen later.
         return SandboxConfig(
             memory_mb=memory_mb,
             timeout_s=timeout_s,
-            network=network,
-            min_isolation=policy.min_tier,
+            network=network and policy.egress.grants_network,
+            min_isolation=policy.effective_min_tier,
+            egress=policy.egress,
         )
