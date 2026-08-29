@@ -460,16 +460,6 @@
       ]
     },
     {
-      "id": "workspace-project-scope",
-      "subsystem": "Workspace / Project scope",
-      "disposition": "CONNECT",
-      "rationale": "Project authorization: the scope check a Run's Project id is enforced against. The Workspace half of this entry is connected as of #516 -- `wire_workspace_store` resolves the canonical Workspace store from the container's own relational backend, which is what reached `maistro.workspaces` and its model and store. What remains is the authorization module, which #38 reaches when project-scoped resources flow through it.",
-      "root": "the canonical Run store's scope enforcement (#38)",
-      "modules": [
-        "maistro.projects.authorization"
-      ]
-    },
-    {
       "id": "hive-dag-and-artifact-optimisation",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
