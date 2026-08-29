@@ -1195,16 +1195,14 @@ def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str
     return regressions, improvements
 
 
-def _own_note() -> Any | None:
-    """This candidate's own note from the worktree, or None if it has not banked.
+def _banked() -> Any:
+    """What the notes in this tree jointly claim, for the "did you bank it?" half.
 
-    Read from the worktree on purpose, unlike the fold: this is the candidate's
-    own record of what it measured, and the question it answers — "did you bank
-    what you measured?" — is only about the candidate. Found by what the change
-    did rather than by the branch name, because CI has no branch name to offer;
-    see `ac_state_notes.own_note`.
+    A fold rather than one note: a stacked branch carries its parent's note as
+    well as its own and both are new relative to the base, so "which one is the
+    candidate's" has no answer there — see `ac_state_notes.banked_bound` (#609).
     """
-    return ac_state_notes.own_note()
+    return ac_state_notes.banked_bound()
 
 
 def _show_bounds() -> int:
@@ -1330,17 +1328,23 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     # candidate cannot write. That is #534's property: the thing being judged
     # does not supply the judge.
     #
-    # **Slack** is judged against the candidate's own note, because a candidate
-    # that improves is *supposed* to be above the base fold — that is what
-    # improving means — and comparing the improvement against the base would
-    # make every genuine gain unpassable. What must not happen is banking less
-    # than you measured, and that is exactly `measured == own note`.
+    # **Slack** is judged against what this tree's notes jointly claim, because a
+    # candidate that improves is *supposed* to be above the base fold — that is
+    # what improving means — and comparing the improvement against the base
+    # would make every genuine gain unpassable. What must not happen is banking
+    # less than you measured, and that is `measured == the banked fold`.
     #
-    # A branch that has not banked has no note, so the base fold plays both
-    # roles and the old exact-equality behaviour is what it gets — along with
-    # the message telling it to bank.
-    own = _own_note()
-    target = own.counters if own is not None else bound.counters
+    # The banked fold rather than one note (#609): a stacked branch carries its
+    # parent's note as well as its own, both new relative to the base, and the
+    # rule that asked for exactly one made every stacked PR read as an unbanked
+    # improvement. Folding the worktree cannot loosen anything — `max` for
+    # coverage, `min` for debt — and the deletion this does not catch is caught
+    # by `regressions`, which is folded at the base.
+    #
+    # A branch with no notes at all falls back to the base fold, which is the
+    # old exact-equality behaviour, along with the message telling it to bank.
+    banked = _banked()
+    target = banked.counters if banked.counters else bound.counters
     regressions, _ = _compare(bound.counters, totals)
     exact_regressions, improvements = _compare(target, totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))

@@ -161,33 +161,40 @@ Feature: AC-state per-branch notes
     Then it names the folded bound, where it came from, and the exact bank command
 
   @AC-7
-  Scenario: The candidate's own note is found on a detached head
-    Given a branch that banked a note
-    And a checkout with no branch name to report
-    When the candidate's own note is looked for
-    Then the note it banked is found
+  Scenario: A stacked branch's claim includes both notes
+    Given a branch cut from another branch that has already banked
+    And both notes are new relative to the base the bound is read at
+    When the candidate's claim is folded
+    Then it is the strongest of the two
+    And the stack is not read as an unbanked improvement
 
   @AC-7
-  Scenario: A note whose filename no longer matches the branch is still found
+  Scenario: The claim is found on a detached head
+    Given a checkout with no branch name to report
+    When the candidate's claim is folded
+    Then the banked measurement is found
+
+  @AC-7
+  Scenario: A note whose filename no longer matches the branch still counts
     Given a banked note and a branch renamed since
-    When the candidate's own note is looked for
-    Then the note it banked is found
+    When the candidate's claim is folded
+    Then the banked measurement is found
 
   @AC-7
-  Scenario: Re-settling the shared baseline is not banking a measurement
-    Given a candidate that only rewrites the migration baseline
-    When the candidate's own note is looked for
-    Then there is none, and the base fold judges it alone
+  Scenario: A tree with no notes claims nothing
+    Given a candidate carrying no notes at all
+    When the candidate's claim is folded
+    Then it is empty, and the base fold judges the candidate alone
 
   @AC-7
-  Scenario: A candidate that touched two notes has no own note
-    Given a candidate that wrote more than one branch note
-    When the candidate's own note is looked for
-    Then there is none, and the base fold judges it alone
+  Scenario: A weak note cannot lower the claim
+    Given a candidate that banks a value below what the tree already records
+    When the candidate's claim is folded
+    Then the stronger value stands
 
   @AC-7
-  Scenario: A note already at the base is not the candidate's
-    Given a note that merged into the base before this branch was cut
-    When the candidate's own note is looked for
-    Then there is none, because the fold already carries it
+  Scenario: Deleting every note cannot reach the regression bound
+    Given a candidate that removes every note from its tree
+    When the bound that judges regressions is folded
+    Then it is unchanged, because it is read at the base
 ```
