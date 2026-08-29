@@ -18,6 +18,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-ac-state.py"
+IMPL = ROOT / "scripts" / "check_ac_state_impl.py"
 
 TOTALS = {
     "completion_claims_contradicted": 9,
@@ -53,7 +54,16 @@ def test_the_fixture_covers_every_ratcheted_counter(gate):
 
 @pytest.fixture(scope="module")
 def gate():
-    spec = importlib.util.spec_from_file_location("check_ac_state", SCRIPT)
+    # The impl, not the `check-ac-state.py` front door. #621 split the gate in
+    # two: the front door adds the merge-group actual-base guard and bulk
+    # re-exports everything else from the impl. Re-exported names read fine,
+    # but `monkeypatch.setattr(gate, "SPEC_DIR", ...)` rebinds the *copy* on
+    # the front door while `_spec_files()` keeps reading the impl's own
+    # `SPEC_DIR` — so the patch silently does nothing and the test walks the
+    # real `docs/specs`. These suites exercise impl internals, so they take
+    # the module that owns them; the front door's own guard is covered by
+    # `tests/test_ac_state_merge_guard.py`.
+    spec = importlib.util.spec_from_file_location("check_ac_state_impl", IMPL)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
