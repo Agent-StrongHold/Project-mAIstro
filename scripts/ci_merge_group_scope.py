@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Classify which expensive CI legs a merge-group candidate can affect.
 
-This is deliberately conservative.  Shared dependency/configuration surfaces
-force every specialized leg to run.  Otherwise a leg runs when the candidate
+This is deliberately conservative. Shared dependency/configuration surfaces
+force every specialized leg to run. Otherwise a leg runs when the candidate
 changes code, tests, or deployment inputs owned by that leg.
 
-The classifier is pure: callers provide the changed paths.  Workflow plumbing
+The classifier is pure: callers provide the changed paths. Workflow plumbing
 is responsible for deriving those paths from the immutable merge-group base
 revision resolved by :mod:`ci_base_revision`.
 """
@@ -28,7 +28,7 @@ LEGS = (
 )
 
 # Any of these can change dependency resolution, test collection, or the CI
-# contract itself.  Guessing narrower here would turn optimization into a hole.
+# contract itself. Guessing narrower here would turn optimization into a hole.
 _GLOBAL = {
     "pyproject.toml",
     "uv.lock",
@@ -57,8 +57,18 @@ def classify(paths: Iterable[str]) -> dict[str, bool]:
         server = _under(path, "packages/maistro-server")
         hive = _under(path, "packages/hive-conductor")
 
-        if _under(path, "alembic", "tests/migrations", "packages/maistro-core/tests/persistence", "packages/maistro-core/tests/workspaces") or (
-            core and any(token in path for token in ("persistence", "workspace", "container", "storage", "run_store"))
+        if _under(
+            path,
+            "alembic",
+            "tests/migrations",
+            "packages/maistro-core/tests/persistence",
+            "packages/maistro-core/tests/workspaces",
+        ) or (
+            core
+            and any(
+                token in path
+                for token in ("persistence", "workspace", "container", "storage", "run_store")
+            )
         ):
             out["postgres"] = True
 
@@ -77,15 +87,13 @@ def classify(paths: Iterable[str]) -> dict[str, bool]:
             out["hive_e2e"] = True
 
         if _under(path, "packages") and (
-            path.endswith("pyproject.toml")
-            or "/src/" in path
-            or path.endswith("/__init__.py")
+            path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py")
         ):
             out["wheel_imports"] = True
 
         # Every shipped image copies package sources; the RSI image additionally
         # copies tests, scripts, docs, quality data, tools, templates, agents,
-        # formal assets, sbx and .github.  Keep this list equal to Dockerfile
+        # formal assets, sbx and .github. Keep this list equal to Dockerfile
         # COPY inputs rather than pretending a Dockerfile is the only input.
         if (
             path.startswith("Dockerfile")
