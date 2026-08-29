@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +26
+  packages/maistro-core/tests: +28
 ---
 # claude-m2-76-real-isolation-backend
 
@@ -9,7 +9,7 @@ backend, and nothing assembled them (#76, ADR-093). Every property the ladder
 promises was therefore unfalsifiable in a shipped configuration: no caller
 built a selector, so no caller could be refused by one.
 
-**`tests/sandbox/test_real_backend.py` (+26)**, in three groups that are
+**`tests/sandbox/test_real_backend.py` (+28)**, in three groups that are
 deliberately not the same kind of test:
 
 *The fail-open the selector permitted.* `register("vm", FakeSandboxBackend())`
@@ -51,6 +51,19 @@ CI installs `bubblewrap` in `ci.yml`'s `test` job and `quality.yml`'s
 `coverage (no services)` job. Without that the six integration tests skip
 everywhere and the diff-coverage gate measures a backend whose execution paths
 nothing ran — the exact gap that gate exists to find.
+
+`maistro sandbox status` is the operator entry point, and it is what makes
+the reachability gate pass honestly rather than by baseline. The gate found all
+three new modules unreachable — correctly: the subsystem had no caller at all,
+which is the same observation this PR's description already made. A command
+that reports what the host provides is the operational half of the support
+matrix, and the case it exists for is real: a host where `bwrap` is installed
+but user namespaces are restricted looks identical from outside to one where
+`bwrap` is absent, and the difference is a line of `notes` nothing could read.
+
+Wiring it took the whole subsystem from 6/9 modules unreachable to **0/9**, so
+six stale entries left `quality/reachability-baseline.json` and the convergence
+matrix's "none in shipped repo processes" entry-point claim stopped being true.
 
 Two vulture entries were pruned rather than banked, because both became live
 code: `SandboxConfig.writable_paths` is now honoured by the bubblewrap backend,
