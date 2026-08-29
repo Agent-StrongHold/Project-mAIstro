@@ -37,8 +37,8 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **26** |
-| `main` | yes | **1** | no | no | no | **30** |
+| `develop` | yes | **0** | yes | no | no | **25** |
+| `main` | yes | **1** | no | no | no | **29** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -52,7 +52,6 @@ is also required live on both branches; because it is produced by
 | `SAST (bandit + semgrep + gitleaks)` | ● | ● |
 | `Supply chain (pip-audit)` | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● |
-| `autonomous-merge-admissibility` | ● | ● |
 | `block` | ● | ● |
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |

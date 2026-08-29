@@ -205,7 +205,7 @@
       "id": "integrations-bridges",
       "subsystem": "External integrations",
       "disposition": "CONNECT",
-      "rationale": "Home Assistant, CoinSwarm, ntfy and Turing bridges — the homelab product surface, none of it reached from a route or a trigger.",
+      "rationale": "Home Assistant, CoinSwarm, ntfy and Turing bridges \u2014 the homelab product surface, none of it reached from a route or a trigger.",
       "root": "a Conductor route or an ADR-086 trigger",
       "modules": [
         "maistro.integrations",
@@ -356,21 +356,6 @@
       ]
     },
     {
-      "id": "sandbox",
-      "subsystem": "Sandbox isolation",
-      "disposition": "CONNECT",
-      "rationale": "ADR-093's sandbox protocol, policy, selector and fake backend. #42 executes an Attempt inside an ExecutionRuntime, which is what makes the sandbox reachable.",
-      "root": "ExecutionRuntime attempt execution (#42)",
-      "modules": [
-        "maistro.sandbox",
-        "maistro.sandbox.backends",
-        "maistro.sandbox.backends.fake",
-        "maistro.sandbox.policy",
-        "maistro.sandbox.protocol",
-        "maistro.sandbox.selector"
-      ]
-    },
-    {
       "id": "sessions-search",
       "subsystem": "Sessions",
       "disposition": "CONNECT",
@@ -464,7 +449,7 @@
       "id": "security-auth-backends",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
-      "rationale": "Interchangeable auth backends — JWT, static, cookie, demo cookie and the composite that selects among them. Products wire their own auth instead, so none is selected here.",
+      "rationale": "Interchangeable auth backends \u2014 JWT, static, cookie, demo cookie and the composite that selects among them. Products wire their own auth instead, so none is selected here.",
       "root": "maistro.container auth wiring, or maistro_server middleware",
       "modules": [
         "maistro.security.auth_composite",
@@ -478,7 +463,7 @@
       "id": "security-unenforced-controls",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
-      "rationale": "Guardrails, trust-boundary checks, task policy and Warden flag response: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes — construction is not enforcement.",
+      "rationale": "Guardrails, trust-boundary checks, task policy and Warden flag response: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
       "root": "the real Conductor chat and tool paths (#66)",
       "modules": [
         "maistro.security.guardrail",
@@ -492,20 +477,17 @@
       "id": "workspace-project-scope",
       "subsystem": "Workspace / Project scope",
       "disposition": "CONNECT",
-      "rationale": "The Workspace model and store, the SQLite scope store, and project authorization. These are the scope roots of the canonical spine; #37/#38 give every Run a Project id enforced at the store boundary, which is what reaches them.",
-      "root": "the canonical Run store's scope enforcement (#37, #38)",
+      "rationale": "Project authorization: the scope check a Run's Project id is enforced against. The Workspace half of this entry is connected as of #516 -- `wire_workspace_store` resolves the canonical Workspace store from the container's own relational backend, which is what reached `maistro.workspaces` and its model and store. What remains is the authorization module, which #38 reaches when project-scoped resources flow through it.",
+      "root": "the canonical Run store's scope enforcement (#38)",
       "modules": [
-        "maistro.projects.authorization",
-        "maistro.workspaces",
-        "maistro.workspaces.model",
-        "maistro.workspaces.store"
+        "maistro.projects.authorization"
       ]
     },
     {
       "id": "hive-dag-and-artifact-optimisation",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
-      "rationale": "DAG hill-climbing optimises a user's DAG, skills and tools — the artefacts an agent runs with. That is a product capability, and a distinct thing from maistro-rsi, which improves the engine's own codebase under ADR-088. An earlier disposition here called these a duplicate of RSI and retired four of them on that basis; the rationale was wrong and the deletion was reverted. services/optimizer.py and routes/optimizer.py already ship the DAG half of this surface (POST /v1/optimizer/{dag_id}/run, proposals, accept/reject), so these are unfinished extensions of a live feature rather than a second system. hill_climber is its eval-rotation strategy; skill_optimizer extends it to SKILL.md documents and tool schemas; the ui_* trio climbs the product's own UI against canonical examples, with ui_climb_vm naming the microVM as the execution model.",
+      "rationale": "DAG hill-climbing optimises a user's DAG, skills and tools \u2014 the artefacts an agent runs with. That is a product capability, and a distinct thing from maistro-rsi, which improves the engine's own codebase under ADR-088. An earlier disposition here called these a duplicate of RSI and retired four of them on that basis; the rationale was wrong and the deletion was reverted. services/optimizer.py and routes/optimizer.py already ship the DAG half of this surface (POST /v1/optimizer/{dag_id}/run, proposals, accept/reject), so these are unfinished extensions of a live feature rather than a second system. hill_climber is its eval-rotation strategy; skill_optimizer extends it to SKILL.md documents and tool schemas; the ui_* trio climbs the product's own UI against canonical examples, with ui_climb_vm naming the microVM as the execution model.",
       "root": "services.optimizer / routes.optimizer for the DAG and skill halves; services.hyperlight_executor for the microVM UI loop",
       "modules": [
         "services.hill_climber",
@@ -519,7 +501,7 @@
       "id": "hive-project-onboarding",
       "subsystem": "Agent Conductor HTTP surface",
       "disposition": "CONNECT",
-      "rationale": "routes/projects.py is a project onboarding flow — intake, scan, deploy, persisted through the Launch DB/Cache/Store — declaring prefix=/v1/projects and never registered in main.py. An earlier disposition called it a duplicate of the canonical project scope surface and marked it RETIRE. That was wrong: maistro.projects owns Workspace/Project *scope*, which is a different thing from an onboarding wizard.",
+      "rationale": "routes/projects.py is a project onboarding flow \u2014 intake, scan, deploy, persisted through the Launch DB/Cache/Store \u2014 declaring prefix=/v1/projects and never registered in main.py. An earlier disposition called it a duplicate of the canonical project scope surface and marked it RETIRE. That was wrong: maistro.projects owns Workspace/Project *scope*, which is a different thing from an onboarding wizard.",
       "root": "main.py route registration",
       "modules": [
         "routes.projects"
@@ -539,7 +521,7 @@
       "id": "builders-domain-logic",
       "subsystem": "Builders pipeline",
       "disposition": "CONNECT",
-      "rationale": "The spec-to-tests-to-code-to-review domain that ADR-090 and ADR-099 keep. builders/dag.py implements SPEC-070226-82ea, which implements ADR-099 — current accepted architecture, not something superseded. builders/orchestrator.py states the convergence rule outright in its own docstring: 'Core owns workflow state. Builders runtime only returns results.' graph.py is the PipelineGraph data model, logger.py records builder actions and XP, runtime.py is the shared runtime for Frank, Mason and Auditor. An earlier disposition marked six of these RETIRE as a 'duplicate lifecycle'; reading them shows only graph_executor.py fits that description.",
+      "rationale": "The spec-to-tests-to-code-to-review domain that ADR-090 and ADR-099 keep. builders/dag.py implements SPEC-070226-82ea, which implements ADR-099 \u2014 current accepted architecture, not something superseded. builders/orchestrator.py states the convergence rule outright in its own docstring: 'Core owns workflow state. Builders runtime only returns results.' graph.py is the PipelineGraph data model, logger.py records builder actions and XP, runtime.py is the shared runtime for Frank, Mason and Auditor. An earlier disposition marked six of these RETIRE as a 'duplicate lifecycle'; reading them shows only graph_executor.py fits that description.",
       "root": "Graph nodes registered in maistro.graph.nodes (#49)",
       "modules": [
         "maistro.builders",
@@ -573,7 +555,7 @@
       "id": "canvas-job-runner",
       "subsystem": "Canvas ability",
       "disposition": "CONNECT",
-      "rationale": "CanvasJobRunner is unstarted, not dead. canvas/executor.py — which is reachable — documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and two dedicated suites cover it, including single-claim-under-contention and lease reaping. An earlier disposition marked it RETIRE because its claim/lease/reap states duplicate the ADR-081626-f383 fence. They do, and #52 is where that is resolved — but a module with a migration, a documented contract from reachable code and concurrency tests is wiring owed, not debt to delete.",
+      "rationale": "CanvasJobRunner is unstarted, not dead. canvas/executor.py \u2014 which is reachable \u2014 documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and two dedicated suites cover it, including single-claim-under-contention and lease reaping. An earlier disposition marked it RETIRE because its claim/lease/reap states duplicate the ADR-081626-f383 fence. They do, and #52 is where that is resolved \u2014 but a module with a migration, a documented contract from reachable code and concurrency tests is wiring owed, not debt to delete.",
       "root": "a canvas worker process started at deploy time; #52 folds it into Attempt execution",
       "modules": [
         "maistro_canvas.canvas.runner"
@@ -603,7 +585,7 @@
       "id": "mutation-testing-tooling",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
-      "rationale": "The mutation-testing pillar's scripts, unreachable because .github/workflows/mutation.yml is currently a stub. That is a deliberate, documented parking rather than a gap: the workflow's own header states that mutation is disabled until self-hosted runner capacity is restored, that it must not consume GitHub-hosted Actions minutes while parked, and that the implementation, scheduler, checkpointing, history and baselines are kept in the repository precisely so they can be restored. These nine are therefore retained on purpose, and they all become reachable together the moment that workflow runs again. Recorded here because tooling only entered the reachability graph in ADR-082526-aef8 — the decision was always written down, in the workflow file.",
+      "rationale": "The mutation-testing pillar's scripts, unreachable because .github/workflows/mutation.yml is currently a stub. That is a deliberate, documented parking rather than a gap: the workflow's own header states that mutation is disabled until self-hosted runner capacity is restored, that it must not consume GitHub-hosted Actions minutes while parked, and that the implementation, scheduler, checkpointing, history and baselines are kept in the repository precisely so they can be restored. These nine are therefore retained on purpose, and they all become reachable together the moment that workflow runs again. Recorded here because tooling only entered the reachability graph in ADR-082526-aef8 \u2014 the decision was always written down, in the workflow file.",
       "root": ".github/workflows/mutation.yml, once self-hosted runner capacity is restored and its real job replaces the parked stub",
       "modules": [
         "scripts/check_mutation_baseline.py",
@@ -634,7 +616,7 @@
       "id": "rsi-containment-review-simulations",
       "subsystem": "Repo tooling",
       "disposition": "LIBRARY",
-      "rationale": "Supporting artifacts for docs/reviews/2026-07-29-rsi-containment-review.md section 9.6, which they are cited by name in. They demonstrate the RLPHD uncertainty band shrinking as an operator rules; they compute nothing the product depends on and assert nothing CI could check. A simulation whose output is a figure in a review document is reachable from that document, which is the only root it needs — running them in CI would spend minutes to reproduce a number already written down.",
+      "rationale": "Supporting artifacts for docs/reviews/2026-07-29-rsi-containment-review.md section 9.6, which they are cited by name in. They demonstrate the RLPHD uncertainty band shrinking as an operator rules; they compute nothing the product depends on and assert nothing CI could check. A simulation whose output is a figure in a review document is reachable from that document, which is the only root it needs \u2014 running them in CI would spend minutes to reproduce a number already written down.",
       "modules": [
         "scripts/rlphd_band_sim.py",
         "scripts/rlphd_cold_start_sim.py",
@@ -650,6 +632,16 @@
       "modules": [
         "scripts/secret_env.py"
       ]
+    },
+    {
+      "id": "disabled-autonomous-merge-gate",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Orphaned by `14a67dd` (\"ci: disable autonomous merge safety gate for now\"), which deleted `.github/workflows/autonomous-merge.yml` -- the only thing that invoked this script. CONNECT rather than LIBRARY because that commit message says \"for now\": the gate is meant to run again once #562 decides whether a generated `quality/` ledger counts as trusted surface, at which point it needs a workflow back and this entry pruned. Recorded rather than deleted so the intent survives the pause; a LIBRARY disposition would read as \"this was always meant to be import-only\", which is the opposite of true -- it is a gate with nothing currently running it.",
+      "modules": [
+        "scripts/check-autonomous-merge.py"
+      ],
+      "root": ".github/workflows/autonomous-merge.yml, restored once #562 decides whether a generated quality/ ledger is part of the trusted surface and the check can pass for an ordinary change"
     }
   ]
 }

@@ -19,7 +19,7 @@ from maistro.runs import (
     transition_node_run,
     transition_run,
 )
-from maistro.runs.lifecycle import settle_open_node_run
+from maistro.runs.lifecycle import settle_open_node_run, transition_path
 
 
 def _graph() -> Graph:
@@ -192,3 +192,28 @@ def test_settling_stamps_the_caller_s_clock() -> None:
     settled = settle_open_node_run(node_run, RunStatus.CANCELLED, at=at)
 
     assert settled.finished_at == at
+
+
+def test_transition_path_is_empty_when_there_is_nothing_to_do() -> None:
+    assert transition_path(RunStatus.RUNNING, RunStatus.RUNNING) == ()
+
+
+def test_transition_path_returns_the_single_legal_edge() -> None:
+    assert transition_path(RunStatus.QUEUED, RunStatus.RUNNING) == (RunStatus.RUNNING,)
+
+
+def test_transition_path_walks_the_gap_rather_than_jumping_it() -> None:
+    """A node answered out of a HITL pause has to reach COMPLETED through the
+    statuses the table actually has edges for."""
+    assert transition_path(RunStatus.PAUSED, RunStatus.COMPLETED) == (
+        RunStatus.QUEUED,
+        RunStatus.RUNNING,
+        RunStatus.COMPLETED,
+    )
+
+
+def test_transition_path_refuses_to_invent_an_exit_from_a_terminal_status() -> None:
+    """Silently returning nothing here would hide a real disagreement between
+    two records about work that is already finished."""
+    with pytest.raises(ValueError, match="no legal transition path"):
+        transition_path(RunStatus.COMPLETED, RunStatus.RUNNING)

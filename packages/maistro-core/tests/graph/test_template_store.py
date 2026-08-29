@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from maistro.graph.definitions import Edge, GraphTemplate, Node
 from maistro.graph.templates import (
@@ -241,3 +242,57 @@ async def test_require_template_returns_what_it_found(store: Any, request: Any) 
     await store.put(_template(template_id=template_id))
 
     assert (await require_template(store, template_id)).template_id == template_id
+
+
+class TestContentIsValidatedWhereItBecomesARecord:
+    """A template validated at construction can be edited into an invalid one.
+
+    Found by review of #555 and carried to #556. Every content field is a
+    mutable `dict` or `list`, and pydantic validators run when the model is
+    built — so the object a store is handed is not necessarily the object that
+    was checked:
+
+        template = GraphTemplate(nodes=[a, b], edges=[a_to_b])   # validated
+        template.nodes.pop()                                     # nothing runs
+        await store.put(template)                                # persisted
+
+    `validate_assignment` does not close it: it fires on rebinding a field, not
+    on mutating what the field points at. The boundary that can is the one
+    where content stops being a local object and becomes a record, so `put`
+    revalidates on every backend.
+
+    The rule exercised here is the one the model carries today — an edge whose
+    endpoints are not in the graph. `revalidated` re-runs the *model's*
+    validators rather than any named rule, so R12's refusal of live execution
+    state in template content (#555) is enforced here too the moment it lands,
+    without this seam learning about it.
+    """
+
+    async def test_a_template_mutated_into_an_invalid_one_is_refused(
+        self, store: Any, request: Any
+    ) -> None:
+        template = _template(template_id=_ids(request))
+        template.nodes.pop()  # the edge now names a node the graph lacks
+
+        with pytest.raises(ValidationError, match="outside graph template"):
+            await store.put(template)
+
+    async def test_the_refused_template_did_not_reach_the_store(
+        self, store: Any, request: Any
+    ) -> None:
+        """Refusing after writing would be worse than not refusing."""
+        template_id = _ids(request)
+        template = _template(template_id=template_id)
+        template.nodes.pop()
+
+        with pytest.raises(ValidationError):
+            await store.put(template)
+
+        assert await store.get(template_id) is None
+
+    async def test_an_unmutated_template_still_stores(self, store: Any, request: Any) -> None:
+        """The guard must not cost the ordinary path anything."""
+        template_id = _ids(request)
+        await store.put(_template(template_id=template_id))
+
+        assert await store.get(template_id) is not None

@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Iterable
 from copy import deepcopy
 from datetime import UTC, datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -177,6 +177,31 @@ ACCEPTED_NODE_OUTCOME_STATUSES = frozenset(
         RunStatus.FAILED,
     }
 )
+
+
+class CancellationCause(Enum):
+    """Why an Attempt is cancelled — the one thing its status cannot say (#230).
+
+    `AttemptStatus.CANCELLED` carries two meanings that need opposite logical
+    projections, and no amount of reading the persisted Attempt tells them
+    apart:
+
+    ``REQUESTED``
+        Someone asked this work to stop. The retry decision has been made and
+        it was *don't*, so the NodeRun is terminal.
+
+    ``RECOVERED``
+        A process died mid-Attempt and the physical record is being closed out
+        so a *fresh* Attempt can run — `_reconcile_orphaned_attempts`'s case.
+        The node is still owed, so it parks exactly as a failure does.
+
+    Two members, deliberately not three: this says why a cancellation happened,
+    not what state anything is in, and it must not become a second lifecycle
+    (`scripts/check-execution-lifecycles.py`).
+    """
+
+    REQUESTED = "requested"
+    RECOVERED = "recovered"
 
 
 class GraphSnapshot(BaseModel):
@@ -465,6 +490,7 @@ __all__ = [
     "Attempt",
     "AttemptResult",
     "AttemptStatus",
+    "CancellationCause",
     "ExecutionLease",
     "GraphSnapshot",
     "NodeRun",
