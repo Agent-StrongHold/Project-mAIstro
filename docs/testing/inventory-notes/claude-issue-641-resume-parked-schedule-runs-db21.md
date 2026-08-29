@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +20
+  packages/maistro-core/tests: +23
 ---
 # claude-issue-641-resume-parked-schedule-runs-db21
 
-Twenty added, none removed, none rewritten. All in
+Twenty-three added, none removed, none rewritten. All in
 `tests/runs/test_parked_run_resume.py`, the suite for SPEC-082926-a44e.
 
 Three of the twelve pin the classification table itself, and six exercise the
@@ -41,3 +41,15 @@ The other seven are `resumable_pause`'s refusals, tested directly rather than
 through the tick: each is a durable row the tick would have to be handed, and
 building seven parked Runs to reach seven guards would test the fixture rather
 than the rule.
+
+Three more came from the diff-coverage gate on CI, which reached lines my local
+run did not: the lost claim and both halves of the way back. The concurrency
+test above can pass by the "second tick saw nothing parked" route without ever
+exercising the claim failing, so that path is now forced rather than raced —
+the transition table refusing is the same fact, deterministically.
+
+The middle one is worth its own line. `prepare_execution` un-parks the NodeRun
+before the executor runs, so a resume that fails *after* that leaves a NodeRun
+genuinely RUNNING, and re-parking the Run over it would say the work stopped
+when it had not. The guard that declines there was written on that reasoning
+and now has the test that holds it.

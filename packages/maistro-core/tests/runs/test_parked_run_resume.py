@@ -36,6 +36,7 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.store import RunIntegrityError
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -495,3 +496,77 @@ class TestWhatCountsAsAReadablePause:
         assert pause is not None
         assert pause.resume_at == datetime(2020, 1, 1, 12, 0, tzinfo=UTC)
         assert pause.elapsed(datetime.now(UTC)) is True
+
+
+class TestTheClaimAndTheWayBack:
+    """The tick's two failure paths, forced rather than raced.
+
+    `asyncio.gather` on an in-memory store does not reliably interleave two
+    ticks at the transition, so the concurrency test above can pass by the
+    "second tick saw nothing parked" route without ever exercising the lost
+    claim. Making the claim fail outright is the same fact, deterministically:
+    the transition table refused, so this Run is not ours.
+    """
+
+    async def test_a_tick_that_loses_the_claim_resumes_nothing(self, monkeypatch) -> None:
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-11")
+
+        async def refuse(*_args: Any, **_kwargs: Any) -> None:
+            raise RunIntegrityError("another tick already claimed this Run")
+
+        monkeypatch.setattr(container.run_store, "transition_run", refuse)
+
+        assert await container.resume_parked_runs() == 0
+        assert _PollingPauseNode.reaches == 1
+
+    async def test_a_node_run_that_actually_started_is_not_re_parked(self, monkeypatch) -> None:
+        """The realistic failure. `prepare_execution` un-parks the NodeRun
+        before the executor runs, so a failure after that point leaves a NodeRun
+        that is genuinely RUNNING. Re-parking the Run over it would say the work
+        stopped when it did not -- the derived state is already the answer.
+        """
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-12")
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+
+        async def start_then_fail(self: Any, run: Any, pause: Any) -> None:
+            await container.run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+            raise RuntimeError("the executor died after the NodeRun started")
+
+        monkeypatch.setattr(
+            "maistro.runs.consumption.ScheduleAttemptExecutor.resume", start_then_fail
+        )
+
+        await container.resume_parked_runs()
+
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        assert run.status is RunStatus.RUNNING
+
+    async def test_a_failing_re_park_is_logged_rather_than_raised(
+        self, monkeypatch, caplog
+    ) -> None:
+        """The tick is a loop over many Runs. A store that refuses the way back
+        for one of them must not take the other ninety-nine with it."""
+        import logging
+
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-13")
+
+        async def boom_resume(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("resume failed")
+
+        async def boom_read(*_args: Any, **_kwargs: Any) -> None:
+            raise RunIntegrityError("the store is unreachable")
+
+        monkeypatch.setattr("maistro.runs.consumption.ScheduleAttemptExecutor.resume", boom_resume)
+        monkeypatch.setattr(container.run_store, "get_node_run", boom_read)
+
+        with caplog.at_level(logging.WARNING, logger="maistro.container"):
+            assert await container.resume_parked_runs() == 1
+
+        assert "could not be re-parked" in caplog.text
