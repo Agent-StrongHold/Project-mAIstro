@@ -23,10 +23,13 @@ COPY pyproject.toml uv.lock README.md ./
 COPY packages/maistro-core packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
 
-# Production API: editable core (with extras used by the server) + server
-RUN uv pip install --system \
-    -e "./packages/maistro-core[llm,sandbox,observability]" \
-    -e "./packages/maistro-server"
+# Production API: core (with the extras the server uses) + server.
+# pip, not uv, for the reason recorded at the runtime-stage install below:
+# building a local path makes uv read the root workspace tables, and this
+# image copies two of the seven members.
+RUN pip install --no-cache-dir \
+    "./packages/maistro-core[llm,sandbox,observability]" \
+    "./packages/maistro-server"
 
 
 # ─── Production stage ─────────────────────────────────
@@ -74,11 +77,28 @@ COPY alembic/ alembic/
 COPY alembic.ini .
 COPY pyproject.toml uv.lock README.md ./
 
-# Re-resolve editable installs against copied trees
+# Install the workspace packages with pip, not uv, and non-editable.
+#
+# `uv pip install` on a local path builds that path's project, which makes uv
+# read the root `pyproject.toml` -- and this image copies only maistro-core and
+# maistro-server, while the root declares `[tool.uv.workspace] members =
+# ["packages/*"]` with `workspace = true` sources for five packages that are
+# not here. uv aborts:
+#
+#   Failed to parse entry: `maistro-bootstrap`
+#   `maistro-bootstrap` references a workspace in `tool.uv.sources`, but is
+#   not a workspace member
+#
+# So this image could not be built at all, and nothing noticed because nothing
+# built it -- which is the whole of #346 in one line. pip does not read
+# `[tool.uv.sources]`, which is why the main Dockerfile (identical partial
+# context) builds; matching it here is the smallest fix that does not drag five
+# unrelated packages into a browser image. Named packages are still fine on uv
+# -- nothing local is built -- so the Playwright step below is unchanged.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-RUN uv pip install --system \
-    -e "./packages/maistro-core[llm,sandbox,observability]" \
-    -e "./packages/maistro-server" \
+RUN pip install --no-cache-dir \
+    "./packages/maistro-core[llm,sandbox,observability]" \
+    "./packages/maistro-server" \
     "alembic>=1.14" \
     "pydantic-ai-slim[openai]>=0.1" \
     "openai>=1.40,<2" \

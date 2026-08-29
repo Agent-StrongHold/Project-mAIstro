@@ -703,15 +703,33 @@ jobs:
       # (#225) each survived audits and were found by grep. Scope is narrow on
       # purpose: the same check over every uncalled public export would seed at
       # 662 entries and teach banking (ADR-082526-1899).
+      # `RATCHET_BASE_REV` names the revision this event is a change *from*.
+      # Without it the checker fell back to `origin/develop`, and on a push to
+      # `develop` that ref IS the pushed HEAD -- so the ledger was read out of
+      # the commit under judgement, which is the self-approval this ratchet
+      # exists to prevent (Codex, #534). A PR based on anything other than
+      # `develop` was judged against the wrong branch for the same reason.
+      #
+      # On the push that creates a branch, `github.event.before` is git's null
+      # SHA. That names no revision, so the checker falls through to the trunk
+      # rather than failing every first push to a `feat/*` branch.
       - name: wiring reads ratchet (DI attributes nothing reads back)
+        env:
+          RATCHET_BASE_REV: >-
+            ${{ github.event_name == 'pull_request'
+                && github.event.pull_request.base.sha
+                || github.event.before }}
         run: uv run python scripts/check-wiring-reads.py
 
       # The reachability ratchet says *how much* is unwired; the convergence
       # matrix says *who owns what* and which subsystem each unreachable module
       # belongs to. It is the M0 planning surface (#28), so it is checked rather
       # than trusted: the rows must partition every production module, and each
-      # row's unreachable count is recomputed from the same import graph. A row
-      # that drifts out of date is a wrong plan, silently.
+      # row's unreachable *share* -- `none`/`few`/`some`/`most`/`all` -- is
+      # recomputed from the same import graph. A row that drifts out of date is
+      # a wrong plan, silently. The share rather than a transcribed `19/62`,
+      # because the denominator moved whenever any PR added a module anywhere
+      # (#605); `--census` prints the exact counts.
       - name: convergence matrix (subsystem ownership stays current)
         run: uv run python scripts/check-convergence-matrix.py
 
@@ -731,6 +749,15 @@ jobs:
       # implementation written because the first was documented as absent (#157).
       - name: security inventory (SECURITY.md's checkable claims match the code)
         run: uv run python scripts/check-security-inventory.py
+
+      # Trivy and Grype covered two images. The repository has nine
+      # Dockerfiles, and the one whose own header calls the browser surface
+      # "the single largest remaining CVE source" was not among the two —
+      # unnoticed because nothing enumerated them. This closes the set: every
+      # Dockerfile carries a disposition, and a shipped one must name the jobs
+      # that build and scan it (#346).
+      - name: image inventory (every Dockerfile is dispositioned; shipped ones name live jobs)
+        run: uv run python scripts/check-image-inventory.py
 
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
@@ -752,9 +779,12 @@ jobs:
       # measurement.
       #
       # THE RATCHET says the repository did not get worse: ten debt counters
-      # against quality/ac-state-ceilings.json, each may only go down, and an
-      # unbanked improvement fails too so the ceiling cannot hold slack a later
-      # regression would spend.
+      # against a bound folded from quality/ac-state-notes/ at the base
+      # revision, each may only go down, and an unbanked improvement fails too
+      # so the ceiling cannot hold slack a later regression would spend. The
+      # bound moved off one shared line in #585 because that line was rewritten
+      # by every AC-proving PR and serialized the queue; the strictness is
+      # unchanged.
       #
       # THE MANDATE says this change proved what it claimed, in two halves.
       # The criterion half: zero tolerance on criteria the PR creates or newly
