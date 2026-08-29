@@ -9,16 +9,16 @@
   ],
   "fold": "a tier is the highest rung every criterion of the document has reached",
   "totals": {
-    "specs": 178,
-    "specs_with_ac_heading": 170,
-    "specs_with_ac_ids": 32,
+    "specs": 179,
+    "specs_with_ac_heading": 171,
+    "specs_with_ac_ids": 33,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 600,
-    "criteria_annotated": 214,
-    "markers_found": 319,
+    "criteria_declared": 605,
+    "criteria_annotated": 219,
+    "markers_found": 324,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
-    "gherkin_criteria": 238,
+    "gherkin_criteria": 243,
     "scenarios_without_ac_tag": 0,
     "gherkin_parse_errors": 0,
     "completion_claims_contradicted": 0,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 21.3053
+    "design_coverage": 21.9349
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,8 +540,8 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 21.3053,
-    "decisions": 124,
+    "percent": 21.9349,
+    "decisions": 125,
     "decisions_scoring_zero": 96,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
@@ -1313,6 +1313,13 @@
         "declared_status": "Accepted",
         "criteria": 6,
         "reachable": 6,
+        "percent": 100.0
+      },
+      {
+        "id": "ADR-082926-3b80",
+        "declared_status": "Accepted",
+        "criteria": 5,
+        "reachable": 5,
         "percent": 100.0
       },
       {
@@ -5722,6 +5729,106 @@
           "form": "gherkin",
           "scenario": [
             "Effective values are observable"
+          ],
+          "rung": "reachable"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-082926-3b80",
+      "file": "docs/specs/SPEC-082926-3b80-conductor-dashboard-layout-durability.md",
+      "layer": "Foundation",
+      "declared_status": "AC Defined",
+      "implements": [
+        "- maistro-engine#ADR-082926-3b80"
+      ],
+      "declares_non_measurable": false,
+      "declared_unproven": [],
+      "has_ac_heading": true,
+      "criteria_total": 5,
+      "annotated": 5,
+      "gherkin_criteria": 5,
+      "gherkin_parse_errors": [],
+      "scenarios_without_ac_tag": [],
+      "distribution": {
+        "declared": 0,
+        "covered": 0,
+        "passing": 0,
+        "reachable": 5
+      },
+      "tier": "reachable",
+      "criteria": [
+        {
+          "id": "SPEC-082926-3b80/AC-1",
+          "claimed": false,
+          "module": "dashboard_layouts",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_dashboard_layout_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A saved layout survives a restart",
+            "The layout is not written beside the code"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-3b80/AC-2",
+          "claimed": false,
+          "module": "dashboard_layouts",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_dashboard_layout_durability.py",
+            "packages/hive-conductor/backend/tests/test_widget_tools.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A write that does not land is not reported as success",
+            "A write that does not read back is not reported as success",
+            "The route does not catch its own persistence failure"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-3b80/AC-3",
+          "claimed": false,
+          "module": "dashboard_layouts",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_dashboard_layout_durability.py",
+            "packages/hive-conductor/backend/tests/test_widget_tools.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "One principal cannot read another's layout",
+            "A request with no principal is refused rather than pooled"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-3b80/AC-4",
+          "claimed": false,
+          "module": "dashboard_layouts",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_dashboard_layout_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A stale expected revision is refused",
+            "A matching expected revision is accepted",
+            "A save without an expectation is last-write-wins"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "SPEC-082926-3b80/AC-5",
+          "claimed": false,
+          "module": "dashboard_layouts",
+          "covered_by": [
+            "packages/hive-conductor/backend/tests/test_dashboard_layout_durability.py"
+          ],
+          "form": "gherkin",
+          "scenario": [
+            "A read does not depend on a write succeeding",
+            "The revision is reported to the client that saved"
           ],
           "rung": "reachable"
         }
@@ -13752,6 +13859,21 @@
           "rung": "reachable"
         }
       ],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "reachable"
+    },
+    {
+      "id": "ADR-082926-3b80",
+      "file": "docs/adr/ADR-082926-3b80-conductor-dashboard-layouts-are-durable.md",
+      "declared_status": "Accepted",
+      "specs": [
+        "SPEC-082926-3b80"
+      ],
+      "measurable_specs": 1,
+      "own_criteria": 0,
+      "own_detail": [],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
       "declared_unproven": [],
