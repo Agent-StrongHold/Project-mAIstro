@@ -110,6 +110,7 @@ if TYPE_CHECKING:
     from maistro.protocols.strikes import StrikeTracker
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
+    from maistro.runs.consumption import ParkedPause
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -731,6 +732,85 @@ class Container:
                 await self._settle_unstarted_consumption(run.run_id)
             executed += 1
         return executed
+
+    async def resume_parked_runs(self, *, limit: int = 100, now: datetime | None = None) -> int:
+        """Tick the consumer for parked Runs whose wait is over (#641). Returns how many resumed.
+
+        The read half of #636's write half. A Run that yielded parks WAITING or
+        PAUSED, and `execute_admitted_runs` polls `QUEUED` only — so a durably
+        correct pause was also a permanently inert one, and the obvious
+        workaround (requeue to QUEUED) is worse than the gap: the consumer
+        starts a *fresh* Attempt at the node's beginning, and a node that
+        dispatched before pausing dispatches again.
+
+        So this resumes only what a timer may safely re-enter:
+        `resumable_pause` requires a YIELDED Attempt (a failure's park is a
+        retry decision somebody else owns), an elapsed `resume_at`, and a
+        pause reason classified `RESUME_ON_ELAPSED` — a node that polls.
+        Answer-gated pauses are left parked and visible, which is why
+        `agent.delegate_remote` cannot be re-dispatched by this tick.
+
+        Same discipline as its three siblings: bounded, idempotent,
+        operator-scheduled, never self-starting (ADR-019). The claim is the
+        parked→RUNNING transition itself, so a concurrent tick's loser skips
+        rather than resuming the same Run twice.
+        """
+        from maistro.runs.consumption import (
+            ScheduleAttemptExecutor,
+            parked_by_consumer,
+            unresolvable_reason,
+        )
+
+        moment = now if now is not None else datetime.now(UTC)
+        parked: list[Run] = []
+        for status in (RunStatus.WAITING, RunStatus.PAUSED):
+            parked.extend(await self.run_store.list_by_status(status, limit=limit))
+
+        executor = ScheduleAttemptExecutor(
+            self.run_store,
+            node_resolver=build_node_resolver(
+                harness_adapters=self.harness_adapters,
+                usage_log=self.usage_log,
+                a2a_delegator=self.a2a_delegator,
+                guest_peers=self.guest_peers,
+                run_store=self.run_store,
+            ),
+        )
+        resumed = 0
+        for run in parked[:limit]:
+            if not parked_by_consumer(run) or unresolvable_reason(run) is not None:
+                continue
+            pause = await self._resumable_pause_for(run, moment)
+            if pause is None:
+                continue
+            try:
+                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            except Exception:
+                # Another tick won the claim, or the Run moved on. Not ours.
+                continue
+            try:
+                await executor.resume(claimed, pause)
+            except Exception:
+                logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
+                await self._settle_unstarted_consumption(run.run_id)
+            resumed += 1
+        return resumed
+
+    async def _resumable_pause_for(self, run: Run, moment: datetime) -> ParkedPause | None:
+        """The one parked NodeRun this Run can be resumed through, or None.
+
+        A single-node Run has one NodeRun; more than one would mean the node was
+        restarted rather than continued, which is the state this tick exists to
+        avoid creating. Refusing to guess between them is the honest answer.
+        """
+        from maistro.runs.consumption import resumable_pause
+
+        node_runs = await self.run_store.list_node_runs(run.run_id)
+        if len(node_runs) != 1:
+            return None
+        node_run = node_runs[0]
+        attempts = await self.run_store.list_attempts(node_run.node_run_id)
+        return resumable_pause(node_run, attempts, now=moment)
 
     async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:
         """Terminalize an owned Run this process can never execute (#251).
