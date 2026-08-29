@@ -378,15 +378,6 @@ wheels = [
 ]
 
 [[package]]
-name = "backoff"
-version = "2.2.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
-]
-
-[[package]]
 name = "bcrypt"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1537,20 +1528,15 @@ name = "hive-conductor"
 version = "0.9.0"
 source = { editable = "packages/hive-conductor" }
 dependencies = [
-    { name = "argon2-cffi" },
-    { name = "bcrypt" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "langfuse" },
-    { name = "maistro-core" },
+    { name = "maistro-core", extra = ["bcrypt"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "pyyaml" },
-    { name = "regex" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1561,17 +1547,18 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-bdd" },
 ]
+observability = [
+    { name = "maistro-core", extra = ["observability"] },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "argon2-cffi", specifier = ">=23.1.0,<25" },
-    { name = "bcrypt", specifier = ">=4.0.0,<6" },
     { name = "cryptography", specifier = ">=50.0.0,<51" },
     { name = "fastapi", specifier = ">=0.115.0,<1" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0.0,<7" },
-    { name = "langfuse", specifier = ">=3.9.3,<5" },
-    { name = "maistro-core", editable = "packages/maistro-core" },
+    { name = "maistro-core", extras = ["bcrypt"], editable = "packages/maistro-core" },
+    { name = "maistro-core", extras = ["observability"], marker = "extra == 'observability'", editable = "packages/maistro-core" },
     { name = "pydantic", specifier = ">=2.0.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.0.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0,<10" },
@@ -1579,12 +1566,10 @@ requires-dist = [
     { name = "pytest-bdd", marker = "extra == 'dev'", specifier = ">=8.0.0,<9" },
     { name = "python-multipart", specifier = ">=0.0.9,<1" },
     { name = "pyyaml", specifier = ">=6.0.0,<7" },
-    { name = "regex", specifier = ">=2024.5.15,<2027" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<3" },
-    { name = "structlog", specifier = ">=24.1.0,<26" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0,<1" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["observability", "dev"]
 
 [[package]]
 name = "httpcore"
@@ -1959,25 +1944,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/0e/72/a3add0e4eec4eb9e2569554f7c70f4a3c27712f40e3284d483e88094cc0e/langdetect-1.0.9.tar.gz", hash = "sha256:cbc1fef89f8d062739774bd51eda3da3274006b3661d199c2655f6b3f6d605a0", size = 981474, upload-time = "2021-05-07T07:54:13.562Z" }
 
 [[package]]
-name = "langfuse"
-version = "4.14.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "backoff" },
-    { name = "httpx" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/36/7c/4cdf76a100f169a0855d4a7e69598a3bbe19bd2f048c5de3c298af1aa2c0/langfuse-4.14.2.tar.gz", hash = "sha256:76eb3f2c2106ddd63271154d1a33f8b3d4036f449a9f9b48403c36bd5e7c1bba", size = 389507, upload-time = "2026-07-30T11:54:48.46Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/b5/1499bcedb6872e8acc4e7043c522c9f3a4fe2eafd78a6f37e73308d18753/langfuse-4.14.2-py3-none-any.whl", hash = "sha256:27879cbaea570e94323c6ced60a0997feedf5294f18b51436009947c42f9f92e", size = 688132, upload-time = "2026-07-30T11:54:49.553Z" },
-]
-
-[[package]]
 name = "lazy-object-proxy"
 version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2259,6 +2225,7 @@ dependencies = [
 all = [
     { name = "aiosqlite" },
     { name = "anthropic" },
+    { name = "bcrypt" },
     { name = "bip-utils" },
     { name = "boto3" },
     { name = "fastapi" },
@@ -2276,6 +2243,9 @@ all = [
 asgi = [
     { name = "fastapi" },
     { name = "starlette" },
+]
+bcrypt = [
+    { name = "bcrypt" },
 ]
 builders = [
     { name = "anthropic" },
@@ -2321,6 +2291,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'builders'", specifier = ">=0.28,<1" },
     { name = "argon2-cffi", specifier = ">=23.1,<25" },
     { name = "asyncpg", specifier = ">=0.30,<1" },
+    { name = "bcrypt", marker = "extra == 'bcrypt'", specifier = ">=4.0,<6" },
     { name = "bip-utils", marker = "extra == 'identity'", specifier = ">=2.9,<3" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.34,<2" },
     { name = "cryptography", specifier = ">=50.0.0,<51" },
@@ -2329,7 +2300,7 @@ requires-dist = [
     { name = "google-re2", marker = "extra == 're2'", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "maistro-bootstrap", extras = ["builders"], marker = "extra == 'builders'", editable = "packages/maistro-bootstrap" },
-    { name = "maistro-core", extras = ["llm", "sandbox", "observability", "tui", "builders", "sqlite", "asgi", "identity", "s3"], marker = "extra == 'all'", editable = "packages/maistro-core" },
+    { name = "maistro-core", extras = ["llm", "sandbox", "observability", "tui", "builders", "sqlite", "asgi", "identity", "s3", "bcrypt"], marker = "extra == 'all'", editable = "packages/maistro-core" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
     { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
@@ -2351,7 +2322,7 @@ requires-dist = [
     { name = "textual", marker = "extra == 'builders'", specifier = ">=0.61,<9" },
     { name = "typer", marker = "extra == 'tui'", specifier = ">=0.12,<1" },
 ]
-provides-extras = ["llm", "sandbox", "re2", "s3", "observability", "tui", "builders", "sqlite", "identity", "asgi", "all", "dev"]
+provides-extras = ["llm", "sandbox", "bcrypt", "re2", "s3", "observability", "tui", "builders", "sqlite", "identity", "asgi", "all", "dev"]
 
 [[package]]
 name = "maistro-design"
@@ -2362,7 +2333,6 @@ dependencies = [
     { name = "maistro-canvas" },
     { name = "maistro-core" },
     { name = "pydantic" },
-    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -2384,7 +2354,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<2" },
-    { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
 ]
 provides-extras = ["dev"]
@@ -2445,7 +2414,6 @@ dependencies = [
     { name = "maistro-bootstrap" },
     { name = "maistro-core", extra = ["llm"] },
     { name = "maistro-evolve" },
-    { name = "pydantic" },
     { name = "structlog" },
 ]
 
@@ -2464,7 +2432,6 @@ requires-dist = [
     { name = "maistro-core", extras = ["llm"], editable = "packages/maistro-core" },
     { name = "maistro-evolve", editable = "packages/maistro-evolve" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
-    { name = "pydantic", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
@@ -2479,9 +2446,7 @@ source = { editable = "packages/maistro-server" }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
-    { name = "fastmcp" },
-    { name = "langfuse" },
-    { name = "maistro-core" },
+    { name = "maistro-core", extra = ["llm"] },
     { name = "psycopg", extra = ["binary"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2498,9 +2463,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "fastmcp", specifier = ">=2.0,<4" },
-    { name = "langfuse", specifier = ">=3.9.3,<5" },
-    { name = "maistro-core", editable = "packages/maistro-core" },
+    { name = "maistro-core", extras = ["llm"], editable = "packages/maistro-core" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
@@ -2515,10 +2478,8 @@ name = "maistro-turing"
 version = "0.9.0"
 source = { editable = "packages/maistro-turing" }
 dependencies = [
-    { name = "httpx" },
     { name = "maistro-core" },
     { name = "pydantic" },
-    { name = "structlog" },
 ]
 
 [package.optional-dependencies]
@@ -2531,14 +2492,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "maistro-core", editable = "packages/maistro-core" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
     { name = "pydantic", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
-    { name = "structlog", specifier = ">=24.4,<26" },
 ]
 provides-extras = ["dev"]
 

@@ -9,8 +9,12 @@ license-files = ["LICENSE"]
 dependencies = [
     "maistro-core>=0.9.0",
     "pydantic>=2.0,<3",
-    "structlog>=24.4,<26",
-    "httpx>=0.28,<1",
+    # structlog and httpx were declared here and imported nowhere in
+    # `src/maistro_turing`; both arrive as hard dependencies of
+    # maistro-core, which is what actually imports them (#514). A second
+    # declaration of a dependency you do not use is not belt-and-braces --
+    # it is a second range that can drift from the owner's and quietly
+    # constrain the resolver.
 ]
 
 [project.optional-dependencies]

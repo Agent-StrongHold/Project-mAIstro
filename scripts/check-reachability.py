@@ -483,37 +483,104 @@ def unreachable_modules(
     static_roots: tuple[str, ...] = STATIC_ROOTS,
     dynamic_roots: tuple[str, ...] = DYNAMIC_ROOTS,
 ) -> tuple[list[str], int]:
+    """The scoped identities nothing imports, and the size of the module universe.
+
+    Identities, not report labels. The baseline this feeds is read by other
+    gates — `check_ac_state_impl.py` decides a criterion's `reachable` rung by
+    looking its `ac-modules` anchor up in it, and that anchor is required to be
+    spelled the way `_collect_modules` spells it. Reporting one spelling while
+    storing another let a criterion anchored to a module that *is* baselined
+    unreachable clear the top rung anyway, because the two sides never used the
+    same names (#651). `display_name` makes the label a person reads, at the
+    edge that prints it.
+    """
     mods, seen = _reachability(root, flat_apps, static_roots, dynamic_roots)
-    unreachable = sorted(_display_name(key, flat_apps) for key in set(mods) - seen)
-    return unreachable, len(mods)
+    return sorted(set(mods) - seen), len(mods)
+
+
+def display_name(key: str, flat_apps: tuple[FlatApp, ...] = FLAT_APPS) -> str:
+    """The human-facing label for a scoped module identity."""
+    return _display_name(key, flat_apps)
+
+
+def unknown_baseline_entries(
+    baseline: set[str], universe: set[str], flat_apps: tuple[FlatApp, ...] = FLAT_APPS
+) -> list[tuple[str, str]]:
+    """Baseline entries naming no module identity, each with a suggestion.
+
+    A baseline the graph cannot resolve is not a stricter baseline, it is a
+    hole: the entry matches nothing the walk produces, so the ratchet can never
+    retire it, and every consumer that asks the baseline about a module gets
+    "not listed" for one that is genuinely unreachable. The suggestion is the
+    identity whose report label the entry was written as — the way all forty
+    original strays arose — when exactly one identity carries that label.
+    """
+    labels: dict[str, list[str]] = {}
+    for key in universe:
+        labels.setdefault(_display_name(key, flat_apps), []).append(key)
+    return [
+        (entry, labels[entry][0] if len(labels.get(entry, ())) == 1 else "")
+        for entry in sorted(baseline - universe)
+    ]
+
+
+def _report_unknown_entries(unknown: list[tuple[str, str]]) -> None:
+    print(f"\n{len(unknown)} baseline entry(ies) name NO module the graph knows:\n")
+    for entry, suggestion in unknown:
+        # Two different faults, and they take opposite fixes. An entry that is
+        # some module's *report label* is a live module written the wrong way,
+        # and respelling it keeps the ratchet's grip. An entry matching nothing
+        # at all is a phantom -- the module was deleted or never existed -- and
+        # respelling it is impossible; it has to go.
+        print(
+            f"  {entry}"
+            + (f"  → rename to {suggestion!r}" if suggestion else "  (no such module — delete it)")
+        )
+    print(
+        "\nAn entry the walk cannot resolve never matches and never retires, and every\n"
+        "gate that asks this baseline about a module reads 'not listed' for one that is\n"
+        "genuinely unreachable. Spell entries as the identity `_collect_modules` produces:\n"
+        "dotted for packages (`maistro.builders.runtime`), scoped for flat apps and repo\n"
+        "tooling (`@flat/hive-conductor/routes.projects`, `@tool/ac_state_notes`)."
+    )
 
 
 def main() -> int:
-    unreachable, total = unreachable_modules()
+    mods, seen = _reachability(ROOT, FLAT_APPS, STATIC_ROOTS, DYNAMIC_ROOTS)
+    unreachable = sorted(set(mods) - seen)
+    total = len(mods)
     baseline = set(json.loads(BASELINE.read_text())["unreachable"])
 
+    unknown = unknown_baseline_entries(baseline, set(mods))
     added = sorted(set(unreachable) - baseline)
-    removed = sorted(baseline - set(unreachable))
+    # An unknown entry is already reported as unresolvable; calling it "newly
+    # reachable" as well would name one fault twice and send the reader to the
+    # wrong fix — pruning an entry that needs respelling.
+    removed = sorted(baseline - set(unreachable) - {entry for entry, _ in unknown})
 
     print(f"{total} production modules, {len(unreachable)} unreachable from any entry point")
+
+    if unknown:
+        _report_unknown_entries(unknown)
 
     if removed:
         print(f"\n{len(removed)} module(s) newly REACHABLE — drop them from the baseline:")
         for module in removed:
-            print(f"  - {module}")
+            print(f"  - {display_name(module)}")
 
     if added:
         print(f"\n{len(added)} module(s) are NEWLY UNREACHABLE:\n")
         for module in added:
-            print(f"  {module}")
+            print(f"  {display_name(module)}  ({module})")
         print(
             "\nNothing that runs imports these. If that is intended — a library-only\n"
             "surface, or test scaffolding — add them to quality/reachability-baseline.json\n"
-            "with a note. If it is not, they are built-but-never-wired: give them a call\n"
-            "path, and check that no doc already claims they run."
+            "with a note, spelled as the identity in parentheses. If it is not, they are\n"
+            "built-but-never-wired: give them a call path, and check that no doc already\n"
+            "claims they run."
         )
 
-    if added or removed:
+    if added or removed or unknown:
         if removed:
             print(
                 "\nThe reviewed baseline must shrink when modules become reachable. "

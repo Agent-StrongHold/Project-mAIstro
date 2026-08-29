@@ -76,7 +76,7 @@ def test_flat_app_fixture_keeps_disconnected_module_unreachable(tmp_path: Path) 
     assert _flat("example", "main") in seen
     assert _flat("example", "services") in seen
     assert _flat("example", "services.live") in seen
-    assert unreachable == ["example-backend::dead"]
+    assert unreachable == [_flat("example", "dead")]
     assert all("tests" not in path.parts for path in mods.values())
 
 
