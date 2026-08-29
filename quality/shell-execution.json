@@ -1,0 +1,26 @@
+{
+  "_comment": "Every `shell=True` in the packages this gate governs, declared (#305). A call not listed here fails scripts/check-shell-execution.py, and a listed call that no longer exists fails it too -- a stale entry is a standing approval for whoever next adds one at that spot. Being listed is not approval of the code; it is a record that someone decided the string reaching this shell is one an operator typed, and named the caller who guarantees it.",
+  "calls": [
+    {
+      "file": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "symbol": "LocalSandbox._run",
+      "owner": "@BlakeMatthews-dev",
+      "reachable_from": "the CLI apply-patch path only",
+      "reason": "`LocalSandbox.exec`'s inner thread body. A host-backed sandbox for `python -m maistro_rsi run` at a terminal. Unreachable from the Conductor route since #305: under container isolation the loop hands the apply function _NoHostExecSandbox, whose exec refuses."
+    },
+    {
+      "file": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
+      "symbol": "LocalRsiLoop._run_tests",
+      "owner": "@BlakeMatthews-dev",
+      "reachable_from": "the CLI, when no test_argv is configured",
+      "reason": "`test_command` is what an operator typed at a terminal, and that operator already has a shell. Every non-terminal caller supplies `test_argv`, which runs as a vector with no shell; the Conductor route resolves it from server-side policy (#305)."
+    },
+    {
+      "file": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
+      "symbol": "_run",
+      "owner": "@BlakeMatthews-dev",
+      "reachable_from": "the CLI, when no test_argv is passed to evaluate_candidate",
+      "reason": "The fitness scorecard's tests_pass gate, same command and same distinction as _run_tests above. `fitness=True` is the Conductor route's default, so this had to take the argv too -- validating one of the two shells would have left the default path on the other."
+    }
+  ]
+}

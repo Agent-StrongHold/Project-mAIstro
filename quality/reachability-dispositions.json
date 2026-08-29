@@ -217,16 +217,13 @@
       "id": "memory-advanced-retrieval",
       "subsystem": "Memory",
       "disposition": "CONNECT",
-      "rationale": "Episodic consolidation, ranking, retrieval and sharing, plus learnings approval, embeddings and promotion. ADR-082226-5104 makes these first-class: embeddings move onto the memory row via pgvector, and consolidation is what dreaming executes as a canonical Run.",
+      "rationale": "Episodic consolidation and sharing, memory exposure mode, and learnings approval, promotion and skill mutation. ADR-082226-5104 makes these first-class: consolidation is what dreaming executes as a canonical Run. Ranking, retrieval and embeddings left this group at #622, which put the ADR-080 part D score behind the EpisodicStore protocol and wired the ADR-091 assembly that reads it into the agent's prompt builder.",
       "root": "the dream consolidation Graph and pgvector retrieval (ADR-082226-5104)",
       "modules": [
         "maistro.memory.episodic.consolidation",
-        "maistro.memory.episodic.ranking",
-        "maistro.memory.episodic.retrieval",
         "maistro.memory.episodic.sharing",
         "maistro.memory.exposure",
         "maistro.memory.learnings.approval",
-        "maistro.memory.learnings.embeddings",
         "maistro.memory.learnings.promoter",
         "maistro.memory.mutations"
       ]
@@ -383,17 +380,6 @@
       ]
     },
     {
-      "id": "tasks-recovery",
-      "subsystem": "Task queue and runner",
-      "disposition": "CONNECT",
-      "rationale": "ADR-056 crash recovery and replay for the task queue. #41/#43 make the queue a receipt over a canonical Run, and #62 owns recovery, so these are reached from the canonical recovery path.",
-      "root": "canonical Run recovery (#62), not a queue-private one",
-      "modules": [
-        "maistro.tasks.recovery",
-        "maistro.tasks.replay"
-      ]
-    },
-    {
       "id": "testing-scaffolding",
       "subsystem": "Test scaffolding",
       "disposition": "LIBRARY",
@@ -457,16 +443,6 @@
         "maistro.security.task_policy",
         "maistro.security.trust_boundary",
         "maistro.security.warden.flag_response"
-      ]
-    },
-    {
-      "id": "workspace-project-scope",
-      "subsystem": "Workspace / Project scope",
-      "disposition": "CONNECT",
-      "rationale": "Project authorization: the scope check a Run's Project id is enforced against. The Workspace half of this entry is connected as of #516 -- `wire_workspace_store` resolves the canonical Workspace store from the container's own relational backend, which is what reached `maistro.workspaces` and its model and store. What remains is the authorization module, which #38 reaches when project-scoped resources flow through it.",
-      "root": "the canonical Run store's scope enforcement (#38)",
-      "modules": [
-        "maistro.projects.authorization"
       ]
     },
     {

@@ -15,9 +15,11 @@ resolving without a version means "whatever is current".
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from typing import Protocol, TypeVar, runtime_checkable
 
-from maistro.graph.definitions import GraphTemplate, NodeTemplate
+from maistro.graph.definitions import GraphTemplate, NodeTemplate, TemplateLifecycle
 
 TemplateT = TypeVar("TemplateT", GraphTemplate, NodeTemplate)
 
@@ -47,6 +49,118 @@ def revalidated(template: TemplateT) -> TemplateT:
     return type(template).model_validate(template.model_dump())
 
 
+@dataclass(frozen=True)
+class PromotionApproval:
+    """The policy decision that permits one promotion (SPEC-081226-bb3a R14).
+
+    AC-11's third clause is "promotion creates a new explicit version only
+    after the policy gate". The first version of `promote_audited` had no gate
+    at all -- it recorded audit entries and activated, so any caller could
+    promote and a successful audit write was being treated as policy approval
+    (Codex, #589). Recording that a thing happened is not deciding that it may.
+
+    The genome side refuses `approved_for_promotion=False`; the same posture
+    here, as a required argument rather than a mutable field, so there is no
+    state to overwrite and no default that could be `True`. `approver` and
+    `reason` must both be non-empty: an approval with nobody behind it and no
+    stated grounds is the shrug this exists to prevent.
+    """
+
+    approver: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.approver.strip():
+            raise ValueError("a promotion approval must name its approver")
+        if not self.reason.strip():
+            raise ValueError("a promotion approval must state its reason")
+
+
+@runtime_checkable
+class TemplatePromotionAudit(Protocol):
+    """Sink for the two entries a promotion must leave behind.
+
+    Deliberately the same shape as `maistro_evolve.audit.GenomeAuditTrail`
+    rather than a second, weaker discipline beside it: an attempt entry before
+    the state change and a committed entry after, so an active version can
+    never appear without a matching record (ADR-082926-65bf, SPEC-081226-bb3a
+    R14).
+    """
+
+    async def record(self, event: str, template_id: str, version: int) -> None: ...
+
+
+class TemplateLifecycleStore(Protocol):
+    """The slice of a template store `promote_audited` needs.
+
+    Both families satisfy it, so the audit guarantee has one implementation
+    rather than one per backend.
+    """
+
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None: ...
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle: ...
+
+
+async def promote_audited(
+    store: TemplateLifecycleStore,
+    template_id: str,
+    version: int,
+    *,
+    audit: TemplatePromotionAudit,
+    approval: PromotionApproval,
+) -> None:
+    """Make one template version active, gated and audited, in that order.
+
+    `approval` is the policy gate AC-11's third clause requires, and it is a
+    required argument so there is no way to reach activation without one.
+
+    The ordering is what makes the audit claim true rather than nearly true::
+
+        1. record the attempt          -- a sink that is down blocks the
+                                          promotion entirely; nothing moved
+        2. lifecycle -> "promoting"    -- committed by the durable stores, but
+                                          no execution path resolves it
+        3. record the commit           -- if this fails, step 2 is undone and
+                                          the version is a candidate again
+        4. lifecycle -> "active"       -- only now is it what callers get
+
+    Step 2 is why `promoting` exists. Activating first and auditing second --
+    what this did before -- means the durable stores have already committed
+    the row when the sink is asked, so a concurrent reader can resolve and
+    instantiate a version that the audit failure then rolls back (Codex,
+    #589). With the middle state, "active implies a committed audit entry"
+    holds for every observer, not just the promoting task.
+
+    If step 4 fails the version is left `promoting`: audited as committed but
+    not yet serving. That is the safe direction of the two -- a promotion that
+    did not finish, rather than an unaudited active version -- and it is
+    visible to `lifecycle_of` rather than silent.
+
+    Compensation catches `BaseException`, not `Exception`. `asyncio.CancelledError`
+    inherits from `BaseException`, so a task cancelled at a request timeout or
+    a service shutdown would otherwise skip the rollback and leave the version
+    mid-promotion (Codex, #589). The rollback is shielded, because a
+    compensating write that is itself cancelled is not a compensation.
+
+    `set_lifecycle` is the raw operation and does none of this. Every
+    auditable promotion must route through here, exactly as
+    `PopulationStore.promote_audited` is the only sanctioned path for a
+    genome.
+    """
+    before = await store.lifecycle_of(template_id, version)
+    await audit.record("template_promotion_attempt", template_id, version)
+    await store.set_lifecycle(template_id, version, "promoting")
+    try:
+        await audit.record("template_promotion_committed", template_id, version)
+    except BaseException:
+        await asyncio.shield(store.set_lifecycle(template_id, version, before))
+        raise
+    await store.set_lifecycle(template_id, version, "active")
+
+
 class GraphTemplateNotFound(KeyError):
     """No template of that id — or no such version of it — exists."""
 
@@ -58,6 +172,12 @@ class GraphTemplateConflict(ValueError):
 @runtime_checkable
 class GraphTemplateStore(Protocol):
     async def put(self, template: GraphTemplate) -> GraphTemplate: ...
+
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None: ...
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle: ...
 
     async def get(
         self, template_id: str, *, version: int | None = None
@@ -83,12 +203,29 @@ async def require_template(
     """
     template = await store.get(template_id, version=version)
     if template is not None:
-        return template
-    if version is None:
-        raise GraphTemplateNotFound(f"no GraphTemplate {template_id!r} is registered")
+        if template.lifecycle == "active":
+            return template
+        # An exact version is the inspection door, not an execution one. A
+        # Schedule pinning `template_version` to a candidate reached this
+        # function, which returned it and let it run in scheduled production
+        # work without ever being promoted (Codex, #589). Reading a candidate
+        # is still available -- through `store.get`, which is what inspection
+        # should use.
+        raise GraphTemplateNotFound(
+            f"GraphTemplate {template_id!r} version {version} is {template.lifecycle}, "
+            "not active; promote it before anything executes it"
+        )
     known = await store.versions(template_id)
     if not known:
         raise GraphTemplateNotFound(f"no GraphTemplate {template_id!r} is registered")
+    if version is None:
+        # Registered, but nothing active. Reporting "not registered" here sent
+        # the scheduling admission path to diagnose a configuration mistake
+        # when the actual answer was that a promotion is owed (Codex, #589).
+        raise GraphTemplateNotFound(
+            f"GraphTemplate {template_id!r} has no active version; "
+            f"registered versions: {', '.join(str(item) for item in known)}"
+        )
     raise GraphTemplateNotFound(
         f"GraphTemplate {template_id!r} has no version {version}; "
         f"registered versions: {', '.join(str(item) for item in known)}"
@@ -116,18 +253,63 @@ class InMemoryGraphTemplateStore:
                 f"GraphTemplate {template.template_id!r} version {template.version} already "
                 "exists with different content; register a new version instead"
             )
-        self._templates[key] = revalidated(template).model_copy(deep=True)
+        stored = revalidated(template).model_copy(deep=True)
+        if existing is not None:
+            # An idempotent re-registration must not move the lifecycle. The
+            # content hash excludes `lifecycle`, so a caller re-submitting the
+            # same content with the field's default -- any code path that
+            # rebuilds a template without knowing about it -- hashes equal to
+            # a stored candidate and would silently activate it, with no
+            # approval and no audit entry. The reverse demotes a promoted
+            # version just as quietly (Codex, #589). `promote_audited` is the
+            # only thing that changes this.
+            stored = stored.model_copy(update={"lifecycle": existing.lifecycle})
+        self._templates[key] = stored
         return template
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None:
+        """The raw transition. `promote_audited` is the sanctioned path."""
+        found = self._templates.get((template_id, version))
+        if found is None:
+            raise GraphTemplateNotFound(
+                f"no GraphTemplate {template_id!r} version {version} to promote"
+            )
+        found.lifecycle = lifecycle
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle:
+        found = self._templates.get((template_id, version))
+        if found is None:
+            raise GraphTemplateNotFound(
+                f"no GraphTemplate {template_id!r} version {version} is registered"
+            )
+        return found.lifecycle
+
     async def get(self, template_id: str, *, version: int | None = None) -> GraphTemplate | None:
+        """Unversioned resolution returns the latest *active* version.
+
+        A candidate stays addressable by exact version -- inspecting one is
+        the point of having it -- but is never what an unversioned lookup
+        hands back. That is the failure ADR-082926-65bf guards: a candidate
+        silently becoming what everyone gets. `promoting` is excluded for the
+        same reason, one step further along.
+
+        This is the *inspection* door. `require_template` is the execution
+        door and refuses a non-active version even when one is named
+        explicitly -- see the note there.
+        """
         if version is not None:
             found = self._templates.get((template_id, version))
             return found.model_copy(deep=True) if found is not None else None
-        known = await self.versions(template_id)
-        if not known:
+        active = [
+            version_
+            for version_ in await self.versions(template_id)
+            if self._templates[(template_id, version_)].lifecycle == "active"
+        ]
+        if not active:
             return None
-        latest = self._templates[(template_id, known[-1])]
-        return latest.model_copy(deep=True)
+        return self._templates[(template_id, active[-1])].model_copy(deep=True)
 
     async def list_for_workspace(self, workspace_id: str) -> list[GraphTemplate]:
         found = [
@@ -166,6 +348,12 @@ class NodeTemplateStore(Protocol):
 
     async def put(self, template: NodeTemplate) -> NodeTemplate: ...
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None: ...
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle: ...
+
     async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None: ...
 
     async def list_for_workspace(self, workspace_id: str) -> list[NodeTemplate]: ...
@@ -187,12 +375,29 @@ async def require_node_template(
     """
     template = await store.get(template_id, version=version)
     if template is not None:
-        return template
-    if version is None:
-        raise NodeTemplateNotFound(f"no NodeTemplate {template_id!r} is registered")
+        if template.lifecycle == "active":
+            return template
+        # An exact version is the inspection door, not an execution one. A
+        # Schedule pinning `template_version` to a candidate reached this
+        # function, which returned it and let it run in scheduled production
+        # work without ever being promoted (Codex, #589). Reading a candidate
+        # is still available -- through `store.get`, which is what inspection
+        # should use.
+        raise NodeTemplateNotFound(
+            f"NodeTemplate {template_id!r} version {version} is {template.lifecycle}, "
+            "not active; promote it before anything executes it"
+        )
     known = await store.versions(template_id)
     if not known:
         raise NodeTemplateNotFound(f"no NodeTemplate {template_id!r} is registered")
+    if version is None:
+        # Registered, but nothing active. Reporting "not registered" here sent
+        # the scheduling admission path to diagnose a configuration mistake
+        # when the actual answer was that a promotion is owed (Codex, #589).
+        raise NodeTemplateNotFound(
+            f"NodeTemplate {template_id!r} has no active version; "
+            f"registered versions: {', '.join(str(item) for item in known)}"
+        )
     raise NodeTemplateNotFound(
         f"NodeTemplate {template_id!r} has no version {version}; "
         f"registered versions: {', '.join(str(item) for item in known)}"
@@ -222,17 +427,55 @@ class InMemoryNodeTemplateStore:
                 f"NodeTemplate {template.template_id!r} version {template.version} already "
                 "exists with different content; register a new version instead"
             )
-        self._templates[key] = revalidated(template).model_copy(deep=True)
+        stored = revalidated(template).model_copy(deep=True)
+        if existing is not None:
+            # An idempotent re-registration must not move the lifecycle. The
+            # content hash excludes `lifecycle`, so a caller re-submitting the
+            # same content with the field's default -- any code path that
+            # rebuilds a template without knowing about it -- hashes equal to
+            # a stored candidate and would silently activate it, with no
+            # approval and no audit entry. The reverse demotes a promoted
+            # version just as quietly (Codex, #589). `promote_audited` is the
+            # only thing that changes this.
+            stored = stored.model_copy(update={"lifecycle": existing.lifecycle})
+        self._templates[key] = stored
         return template
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None:
+        """The raw transition. `promote_audited` is the sanctioned path."""
+        found = self._templates.get((template_id, version))
+        if found is None:
+            raise NodeTemplateNotFound(
+                f"no NodeTemplate {template_id!r} version {version} to promote"
+            )
+        found.lifecycle = lifecycle
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle:
+        found = self._templates.get((template_id, version))
+        if found is None:
+            raise NodeTemplateNotFound(
+                f"no NodeTemplate {template_id!r} version {version} is registered"
+            )
+        return found.lifecycle
+
     async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None:
+        """Unversioned resolution returns the latest *active* version.
+
+        Same rule and same reason as `InMemoryGraphTemplateStore.get`.
+        """
         if version is not None:
             found = self._templates.get((template_id, version))
             return found.model_copy(deep=True) if found is not None else None
-        known = await self.versions(template_id)
-        if not known:
+        active = [
+            version_
+            for version_ in await self.versions(template_id)
+            if self._templates[(template_id, version_)].lifecycle == "active"
+        ]
+        if not active:
             return None
-        return self._templates[(template_id, known[-1])].model_copy(deep=True)
+        return self._templates[(template_id, active[-1])].model_copy(deep=True)
 
     async def list_for_workspace(self, workspace_id: str) -> list[NodeTemplate]:
         found = [
@@ -256,6 +499,9 @@ __all__ = [
     "NodeTemplateConflict",
     "NodeTemplateNotFound",
     "NodeTemplateStore",
+    "TemplateLifecycleStore",
+    "TemplatePromotionAudit",
+    "promote_audited",
     "require_node_template",
     "require_template",
     "revalidated",

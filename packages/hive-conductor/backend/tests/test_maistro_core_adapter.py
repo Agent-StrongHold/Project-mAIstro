@@ -13,8 +13,10 @@ from config import Settings
 async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatch):
     """Hive must consume the prompt store selected by the core Container (#122)."""
     selected_prompt_manager = object()
+    selected_assembly_policy = object()
     container = SimpleNamespace(
         prompt_manager=selected_prompt_manager,
+        context_assembly_policy=selected_assembly_policy,
         context_builder=object(),
         warden=object(),
         sentinel=object(),
@@ -48,5 +50,9 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     )
 
     assert captured["prompt_manager"] is selected_prompt_manager
+    # Same requirement, one wiring later: the ADR-091 assembly the Container
+    # selected has to be the one the agents get, or the Conductor's episodic
+    # memories reach no prompt (#622).
+    assert captured["context_assembly_policy"] is selected_assembly_policy
     assert container.agents == ["wired-agent"]
     assert bridge.container is container
