@@ -10,8 +10,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from maistro.graph.definitions import GraphTemplate, NodeTemplate
-from maistro.graph.templates import GraphTemplateConflict, NodeTemplateConflict, revalidated
+from maistro.graph.definitions import GraphTemplate, NodeTemplate, TemplateLifecycle
+from maistro.graph.templates import (
+    GraphTemplateConflict,
+    GraphTemplateNotFound,
+    NodeTemplateConflict,
+    NodeTemplateNotFound,
+    revalidated,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
@@ -108,7 +114,55 @@ class SqliteGraphTemplateStore:
         await self._conn.commit()
         return template
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None:
+        """The raw transition. `promote_audited` is the sanctioned path.
+
+        `json_set` rather than a rewritten payload, for the reason the
+        PostgreSQL twin records: the lifecycle is the only thing moving, and
+        rewriting the whole document to change one key would let an in-flight
+        model change ride along with a promotion.
+        """
+        cursor = await self._conn.execute(
+            """UPDATE graph_templates
+                   SET payload = json_set(payload, '$.lifecycle', ?)
+               WHERE template_id = ? AND version = ?""",
+            (lifecycle, template_id, version),
+        )
+        if cursor.rowcount == 0:
+            await self._conn.rollback()
+            raise GraphTemplateNotFound(
+                f"no GraphTemplate {template_id!r} version {version} to promote"
+            )
+        await self._conn.commit()
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle:
+        """Absent reads as `active`, matching the PostgreSQL twin.
+
+        Rows written before ADR-082926-65bf carry no `lifecycle` key and are
+        every one of them active reusable definitions.
+        """
+        cursor = await self._conn.execute(
+            "SELECT json_extract(payload, '$.lifecycle') FROM graph_templates "
+            "WHERE template_id = ? AND version = ?",
+            (template_id, version),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise GraphTemplateNotFound(
+                f"no GraphTemplate {template_id!r} version {version} is registered"
+            )
+        return "candidate" if row[0] == "candidate" else "active"
+
     async def get(self, template_id: str, *, version: int | None = None) -> GraphTemplate | None:
+        """Unversioned resolution returns the latest *active* version.
+
+        `IS NOT 'candidate'` rather than `= 'active'`: `json_extract` yields
+        NULL for a row written before the lifecycle existed, and every such row
+        is an active definition. SQLite's `IS NOT` compares NULL without
+        propagating it, which `!=` would.
+        """
         if version is not None:
             cursor = await self._conn.execute(
                 "SELECT payload FROM graph_templates WHERE template_id = ? AND version = ?",
@@ -118,6 +172,7 @@ class SqliteGraphTemplateStore:
             cursor = await self._conn.execute(
                 """SELECT payload FROM graph_templates
                    WHERE template_id = ?
+                     AND json_extract(payload, '$.lifecycle') IS NOT 'candidate'
                    ORDER BY version DESC
                    LIMIT 1""",
                 (template_id,),
@@ -218,7 +273,42 @@ class SqliteNodeTemplateStore:
         await self._conn.commit()
         return template
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None:
+        """The raw transition. `promote_audited` is the sanctioned path."""
+        cursor = await self._conn.execute(
+            """UPDATE node_templates
+                   SET payload = json_set(payload, '$.lifecycle', ?)
+               WHERE template_id = ? AND version = ?""",
+            (lifecycle, template_id, version),
+        )
+        if cursor.rowcount == 0:
+            await self._conn.rollback()
+            raise NodeTemplateNotFound(
+                f"no NodeTemplate {template_id!r} version {version} to promote"
+            )
+        await self._conn.commit()
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle:
+        """Absent reads as `active`, matching the PostgreSQL twin."""
+        cursor = await self._conn.execute(
+            "SELECT json_extract(payload, '$.lifecycle') FROM node_templates "
+            "WHERE template_id = ? AND version = ?",
+            (template_id, version),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise NodeTemplateNotFound(
+                f"no NodeTemplate {template_id!r} version {version} is registered"
+            )
+        return "candidate" if row[0] == "candidate" else "active"
+
     async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None:
+        """Unversioned resolution returns the latest *active* version.
+
+        Same rule and same NULL-tolerant predicate as its GraphTemplate sibling.
+        """
         if version is not None:
             cursor = await self._conn.execute(
                 "SELECT payload FROM node_templates WHERE template_id = ? AND version = ?",
@@ -228,6 +318,7 @@ class SqliteNodeTemplateStore:
             cursor = await self._conn.execute(
                 """SELECT payload FROM node_templates
                    WHERE template_id = ?
+                     AND json_extract(payload, '$.lifecycle') IS NOT 'candidate'
                    ORDER BY version DESC
                    LIMIT 1""",
                 (template_id,),

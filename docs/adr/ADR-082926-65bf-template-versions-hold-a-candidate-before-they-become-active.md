@@ -10,7 +10,6 @@ history:
     date: 2026-08-29
 substrate:
   - maistro-engine#ADR-081226-bb3a
-  - maistro-engine#ADR-082926-d0dc
 implements: []
 related:
   - maistro-engine#SPEC-081226-bb3a
@@ -83,8 +82,8 @@ Two rules follow, and they are the whole decision:
 
 ### `lifecycle` is excluded from the content hash
 
-For the reason ADR-082926-d0dc records about `saved_from`, stated in the
-other direction:
+The rule is that a fact *about* a definition must not change what the
+definition *is*:
 
 > Two templates that differ only in whether they have been promoted are the
 > same definition. If `lifecycle` entered the hash, promoting a candidate
@@ -95,6 +94,11 @@ other direction:
 Candidacy is lifecycle, not content. `content_hash` answers "what is this
 definition"; `lifecycle` answers "may it be handed out by default". They are
 different questions and the hash must only answer the first.
+
+The same rule is being recorded in parallel for `saved_from` in
+ADR-082926-d0dc (#40, in flight). That is a citation rather than a
+dependency: this decision stands on its own reasoning and neither ADR needs
+the other to land first, so there is no `substrate` edge between them.
 
 ### The default is `"active"`, and that is deliberate
 

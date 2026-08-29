@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -96,12 +96,37 @@ class Graph(BaseModel):
         return _content_hash(self._snapshot_content())
 
 
+TemplateLifecycle = Literal["candidate", "active"]
+"""Whether a template version may be handed out as the current definition.
+
+ADR-082926-65bf. A candidate exists and is addressable by exact version, but
+unversioned resolution never returns one -- the guarded failure is a candidate
+silently becoming what everyone gets. Only an audited promotion moves a version
+from `candidate` to `active`.
+
+Excluded from the content hash for the mirror of the reason ADR-082926-d0dc
+excludes `saved_from`: two templates differing only in whether they have been
+promoted are the same definition, and every object instantiated while a version
+was a candidate cites that version's `content_hash` in its `source_template`.
+Promotion must not retroactively falsify their provenance.
+
+Defaults to `"active"`. The opposite default is safer in isolation and wrong
+here: every template written before this decision is an active reusable
+definition, so defaulting to `"candidate"` would make existing JSONB payloads
+read back as candidates and hide every stored template from unversioned
+resolution. The gate that matters is not the default -- it is that promotion is
+the only way this changes after `put`, and a caller must ask for candidacy
+explicitly to get it.
+"""
+
+
 class NodeTemplate(BaseModel):
     """Versioned reusable Node definition with copy + provenance instantiation."""
 
     template_id: str = Field(default_factory=_id)
     workspace_id: str
     version: int = Field(default=1, ge=1)
+    lifecycle: TemplateLifecycle = "active"
     name: str
     node_type: str
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -113,7 +138,9 @@ class NodeTemplate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def _reusable_content(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"template_id", "workspace_id", "version"}, mode="json")
+        return self.model_dump(
+            exclude={"template_id", "workspace_id", "version", "lifecycle"}, mode="json"
+        )
 
     @property
     def content_hash(self) -> str:
@@ -159,6 +186,7 @@ class GraphTemplate(BaseModel):
     template_id: str = Field(default_factory=_id)
     workspace_id: str
     version: int = Field(default=1, ge=1)
+    lifecycle: TemplateLifecycle = "active"
     name: str
     description: str = ""
     nodes: list[Node] = Field(default_factory=list)
@@ -174,7 +202,9 @@ class GraphTemplate(BaseModel):
         return self
 
     def _reusable_content(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"template_id", "workspace_id", "version"}, mode="json")
+        return self.model_dump(
+            exclude={"template_id", "workspace_id", "version", "lifecycle"}, mode="json"
+        )
 
     @property
     def content_hash(self) -> str:
@@ -255,5 +285,6 @@ __all__ = [
     "GraphTemplate",
     "Node",
     "NodeTemplate",
+    "TemplateLifecycle",
     "TemplateProvenance",
 ]

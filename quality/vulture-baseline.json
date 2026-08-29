@@ -1446,7 +1446,6 @@
         "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'get_breeding_pool'",
         "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'get_lineage'",
         "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'home_island'",
-        "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'promote_audited'",
         "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'rollback_audited'",
         "packages/maistro-evolve/src/maistro_evolve/tournament.py::unused method 'get_battle_history'",
         "packages/maistro-evolve/src/maistro_evolve/tournament.py::unused method 'get_leaderboard'",
