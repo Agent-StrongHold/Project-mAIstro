@@ -95,7 +95,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `2/12` | MIGRATE — becomes an admission receipt over a canonical Run | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `0/5` | MIGRATE — delegation must create child Runs | ADR-058 | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
 | Recurrence / schedules | `services.scheduler` background loop | `1/7` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231); it still executes through `run_registered_dag`, whose `DurableRunStore` is disjoint from the canonical `RunStore` — #251 | #46, #62, #231, #251 |
-| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `19/59` | KEEP — the 40 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
+| Repo tooling | the `.github/workflows/*.yml` step that executes the script | `19/60` | KEEP — the 41 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `3/10` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | ADR-071, ADR-052 | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
 | Builders pipeline | none | `15/15` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090, ADR-099 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
 | Workspace / Project scope | `routes.projects`, `routes.workspaces` (partly unreachable) | `1/15` | CONNECT — the Workspace store is wired and durable (#516); Project authorization is the remaining hop | ADR-081226-9944, ADR-081426-b1d3 | every Run carries a Project id enforced at the store boundary | #37, #38 |
@@ -104,7 +104,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no new direct caller escapes | #56 |
 | Router and classifier | `maistro.container.route_request` | `1/13` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
 | Tool execution | `services.tool_executor`, `maistro.container` | `9/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
-| Sandbox isolation | none in shipped repo processes | `6/6` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
+| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/9` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `12/22` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
 | Credentials | `routes.credentials`, `services.credential_store_v2` | `4/7` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
@@ -128,7 +128,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Reactor loop | `maistro.reactor` (installer-launched) | `0/1` | KEEP | SPEC-013, ADR-086 | loop timing tests | — |
 | Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `5/15` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
+| Core CLI | `maistro.cli` console script | `5/16` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
 | Shared contracts and config | imported by every package | `1/46` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/20` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
@@ -139,7 +139,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `7/61` | MIGRATE — cycle is Run, battle is NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
 | RSI autorun | `maistro_rsi.cli`, `routes.rsi` | `4/35` | MIGRATE — cycles become Runs over authorized work source | ADR-088 | every RSI cycle has Run provenance; backlog through adapter | #50 |
 | Turing self-model | `maistro_turing.runtime`, turing backend `main` | `0/23` | MIGRATE — reachable paths only; cognition remains gated | ADR-081426-fb9f, ADR-070426-9f47 | reachable Turing execution carries Run/Invocation correlation | #54 |
-| ADR/spec registry CLI | `maistro_registry.cli` | `0/8` | KEEP — lifecycle relationships are now prospectively validated | ADR-031, ADR-062026-9b30, ADR-097 | strict registry validation + #239 lifecycle-evidence cases | #30, #239 |
+| ADR/spec registry CLI | `maistro_registry.cli` | `0/9` | KEEP — lifecycle relationships are now prospectively validated | ADR-031, ADR-062026-9b30, ADR-097 | strict registry validation + #239 lifecycle-evidence cases | #30, #239 |
 | Bootstrap installer | `maistro_bootstrap` console script | `0/20` | KEEP | ADR-020, ADR-033 | installer smoke tests | — |
 
 ## Current convergence boundary after M0
