@@ -14,8 +14,8 @@
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 596,
-    "criteria_annotated": 215,
-    "markers_found": 308,
+    "criteria_annotated": 214,
+    "markers_found": 307,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 20.1236
+    "design_coverage": 20.1913
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,9 +540,9 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 20.1236,
+    "percent": 20.1913,
     "decisions": 123,
-    "decisions_scoring_zero": 97,
+    "decisions_scoring_zero": 96,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
@@ -1088,8 +1088,8 @@
         "id": "ADR-081226-bb3a",
         "declared_status": "Accepted",
         "criteria": 12,
-        "reachable": 0,
-        "percent": 0.0
+        "reachable": 1,
+        "percent": 8.3333
       },
       {
         "id": "ADR-081226-e626",
@@ -4677,15 +4677,15 @@
       "declared_unproven": [],
       "has_ac_heading": true,
       "criteria_total": 12,
-      "annotated": 12,
+      "annotated": 11,
       "gherkin_criteria": 12,
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
         "declared": 9,
-        "covered": 3,
+        "covered": 2,
         "passing": 0,
-        "reachable": 0
+        "reachable": 1
       },
       "tier": "declared",
       "criteria": [
@@ -4748,12 +4748,14 @@
           "id": "SPEC-081226-bb3a/AC-6",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/test_graph_definitions.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Save-as-template creates a new identity and leaves the source alone"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-7",
@@ -4804,15 +4806,13 @@
         {
           "id": "SPEC-081226-bb3a/AC-11",
           "claimed": false,
-          "module": "maistro.graph.templates",
-          "covered_by": [
-            "packages/maistro-core/tests/graph/test_node_template_store.py"
-          ],
+          "module": null,
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Improvement produces candidates, never silent mutation"
           ],
-          "rung": "covered"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-12",
@@ -13687,8 +13687,8 @@
       "tier": "reachable"
     },
     {
-      "id": "ADR-082926-65bf",
-      "file": "docs/adr/ADR-082926-65bf-template-versions-hold-a-candidate-before-they-become-active.md",
+      "id": "ADR-082926-d0dc",
+      "file": "docs/adr/ADR-082926-d0dc-save-as-template-records-its-source-object.md",
       "declared_status": "Proposed",
       "specs": [],
       "measurable_specs": 0,

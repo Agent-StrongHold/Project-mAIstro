@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.graph.definitions import Edge, Graph, GraphTemplate, Node, NodeTemplate
+from maistro.graph.definitions import (
+    Edge,
+    Graph,
+    GraphTemplate,
+    Node,
+    NodeTemplate,
+    TemplateProvenance,
+)
 
 
 def test_node_template_instantiation_is_independent_and_records_exact_provenance() -> None:
@@ -98,13 +105,25 @@ def test_graph_template_instantiation_allocates_independent_topology_and_scope()
     assert template.metadata["labels"] == ["canonical"]
 
 
+@pytest.mark.ac("SPEC-081226-bb3a/AC-6")
 def test_objects_can_be_saved_as_new_workspace_wide_templates() -> None:
+    """All three clauses, including the one that had no field to bind to.
+
+    "Their provenance identifies the source Node" was unassertable until
+    ADR-082926-d0dc gave templates a `saved_from`: `TemplateProvenance` runs
+    object -> template, and nothing ran the other way. A template promoted out
+    of a live object was indistinguishable from one authored from nothing.
+    """
     node = Node(
         node_id="live-node",
         node_type="agent",
         name="Edited Coder",
-        parameters={"model": "new-model"},
+        parameters={"model": "new-model", "tuning": {"temperature": 0.4}},
+        source_template=TemplateProvenance(
+            template_id="upstream", template_version=2, template_hash="upstream-hash"
+        ),
     )
+    node_before = node.model_copy(deep=True)
     node_template = NodeTemplate.from_node(
         node,
         workspace_id="workspace-1",
@@ -138,6 +157,54 @@ def test_objects_can_be_saved_as_new_workspace_wide_templates() -> None:
     assert new_graph.source_template is not None
     assert new_graph.source_template.template_id == "saved-graph-template"
     assert new_graph.nodes[0].node_id != node.node_id
+
+    # "and their provenance identifies the source Node"
+    assert node_template.saved_from is not None
+    assert node_template.saved_from.object_kind == "node"
+    assert node_template.saved_from.object_id == "live-node"
+    assert node_template.saved_from.object_hash
+    # Lineage is a chain, not one hop: this template knows the Node it came
+    # from, and that the Node itself came from `upstream@2`.
+    assert node_template.saved_from.object_source_template == node.source_template
+
+    assert graph_template.saved_from is not None
+    assert graph_template.saved_from.object_kind == "graph"
+    assert graph_template.saved_from.object_id == "live-graph"
+
+    # "and the Node itself is unchanged" -- whole-object equality, after the
+    # save and after both instantiations, not a field spot-check.
+    assert node == node_before
+
+
+def test_saved_from_stays_out_of_the_content_hash() -> None:
+    """The load-bearing half of ADR-082926-d0dc.
+
+    Two templates saved from two *different* Nodes carrying identical content
+    are identical content. If `saved_from` reached the hash they would hash
+    differently, and AC-7's idempotent re-registration ("re-registering
+    identical content is a no-op") would start refusing them as redefinition
+    conflicts. Provenance about where content came from must not change what
+    the content is.
+    """
+    shared = {
+        "node_type": "agent",
+        "name": "Coder",
+        "parameters": {"model": "m", "tuning": {"temperature": 0.4}},
+    }
+    first = Node(node_id="node-a", **shared)
+    second = Node(
+        node_id="node-b",
+        source_template=TemplateProvenance(
+            template_id="elsewhere", template_version=7, template_hash="other-hash"
+        ),
+        **shared,
+    )
+
+    a = NodeTemplate.from_node(first, workspace_id="workspace-1", template_id="t-a")
+    b = NodeTemplate.from_node(second, workspace_id="workspace-2", template_id="t-b")
+
+    assert a.saved_from != b.saved_from
+    assert a.content_hash == b.content_hash
 
 
 def test_graph_requires_workspace_project_scope_and_unique_node_ids() -> None:

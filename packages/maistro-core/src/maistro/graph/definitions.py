@@ -27,6 +27,25 @@ class TemplateProvenance(BaseModel):
     template_hash: str
 
 
+class SourceObjectProvenance(BaseModel):
+    """The Workspace object a template was saved from (ADR-082926-d0dc).
+
+    `TemplateProvenance` runs object -> template: it says which template an
+    instantiated object came from. This runs the other way, and only
+    save-as-template creates it. Without it a template promoted out of a live
+    object is indistinguishable from one authored from nothing.
+
+    `object_source_template` is what makes lineage a chain rather than one hop:
+    a Node instantiated from T@1, customized and saved as U@1 records both the
+    Node it came from and that the Node itself came from T@1.
+    """
+
+    object_kind: Literal["node", "graph"]
+    object_id: str
+    object_hash: str
+    object_source_template: TemplateProvenance | None = None
+
+
 class Node(BaseModel):
     """Canonical mutable executable position in a Graph.
 
@@ -136,10 +155,26 @@ class NodeTemplate(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    saved_from: SourceObjectProvenance | None = None
 
     def _reusable_content(self) -> dict[str, Any]:
+        # Two exclusions beyond the identity fields, and they are the same
+        # rule read in two directions: a fact *about* a definition must not
+        # change what the definition *is*.
+        #
+        # `saved_from` (ADR-082926-d0dc): two templates saved from two
+        # different Nodes that carry identical content *are* identical
+        # content; if their origin entered the hash they would hash
+        # differently, and the store's idempotent re-registration (AC-7)
+        # would start refusing them as redefinition conflicts.
+        #
+        # `lifecycle` (ADR-082926-65bf): every object instantiated from a
+        # version while it was a candidate cites that version's hash in
+        # `source_template`, so a hash that moved on promotion would
+        # retroactively falsify their provenance.
         return self.model_dump(
-            exclude={"template_id", "workspace_id", "version", "lifecycle"}, mode="json"
+            exclude={"template_id", "workspace_id", "version", "saved_from", "lifecycle"},
+            mode="json",
         )
 
     @property
@@ -177,6 +212,16 @@ class NodeTemplate(BaseModel):
             version=version,
             name=name if name is not None else node.name,
             **values,
+            # AC-6's third clause. The Node's own `source_template` is carried
+            # through rather than dropped, so lineage is a chain: this
+            # template knows the Node it came from, and that the Node came
+            # from a template before it.
+            saved_from=SourceObjectProvenance(
+                object_kind="node",
+                object_id=node.node_id,
+                object_hash=_content_hash(node.model_dump(exclude={"node_id"}, mode="json")),
+                object_source_template=node.source_template,
+            ),
         )
 
 
@@ -192,6 +237,7 @@ class GraphTemplate(BaseModel):
     nodes: list[Node] = Field(default_factory=list)
     edges: list[Edge] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    saved_from: SourceObjectProvenance | None = None
 
     @model_validator(mode="after")
     def _validate_edges(self) -> GraphTemplate:
@@ -202,8 +248,12 @@ class GraphTemplate(BaseModel):
         return self
 
     def _reusable_content(self) -> dict[str, Any]:
+        # Both exclusions carry the reasons `NodeTemplate._reusable_content`
+        # records, for the same objects one level up: a Graph's origin and a
+        # Graph template's lifecycle are facts about it, not content of it.
         return self.model_dump(
-            exclude={"template_id", "workspace_id", "version", "lifecycle"}, mode="json"
+            exclude={"template_id", "workspace_id", "version", "saved_from", "lifecycle"},
+            mode="json",
         )
 
     @property
@@ -276,6 +326,16 @@ class GraphTemplate(BaseModel):
             nodes=snapshot.nodes,
             edges=snapshot.edges,
             metadata=snapshot.metadata,
+            saved_from=SourceObjectProvenance(
+                object_kind="graph",
+                object_id=graph.graph_id,
+                object_hash=_content_hash(
+                    graph.model_dump(
+                        exclude={"graph_id", "workspace_id", "project_id"}, mode="json"
+                    )
+                ),
+                object_source_template=graph.source_template,
+            ),
         )
 
 
@@ -285,6 +345,7 @@ __all__ = [
     "GraphTemplate",
     "Node",
     "NodeTemplate",
+    "SourceObjectProvenance",
     "TemplateLifecycle",
     "TemplateProvenance",
 ]
