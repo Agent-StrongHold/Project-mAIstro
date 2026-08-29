@@ -1,0 +1,57 @@
+name: tmp-561-structural-ratchets
+
+on:
+  push:
+    branches:
+      - chatgpt/tmp-561-ratchets-current
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prune newly reachable Project authorization module
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('quality/reachability-baseline.json')
+          doc = json.loads(p.read_text())
+          target = 'maistro.projects.authorization'
+          if target not in doc['unreachable']:
+              raise SystemExit(f'{target} is not present in unreachable baseline')
+          doc['unreachable'].remove(target)
+          p.write_text(json.dumps(doc, indent=2) + '\n')
+          PY
+      - name: Update measured maistro-server convergence count
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/architecture/CONVERGENCE-MATRIX.md')
+          text = p.read_text()
+          old = '| maistro-server HTTP app | `maistro_server.main` | `0/21` |'
+          new = '| maistro-server HTTP app | `maistro_server.main` | `0/23` |'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one matrix row prefix, found {text.count(old)}')
+          p.write_text(text.replace(old, new))
+          PY
+      - name: Verify reachability
+        run: python scripts/check-reachability.py
+      - name: Verify convergence matrix
+        run: python scripts/check-convergence-matrix.py
+      - name: Commit structural ratchets and remove generator
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-561-structural-ratchets.yml
+          git add quality/reachability-baseline.json docs/architecture/CONVERGENCE-MATRIX.md
+          git commit -m "chore: record PR 561 structural ratchets"
+          git push origin HEAD:${{ github.ref_name }}
