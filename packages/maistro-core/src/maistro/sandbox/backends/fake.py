@@ -17,7 +17,7 @@ from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
 class FakeSandboxBackend:
     """In-process fake. No isolation. Dev/test only."""
 
-    _tier = "fake"
+    tier = "fake"
 
     def __init__(self) -> None:
         self._instances: dict[str, SandboxConfig] = {}

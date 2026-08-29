@@ -356,21 +356,6 @@
       ]
     },
     {
-      "id": "sandbox",
-      "subsystem": "Sandbox isolation",
-      "disposition": "CONNECT",
-      "rationale": "ADR-093's sandbox protocol, policy, selector and fake backend. #42 executes an Attempt inside an ExecutionRuntime, which is what makes the sandbox reachable.",
-      "root": "ExecutionRuntime attempt execution (#42)",
-      "modules": [
-        "maistro.sandbox",
-        "maistro.sandbox.backends",
-        "maistro.sandbox.backends.fake",
-        "maistro.sandbox.policy",
-        "maistro.sandbox.protocol",
-        "maistro.sandbox.selector"
-      ]
-    },
-    {
       "id": "sessions-search",
       "subsystem": "Sessions",
       "disposition": "CONNECT",
@@ -492,13 +477,10 @@
       "id": "workspace-project-scope",
       "subsystem": "Workspace / Project scope",
       "disposition": "CONNECT",
-      "rationale": "The Workspace model and store, the SQLite scope store, and project authorization. These are the scope roots of the canonical spine; #37/#38 give every Run a Project id enforced at the store boundary, which is what reaches them.",
-      "root": "the canonical Run store's scope enforcement (#37, #38)",
+      "rationale": "Project authorization: the scope check a Run's Project id is enforced against. The Workspace half of this entry is connected as of #516 -- `wire_workspace_store` resolves the canonical Workspace store from the container's own relational backend, which is what reached `maistro.workspaces` and its model and store. What remains is the authorization module, which #38 reaches when project-scoped resources flow through it.",
+      "root": "the canonical Run store's scope enforcement (#38)",
       "modules": [
-        "maistro.projects.authorization",
-        "maistro.workspaces",
-        "maistro.workspaces.model",
-        "maistro.workspaces.store"
+        "maistro.projects.authorization"
       ]
     },
     {
@@ -659,6 +641,16 @@
       "modules": [
         "scripts/ratchet_provenance.py"
       ]
+    },
+    {
+      "id": "disabled-autonomous-merge-gate",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Orphaned by `14a67dd` (\"ci: disable autonomous merge safety gate for now\"), which deleted `.github/workflows/autonomous-merge.yml` -- the only thing that invoked this script. CONNECT rather than LIBRARY because that commit message says \"for now\": the gate is meant to run again once #562 decides whether a generated `quality/` ledger counts as trusted surface, at which point it needs a workflow back and this entry pruned. Recorded rather than deleted so the intent survives the pause; a LIBRARY disposition would read as \"this was always meant to be import-only\", which is the opposite of true -- it is a gate with nothing currently running it.",
+      "modules": [
+        "scripts/check-autonomous-merge.py"
+      ],
+      "root": ".github/workflows/autonomous-merge.yml, restored once #562 decides whether a generated quality/ ledger is part of the trusted surface and the check can pass for an ordinary change"
     }
   ]
 }

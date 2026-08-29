@@ -1,8 +1,9 @@
 """Characterization and migration-target tests for Stream 5 graph convergence.
 
 These tests deliberately separate behavior that is already authoritative in
-``GraphRun`` from known durable-executor gaps. Strict xfails describe canonical
-behavior Stream 5 has not made real yet; passing cases are parity already won.
+``GraphRun`` from known durable-executor gaps. Earlier revisions carried strict
+xfails for canonical behavior Stream 5 had not made real yet; every remaining
+case now passes, so this file records parity already won.
 
 They must not be "fixed" by weakening the assertions or by teaching the tests
 about another temporary lifecycle model.

@@ -8,22 +8,20 @@ on:
   # unreviewed, it was unmeasured, and every accumulated failure arrived at once
   # on retarget, against the branch least able to absorb it.
   #
-  # A required-check set that silently does not apply to a whole class of PRs is
-  # worse than none: the green tick means different things depending on the base
-  # and nothing on the PR says which. #161.
+  # A required-check set that silently does not apply to a whole class of PRs or
+  # merge-group candidates is worse than none: the green tick means different
+  # things depending on the merge path and nothing on the candidate says which.
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [develop, integration, main]
 
-# Supersede in-flight runs for the same PR. Added with #161: this workflow now
-# runs on every PR rather than only develop/integration/main-based ones, and a
-# stack of PRs each pushing repeatedly is exactly where runs pile up.
-# Cancellation is scoped to pull_request — a push to a protected branch must run
-# to completion, because a cancelled run reports neither success nor failure and
-# ADR-095's branch model relies on knowing whether a commit there was green.
+# Supersede in-flight candidate runs. Protected-branch pushes still run to
+# completion because their pass/fail record is durable evidence about that SHA.
 concurrency:
-  group: vulture-ratchet-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: vulture-ratchet-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 permissions:
   contents: read
