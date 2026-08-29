@@ -383,17 +383,6 @@
       ]
     },
     {
-      "id": "tasks-recovery",
-      "subsystem": "Task queue and runner",
-      "disposition": "CONNECT",
-      "rationale": "ADR-056 crash recovery and replay for the task queue. #41/#43 make the queue a receipt over a canonical Run, and #62 owns recovery, so these are reached from the canonical recovery path.",
-      "root": "canonical Run recovery (#62), not a queue-private one",
-      "modules": [
-        "maistro.tasks.recovery",
-        "maistro.tasks.replay"
-      ]
-    },
-    {
       "id": "testing-scaffolding",
       "subsystem": "Test scaffolding",
       "disposition": "LIBRARY",

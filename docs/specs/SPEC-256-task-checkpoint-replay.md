@@ -3,8 +3,13 @@ id: SPEC-256
 title: "Task crash recovery — checkpoint replay and crash-loop quarantine core (ADR-056)"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: AC Defined
 created: 2026-06-20
+history:
+  - status: Accepted
+    date: 2026-06-20
+  - status: AC Defined
+    date: 2026-08-29
 substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-018
@@ -23,6 +28,16 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/tasks/test_checkpoint_replay.py
+  - packages/maistro-core/tests/orchestrator/waves/test_recovery_compatibility.py
+source:
+  - packages/maistro-core/src/maistro/tasks/recovery.py
+ac-modules:
+  AC-1: maistro.orchestrator.waves.ensemble
+  AC-2: maistro.orchestrator.waves.ensemble
+  AC-3: maistro.orchestrator.waves.ensemble
+  AC-4: maistro.orchestrator.waves.ensemble
+  AC-5: maistro.tasks.replay
+  AC-6: maistro.orchestrator.waves.ensemble
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -142,6 +157,56 @@ def version_compatible(checkpoint, *, current_recipe_version, current_code_regis
 ```
 
 ## Acceptance criteria
+
+The list below is about the pure functions, and every claim in it was true. What
+was missing is a caller: `version_compatible` and `CrashLoopPolicy` had none, so
+recovery resumed a checkpoint without comparing the versions the checkpoint
+itself recorded, and a task that crashed during recovery was recovered again on
+every restart. #624 wired them and states those criteria here, in the form the
+AC gate reads.
+
+```gherkin
+@AC-1
+Scenario: A checkpoint from another recipe version is not resumed
+  Given checkpoints recorded under one recipe version
+  When recovery runs under a different recipe version
+  Then the saved results are not returned as the answer
+  And the refusal names the recorded version and the running one
+
+@AC-2
+Scenario: A checkpoint from another code registry version is not resumed
+  Given checkpoints recorded under one code registry version
+  When recovery runs under a different code registry version
+  Then the saved results are not returned as the answer
+
+@AC-3
+Scenario: A matching checkpoint still recovers
+  Given checkpoints recorded under the running configuration
+  When recovery runs
+  Then the saved results are returned without re-running any wave
+
+@AC-4
+Scenario: Repeated recovery quarantines the task
+  Given a task recovered more times than the configured limit without completing
+  When recovery runs again
+  Then it refuses, distinguishably from having nothing to recover
+  And a task with no checkpoints is never quarantined
+
+@AC-5
+Scenario: An interruption before completion reports what it left open
+  Given checkpoints recording an open tool call, a raised approval gate and spend
+  And no completion marker
+  When recovery runs
+  Then the folded state carries that open call, that pending gate and that spend
+  And folding the checkpoints the ensemble actually writes does not raise
+
+@AC-6
+Scenario: The recovery decision is on the event stream
+  When recovery resumes, refuses or quarantines
+  Then it emits a canonical event saying which, and why
+```
+
+### Pure-function claims verified by `test_checkpoint_replay.py`
 
 - [x] A `TOOL_CALL_ABOUT_TO_FIRE` with a matching later `TOOL_CALL_DONE` leaves that call out of
       `open_tool_calls`; one with no matching `done` leaves it in.

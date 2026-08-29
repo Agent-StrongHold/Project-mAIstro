@@ -18,6 +18,10 @@ class CheckpointKind(StrEnum):
     APPROVAL_GATE_ANSWERED = "approval.gate.answered"
     SPEND_UPDATE = "spend.update"
     MEMORY_PROMOTE = "memory.promote"
+    # Recovery's own record, so the crash-loop count survives the restart it
+    # exists to count. An in-process breaker cannot observe a process crash;
+    # the checkpoint store is the one thing that does (#624).
+    RECOVERY_ATTEMPTED = "recovery.attempted"
 
 
 @dataclass(frozen=True)
