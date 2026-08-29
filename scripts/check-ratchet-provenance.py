@@ -35,6 +35,14 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "this call site uses reachability only for census attribution; "
         "check-reachability.py owns the blocking debt ratchet"
     ),
+    ("check_ac_state_impl.py", "quality/reachability-baseline.json"): (
+        "criterion reachability is a measurement input; the blocking reachability ratchet "
+        "separately prevents a candidate from deleting an actually-unreachable module to "
+        "promote its own AC rung"
+    ),
+    ("check_ac_state_impl.py", "quality/ac-state.json"): (
+        "generated AC-state report output, not a comparison oracle"
+    ),
 }
 
 TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
