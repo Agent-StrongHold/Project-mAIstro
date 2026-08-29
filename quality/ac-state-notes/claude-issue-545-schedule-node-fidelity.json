@@ -5,11 +5,11 @@
     "completion_claims_contradicted": 0,
     "completion_claims_unverifiable": 0,
     "criteria_claimed_but_unproven": 0,
-    "design_coverage": 23.8948,
+    "design_coverage": 26.7439,
     "gherkin_parse_errors": 0,
     "markers_without_criterion": 2,
     "scenarios_without_ac_tag": 0,
-    "specs_awaiting_retrofit": 139,
+    "specs_awaiting_retrofit": 137,
     "specs_declaring_no_criteria": 7,
     "specs_implementing_nothing": 76
   },

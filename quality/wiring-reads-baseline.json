@@ -7,7 +7,6 @@
         "db_pool": "Consumed by injection \u2014 passed to wire_execution_spine and _wire_sqlite_durable_events before the Container is constructed. The field is an unread second reference, kept because downstream products construct a Container and reach the pool through it.",
         "elevation_store": "Consumed by injection \u2014 passed to Sentinel at construction. The field is an unread second reference.",
         "golden_record_store": "InMemoryGoldenRecordStore is constructed and only stored. No production reader.",
-        "harness_adapters": "Consumed by injection \u2014 passed to _wire_harness_adapters, whose result becomes spawn_harness_node. The field holds the caller's pass-through argument and has no production reader.",
         "harness_registry": "Returned by _wire_hierarchy alongside `hierarchy` and only stored. No production reader.",
         "hierarchy": "HierarchicalOrchestrator is returned by _wire_hierarchy and only stored. No production reader; the orchestrator surface is reached through maistro.orchestrator directly.",
         "identity_linker": "IdentityLinker is constructed and only stored. No production reader.",
@@ -17,8 +16,7 @@
         "project_scope_store": "Consumed by injection \u2014 returned by wire_execution_spine and passed to wire_chat_admission. The field is an unread second reference.",
         "resilience_policies": "InMemoryResiliencePolicyStore is constructed with the default policy set and only stored. No production reader; ADR-038's circuit-breaking reads its policies through maistro.resilience.",
         "spawn_harness_node": "AgentSpawnHarnessNode is constructed from the wired adapters and only stored. No production reader.",
-        "template_store": "Bound from wire_execution_spine's `graph_template_store` and only stored. The scheduler admission path takes its GraphTemplateStore by constructor injection instead (maistro.scheduling.admission), so this field is a second reference nothing follows.",
-        "usage_log": "Defaults from get_default_usage_log(). Production reads that module-level singleton directly (maistro.quota.usage_log); the container field is a parallel handle nothing follows."
+        "template_store": "Bound from wire_execution_spine's `graph_template_store` and only stored. The scheduler admission path takes its GraphTemplateStore by constructor injection instead (maistro.scheduling.admission), so this field is a second reference nothing follows."
       }
     }
   }
