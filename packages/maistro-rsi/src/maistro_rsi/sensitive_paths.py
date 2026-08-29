@@ -121,6 +121,22 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # itself. Matched at directory granularity: the whole package persists
     # depth state, so `executor.py` alone left its siblings uncovered.
     "maistro/graph/durable_runs/",
+    # --- the Conductor's RSI containment, now that the gate can see it ------
+    # `packages/*/src` never matched the Conductor's flat backend, so these were
+    # invisible to the promotion-surface walk until #513 added that source root
+    # and rooted `services.rsi` / `routes.rsi`. They are not newly reachable;
+    # they are newly *visible*, and both make containment decisions.
+    #
+    # `rsi_execution_policy` IS the containment: it resolves which repository an
+    # HTTP-initiated run may touch, which argument vector it may execute, and
+    # whether isolation is available at all. A candidate editing it authorizes
+    # its own path and its own command.
+    "services/rsi_execution_policy.py",
+    # And the settings the policy reads — `rsi_repo_roots` above all. Protecting
+    # the policy while leaving its inputs editable is the same mistake #513
+    # found with `maistro/http.py`: the rule is written in one file and takes
+    # effect from another.
+    "hive-conductor/backend/config.py",
     # --- the gates, and the ratchet baselines they read ---------------------
     # Previously the only thing standing between the loop and its own CI config
     # was a sentence in a prompt telling the model not to touch it.

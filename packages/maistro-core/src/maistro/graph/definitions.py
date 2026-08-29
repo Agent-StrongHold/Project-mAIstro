@@ -286,12 +286,46 @@ class Graph(BaseModel):
         return _content_hash(self._snapshot_content())
 
 
+TemplateLifecycle = Literal["candidate", "promoting", "active"]
+"""Whether a template version may be handed out as the current definition.
+
+ADR-082926-65bf. A candidate exists and is addressable by exact version, but
+no *execution* path will resolve one -- the guarded failure is a candidate
+silently becoming what everyone runs. Only an audited, approved promotion moves
+a version to `active`.
+
+`promoting` is the transitional state a version occupies between its approval
+being recorded and its activation being recorded. It resolves exactly like
+`candidate` -- that is its whole purpose. The durable stores commit
+`set_lifecycle` before the audit sink is asked for the committed entry, so
+without a non-resolvable middle state a concurrent reader could instantiate a
+version that the audit failure then rolls back, and "no active version without
+a committed audit entry" would be a claim the implementation does not keep
+(Codex, #589).
+
+Excluded from the content hash for the mirror of the reason ADR-082926-d0dc
+excludes `saved_from`: two templates differing only in whether they have been
+promoted are the same definition, and every object instantiated while a version
+was a candidate cites that version's `content_hash` in its `source_template`.
+Promotion must not retroactively falsify their provenance.
+
+Defaults to `"active"`. The opposite default is safer in isolation and wrong
+here: every template written before this decision is an active reusable
+definition, so defaulting to `"candidate"` would make existing JSONB payloads
+read back as candidates and hide every stored template from unversioned
+resolution. The gate that matters is not the default -- it is that promotion is
+the only way this changes after `put`, and a caller must ask for candidacy
+explicitly to get it.
+"""
+
+
 class NodeTemplate(BaseModel):
     """Versioned reusable Node definition with copy + provenance instantiation."""
 
     template_id: str = Field(default_factory=_id)
     workspace_id: str
     version: int = Field(default=1, ge=1)
+    lifecycle: TemplateLifecycle = "active"
     name: str
     node_type: str
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -311,15 +345,23 @@ class NodeTemplate(BaseModel):
         return self
 
     def _reusable_content(self) -> dict[str, Any]:
-        # `saved_from` is excluded for a stronger reason than the identity
-        # fields beside it (ADR-082926-d0dc). Two templates saved from two
+        # Two exclusions beyond the identity fields, and they are the same
+        # rule read in two directions: a fact *about* a definition must not
+        # change what the definition *is*.
+        #
+        # `saved_from` (ADR-082926-d0dc): two templates saved from two
         # different Nodes that carry identical content *are* identical
         # content; if their origin entered the hash they would hash
         # differently, and the store's idempotent re-registration (AC-7)
-        # would start refusing them as redefinition conflicts. Provenance
-        # about where content came from must not change what the content is.
+        # would start refusing them as redefinition conflicts.
+        #
+        # `lifecycle` (ADR-082926-65bf): every object instantiated from a
+        # version while it was a candidate cites that version's hash in
+        # `source_template`, so a hash that moved on promotion would
+        # retroactively falsify their provenance.
         return self.model_dump(
-            exclude={"template_id", "workspace_id", "version", "saved_from"}, mode="json"
+            exclude={"template_id", "workspace_id", "version", "saved_from", "lifecycle"},
+            mode="json",
         )
 
     @property
@@ -376,6 +418,7 @@ class GraphTemplate(BaseModel):
     template_id: str = Field(default_factory=_id)
     workspace_id: str
     version: int = Field(default=1, ge=1)
+    lifecycle: TemplateLifecycle = "active"
     name: str
     description: str = ""
     nodes: list[Node] = Field(default_factory=list)
@@ -399,12 +442,12 @@ class GraphTemplate(BaseModel):
         return self
 
     def _reusable_content(self) -> dict[str, Any]:
-        # Excluded for the reason `NodeTemplate._reusable_content` records:
-        # two Graphs saved with identical content are identical content, and
-        # letting their origin reach the hash would turn re-registration into
-        # a conflict (ADR-082926-d0dc).
+        # Both exclusions carry the reasons `NodeTemplate._reusable_content`
+        # records, for the same objects one level up: a Graph's origin and a
+        # Graph template's lifecycle are facts about it, not content of it.
         return self.model_dump(
-            exclude={"template_id", "workspace_id", "version", "saved_from"}, mode="json"
+            exclude={"template_id", "workspace_id", "version", "saved_from", "lifecycle"},
+            mode="json",
         )
 
     @property
@@ -501,6 +544,7 @@ __all__ = [
     "NodeTemplate",
     "RuntimeStateInTemplate",
     "SourceObjectProvenance",
+    "TemplateLifecycle",
     "TemplateProvenance",
     "separate_runtime_state",
 ]

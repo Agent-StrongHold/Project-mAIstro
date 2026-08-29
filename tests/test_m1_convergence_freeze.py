@@ -156,10 +156,38 @@ class TestTheBaseRevisionIsResolvedNotAssumed:
 
     def test_the_repositorys_own_base_resolves(self) -> None:
         """Against the real clone rather than a fake: the helper has to name a
-        revision `git` will actually accept."""
-        resolved = _fetched_base("HEAD")
+        revision `git` will actually accept -- and it has to do it without a
+        network call.
 
-        assert _rev_exists(resolved)
+        Never `_fetched_base("HEAD")`: `origin/HEAD` is absent in plenty of
+        checkouts, so that spelling sends an unconditional test down the fetch
+        path, and the whole root suite then fails in any clone with no `origin`
+        or an unreachable one -- while the live PR gate this belongs to is not
+        even active.
+
+        The earlier fix for that named whichever remote ref the clone happened
+        to have and skipped when it had none. That worked, but a conditional
+        skip is a test that stops running when the condition changes, and the
+        condition here is "somebody's checkout". So the ref is *made* instead:
+        one temporary remote-tracking ref, pointing at HEAD, deleted again in
+        `finally`. The no-fetch branch is then covered in every clone, on every
+        machine, with no network and nothing to skip.
+        """
+        ref = "m1-freeze-selftest"
+        qualified = f"refs/remotes/origin/{ref}"
+        subprocess.run(
+            ["git", "update-ref", qualified, "HEAD"], cwd=ROOT, check=True, capture_output=True
+        )
+        try:
+            assert _fetched_base(ref) == f"origin/{ref}"
+            assert _rev_exists(f"origin/{ref}")
+        finally:
+            subprocess.run(
+                ["git", "update-ref", "-d", qualified],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+            )
 
 
 class _FakeSubprocess:

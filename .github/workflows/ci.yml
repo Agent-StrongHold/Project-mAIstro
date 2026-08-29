@@ -155,6 +155,14 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # `LocalRsiLoop._run_tests` carried the comment "the test command is
+      # operator-supplied config, not agent input" while POST /v1/rsi/runs
+      # accepted that command over HTTP (#305). The comment was true when it
+      # was written and false by the time it mattered, because nothing checks
+      # a comment against its callers. quality/shell-execution.json does.
+      - name: Every shell=True is declared with a caller someone vouches for
+        run: python3 scripts/check-shell-execution.py
+
       # `Dockerfile.rsi-runner` copied the repository root into an image that
       # then runs agent-authored code, and nothing denied `.env` (#308). The
       # per-Dockerfile ignore is BuildKit-only, so two files have to agree or
