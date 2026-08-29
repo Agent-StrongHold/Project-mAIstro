@@ -212,13 +212,31 @@ async def test_the_sandbox_sees_only_its_own_processes(sandbox) -> None:
     assert int(count) < 10
 
 
-@requires_bwrap
-async def test_a_nested_user_namespace_cannot_be_mapped(sandbox) -> None:
-    """Writing a uid_map inside is how a workload would try to get back the
-    capabilities `--cap-drop ALL` took away."""
-    text = await output(sandbox, "unshare -Ur true 2>&1")
+#: Read a file the sandbox must not have, and write to a path it must not own.
+_REACH_FOR_THE_HOST = "cat /etc/passwd 2>&1; touch /usr/escape 2>&1"
 
-    assert "Operation not permitted" in text or "not permitted" in text
+
+@requires_bwrap
+async def test_a_nested_user_namespace_does_not_reopen_the_host(sandbox) -> None:
+    """Nesting a user namespace is how a workload would try to get back the
+    capabilities `--cap-drop ALL` took away.
+
+    The assertion is about what the nested namespace can *reach*, not about
+    whether the syscall was refused — and that distinction was measured the
+    hard way. An earlier version asserted the refusal, which held in a
+    privileged container and failed on CI, where an unprivileged runner
+    permits the nesting a root container refuses. Whether nesting succeeds is
+    a property of the host; whether it reopens the mount namespace is the
+    property of this sandbox, and is the same either way. The fallback runs
+    the same payload unnested so the assertions hold on both kinds of host.
+    """
+    text = await output(
+        sandbox,
+        f"unshare -Ur sh -c '{_REACH_FOR_THE_HOST}' || sh -c '{_REACH_FOR_THE_HOST}'",
+    )
+
+    assert "No such file" in text  # /etc/passwd, still absent
+    assert "Read-only file system" in text  # /usr, still not writable
 
 
 @requires_bwrap
@@ -230,9 +248,14 @@ async def test_chroot_is_refused(sandbox) -> None:
 
 @requires_bwrap
 async def test_the_workload_cannot_mount_anything(sandbox) -> None:
-    text = await output(sandbox, "mkdir -p /work/m && mount -t tmpfs none /work/m 2>&1")
+    """The outcome, not the wording. `mount` says "permission denied" in a
+    privileged container and "must be superuser" on an unprivileged runner;
+    asserting either one is asserting the host's `util-linux` build."""
+    result = await run(sandbox, "mkdir -p /work/m && mount -t tmpfs none /work/m")
+    mounts = await output(sandbox, "cat /proc/self/mounts")
 
-    assert "denied" in text or "permitted" in text
+    assert result.exit_code != 0
+    assert "/work/m" not in mounts
 
 
 # --- devices ------------------------------------------------------------------
