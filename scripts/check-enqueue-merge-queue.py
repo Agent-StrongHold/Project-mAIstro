@@ -47,7 +47,10 @@ def latest_status_state(statuses: list[dict[str, Any]], context: str) -> str | N
     matches = [item for item in statuses if item.get("context") == context]
     if not matches:
         return None
-    latest = max(matches, key=lambda item: str(item.get("created_at") or ""))
+    latest = max(
+        matches,
+        key=lambda item: str(item.get("created_at") or ""),
+    )
     state = latest.get("state")
     return str(state) if state is not None else None
 
@@ -58,7 +61,9 @@ def latest_check_conclusion(checks: list[dict[str, Any]], name: str) -> str | No
         return None
     latest = max(
         matches,
-        key=lambda item: str(item.get("completed_at") or item.get("started_at") or ""),
+        key=lambda item: str(
+            item.get("completed_at") or item.get("started_at") or ""
+        ),
     )
     conclusion = latest.get("conclusion")
     return str(conclusion) if conclusion is not None else None
@@ -121,9 +126,17 @@ class GitHubApi:
         page = 1
         while True:
             query = urllib.parse.urlencode(
-                {"state": "open", "base": BASE_BRANCH, "per_page": 100, "page": page}
+                {
+                    "state": "open",
+                    "base": BASE_BRANCH,
+                    "per_page": 100,
+                    "page": page,
+                },
             )
-            batch = self._request("GET", f"/repos/{self._repository}/pulls?{query}")
+            batch = self._request(
+                "GET",
+                f"/repos/{self._repository}/pulls?{query}",
+            )
             assert isinstance(batch, list)
             result.extend(batch)
             if len(batch) < 100:
@@ -132,14 +145,19 @@ class GitHubApi:
 
     def statuses(self, sha: str) -> list[dict[str, Any]]:
         data = self._request(
-            "GET", f"/repos/{self._repository}/commits/{sha}/statuses?per_page=100"
+            "GET",
+            f"/repos/{self._repository}/commits/{sha}/statuses?per_page=100",
         )
         assert isinstance(data, list)
         return data
 
     def admission_checks(self, sha: str) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode(
-            {"check_name": ADMISSION_CHECK, "filter": "latest", "per_page": 100}
+            {
+                "check_name": ADMISSION_CHECK,
+                "filter": "latest",
+                "per_page": 100,
+            },
         )
         data = self._request(
             "GET",
