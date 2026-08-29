@@ -27,6 +27,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 IMPL = ROOT / "scripts" / "check_ac_state_impl.py"
 
+# SPEC-082926-c2d7 declares `contracts: [behavioral]`, and ADR-032 says a
+# document claiming a kind has a test marked with that kind -- enforced from
+# #345 on, which is why this was never required before. The spec is about how
+# the rung behaves for a name the graph does not know, so the claim is true and
+# the marker is what makes it checkable rather than asserted.
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 @pytest.fixture(scope="module")
 def check():
