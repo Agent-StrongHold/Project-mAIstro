@@ -32,12 +32,12 @@ tests:
 source:
   - packages/hive-conductor/backend/services/durability.py
 ac-modules:
-  AC-1: services.durability
-  AC-2: services.durability
-  AC-3: routes.health
-  AC-4: services.durability
-  AC-5: services.durability
-  AC-6: services.model_store
+  AC-1: '@flat/hive-conductor/services.durability'
+  AC-2: '@flat/hive-conductor/services.durability'
+  AC-3: '@flat/hive-conductor/routes.health'
+  AC-4: '@flat/hive-conductor/services.durability'
+  AC-5: '@flat/hive-conductor/services.durability'
+  AC-6: '@flat/hive-conductor/services.model_store'
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
