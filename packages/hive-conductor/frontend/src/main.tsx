@@ -1,6 +1,15 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+// Self-hosted typefaces (#377). These were three <link> tags to Google Fonts
+// in index.html, which leaked every visitor's IP to a third party, put a CDN
+// on the critical path of a product that runs on a mini-PC with no guaranteed
+// internet, and forced the only third-party origins in the CSP. Vite emits the
+// woff2 files as same-origin assets; the browser still fetches only the
+// subsets a page actually renders, because each @font-face carries its
+// unicode-range. Caveat was dropped rather than moved: nothing referenced it.
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 import "./index.css";
 // Persona/Workspace theme variants -- scoped by [data-theme="..."] on
 // <html>, set by WorkspaceContext when a workspace's theme_id isn't

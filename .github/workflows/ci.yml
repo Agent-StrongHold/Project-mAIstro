@@ -14,20 +14,18 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+  # A merge queue evaluates a synthetic commit containing the current base plus
+  # the queued candidate(s). Every required CI job must report on that SHA, not
+  # merely on the feature-branch head that was green before it entered the queue.
+  merge_group:
+    types: [checks_requested]
 
-# Supersede in-flight runs for the same PR instead of letting them pile up.
-# Every push to a PR previously left the prior run's jobs burning runners —
-# including this workflow's own 20-minute `hive-conductor-e2e-ui` — which is
-# what left later jobs sitting `queued` for tens of minutes.
-#
-# Cancellation is scoped to pull_request on purpose: pushes to main/integration/
-# develop must run to completion, because ADR-095's branch model relies on
-# knowing whether a given commit on a protected branch was green. A cancelled
-# run reports neither success nor failure, so cancelling those would erase that
-# record rather than just saving time.
+# Supersede in-flight runs for the same PR or merge-group candidate instead of
+# letting them pile up. Protected-branch pushes still run to completion because
+# their pass/fail record is durable evidence about that exact branch SHA.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 permissions:
   contents: read
@@ -186,6 +184,16 @@ jobs:
         run: uv run pytest packages/maistro-core/tests/persistence -v --tb=short
       - name: Container wires the PostgreSQL backend
         run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short
+      # The canonical Workspace (#516). `MAISTRO_REQUIRE_PG_LEGS` here rather
+      # than in the job env: the suites above predate it and a leg that has
+      # never run must not start failing the job on this change. For this one
+      # the point is precisely that the PostgreSQL leg cannot skip -- an
+      # untested durable store is what the whole suite exists to prevent, and
+      # a skip and a pass are the same green tick.
+      - name: Workspace stores conform across memory, SQLite and PostgreSQL
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
 
   object-storage:
     # MinIO, not moto. The default `test` job already runs the archive suite
@@ -252,6 +260,18 @@ jobs:
           # bounded it. `|| true` tolerates a *failed* apt, not a wedged one.
           timeout 180 sudo apt-get update || true
           timeout 180 sudo apt-get install -y age || true
+          # bubblewrap is the Tier-3 sandbox backend (#76, ADR-093). Installed
+          # rather than skipped-around: its integration tests are the only place
+          # the isolation claim is checked against the kernel instead of against
+          # our own argv, and a suite where they always skip proves nothing.
+          timeout 180 sudo apt-get install -y bubblewrap || true
+          # Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1,
+          # which leaves `bwrap` installed but unable to build a namespace --
+          # it fails at "loopback: Failed RTM_NEWADDR". Detection treats that
+          # as "no Tier 3" and the integration tests skip, correctly but
+          # uselessly. Relaxing it here makes the runner resemble a host that
+          # can actually run the sandbox, so the kernel assertions execute.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if ! command -v age-keygen &> /dev/null; then
             echo "Installing age-keygen from source..."
             mkdir -p /tmp/age && cd /tmp/age

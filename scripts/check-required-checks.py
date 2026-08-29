@@ -19,13 +19,20 @@ different PRs. A new `branches:` filter under `pull_request:` or
 `pull_request_target:` shows up here as a changed row rather than as a silent
 hole in coverage.
 
+For the active `develop` merge queue, it additionally requires every ordinary
+required check producer to handle `merge_group: checks_requested`, and it pins
+the reviewed queue method to `SQUASH`. A queue tests a synthetic candidate SHA.
+A required check that only handles `pull_request` can be green on the feature
+head and then remain `Expected` forever on the SHA the queue is actually trying
+to land.
+
 What it deliberately does not do
 --------------------------------
-Read the repository's actual branch-protection settings. That needs an
-admin-scoped token this workflow does not have and should not have, and a gate
-that requires a privileged credential is one that gets disabled. The file is the
-declared contract; #162 is where a human matches the settings to it. Keeping the
-two separate means this check works on a fork with no secrets at all.
+Read the repository's actual live branch-protection or ruleset settings. That
+needs an admin-scoped token this workflow does not have and should not have. It
+reads only the checked-in `.github/branch-protection.json` and
+`.github/merge-queue.json` declarations. A human applies and reads back the live
+ruleset after these trusted workflow changes are on `develop`.
 
 Usage
 -----
@@ -35,6 +42,7 @@ Usage
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -44,54 +52,49 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 DOC = REPO_ROOT / "docs" / "ci" / "REQUIRED-CHECKS.md"
+PROTECTION = REPO_ROOT / ".github" / "branch-protection.json"
+MERGE_QUEUE = REPO_ROOT / ".github" / "merge-queue.json"
 BEGIN = "<!-- checks:table -->"
 END = "<!-- /checks:table -->"
 
 
 class ContractError(RuntimeError):
-    """A workflow the contract cannot express, rather than one it misreads.
+    """A workflow the contract cannot express, rather than one it misreads."""
 
-    Raised instead of recording a best guess. A gate whose failure mode is a
-    plausible-looking wrong answer is worse than one that stops: the wrong
-    answer gets banked into the table and read as the truth afterwards.
-    """
+
+def _trigger_block(doc: dict, events: tuple[str, ...]) -> dict | None:
+    """The first requested Actions event block, normalized across YAML forms."""
+    triggers = doc.get(True, doc.get("on"))
+    if isinstance(triggers, list):
+        return {} if any(event in triggers for event in events) else None
+    if isinstance(triggers, str):
+        return {} if triggers in events else None
+    if not isinstance(triggers, dict):
+        return None
+    for event in events:
+        if event in triggers:
+            return triggers[event] or {}
+    return None
 
 
 def _pull_request_trigger(doc: dict) -> dict | None:
     """The PR trigger block, or None when the workflow has no PR trigger.
 
-    Both `pull_request` and `pull_request_target` are merge-boundary checks.
-    The latter matters for base-trusted judges such as autonomous-merge safety:
-    excluding it from this contract would make a required check invisible to
-    the branch-protection audit precisely because it is loaded from the base.
-
-    Three spellings are valid for either trigger family:
-
-        on: {pull_request: {branches: [main]}}   -> the filter dict
-        on: {pull_request_target: null}          -> {} (unfiltered)
-        on: [push, pull_request]                 -> {} (unfiltered)
-
-    ``on:`` is YAML 1.1's boolean ``True`` after parsing — the classic GitHub
-    Actions footgun. Both spellings are read so a `"on"`-quoted workflow is not
-    silently treated as having no triggers at all.
-
-    The sequence form matters for the same reason: rejecting every
-    non-dictionary trigger dropped such a workflow out of the contract
-    *entirely*, and `--update` then produced a table that passed CI while the
-    checks it omitted were still gating merges.
+    Both `pull_request` and `pull_request_target` are merge-boundary checks. The
+    latter matters for base-trusted judges such as autonomous-merge safety.
     """
-    triggers = doc.get(True, doc.get("on"))
-    pr_events = ("pull_request", "pull_request_target")
-    if isinstance(triggers, list):
-        return {} if any(event in triggers for event in pr_events) else None
-    if isinstance(triggers, str):
-        return {} if triggers in pr_events else None
-    if not isinstance(triggers, dict):
+    return _trigger_block(doc, ("pull_request", "pull_request_target"))
+
+
+def _merge_group_trigger(doc: dict) -> dict | None:
+    """A usable merge-group trigger, or None when this workflow cannot queue-gate."""
+    block = _trigger_block(doc, ("merge_group",))
+    if block is None or not isinstance(block, dict):
         return None
-    for event in pr_events:
-        if event in triggers:
-            return triggers[event] or {}
-    return None
+    types = block.get("types")
+    if types and "checks_requested" not in types:
+        return None
+    return block
 
 
 _FILTER_LABELS = (
@@ -173,6 +176,7 @@ def _workflow_files() -> list[Path]:
 
 
 def collect() -> list[tuple[str, str, str]]:
+    """(workflow, check name, scope) for every job reachable from a PR."""
     rows: list[tuple[str, str, str]] = []
     for path in _workflow_files():
         doc = yaml.safe_load(path.read_text()) or {}
@@ -208,6 +212,42 @@ def base_coupled(rows: list[tuple[str, str, str]]) -> set[tuple[str, str]]:
     return {(wf, check) for wf, check, scope in rows if "base" in scope}
 
 
+def merge_group_gaps(rows: list[tuple[str, str, str]]) -> list[str]:
+    """Any checked-in queue contract or required producer that cannot queue-gate."""
+    gaps: list[str] = []
+    if not PROTECTION.exists():
+        gaps.append(f"{PROTECTION.relative_to(REPO_ROOT)} does not exist")
+        return gaps
+    if not MERGE_QUEUE.exists():
+        gaps.append(f"{MERGE_QUEUE.relative_to(REPO_ROOT)} does not exist")
+        return gaps
+
+    protection = json.loads(PROTECTION.read_text(encoding="utf-8"))
+    queue = json.loads(MERGE_QUEUE.read_text(encoding="utf-8"))
+    policy = (queue.get("branches") or {}).get("develop") or {}
+    if policy.get("merge_method") != "SQUASH":
+        gaps.append("develop merge queue must use merge_method=SQUASH")
+    if policy.get("max_entries_to_merge") != 1:
+        gaps.append("develop merge queue must initially merge one PR per group")
+
+    required = set(protection["branches"]["develop"]["required_status_checks"]["contexts"])
+    producer = {check: workflow for workflow, check, _scope_value in rows}
+
+    merge_capable: set[str] = set()
+    for path in _workflow_files():
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if _merge_group_trigger(doc) is not None:
+            merge_capable.add(doc.get("name", path.name))
+
+    for check in sorted(required):
+        workflow = producer.get(check)
+        if workflow is not None and workflow not in merge_capable:
+            gaps.append(
+                f"{check!r} is required on develop but {workflow!r} has no merge_group gate"
+            )
+    return gaps
+
+
 def render(rows: list[tuple[str, str, str]]) -> str:
     lines = ["| Workflow | Check name | Runs on |", "|---|---|---|"]
     lines += [f"| {wf} | `{check}` | {scope} |" for wf, check, scope in rows]
@@ -221,30 +261,50 @@ def main() -> int:
 
     text = DOC.read_text()
     if BEGIN not in text or END not in text:
-        print(f"FAIL: {DOC.relative_to(REPO_ROOT)} has no checks:table markers", file=sys.stderr)
+        print(
+            f"FAIL: {DOC.relative_to(REPO_ROOT)} has no checks:table markers",
+            file=sys.stderr,
+        )
+        return 1
+
+    rows = collect()
+    queue_gaps = merge_group_gaps(rows)
+    if queue_gaps:
+        print(
+            "FAIL: develop merge-queue contract is not satisfiable:\n\n  "
+            + "\n  ".join(queue_gaps),
+            file=sys.stderr,
+        )
         return 1
 
     head, rest = text.split(BEGIN, 1)
     _, tail = rest.split(END, 1)
-    table = render(collect())
+    table = render(rows)
     rebuilt = f"{head}{BEGIN}\n\n{table}\n\n{END}{tail}"
 
     if "--update" in sys.argv:
         DOC.write_text(rebuilt)
-        print(f"updated {DOC.relative_to(REPO_ROOT)} ({len(collect())} checks)")
+        print(f"updated {DOC.relative_to(REPO_ROOT)} ({len(rows)} checks)")
         return 0
 
     if rebuilt != text:
         print(
             f"FAIL: {DOC.relative_to(REPO_ROOT)} does not match .github/workflows/\n\n"
             "  A job was added, removed, renamed, or had its PR trigger changed.\n"
+            "  Branch protection pins these names as strings, so a rename that is\n"
+            "  not reflected here silently detaches a required check from the job\n"
+            "  meant to produce it.\n\n"
             "  Refresh with: python3 scripts/check-required-checks.py --update\n"
-            "  Then read the diff — a check moving off 'every PR' is a coverage hole.",
+            "  Then read the diff — a check moving off 'every PR' is a coverage\n"
+            "  hole, not a formatting change.",
             file=sys.stderr,
         )
         return 1
 
-    print(f"ok: {len(collect())} PR checks match docs/ci/REQUIRED-CHECKS.md")
+    print(
+        f"ok: {len(rows)} PR checks match docs/ci/REQUIRED-CHECKS.md; "
+        "develop queue is SQUASH and all ordinary required checks can report on merge_group"
+    )
     return 0
 
 
