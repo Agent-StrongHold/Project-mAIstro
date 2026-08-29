@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs.stores import InMemoryDurableRunStore, SqliteDurableRunStore
@@ -25,6 +25,14 @@ from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.model import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
+
+
+class TagsOutput(RootModel[list[str]]):
+    """A node output whose root is a list, not an object."""
+
+
+class ScoreOutput(RootModel[float]):
+    """A node output whose root is a bare scalar."""
 
 
 class TypedOutput(BaseModel):
@@ -83,6 +91,27 @@ def test_a_plain_mapping_output_is_unchanged() -> None:
     result = NodeResult(success=True, output={"text": "done"})
 
     assert NodeResult.model_validate_json(result.model_dump_json()).output == {"text": "done"}
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-1")
+def test_a_root_model_output_survives_its_own_shape() -> None:
+    """The write side accepts every `BaseModel`, so the read side must too.
+
+    A `RootModel` serializes to its root -- a list here, a bare scalar below.
+    Against a dict-only read branch these serialized correctly and then failed
+    validation coming back, which is worse than the loss being fixed: the old
+    contract dropped them silently, a half-fixed one raises.
+    """
+    result = NodeResult(success=True, output=TagsOutput(["alpha", "beta"]))
+
+    assert NodeResult.model_validate_json(result.model_dump_json()).output == ["alpha", "beta"]
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-1")
+def test_a_scalar_root_model_output_survives() -> None:
+    result = NodeResult(success=True, output=ScoreOutput(1.5))
+
+    assert NodeResult.model_validate_json(result.model_dump_json()).output == 1.5
 
 
 @pytest.mark.ac("SPEC-082926-2844/AC-1")

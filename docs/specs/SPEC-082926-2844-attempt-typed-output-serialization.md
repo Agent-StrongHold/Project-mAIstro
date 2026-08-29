@@ -28,17 +28,11 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/graph/durable_runs/test_typed_attempt_output.py
-  - packages/maistro-core/tests/graph/durable_runs/test_typed_output_recovery.py
-  - packages/maistro-core/tests/cli/test_repair.py
 source:
   - packages/maistro-core/src/maistro/graph/nodes/base.py
-  - packages/maistro-core/src/maistro/graph/durable_runs/repair.py
-  - packages/maistro-core/src/maistro/cli/_repair.py
 ac-modules:
   AC-1: maistro.graph.nodes.base
   AC-2: maistro.graph.durable_runs.stores
-  AC-3: maistro.graph.durable_runs.repair
-  AC-4: maistro.cli._repair
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -91,40 +85,31 @@ class. The envelope never recorded which model produced it, so reviving a class
 here would be a guess; the fields are what the record promised and the fields
 are what it returns.
 
-## Recovering what was already emptied
+## What was already emptied
 
-`maistro.graph.durable_runs.repair` restores an emptied Attempt output from
-evidence the same record already holds, and reports what it cannot.
+Not repaired here, and deliberately so.
 
-Recoverable is exactly one case: the Attempt the NodeRun accepted.
-`AcceptedNodeOutcome.attempt_result.attempt_id` names it by id, and
-`NodeRun.result` holds the same output correctly dumped. That is an exact key,
-not a heuristic.
+The first version of this spec shipped a repair function and a `maistro repair`
+command over `SqliteDurableRunStore`. Both were aimed at the wrong store.
+`container.py` wires `CanonicalDurableRunStore`, whose `get` assembles Attempts
+from the canonical `RunStore`; nothing in production writes the document-shaped
+`durable_graph_runs` table those commands opened. An operator running the survey
+against a real deployment would have created an empty table and been told there
+was nothing to repair — a false clean bill of health, which is worse than no
+command, because this one answers.
 
-Everything else is unrecoverable and is left untouched. A superseded retry, a
-failure, or an in-flight try has no second copy anywhere — its output was
-written once, into the field this defect emptied — and nothing in the record
-tells an emptied output apart from an output that was genuinely `{}`.
-Inventing a value for a physical execution record is worse than an honest gap.
+The affected rows live in the canonical `RunStore`, and reaching them is a
+different design: `DurableRunStore.update` mirrors lifecycle rather than
+rewriting an Attempt's recorded result, so a repair has to go through the
+canonical store's own write path. That is #637, not a patch to this change.
 
-A repaired record advances its `version`, because that is what it is: a new
-version of that row. `DurableRunStore.update` refuses a write that does not
-advance the version, so a caller cannot write a repair back without the row
-saying a repair happened.
-
-## The door
-
-Recovery does not run on its own. Rewriting stored execution history is an
-operator's decision, so `maistro repair` is where it happens, in two commands
-that are deliberately separate:
-
-- `maistro repair survey <db> <project>` reads and reports and writes nothing,
-  so an operator can see the damage before deciding anything.
-- `maistro repair apply <db> <project>` writes back the restorable ones, and
-  says how many outputs it had to leave empty.
-
-A repair nobody can invoke does not repair anything, which is why the library
-function alone would not have closed this.
+**So the disposition is documentation, not recovery.** An Attempt written under
+the old contract holds `output: {}` where its node produced a typed value. For
+the one Attempt its NodeRun accepted, the same output survives on
+`NodeRun.result`, which the executor always dumped explicitly — so the record is
+recoverable in principle, by a reader that knows where to look. For a superseded
+retry, a failure, or an in-flight try there is no second copy anywhere, and
+nothing distinguishes an emptied output from one that was genuinely `{}`.
 
 ## Acceptance Criteria
 
@@ -167,95 +152,4 @@ Feature: Attempt typed output serialization
     When it is written to the SQLite durable run store and read back
     Then the Attempt's persisted output holds the fields the node produced
 
-  @AC-3
-  Scenario: The accepted Attempt is restored from the record's own evidence
-    Given a record whose accepted Attempt was written with an emptied output
-    And the NodeRun that accepted it recorded the output it produced
-    When the record is passed to recovery
-    Then the Attempt's output holds what the NodeRun recorded
-    And the report names it as recovered
-
-  @AC-3
-  Scenario: Recovery changes nothing else in the Attempt result
-    Given a record whose accepted Attempt was written with an emptied output
-    When the record is passed to recovery
-    Then every other field of the Attempt result is what it was
-
-  @AC-3
-  Scenario: A superseded Attempt is reported unrecoverable and left alone
-    Given a NodeRun with an emptied superseded Attempt and an accepted one
-    When the record is passed to recovery
-    Then the superseded Attempt's output is still empty
-    And the report names it unrecoverable because the NodeRun accepted another
-
-  @AC-3
-  Scenario: An Attempt no NodeRun accepted recovers nothing
-    Given a record whose NodeRun accepted no Attempt
-    When the record is passed to recovery
-    Then the record is returned unchanged
-    And the report names the emptied Attempt unrecoverable
-
-  @AC-3
-  Scenario: An accepted Attempt with no stored output is named separately
-    Given a record whose NodeRun accepted an Attempt but recorded no output
-    When the record is passed to recovery
-    Then the report says there was no evidence to restore from
-
-  @AC-3
-  Scenario: An Attempt that genuinely produced a value is not touched
-    Given a record whose Attempt already holds the output it produced
-    When the record is passed to recovery
-    Then the record is returned unchanged
-    And the report names nothing
-
-  @AC-3
-  Scenario: An Attempt with no result at all is not an emptied output
-    Given a record whose Attempt has no result
-    When the record is passed to recovery
-    Then the report names nothing
-
-  @AC-3
-  Scenario: A survey reports across records and changes nothing
-    Given one recoverable record and one unrecoverable record
-    When they are surveyed
-    Then the report counts one of each
-    And neither record is modified
-
-  @AC-3
-  Scenario: A repaired record advances its version
-    Given a record whose accepted Attempt was written with an emptied output
-    When the record is passed to recovery
-    Then the repaired record's version is one higher
-
-  @AC-3
-  Scenario: A record with nothing to restore keeps its version
-    Given a record recovery cannot restore anything in
-    When the record is passed to recovery
-    Then the version is unchanged
-
-  @AC-4
-  Scenario: The survey command reports a recoverable output and writes nothing
-    Given a stored run whose accepted Attempt was written with an emptied output
-    When an operator surveys that project
-    Then the report says it is read-only
-    And the stored output is still empty
-
-  @AC-4
-  Scenario: The survey command says so when there is nothing to repair
-    Given a project with no emptied Attempt outputs
-    When an operator surveys that project
-    Then it says there are none
-
-  @AC-4
-  Scenario: The apply command writes the restored output back
-    Given a stored run whose accepted Attempt was written with an emptied output
-    When an operator applies the repair to that project
-    Then the stored output holds what the node produced
-
-  @AC-4
-  Scenario: The apply command reports what it had to leave empty
-    Given a stored run whose emptied Attempt no NodeRun accepted
-    When an operator applies the repair to that project
-    Then nothing is restored
-    And it says how many outputs stay empty
 ```
