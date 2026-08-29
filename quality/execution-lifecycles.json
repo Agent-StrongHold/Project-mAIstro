@@ -45,11 +45,6 @@
       "rationale": "Per-stage states for the issue-to-merge pipeline, driven by GraphPipelineExecutor. Becomes NodeRun state under #49.",
       "converged_by": "#49"
     },
-    "maistro.orchestrator.master::WorkItemStatus": {
-      "classification": "CONVERGE",
-      "rationale": "The Master Orchestrator dispatches work items across parallel agent groups and tracks their progress and failures itself. #44 makes fan-out and fan-in graph structure, so each work item becomes a NodeRun rather than a row in a private tracker.",
-      "converged_by": "#44"
-    },
     "maistro_canvas.types::JobStatus": {
       "classification": "CONVERGE",
       "rationale": "Canvas generation job states, driven by canvas.runner's claim/lease/reap loop. #52 makes canvas stages canonical NodeRuns and retries Attempts.",
