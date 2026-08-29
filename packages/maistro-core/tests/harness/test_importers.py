@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from maistro.agents.importers import AgentImporter, ImporterRegistry, PiAgentImporter
+from dataclasses import replace
+
+import pytest
+
+from maistro.agents.importers import (
+    AgentImporter,
+    ImporterRegistry,
+    PiAgentImporter,
+    agent_identity_to_node_template,
+)
 from maistro.agents.importers.base import default_importer_registry
 from maistro.skills.importers import ClaudeCodeSkillImporter, SkillImporter
 from maistro.skills.parser import parse_skill_file
@@ -77,7 +86,7 @@ def test_pi_importer_conforms_and_detects() -> None:
 
 def test_pi_importer_roundtrip() -> None:
     agent = PiAgentImporter().to_agent_config(PI_AGENT)
-    assert agent.name == "research_helper"  # sanitized to maistro name shape
+    assert agent.name == "research_helper"
     assert agent.description == "Finds and summarizes papers"
     assert agent.model == "claude-sonnet-4-6"
     assert agent.tools == ("web_search", "document_reader")
@@ -93,6 +102,104 @@ def test_pi_importer_accepts_yaml_string() -> None:
     agent = PiAgentImporter().to_agent_config(source)
     assert agent.name == "helper"
     assert agent.model == "auto"
+
+
+# --- canonical NodeTemplate projection ---
+
+
+def test_agent_identity_projects_to_workspace_node_template_without_guessing_runtime() -> None:
+    agent = PiAgentImporter().to_agent_config(PI_AGENT)
+    template = agent_identity_to_node_template(
+        agent,
+        workspace_id="workspace-1",
+        node_type="agent.runtime_selected_by_caller",
+        parameters={"adapter": "chosen-elsewhere"},
+    )
+
+    assert template.workspace_id == "workspace-1"
+    assert template.name == "research_helper"
+    assert template.node_type == "agent.runtime_selected_by_caller"
+    assert template.parameters == {"adapter": "chosen-elsewhere"}
+    assert template.binding_ids == []
+    assert template.permissions == {}
+    assert template.policies == {}
+
+    source = template.metadata["source_import_provenance"]
+    assert source["source_format"] == "pi"
+    assert source["source_definition"] == "AgentIdentity"
+    assert source["source_name"] == "research_helper"
+    assert len(source["source_hash"]) == 64
+
+    snapshot = template.metadata["legacy_definition_snapshot"]
+    assert snapshot["model"] == "claude-sonnet-4-6"
+    assert snapshot["tools"] == ["web_search", "document_reader"]
+    assert snapshot["model_constraints"]["harness_runner"] == "pi"
+    assert snapshot["model_constraints"]["instructions"] == PI_AGENT["instructions"]
+
+
+def test_native_legacy_identity_gets_explicit_legacy_source_format() -> None:
+    agent = replace(PiAgentImporter().to_agent_config(PI_AGENT), provenance="")
+    template = agent_identity_to_node_template(
+        agent,
+        workspace_id="workspace-1",
+        node_type="agent.explicit",
+    )
+    assert template.metadata["source_import_provenance"]["source_format"] == (
+        "legacy_agent_identity"
+    )
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "trust_tier",
+        "priority_tier",
+        "provenance",
+        "ai_reviewed",
+        "ai_review_clean",
+        "admin_reviewed",
+        "admin_reviewed_by",
+        "user_reviewed",
+        "active",
+    ],
+)
+def test_projection_does_not_launder_legacy_authority_or_live_state(forbidden: str) -> None:
+    agent = PiAgentImporter().to_agent_config(PI_AGENT)
+    template = agent_identity_to_node_template(
+        agent,
+        workspace_id="workspace-1",
+        node_type="agent.explicit",
+    )
+
+    snapshot = template.metadata["legacy_definition_snapshot"]
+    assert forbidden not in snapshot
+    assert forbidden not in template.parameters
+    assert forbidden not in template.permissions
+    assert forbidden not in template.policies
+
+
+def test_projected_template_instantiates_with_canonical_template_provenance() -> None:
+    agent = PiAgentImporter().to_agent_config(PI_AGENT)
+    template = agent_identity_to_node_template(
+        agent,
+        workspace_id="workspace-1",
+        node_type="agent.explicit",
+    )
+    node = template.instantiate()
+
+    assert node.source_template is not None
+    assert node.source_template.template_id == template.template_id
+    assert node.source_template.template_version == template.version
+    assert node.source_template.template_hash == template.content_hash
+    assert node.metadata["source_import_provenance"]["source_format"] == "pi"
+
+
+def test_projection_requires_explicit_workspace_and_node_kind() -> None:
+    agent = PiAgentImporter().to_agent_config(PI_AGENT)
+    with pytest.raises(ValueError, match="workspace_id"):
+        agent_identity_to_node_template(agent, workspace_id=" ", node_type="agent.explicit")
+    with pytest.raises(ValueError, match="node_type"):
+        agent_identity_to_node_template(agent, workspace_id="workspace-1", node_type=" ")
 
 
 # --- ImporterRegistry ---

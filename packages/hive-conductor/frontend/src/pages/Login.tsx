@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
+import { SecretField, TextField } from "../components/shared";
 
 type Mode = "login" | "signup";
 
@@ -31,13 +32,6 @@ const formShell: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 14,
-};
-
-const labelStyle: CSSProperties = {
-  fontFamily: "var(--mono)",
-  fontSize: 9,
-  color: "var(--pencil)",
-  marginBottom: 3,
 };
 
 type LoginProps = {
@@ -223,28 +217,29 @@ export default function Login({ onAuthenticated }: LoginProps) {
           </div>
         )}
 
+        {/* `key={mode}` remounts the form when the user switches between sign
+            in and sign up. Without it React reuses the SecretField at the same
+            child position, so a password revealed on one form stays revealed on
+            the other -- and `switchMode` deliberately preserves `password`, so
+            the credential the user typed appears in plain text on a form they
+            did not reveal it on (raised in review of #375). */}
         {mode === "login" ? (
-          <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div>
-              <div style={labelStyle}>USERNAME</div>
-              <input
-                className="input-field"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                autoFocus
-              />
-            </div>
-            <div>
-              <div style={labelStyle}>PASSWORD</div>
-              <input
-                className="input-field"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-              />
-            </div>
+          <form key="login" onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <TextField
+              label="Username"
+              value={username}
+              onChange={setUsername}
+              autoComplete="username"
+              autoFocus
+              required
+            />
+            <SecretField
+              label="Password"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
+              required
+            />
             <button
               className="btn btn-accent"
               type="submit"
@@ -255,39 +250,34 @@ export default function Login({ onAuthenticated }: LoginProps) {
             </button>
           </form>
         ) : (
-          <form onSubmit={handleSignup} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div>
-              <div style={labelStyle}>USERNAME</div>
-              <input
-                className="input-field"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                autoFocus
-                placeholder="letters, numbers, _ -"
-              />
-            </div>
-            <div>
-              <div style={labelStyle}>PASSWORD</div>
-              <input
-                className="input-field"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-                placeholder="min 8 characters"
-              />
-            </div>
-            <div>
-              <div style={labelStyle}>CONFIRM PASSWORD</div>
-              <input
-                className="input-field"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                autoComplete="new-password"
-              />
-            </div>
+          <form key="signup" onSubmit={handleSignup} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* The rules move out of the placeholders and into hints. A
+                placeholder holding "min 8 characters" vanishes the instant the
+                user starts typing -- exactly when the rule matters. */}
+            <TextField
+              label="Username"
+              value={username}
+              onChange={setUsername}
+              hint="Letters, numbers, _ and - only."
+              autoComplete="username"
+              autoFocus
+              required
+            />
+            <SecretField
+              label="Password"
+              value={password}
+              onChange={setPassword}
+              hint="At least 8 characters."
+              autoComplete="new-password"
+              required
+            />
+            <SecretField
+              label="Confirm password"
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              autoComplete="new-password"
+              required
+            />
             {signupHint && (
               <div
                 style={{

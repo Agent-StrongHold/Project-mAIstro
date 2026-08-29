@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPatch } from "../lib/api";
-import { PageHeader } from "../components/shared";
+import { PageHeader, SecretField } from "../components/shared";
 
 type Settings = Record<string, unknown>;
 
@@ -83,7 +83,15 @@ export default function Settings() {
         <div className="card" style={{ borderLeft: "3px solid var(--danger)", marginBottom: 12, maxWidth: 400 }}>
           <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginBottom: 6 }}>ELEVATION REQUIRED to edit {elevatingFor}</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="input-field" type="password" placeholder="confirm password" value={elevPassword} onChange={(e) => setElevPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void elevateAndSave(elevatingFor); }} />
+            <SecretField
+              label={`Your password, to edit ${elevatingFor}`}
+              value={elevPassword}
+              onChange={setElevPassword}
+              autoComplete="current-password"
+              required
+              onKeyDown={(e) => { if (e.key === "Enter") void elevateAndSave(elevatingFor); }}
+              style={{ flex: 1 }}
+            />
             <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => void elevateAndSave(elevatingFor)}>elevate</button>
             <button className="btn" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => { setElevating(false); setElevatingFor(null); }}>cancel</button>
           </div>
@@ -98,17 +106,17 @@ export default function Settings() {
               {editing === key ? (
                 <div style={{ display: "flex", gap: 4 }}>
                   {typeof value === "boolean" ? (
-                    <select className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} style={{ width: 80 }}>
+                    <select aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} style={{ width: 80 }}>
                       <option value="true">true</option>
                       <option value="false">false</option>
                     </select>
                   ) : key.toLowerCase().includes("model") && availableModels.length > 0 ? (
-                    <select className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)}>
+                    <select aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)}>
                       {!availableModels.includes(editVal) && <option value={editVal}>{editVal}</option>}
                       {availableModels.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
                   ) : (
-                    <input className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
+                    <input aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
                   )}
                   <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
                   <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>

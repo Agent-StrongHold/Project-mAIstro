@@ -66,3 +66,36 @@ async def test_deleting_persona_allows_replacement_for_workspace() -> None:
 
     replacement = await store.create(_persona("p-2", "ws-1", name="Replacement"))
     assert await store.get_for_workspace("ws-1") == replacement
+
+
+@pytest.mark.asyncio
+async def test_a_returned_persona_is_a_snapshot_not_a_live_view() -> None:
+    """What `create` and `update` hand back must not track later edits.
+
+    Every other test in this file compares a returned Persona against the
+    store immediately, while the two are equal either way, so none of them
+    can tell a snapshot from a live view. The difference shows only once the
+    caller mutates its own object afterwards -- and a caller doing exactly
+    that is the normal shape of editing a Persona's template catalog, where
+    a leak would make the store's history a record of the present rather
+    than of what was saved.
+
+    Both of `update`'s copies are load-bearing here: the deep copy into
+    storage and the deep copy on the way out. Making either one shallow
+    alone leaves this passing; making both shallow is what aliases the
+    caller's list into the returned snapshot.
+    """
+    store = InMemoryPersonaStore()
+    created = await store.create(_persona("p-1", "ws-1"))
+
+    working = created.model_copy(deep=True)
+    working.node_template_ids.append("node-template-frank")
+    added = await store.update(working)
+    assert added.node_template_ids == ["node-template-frank"]
+
+    working.node_template_ids.remove("node-template-frank")
+    removed = await store.update(working)
+
+    assert removed.node_template_ids == []
+    assert added.node_template_ids == ["node-template-frank"]
+    assert created.node_template_ids == []
