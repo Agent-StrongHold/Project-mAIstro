@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +58
+  packages/maistro-bootstrap/tests: +4
   packages/maistro-rsi/tests: +33
   tests/: +25
 ---
@@ -61,3 +62,15 @@ is not this change: `e8a9ad9` (#485) added a test and shipped no note, so
 `develop` has been one node ID over since. That +1 is recorded in its own note
 on the #497 branch, attributed to #485. Recording it here instead would double
 it once both land, and would file someone else's delta under this change.
+
+`test_container_sandbox_argv_status.py` (+4, new) covers the two entry points
+this change added to `ContainerBuilderSandbox`. The existing container suite is
+docker-gated in full, so `run_argv_status` and the `run_argv` that now delegates
+to it ran nowhere CI could measure — and what they decide does not need a
+container. `_exec` is stubbed at the seam where the container's result arrives:
+a failing command reports its status rather than only its noise, a passing one
+reports zero (or a seam that always answered "failed" would satisfy the first),
+`run_argv` still returns output alone because for the agent tool the output *is*
+the answer, and the caller's timeout reaches the container rather than being
+silently replaced by the default — a validation run is long, and substituting
+120 seconds would fail a candidate for taking the time it was given.
