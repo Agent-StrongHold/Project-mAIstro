@@ -265,6 +265,13 @@ jobs:
           # the isolation claim is checked against the kernel instead of against
           # our own argv, and a suite where they always skip proves nothing.
           timeout 180 sudo apt-get install -y bubblewrap || true
+          # Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1,
+          # which leaves `bwrap` installed but unable to build a namespace --
+          # it fails at "loopback: Failed RTM_NEWADDR". Detection treats that
+          # as "no Tier 3" and the integration tests skip, correctly but
+          # uselessly. Relaxing it here makes the runner resemble a host that
+          # can actually run the sandbox, so the kernel assertions execute.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if ! command -v age-keygen &> /dev/null; then
             echo "Installing age-keygen from source..."
             mkdir -p /tmp/age && cd /tmp/age
