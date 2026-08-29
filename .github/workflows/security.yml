@@ -152,6 +152,18 @@ jobs:
       - name: Build maistro-engine image
         run: docker build -t "maistro-engine:pr-${CANDIDATE_TAG}" .
 
+      # The two images the inventory (quality/image-inventory.json) records as
+      # DISTRIBUTED. Neither was built or scanned here before #346 -- including
+      # the research image, whose own header calls the browser surface "the
+      # single largest remaining CVE source". Being the reason the API image
+      # could go near-zero-CVE is not the same as being clean; it is the
+      # opposite, and it went unmeasured because nothing enumerated the images.
+      - name: Build maistro-engine-research image
+        run: docker build -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}" .
+
+      - name: Build maistro-rsi-runner image
+        run: docker build -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}" .
+
       - name: Verify live Python packages supersede base-image SBOM inventory
         run: |
           docker run --rm --entrypoint python \
@@ -174,13 +186,54 @@ jobs:
           ignore-unfixed: true
           trivyignores: .trivyignore.yaml
 
+      # maistro-engine was built here and never scanned: no Trivy `image-ref`
+      # named it and the Grype step did not either, while its own Dockerfile
+      # header said in as many words "this image is NOT vuln-gated (only the
+      # hive-conductor image is trivy/grype scanned)". It is a PUBLISHED image
+      # -- release.yml pushes it -- so it is now gated like the rest (#346).
+      - name: Trivy scan maistro-engine (HIGH/CRITICAL only)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          version: v0.73.0
+          image-ref: maistro-engine:pr-${{ env.CANDIDATE_TAG }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+
+      - name: Trivy scan maistro-engine-research (HIGH/CRITICAL only)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          version: v0.73.0
+          image-ref: maistro-engine-research:pr-${{ env.CANDIDATE_TAG }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+
+      - name: Trivy scan maistro-rsi-runner (HIGH/CRITICAL only)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          version: v0.73.0
+          image-ref: maistro-rsi-runner:pr-${{ env.CANDIDATE_TAG }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+
+      # One grype install, every image. `--only-fixed` on all of them, so a
+      # finding here is always something a rebuild could actually resolve.
       - name: Grype scan (cross-check)
         run: |
           curl -sSfL -o grype.tgz https://github.com/anchore/grype/releases/download/v0.116.0/grype_0.116.0_linux_amd64.tar.gz
           echo "40aff724297312f91ea390d003bed8d8651c74cc7f5b26732db80b3a408d2fc5  grype.tgz" | sha256sum --check
           tar -xzf grype.tgz grype && sudo mv grype /usr/local/bin/
-          grype "hive-conductor:pr-${CANDIDATE_TAG}" \
-            --fail-on high --only-fixed --output table
+          for image in hive-conductor maistro-engine maistro-engine-research maistro-rsi-runner; do
+            echo "::group::grype ${image}"
+            grype "${image}:pr-${CANDIDATE_TAG}" \
+              --fail-on high --only-fixed --output table
+            echo "::endgroup::"
+          done
 
       - name: SBOM (syft CycloneDX-JSON)
         run: |
@@ -191,6 +244,10 @@ jobs:
             -o cyclonedx-json > sbom-hive-conductor.json
           syft "maistro-engine:pr-${CANDIDATE_TAG}" \
             -o cyclonedx-json > sbom-maistro-engine.json
+          syft "maistro-engine-research:pr-${CANDIDATE_TAG}" \
+            -o cyclonedx-json > sbom-maistro-engine-research.json
+          syft "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
+            -o cyclonedx-json > sbom-maistro-rsi-runner.json
 
       - name: Upload SBOMs as artifacts
         uses: actions/upload-artifact@v4
