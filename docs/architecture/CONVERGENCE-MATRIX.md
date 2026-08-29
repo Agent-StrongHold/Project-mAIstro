@@ -104,7 +104,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Model providers | `maistro.container` provider wiring | `0/7` | KEEP | ADR-079, ADR-070426-ac56 | provider parity tests; no new direct caller escapes | #56 |
 | Router and classifier | `maistro.container.route_request` | `1/13` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
 | Tool execution | `services.tool_executor`, `maistro.container` | `9/26` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
-| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/10` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
+| Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `0/12` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `12/22` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
 | Credentials | `routes.credentials`, `services.credential_store_v2` | `4/7` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `8/13` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
