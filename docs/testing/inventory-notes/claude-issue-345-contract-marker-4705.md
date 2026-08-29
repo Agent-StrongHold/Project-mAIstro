@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  tests/: +31
+  tests/: +39
 ---
 # claude-issue-345-contract-marker-4705
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
-One new file, thirty-one tests, nothing moved or deleted.
+One new file, thirty-nine tests, nothing moved or deleted.
 
 `tests/test_check_contract_markers.py` covers `scripts/check-contract-markers.py`,
 which enters the repository under the `scripts/` diff-coverage root (#257) —
@@ -81,3 +81,15 @@ unblocks the template rather than clearing a backlog. The collectability fix
 moving nothing is the more informative result: no document was being proven by
 a marker pytest would not run, so a false-evidence path closed without any
 document losing evidence it was relying on.
+
+The last eight came from the diff-coverage gate a second time, and they are
+the error paths rather than the rules: an unparseable test file, a vendored
+directory, a document with no front matter, one whose front matter does not
+parse, a scalar `pytestmark` instead of a list, an unrelated module-level
+assignment, and a baseline that is absent or has no `categories` key.
+
+None is decoration. A gate that dies on one malformed file reports nothing
+about the other 326, and the two front-matter cases are the boundary with the
+registry gate that owns them: a parse error there is its finding, not this
+one's. The impl is at 100% now, which is a consequence of covering those
+paths rather than the goal.

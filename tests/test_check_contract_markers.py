@@ -390,6 +390,76 @@ class TestNodeIdsResolveToTheirOwnTest:
         assert impl.collect(root) == []
 
 
+class TestMalformedInputIsSkippedNotCrashed:
+    """A gate that dies on one bad file reports nothing about the other 326."""
+
+    def test_an_unparseable_test_file_is_skipped(self, impl, tmp_path) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MARKED,
+        )
+        (root / "tests" / "test_broken.py").write_text("def (", encoding="utf-8")
+
+        assert impl.collect(root) == []
+
+    def test_a_vendored_directory_is_not_scanned(self, impl, tmp_path) -> None:
+        """Third-party tests are evidence for their own project, not this one."""
+        root = _corpus(tmp_path, doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"))
+        vendored = root / "tests" / "third_party"
+        vendored.mkdir()
+        (vendored / "test_thing.py").write_text(_MARKED, encoding="utf-8")
+
+        assert [f.category for f in impl.collect(root)] == ["declared-kind-unproven"]
+
+    def test_a_document_with_no_front_matter_is_not_this_gate_s_business(
+        self, impl, tmp_path
+    ) -> None:
+        root = _corpus(tmp_path, doc="# just a heading\n")
+
+        assert impl.collect(root) == []
+
+    def test_a_document_with_malformed_front_matter_is_skipped(self, impl, tmp_path) -> None:
+        """Front matter the registry gate owns; a parse error is its finding, not this one."""
+        root = _corpus(tmp_path, doc="---\ncontracts: [oops\n---\n# thing\n")
+
+        assert impl.collect(root) == []
+
+    def test_a_scalar_pytestmark_is_read_like_a_single_item_list(self, impl, tmp_path) -> None:
+        """`pytestmark = pytest.mark.contract(...)` without the list is legal pytest."""
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MODULE_MARKED.replace(
+                'pytestmark = [pytest.mark.contract("behavioral")]',
+                'pytestmark = pytest.mark.contract("behavioral")',
+            ),
+        )
+
+        assert impl.collect(root) == []
+
+    def test_an_unrelated_module_assignment_is_ignored(self, impl, tmp_path) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test="TIMEOUT = 30\n" + _MODULE_MARKED,
+        )
+
+        assert impl.collect(root) == []
+
+
+class TestTheBaseline:
+    def test_an_absent_baseline_reads_as_empty(self, impl, tmp_path) -> None:
+        """First run on a fresh checkout: everything is new, nothing crashes."""
+        assert impl.load_baseline(tmp_path / "nope.json") == {}
+
+    def test_a_baseline_without_categories_reads_as_empty(self, impl, tmp_path) -> None:
+        path = tmp_path / "b.json"
+        path.write_text(json.dumps({"metric_definition_version": "1"}), encoding="utf-8")
+
+        assert impl.load_baseline(path) == {}
+
+
 ENTRY = ROOT / "scripts" / "check-contract-markers.py"
 
 
