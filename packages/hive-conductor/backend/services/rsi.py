@@ -198,10 +198,19 @@ class _RsiService:
         )
         run.report_dir = lc.report_dir
         run.export_dir = lc.export_patches
+        # `isolation` and `image` are load-bearing, not decoration: the factory
+        # defaults to "local" and builds a LocalWorktreeSandbox, so omitting
+        # them handed an HTTP-initiated run an agent that edits and executes on
+        # the host -- past the `isolation != "container"` refusal above, which
+        # only ever governed the loop's own sandbox (#305). An injected apply
+        # function wins over the one the loop would have built for itself, so
+        # this call site is the only place that decision is made.
         apply_fn = make_builders_apply_patch(
             objective=lc.objective or "",
             model=lc.model,
             max_agent_turns=lc.agent_turns_per_cycle,
+            isolation=lc.isolation,
+            image=lc.sandbox_image,
         )
         loop = LocalRsiLoop(lc, apply_patch=apply_fn)
         # run() is synchronous: driven inline it would block the event loop for

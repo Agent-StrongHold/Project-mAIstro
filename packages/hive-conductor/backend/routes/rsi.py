@@ -60,6 +60,13 @@ class ReviewDecisionBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     decision: Literal["approve", "deny"]
     reason: str | None = None
+    #: Accepted only to be refused. Approving a review runs `git am` and opens a
+    #: pull request against this path, and it reached that code unvalidated
+    #: while the run route next door resolved its `repo_path` through
+    #: `rsi_execution_policy` -- so the containment on the run was reachable
+    #: around, one route over (#305). A patch belongs to the run that produced
+    #: it, so the run's own resolved repository is the only correct answer and
+    #: an override has nothing legitimate to express.
     repo_path: str | None = None
 
 
@@ -248,6 +255,18 @@ def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
     if review_data is None:
         raise HTTPException(status_code=404, detail=f"no review for sha {sha[:12]}")
 
+    if body.repo_path is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "repo_path is no longer accepted here — approving a review applies "
+                "the patch and opens a pull request against the repository the run "
+                "was authorized for, which the run already recorded. Refused rather "
+                "than ignored: a caller who names a repository and gets a different "
+                "one is being misled."
+            ),
+        )
+
     # ── 0. idempotency: a decided review is settled ──
     # Every POST used to retrain Ralph before checking for an existing
     # decision, so a double-click or client retry applied the same feature
@@ -319,7 +338,7 @@ def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
     pr_url = None
     if body.decision == "approve":
         patch_file = review_dir / f"{sha[:12]}.patch"
-        repo = body.repo_path or run.config.get("repo_path", "")
+        repo = run.config.get("repo_path", "")
         if patch_file.is_file() and repo:
             pr_url = _create_pr_from_patch(patch_file, sha, review_data, repo)
 

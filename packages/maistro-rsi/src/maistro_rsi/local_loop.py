@@ -45,6 +45,10 @@ import structlog
 
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
+from maistro_rsi.contained_validation import (
+    ContainmentUnavailable,
+    run_validation_in_container,
+)
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
 
@@ -2247,7 +2251,43 @@ class LocalRsiLoop:
             return _NoHostExecSandbox(cycle_dir)
         return LocalSandbox(cycle_dir)
 
+    def _require_contained_signals(self) -> None:
+        """Refuse a configuration whose signals would execute on the host (#305).
+
+        `use_fitness` composes its Scorecard from signals that each run the
+        candidate's own code where the loop runs: `evaluate_candidate` invokes
+        the test vector, a coverage run, the red/green evidence replay and the
+        static tools, all with `cwd` pointing at the candidate worktree. Under
+        `isolation="container"` that is the same escape `_run_tests` just
+        closed, spread across six call sites instead of one.
+
+        Refused rather than silently downgraded to the bare test gate: a run
+        that scored a candidate on fewer signals than the operator asked for,
+        and said so nowhere, is how a promotion decision quietly changes
+        meaning. Containing those signals is #614.
+        """
+        if self._config.isolation == "container" and self._config.use_fitness:
+            raise ContainmentUnavailable(
+                "fitness scoring runs the candidate's coverage, red/green and "
+                "static-tool signals on the host, which container isolation "
+                "forbids (#614). Run with fitness disabled, or on the local "
+                "isolation an operator has chosen for their own machine."
+            )
+
     def _run_tests(self, cycle_dir: Path) -> bool:
+        if self._config.isolation == "container":
+            # `cycle_dir` holds the candidate's edits. An argument vector is not
+            # an isolation boundary: `python -m pytest` imports the candidate's
+            # test modules, its conftest, and any pytest plugin it declares, so
+            # `shell=False` decides only how the *first* command is parsed, not
+            # whose code runs afterwards (#305). Under container isolation the
+            # validation runs where the edits do.
+            return run_validation_in_container(
+                cycle_dir,
+                self._config.test_argv,
+                image=self._config.sandbox_image,
+                timeout=self._config.test_timeout,
+            )
         if self._config.test_argv:
             # No shell: the vector was chosen from server-side policy, and a
             # metacharacter in any token stays a character in an argument.
@@ -2275,6 +2315,7 @@ class LocalRsiLoop:
         return proc.returncode == 0
 
     def run(self) -> LocalRsiResult:
+        self._require_contained_signals()
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches
         # Review starts AFTER any resume commit: a resumed patch is already-

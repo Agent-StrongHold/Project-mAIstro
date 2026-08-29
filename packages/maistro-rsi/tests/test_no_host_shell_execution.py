@@ -262,3 +262,141 @@ class TestTheFitnessScorecardsOwnTestGate:
         candidate_fitness.evaluate_candidate(str(tmp_path), [], test_command="pytest -q")
 
         assert seen[0] == {"cmd": "pytest -q", "argv": ()}
+
+
+class TestValidationRunsWhereTheEditsDo:
+    """An argument vector is not an isolation boundary (Codex, #305).
+
+    `shell=False` decides how the *first* command is parsed. It says nothing
+    about whose code runs afterwards, and `python -m pytest` imports the
+    candidate's test modules, its `conftest.py`, and any plugin its
+    configuration declares. Under container isolation the loop ran that on the
+    host, as its own process, from an HTTP-initiated run.
+    """
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-1")
+    def test_a_contained_run_never_reaches_the_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import maistro_rsi.local_loop as local_loop
+
+        def _refuse(*_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("candidate validation must not run on the host")
+
+        monkeypatch.setattr(subprocess, "run", _refuse)
+        monkeypatch.setattr(
+            local_loop,
+            "run_validation_in_container",
+            lambda cycle_dir, argv, *, image, timeout: True,
+        )
+        loop = _loop(_config(tmp_path, isolation="container", test_argv=("python", "-m", "pytest")))
+
+        assert loop._run_tests(tmp_path / "cycle") is True
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-2")
+    def test_it_carries_the_vector_the_image_and_the_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sandbox built from the wrong image, or with no timeout, is a
+        different containment claim from the one the config makes."""
+        import maistro_rsi.local_loop as local_loop
+
+        seen: dict[str, Any] = {}
+
+        def _record(cycle_dir: Path, argv: Any, *, image: str, timeout: int) -> bool:
+            seen.update(cycle_dir=cycle_dir, argv=tuple(argv), image=image, timeout=timeout)
+            return False
+
+        monkeypatch.setattr(local_loop, "run_validation_in_container", _record)
+        loop = _loop(
+            _config(
+                tmp_path,
+                isolation="container",
+                test_argv=("pytest", "-q"),
+                sandbox_image="maistro-builders:pinned",
+                test_timeout=42,
+            )
+        )
+
+        assert loop._run_tests(tmp_path / "cycle") is False
+        assert seen == {
+            "cycle_dir": tmp_path / "cycle",
+            "argv": ("pytest", "-q"),
+            "image": "maistro-builders:pinned",
+            "timeout": 42,
+        }
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-3")
+    def test_a_local_run_still_uses_the_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half. Without it, a loop that contained *everything*
+        would satisfy the two above while breaking the operator's own machine.
+        """
+        import maistro_rsi.local_loop as local_loop
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        calls: list[Any] = []
+        monkeypatch.setattr(
+            subprocess, "run", lambda command, **_kw: (calls.append(command), _Completed())[1]
+        )
+        monkeypatch.setattr(
+            local_loop,
+            "run_validation_in_container",
+            lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("not for a local run")),
+        )
+        loop = _loop(_config(tmp_path, isolation="local", test_argv=("pytest", "-q")))
+
+        assert loop._run_tests(tmp_path / "cycle") is True
+        assert calls == [["pytest", "-q"]]
+
+
+class TestFitnessScoringIsRefusedRatherThanRunOnTheHost:
+    """`evaluate_candidate` runs the candidate's coverage, red/green replay and
+    static tools with `cwd` at the candidate worktree — the same escape
+    `_run_tests` just closed, spread across six call sites (#614)."""
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
+    def test_container_isolation_plus_fitness_is_refused(self, tmp_path: Path) -> None:
+        from maistro_rsi.contained_validation import ContainmentUnavailable
+
+        loop = _loop(
+            _config(
+                tmp_path,
+                isolation="container",
+                use_fitness=True,
+                test_argv=("pytest",),
+            )
+        )
+
+        with pytest.raises(ContainmentUnavailable, match="#614"):
+            loop._require_contained_signals()
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
+    def test_the_refusal_names_both_ways_out(self, tmp_path: Path) -> None:
+        """A refusal an operator cannot act on is a dead end, not a guard."""
+        from maistro_rsi.contained_validation import ContainmentUnavailable
+
+        loop = _loop(_config(tmp_path, isolation="container", use_fitness=True))
+
+        with pytest.raises(ContainmentUnavailable) as raised:
+            loop._require_contained_signals()
+
+        assert "fitness disabled" in str(raised.value)
+        assert "local" in str(raised.value)
+
+    @pytest.mark.parametrize(
+        ("isolation", "use_fitness"),
+        [("container", False), ("local", True), ("local", False)],
+    )
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
+    def test_every_other_combination_is_allowed(
+        self, tmp_path: Path, isolation: str, use_fitness: bool
+    ) -> None:
+        loop = _loop(_config(tmp_path, isolation=isolation, use_fitness=use_fitness))
+
+        assert loop._require_contained_signals() is None

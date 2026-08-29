@@ -370,6 +370,50 @@ class TestTheServiceRefusesWhatTheRouteWouldNotSend:
         # Kept only so reports can name what ran; nothing executes it.
         assert config.test_command == "python -m pytest -q"
 
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-7")
+    def test_the_builders_factory_is_told_which_sandbox_to_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal above governed the loop's sandbox, not the agent's.
+
+        `make_builders_apply_patch` defaults to `isolation="local"` and builds
+        a `LocalWorktreeSandbox`, and an injected apply function wins over the
+        one the loop would have constructed for itself — so omitting the
+        argument handed an HTTP-initiated run an agent that edits and executes
+        on the host, straight past the `isolation != "container"` check
+        (Codex, #305).
+        """
+        import maistro_rsi.local_loop as local_loop
+
+        factory_kwargs: list[dict] = []
+
+        class _Loop:
+            def __init__(self, config: object, **_kw: object) -> None: ...
+
+            def run(self) -> object:
+                raise AssertionError("the loop must not start in this test")
+
+        monkeypatch.setattr(local_loop, "LocalRsiLoop", _Loop)
+        monkeypatch.setattr(
+            local_loop,
+            "make_builders_apply_patch",
+            lambda **kw: factory_kwargs.append(kw),
+        )
+
+        with pytest.raises(AssertionError, match="must not start"):
+            self._drive(
+                {
+                    "repo_path": str(tmp_path),
+                    "test_argv": ["python", "-m", "pytest", "-q"],
+                    "isolation": "container",
+                }
+            )
+
+        assert factory_kwargs[0]["isolation"] == "container"
+        # The image too: a container backend with no image to run is the same
+        # unavailability the route already refuses, discovered later.
+        assert factory_kwargs[0]["image"]
+
 
 class TestTheAuthorizedRootsComeFromConfiguration:
     def test_roots_are_read_from_the_setting_and_resolved(
