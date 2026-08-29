@@ -419,3 +419,52 @@ def test_a_probe_that_cannot_run_at_all_is_not_a_tier(
 
     assert not caps.supports("bubblewrap")
     assert "could not run" in caps.notes["bubblewrap"]
+
+
+# --- the operator entry point -------------------------------------------------
+
+
+def _cli(*args: str) -> str:
+    from typer.testing import CliRunner
+
+    from maistro.cli import app
+
+    result = CliRunner().invoke(app, list(args))
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_an_operator_can_read_what_this_host_provides() -> None:
+    """The operational half of the support matrix. That page says what each
+    tier requires; this answers which one *this* machine gives you."""
+    output = _cli("sandbox", "status")
+
+    assert "strongest available tier" in output
+    for tier in ("vm", "gvisor", "bubblewrap"):
+        assert tier in output
+
+
+def test_the_report_says_why_a_tier_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host where `bwrap` is installed but user namespaces are restricted
+    looks identical from outside to one where it is absent. The difference is
+    the note, and before this command there was no way to read it short of
+    importing the library."""
+    from maistro.sandbox import detect
+
+    monkeypatch.setattr(
+        detect,
+        "detect_host_capabilities",
+        lambda: HostCapabilities(tiers=(), notes={"bubblewrap": "RTM_NEWADDR refused"}),
+    )
+    import maistro.cli._sandbox as sandbox_cli
+
+    monkeypatch.setattr(
+        sandbox_cli,
+        "detect_host_capabilities",
+        lambda: HostCapabilities(tiers=(), notes={"bubblewrap": "RTM_NEWADDR refused"}),
+    )
+
+    output = _cli("sandbox", "status")
+
+    assert "RTM_NEWADDR refused" in output
+    assert "No sandbox backend is available" in output
