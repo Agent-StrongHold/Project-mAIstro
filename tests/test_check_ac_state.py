@@ -18,12 +18,25 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "check-ac-state.py"
+
+
+#: The measurement lives in `check_ac_state_impl`; `check-ac-state.py` is a thin
+#: entry point over it that adds the merge guard. These tests are about the
+#: measurement, and several of them monkeypatch what it reads -- `SPEC_DIR`,
+#: `_passing_in_root`. Patching the entry point cannot work: it re-exports by
+#: copying names into its own globals, and a re-exported function still closes
+#: over the implementation's, so the patch rebinds something nothing reads.
+#:
+#: Making the entry point proxy those writes was tried and is worse: the same
+#: file is loaded under four module names across this suite, and a shared
+#: implementation turns one test's patch into every other load's problem. The
+#: seam being tested is the implementation, so this names it.
+IMPL = ROOT / "scripts" / "check_ac_state_impl.py"
 
 
 @pytest.fixture(scope="module")
 def check():
-    spec = importlib.util.spec_from_file_location("check_ac_state", SCRIPT)
+    spec = importlib.util.spec_from_file_location("check_ac_state_impl_under_test", IMPL)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
