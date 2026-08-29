@@ -428,6 +428,14 @@ def _list_field(fm: str, pattern: re.Pattern[str]) -> list[str]:
 
 
 def _ac_modules(fm: str) -> dict[str, str]:
+    """`ac-modules` as AC id -> module identity, read the way YAML would read it.
+
+    The quotes are stripped because they are syntax, not part of the name. A
+    scoped identity has to carry them -- `@` cannot start a bare YAML scalar,
+    so `AC-1: @tool/check-ac-state` does not parse at all -- and keeping them
+    made the anchor `"'@tool/...'"`, which matches no module and is not what
+    the document says.
+    """
     m = AC_MODULES_RE.search(fm)
     if not m:
         return {}
@@ -436,8 +444,16 @@ def _ac_modules(fm: str) -> dict[str, str]:
         if not line.strip():
             continue
         key, _, value = line.strip().partition(":")
-        out[key.strip()] = value.strip()
+        out[key.strip()] = _unquote(value.strip())
     return out
+
+
+def _unquote(value: str) -> str:
+    """Drop one matched pair of surrounding quotes, as a YAML scalar would."""
+    for quote in ("'", '"'):
+        if len(value) >= 2 and value.startswith(quote) and value.endswith(quote):
+            return value[1:-1]
+    return value
 
 
 def _decorator_ac_ids(node: ast.AST) -> list[str]:

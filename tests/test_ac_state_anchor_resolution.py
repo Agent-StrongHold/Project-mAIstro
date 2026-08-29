@@ -128,3 +128,41 @@ class TestTheTwoFailuresStayApart:
         assert unwired in universe
         assert check.unresolvable_anchors([_spec(unwired)], universe) == []
         assert check._is_reachable(unwired, unreachable) is False
+
+
+class TestScopedIdentitiesSurviveYaml:
+    """A scoped anchor must be quoted in YAML, and the quotes are not the name.
+
+    `@` cannot start a bare YAML scalar, so `AC-1: @tool/check-ac-state` does
+    not parse at all -- the front-matter linter dies on the whole file. The
+    anchor therefore has to be quoted, and a regex reader that keeps the quotes
+    yields `"'@tool/...'"`, which matches no module and is not what the document
+    says. Both halves are load-bearing and neither is visible from the other:
+    the resolution gate is regex-based and was happy with the quotes, while the
+    linter is YAML-based and was happy without them.
+    """
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-1")
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_a_quoted_anchor_reads_as_the_bare_identity(self, check, quote: str) -> None:
+        fm = f"ac-modules:\n  AC-1: {quote}@tool/ac_state_notes{quote}\nlayer: Governance\n"
+
+        assert check._ac_modules(fm) == {"AC-1": "@tool/ac_state_notes"}
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-1")
+    def test_an_unquoted_anchor_is_unchanged(self, check) -> None:
+        fm = "ac-modules:\n  AC-1: maistro.runs.store\nlayer: Governance\n"
+
+        assert check._ac_modules(fm) == {"AC-1": "maistro.runs.store"}
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-1")
+    def test_an_unmatched_quote_is_left_alone(self, check) -> None:
+        """Stripping one side would invent an identity the document never wrote."""
+        assert check._unquote("'maistro.runs.store") == "'maistro.runs.store"
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-1")
+    def test_every_anchor_in_the_corpus_resolves(self, check) -> None:
+        """The corpus itself, not a fixture: this is the claim the PR makes."""
+        specs = check.collect_specs({}, check.load_unreachable(), None)
+
+        assert check.unresolvable_anchors(specs, check.load_module_universe()) == []

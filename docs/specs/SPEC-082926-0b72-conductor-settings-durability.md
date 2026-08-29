@@ -33,12 +33,12 @@ tests:
 source:
   - packages/hive-conductor/backend/services/settings_store.py
 ac-modules:
-  AC-1: @flat/hive-conductor/services.settings_store
-  AC-2: @flat/hive-conductor/routes.settings
-  AC-3: @flat/hive-conductor/services.settings_store
-  AC-4: @flat/hive-conductor/routes.settings
-  AC-5: @flat/hive-conductor/services.settings_store
-  AC-6: @flat/hive-conductor/services.settings_store
+  AC-1: '@flat/hive-conductor/services.settings_store'
+  AC-2: '@flat/hive-conductor/routes.settings'
+  AC-3: '@flat/hive-conductor/services.settings_store'
+  AC-4: '@flat/hive-conductor/routes.settings'
+  AC-5: '@flat/hive-conductor/services.settings_store'
+  AC-6: '@flat/hive-conductor/services.settings_store'
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
