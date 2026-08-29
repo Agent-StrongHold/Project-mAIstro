@@ -174,6 +174,30 @@ class PersistedSettingsRecordStore:
         self._flush(timeout=self._timeout)
 
 
+class RefusingSettingsRecordStore:
+    """A store for a durable deployment that has no durable backing (#333).
+
+    Reads answer with whatever the record already held — nothing, on a failed
+    startup — and every write raises, so the API returns `503` rather than an
+    acknowledgement no restart will honour.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    @property
+    def durable(self) -> bool:
+        return False
+
+    def read(self) -> str | None:
+        return None
+
+    def write(self, document: str) -> None:
+        raise SettingsPersistenceError(
+            f"settings cannot be persisted: durable state is unavailable ({self._reason})"
+        )
+
+
 #: `save` is read-modify-write across three steps — load, compare the revision,
 #: write, read back — and two requests interleaving inside it both pass the
 #: revision check and both write, so the second is never refused with the 409

@@ -110,11 +110,6 @@ optimizer_proposals: JsonStore = JsonStore("optimizer_proposals")
 # Task #27 — per-user, per-provider non-secret config (e.g. Airtable base_id).
 # Key shape: f"{user_id}:{provider_id}" → dict[str, str].
 user_provider_config: JsonStore = JsonStore("user_provider_config")
-#: One entry per principal, holding that principal's dashboard layout record.
-#: Here rather than beside the route because this is the boundary the
-#: deployment configures for durability (#340, ADR-082926-3b80); the route
-#: used to keep its own file inside the image.
-dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -142,7 +137,6 @@ _all_json_stores: list[JsonStore] = [
     eval_verdicts,
     optimizer_proposals,
     user_provider_config,
-    dashboard_layouts,
 ]
 
 
@@ -154,6 +148,29 @@ def configure_persistence(persisted_store: Any) -> None:
         store._persisted = persisted_store
     for store in _all_json_stores:
         store._persisted = persisted_store
+
+
+def degrade_all(reason: str) -> None:
+    """Refuse writes on every mutable store (#333, ADR-082926-87bb).
+
+    Called when a `durable` deployment's state did not initialise. Seeded and
+    already-loaded data still reads; nothing new is accepted, which is also
+    what makes recovery safe — a degraded process accumulates nothing that a
+    later restart could write over the durable rows.
+    """
+    for store in _all_model_stores:
+        store.degrade(reason)
+    for json_store in _all_json_stores:
+        json_store.degrade(reason)
+    logger.error("stores degraded, writes refused: %s", reason)
+
+
+def restore_all() -> None:
+    """Accept writes again. For tests and for re-initialisation."""
+    for store in _all_model_stores:
+        store.restore()
+    for json_store in _all_json_stores:
+        json_store.restore()
 
 
 def purge_all_sessions() -> int:

@@ -68,6 +68,38 @@ def _task_clear_supported() -> bool:
         return False
 
 
+def _state_view() -> dict:
+    """The declared/actual state durability block (SPEC-082926-87bb).
+
+    Same defensive contract as the probes above: /health is a liveness probe and
+    must never fail because of this. An unreadable status reports as unstarted,
+    which is what it is.
+    """
+    try:
+        from services.durability import health_view
+
+        return health_view()
+    except Exception:
+        return {
+            "requested": None,
+            "backend": "unreadable",
+            "durable": False,
+            "writes_refused": False,
+            "error": None,
+            "satisfied": True,
+        }
+
+
+def _durability_satisfied() -> bool:
+    """Whether a declared durability requirement failed. Unreadable reads as satisfied."""
+    try:
+        from services.durability import durability_satisfied
+
+        return durability_satisfied()
+    except Exception:
+        return True
+
+
 def _log_redaction_active() -> bool:
     """ADR-064 log-redaction state. Same defensive contract as the probes above:
     unreadable reports as inactive, because a false "secrets are scrubbed" is the
@@ -113,6 +145,10 @@ def health() -> dict:
         "router_model": settings.chat_default_model,
         "vault_enabled": vault_enabled,
         "state_enabled": state_enabled,
+        # #333: `state_enabled: false` was the only signal that durable state
+        # had failed, and nothing consumed it as a failure. This block names
+        # what was requested, what was obtained, and why they differ.
+        "state": _state_view(),
         "privilege_enabled": privilege_available,
         "reactor_enabled": reactor_available,
         # F3: report degradation, do not become an outage. `status` stays "ok"
@@ -126,7 +162,12 @@ def health() -> dict:
         # ADR-064: off means log lines carry API keys and connection strings
         # verbatim, which SECURITY.md says they do not. Degraded, never silent.
         "log_redaction_active": log_redaction,
-        "degraded": (not llm_configured) or (not memory_decay_enabled) or (not log_redaction),
+        "degraded": (
+            (not llm_configured)
+            or (not memory_decay_enabled)
+            or (not log_redaction)
+            or (not _durability_satisfied())
+        ),
     }
 
 
@@ -150,4 +191,10 @@ def ready() -> ReadyResponse:
     checks["llm"] = _llm_state()[0]
     checks["memory_decay"] = _memory_decay_running(_memory_decay_state())
     checks["log_redaction"] = _log_redaction_active()
-    return ReadyResponse(ready=checks["api"], checks=checks)
+    # Not informational (#333): a deployment that declared `durable` and did not
+    # get durable state is serving writes it will lose, so it leaves rotation.
+    # An app whose startup never recorded an outcome — a TestClient over the
+    # bare `app`, say — is not a failure and reads as satisfied; see
+    # `durability.status()` for why None and a failed status are different.
+    checks["durability"] = _durability_satisfied()
+    return ReadyResponse(ready=checks["api"] and checks["durability"], checks=checks)

@@ -32,7 +32,39 @@ def register_pop_hook(store_name: str, hook: Callable[[str], None]) -> None:
         hooks.append(hook)
 
 
-class ModelStore:
+class _Degradable:
+    """Shared write refusal for a store that was promised durability (#333).
+
+    `_degraded_reason` is set by `stores.degrade_all` when the Foundation
+    records a durable deployment whose state did not initialise. Mutation then
+    raises instead of accepting a write that only lives until the process does;
+    reads still answer, because seeded and already-loaded data is useful and a
+    503 on a read tells an operator nothing the failed write has not.
+    """
+
+    _store_name: str
+    _degraded_reason: str | None = None
+
+    def degrade(self, reason: str) -> None:
+        self._degraded_reason = reason
+
+    def restore(self) -> None:
+        self._degraded_reason = None
+
+    @property
+    def degraded(self) -> bool:
+        return self._degraded_reason is not None
+
+    def _refuse_if_degraded(self) -> None:
+        if self._degraded_reason is not None:
+            from services.durability import StoreUnavailableError
+
+            raise StoreUnavailableError(
+                f"store {self._store_name!r} has no durable backing: {self._degraded_reason}"
+            )
+
+
+class ModelStore(_Degradable):
     def __init__(
         self,
         store_name: str,
@@ -43,6 +75,7 @@ class ModelStore:
         self._model_class = model_class
         self._data: dict[str, T] = {}
         self._persisted = persisted
+        self._degraded_reason: str | None = None
 
     def initialize(self) -> None:
         if self._persisted is None:
@@ -69,6 +102,7 @@ class ModelStore:
         return self._data[key]
 
     def __setitem__(self, key: str, value: T) -> None:
+        self._refuse_if_degraded()
         self._data[key] = value
         if self._persisted is not None:
             self._persisted.put(self._store_name, key, value)
@@ -86,6 +120,7 @@ class ModelStore:
         return self._data.get(key, default)
 
     def pop(self, key: str, *default: Any) -> T | Any:
+        self._refuse_if_degraded()
         if key in self._data:
             for hook in _POP_HOOKS.get(self._store_name, ()):
                 hook(key)
@@ -101,11 +136,12 @@ class ModelStore:
             self._persisted.put(self._store_name, key, self._data[key])
 
 
-class JsonStore:
+class JsonStore(_Degradable):
     def __init__(self, store_name: str, persisted: Any | None = None) -> None:
         self._store_name = store_name
         self._data: dict[str, Any] = {}
         self._persisted = persisted
+        self._degraded_reason: str | None = None
 
     def initialize(self) -> None:
         if self._persisted is None:
@@ -131,6 +167,7 @@ class JsonStore:
         return self._data[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
+        self._refuse_if_degraded()
         self._data[key] = value
         if self._persisted is not None:
             self._persisted.put_raw(self._store_name, key, json.dumps(value, default=str))
@@ -145,6 +182,7 @@ class JsonStore:
         return self._data.get(key, default)
 
     def pop(self, key: str, *default: Any) -> Any:
+        self._refuse_if_degraded()
         if key in self._data:
             if self._persisted is not None:
                 self._persisted.delete(self._store_name, key)

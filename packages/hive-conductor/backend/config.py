@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     conductor_vault_path: str | None = None
     conductor_identity_path: str | None = None
     conductor_state_db: str | None = None
+    # `durable` (default) or `ephemeral` — ADR-082926-87bb. Read through
+    # `services.durability.read_mode`, which refuses any other value rather
+    # than defaulting an unreadable declaration.
+    conductor_durability: str = "durable"
     conductor_admin_public_key: str | None = None
     conductor_user_public_key: str | None = None
 
