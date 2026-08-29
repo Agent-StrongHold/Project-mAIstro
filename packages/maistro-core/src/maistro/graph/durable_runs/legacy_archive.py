@@ -35,6 +35,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
 #: The table the pre-convergence SQLite store wrote to.
+#:
+#: Named for readers and for the tests, and deliberately *not* interpolated
+#: into the statements below. A table name cannot be a bind parameter, so
+#: using the constant in a query means building the SQL by string
+#: construction -- bandit B608, which this repository runs at a strict zero
+#: baseline. The scanner is right to be blunt: a query assembled by
+#: f-string is one refactor away from assembling one out of something a
+#: caller supplied.
 LEGACY_TABLE = "durable_graph_runs"
 
 
@@ -98,14 +106,14 @@ class LegacyGraphRunArchive:
         """Every archived run, oldest first."""
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT run_id FROM {LEGACY_TABLE} ORDER BY created_at ASC, run_id ASC"
+                "SELECT run_id FROM durable_graph_runs ORDER BY created_at ASC, run_id ASC"
             ).fetchall()
         return [str(row["run_id"]) for row in rows]
 
     def get(self, run_id: str) -> ArchivedGraphRun | None:
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT record_json FROM {LEGACY_TABLE} WHERE run_id = ?",
+                "SELECT record_json FROM durable_graph_runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
         if row is None:
@@ -115,7 +123,7 @@ class LegacyGraphRunArchive:
     def list_by_status(self, status: RunStatus) -> list[ArchivedGraphRun]:
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT record_json FROM {LEGACY_TABLE} WHERE status = ? "
+                "SELECT record_json FROM durable_graph_runs WHERE status = ? "
                 "ORDER BY created_at ASC, run_id ASC",
                 (status.value,),
             ).fetchall()

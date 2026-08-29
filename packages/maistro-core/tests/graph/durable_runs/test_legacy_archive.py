@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from maistro.graph.durable_runs.legacy_archive import (
+    LEGACY_TABLE,
     ArchivedGraphRun,
     LegacyGraphRunArchive,
     LegacyRunNotResumable,
@@ -127,6 +128,25 @@ def test_archived_runs_are_findable_by_status(archive: LegacyGraphRunArchive) ->
 
     assert [item.run_id for item in completed] == archive.list_run_ids()
     assert archive.list_by_status(RunStatus.FAILED) == []
+
+
+def test_the_named_table_is_the_one_the_queries_read() -> None:
+    """`LEGACY_TABLE` documents the table but is not interpolated into the SQL.
+
+    A table name cannot be a bind parameter, so using the constant in a query
+    means building the statement by string construction -- bandit B608, which
+    this repository runs at a strict zero baseline. The constant and the
+    literals are therefore kept in step by an assertion instead of by an
+    f-string, which is the only part of that arrangement that could drift.
+    """
+    import inspect
+
+    from maistro.graph.durable_runs import legacy_archive
+
+    source = inspect.getsource(legacy_archive)
+
+    assert f"FROM {LEGACY_TABLE} " in source or f"FROM {LEGACY_TABLE}\n" in source
+    assert 'f"SELECT' not in source, "SQL must not be built by f-string (bandit B608)"
 
 
 def test_an_unknown_run_is_absent(archive: LegacyGraphRunArchive) -> None:

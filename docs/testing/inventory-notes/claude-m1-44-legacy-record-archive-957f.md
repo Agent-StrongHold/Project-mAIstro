@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +13
+  packages/maistro-core/tests: +14
 ---
 # claude-m1-44-legacy-record-archive
 
@@ -10,7 +10,7 @@ Attempt identity onto the canonical spine, and `CanonicalDurableRunStore`
 refuses a record whose Run the spine has never seen. That refusal is right for
 new work and leaves every graph run persisted before #565 with no reader.
 
-**`tests/graph/durable_runs/test_legacy_archive.py` (+13)** reads one back:
+**`tests/graph/durable_runs/test_legacy_archive.py` (+14)** reads one back:
 
 - the archived Run reproduces through today's canonical models — workspace,
   project, status and its Graph snapshot;
@@ -48,6 +48,13 @@ but unreachable from any entry point, AC-6 sat at `passing` and design coverage
 that entry point, tested through Typer's runner the way an operator invokes
 them, with the refusal to resume printed on screen rather than living only in
 an exception.
+
+One more test keeps `LEGACY_TABLE` honest. A table name cannot be a bind
+parameter, so using the constant inside a query means building the SQL by
+string construction — bandit B608, which this repository runs at a strict zero
+baseline. The constant and the literal statements are therefore held in step by
+an assertion rather than by an f-string, and the assertion also refuses any
+future `f"SELECT` in that module.
 
 Six vulture findings are banked: `attempts_for`, `list_run_ids` and `resume`
 are `core-public-api-surface` (the archive is exported from
