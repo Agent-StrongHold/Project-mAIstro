@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -30,6 +31,12 @@ from maistro_rsi.export_policy import (
 )
 from maistro_rsi.free_router import FREE_ROUTER_ALIASES, expand_free_router, make_free_selector
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
+from maistro_rsi.model_identifiers import (
+    MAX_ROSTER_SIZE,
+    InvalidModelIdentifier,
+    parse_roster,
+    validate_identifier,
+)
 
 if TYPE_CHECKING:
     from maistro_rsi.harvest import PromotedPatch
@@ -635,6 +642,72 @@ def main(argv: list[str] | None = None) -> int:
     return 1
 
 
+def _optional_identifier(value: str) -> str:
+    """One model identifier, or `""` for "not configured".
+
+    `--local-fallback-model` takes a single model, so a comma-separated value
+    is refused rather than quietly used as one long name: `local_fallback_model`
+    is compared and dispatched as one identifier downstream, and a two-entry
+    string there would silently never match anything.
+    """
+    entries = parse_roster(value)
+    if len(entries) > 1:
+        raise InvalidModelIdentifier(
+            f"expected one model identifier, got {len(entries)}: {value!r}"
+        )
+    return entries[0] if entries else ""
+
+
+@dataclass(frozen=True)
+class _ModelArguments:
+    """The four model-shaped arguments, each validated against the grammar."""
+
+    genome: list[str]
+    emergency: list[str]
+    scout_fallback: list[str]
+    local_fallback: str
+
+
+def _model_arguments(args: argparse.Namespace) -> _ModelArguments:
+    """Validate every model-shaped argument before any of them is used (#309).
+
+    `tools/run_rsi_isolated.sh` validates the same values on the host, and this
+    is not the same check twice: the launcher is one caller, and the roster
+    that matters most here is the one it never sees — the *expanded* one, which
+    this process builds out of a network response.
+
+    A free-router sentinel (openrouter/free / or-free-router) in the roster is a
+    random-model SELECTOR, not a scorable model — it re-randomises every call.
+    Resolving it to concrete, gateway-registered $0 aliases is what pins seeding
+    and the tournament to stable models. Normally the launcher expands this
+    HOST-SIDE (it has OPENROUTER_API_KEY, which the container env deliberately
+    drops); this in-loop pass is the safety net — with no OpenRouter key it maps
+    the sentinel to DEFAULT_FREE_MODEL so a raw, un-pinnable sentinel never
+    reaches the tournament.
+    """
+    genome = list(parse_roster(args.genome_models))
+
+    if any(m in FREE_ROUTER_ALIASES for m in genome):
+        expanded = expand_free_router(genome, make_free_selector()) or genome
+        # What comes back is a remote party's strings, so it is validated like
+        # any other untrusted input. Entry by entry rather than by re-joining on
+        # commas: a returned name that *contains* a comma has to be refused,
+        # not silently split into two models nobody asked for.
+        if len(expanded) > MAX_ROSTER_SIZE:
+            raise InvalidModelIdentifier(
+                f"free-router returned {len(expanded)} entries, over the {MAX_ROSTER_SIZE} limit"
+            )
+        genome = [validate_identifier(m) for m in expanded]
+        print(f"free-router roster resolved -> {genome}")
+
+    return _ModelArguments(
+        genome=genome,
+        emergency=list(parse_roster(args.emergency_models)),
+        scout_fallback=list(parse_roster(args.scout_fallback_models)),
+        local_fallback=_optional_identifier(args.local_fallback_model),
+    )
+
+
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser()
     # `.git` is a dir in a normal checkout, a file in a linked worktree.
@@ -649,18 +722,16 @@ def _run(args: argparse.Namespace) -> int:
             f"live evolution: population at {args.genome_db} IS the roster — "
             "work is kept AND scores the genomes; lineage continues across runs"
         )
-    # A free-router sentinel (openrouter/free / or-free-router) in the roster is a
-    # random-model SELECTOR, not a scorable model — it re-randomises every call.
-    # Resolve it to concrete, gateway-registered $0 aliases so seeding + tournament
-    # pin stable models. Normally the launcher expands this HOST-SIDE (it has
-    # OPENROUTER_API_KEY, which the container env deliberately drops); this in-loop
-    # pass is the safety net — with no OpenRouter key it maps the sentinel to
-    # DEFAULT_FREE_MODEL so a raw, un-pinnable sentinel never reaches the tournament.
-    genome_models = [m.strip() for m in args.genome_models.split(",") if m.strip()]
-    if any(m in FREE_ROUTER_ALIASES for m in genome_models):
-        selector = make_free_selector()
-        genome_models = expand_free_router(genome_models, selector) or genome_models
-        print(f"free-router roster resolved -> {genome_models}")
+    try:
+        models = _model_arguments(args)
+    except InvalidModelIdentifier as refusal:
+        print(f"refusing model roster: {refusal}", file=sys.stderr)
+        return 2
+    genome_models = models.genome
+    emergency_models = models.emergency
+    scout_fallback_models = models.scout_fallback
+    local_fallback_model = models.local_fallback
+
     config = LocalRsiConfig(
         repo_path=str(repo),
         test_command=args.test_cmd,
@@ -679,9 +750,7 @@ def _run(args: argparse.Namespace) -> int:
         competitors=competitors,
         scout=args.scout,
         scout_model=args.scout_model,
-        scout_fallback_models=[
-            m.strip() for m in args.scout_fallback_models.split(",") if m.strip()
-        ],
+        scout_fallback_models=scout_fallback_models,
         regression_judge=not args.no_regression_judge,
         promotion_review=not args.no_promotion_review,
         export_patches=args.export_patches,
@@ -691,8 +760,8 @@ def _run(args: argparse.Namespace) -> int:
         genome_models=genome_models,
         evolve_goal=args.evolve_goal,
         roster_size=args.roster_size,
-        emergency_models=[m.strip() for m in args.emergency_models.split(",") if m.strip()],
-        local_fallback_model=args.local_fallback_model.strip(),
+        emergency_models=emergency_models,
+        local_fallback_model=local_fallback_model,
     )
     print(
         f"RSI local loop -> clone of {repo} in {work_root} ({args.cycles} cycles, model={args.model or 'env default'})"

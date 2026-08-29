@@ -1041,6 +1041,7 @@
         "packages/maistro-core/src/maistro/orchestrator/waves/ensemble.py::unused method 'run_ensemble'",
         "packages/maistro-core/src/maistro/orchestrator/waves/fan_in.py::unused function 'fan_in'",
         "packages/maistro-core/src/maistro/orchestrator/waves/fan_out.py::unused function 'validate_fan_out_width'",
+        "packages/maistro-core/src/maistro/persistence/__init__.py::unused function 'pool_count'",
         "packages/maistro-core/src/maistro/persistence/pg_audit.py::unused method 'get_entries'",
         "packages/maistro-core/src/maistro/persistence/pg_outcomes.py::unused method 'get_daily_timeseries'",
         "packages/maistro-core/src/maistro/persistence/pg_outcomes.py::unused method 'get_task_completion_rate'",

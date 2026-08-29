@@ -40,6 +40,55 @@ REPORT_EVERY="${4:-5}"
 REPORT_DIR="${5:-}"
 GENOME_MODELS="${6:-}"
 EVOLVE_GOAL="${7:-Do substantive test-first work: finish contracted spec acceptance criteria and prove them with @pytest.mark.ac tests; raise ambition without lowering tdd_rigor — a feature only counts when it ships with tests written first.}"
+# Model identifiers are validated HERE, before the gateway .env is mounted
+# anywhere (#309). `GENOME_MODELS` used to be interpolated into a `bash -lc`
+# payload that had just sourced /run/gateway.env, so one apostrophe in a model
+# name executed shell beside the credentials -- and the value is network-derived,
+# because the free-router step below rewrites it from a container that queried
+# OpenRouter. Refusing early means a malformed roster costs an exit code while
+# nothing sensitive is in reach.
+#
+# The grammar and its limits live in maistro_rsi.model_identifiers, which is
+# testable in a way a shell regex is not; this only calls it.
+# Rooted at the script rather than at $PWD: the validator has to be findable
+# from wherever the wrapper was invoked, and a path that silently misses would
+# turn "refuse the roster" into "skip the check".
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PACKAGE_PATHS="packages/maistro-core/src:packages/maistro-evolve/src:packages/maistro-rsi/src:packages/maistro-bootstrap/src"
+# The FILE, not `python3 -m maistro_rsi.model_identifiers`. `-m` initialises the
+# package first, and `maistro_rsi/__init__` imports `coordinator` and its
+# third-party dependencies -- so on a host with only this script's documented
+# prerequisites (Docker and a gateway) `-m` fails before Docker ever starts and
+# a perfectly valid roster exits 64. The module imports only the standard
+# library precisely so running it by path needs nothing installed.
+VALIDATOR="${REPO_ROOT}/packages/maistro-rsi/src/maistro_rsi/model_identifiers.py"
+validate_roster() {
+    # $1 = label for the error, $2 = raw roster, $3 = "single" to refuse a list.
+    # Echoes the canonical form.
+    local label="$1" raw="$2" mode="${3:-}" canonical
+    local -a flags=(--roster "$raw")
+    if [[ -z "$raw" ]]; then
+        return 0
+    fi
+    if [[ "$mode" == single ]]; then
+        flags+=(--single)
+    fi
+    if ! canonical="$(python3 "$VALIDATOR" "${flags[@]}" 2>&1)"; then
+        echo "error: $label rejected -- $canonical" >&2
+        exit 64
+    fi
+    printf '%s' "$canonical"
+}
+
+GENOME_MODELS="$(validate_roster GENOME_MODELS "$GENOME_MODELS")"
+EMERGENCY_MODELS="$(validate_roster MAISTRO_RSI_EMERGENCY_MODELS "${MAISTRO_RSI_EMERGENCY_MODELS:-}")"
+# `--single`: the downstream flag takes one model. Accepting a list here and
+# refusing it in-container would move the refusal to AFTER the gateway
+# credentials are mounted, which is the boundary this validation exists to sit
+# in front of.
+LOCAL_FALLBACK_MODEL="$(validate_roster \
+    MAISTRO_RSI_LOCAL_FALLBACK_MODEL "${MAISTRO_RSI_LOCAL_FALLBACK_MODEL:-}" single)"
+
 IMAGE="${MAISTRO_RSI_IMAGE:-maistro-rsi-runner:latest}"
 # The LiteLLM gateway is published to host-loopback only (compose maps
 # 127.0.0.1:4000:4000), so it is NOT reachable via host.docker.internal. Instead
@@ -122,16 +171,30 @@ $R/coordinator.py"
 # to learn each concrete pick and register it. No-op if no sentinel is present.
 if [[ -n "$GENOME_MODELS" && "$GENOME_MODELS" == *free* ]]; then
     echo "  resolving free-router roster to concrete \$0 aliases (helper container)…"
+    # The payload is a quoted heredoc: the HOST expands nothing in it. Every
+    # candidate-controlled value crosses as an environment variable that the
+    # CONTAINER's bash expands as a variable, so a quote in a model name is a
+    # character in a string rather than a token in a command (#309).
+    read -r -d '' FREE_ROUTER_PAYLOAD <<'INNER' || true
+sed 's/\r$//' /run/gateway.env > /tmp/e.env
+set -a; . /tmp/e.env; set +a
+export LITELLM_URL="$RSI_GATEWAY_URL" LITELLM_BASE_URL="$RSI_GATEWAY_URL" LITELLM_PROXY_URL="$RSI_GATEWAY_URL"
+source /workspace/.venv/bin/activate 2>/dev/null || true
+python -m maistro_rsi.free_router --roster "$RSI_GENOME_MODELS" --free-count 2
+INNER
     EXPANDED="$(docker run --rm --network "$NETWORK" \
         -v "${ENV_MOUNT}:/run/gateway.env:ro" \
-        -e "PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src:packages/maistro-rsi/src:packages/maistro-bootstrap/src" \
-        "$IMAGE" bash -lc "sed 's/\r\$//' /run/gateway.env > /tmp/e.env; set -a; . /tmp/e.env; set +a; \
-            export LITELLM_URL='$GATEWAY_URL' LITELLM_BASE_URL='$GATEWAY_URL' LITELLM_PROXY_URL='$GATEWAY_URL'; \
-            source /workspace/.venv/bin/activate 2>/dev/null || true; \
-            python -m maistro_rsi.free_router --roster '$GENOME_MODELS' --free-count 2" 2>/dev/null | tr -d '\r' | tail -1)"
+        -e "PYTHONPATH=$PACKAGE_PATHS" \
+        -e "RSI_GATEWAY_URL=$GATEWAY_URL" \
+        -e "RSI_GENOME_MODELS=$GENOME_MODELS" \
+        "$IMAGE" bash -lc "$FREE_ROUTER_PAYLOAD" 2>/dev/null | tr -d '\r' | tail -1)"
     if [[ -n "$EXPANDED" && "$EXPANDED" == *,* || "$EXPANDED" == openrouter/* ]]; then
         echo "  free-router expanded: $GENOME_MODELS -> $EXPANDED"
-        GENOME_MODELS="$EXPANDED"
+        # Re-validated, because THIS is the network-derived value: it is the
+        # stdout of a container that just queried OpenRouter. Validating only
+        # the operator's original argument would check the one string that was
+        # never the threat.
+        GENOME_MODELS="$(validate_roster "free-router expansion" "$EXPANDED")"
     else
         echo "  warning: free-router expansion empty; loop will fall back to DEFAULT_FREE_MODEL in-container"
     fi
@@ -143,19 +206,17 @@ fi
 # flagged/ (no auto-PRs) — but "nothing auto-promotes" is the correct default for
 # an experimental/opt-in subsystem. Set MAISTRO_RSI_PROMOTION_REVIEW=off to run
 # fully unattended, relying only on the fitness scorecard.
-REVIEW_FLAG=""
-if [[ "${MAISTRO_RSI_PROMOTION_REVIEW:-on}" == "off" ]]; then
-    REVIEW_FLAG="--no-promotion-review"
-fi
+PROMOTION_REVIEW="${MAISTRO_RSI_PROMOTION_REVIEW:-on}"
 
 # Unified live evolution: GENOME_MODELS set ⇒ the population (persisted in
 # REPORT_DIR/population.db, host-visible, lineage continues across runs that
 # share a REPORT_DIR) is the roster. The GOAL rides in as an env var — never
 # interpolate free text into the inner bash command line.
-LIVE_FLAGS=""
-if [[ -n "$GENOME_MODELS" ]]; then
-    LIVE_FLAGS="--genome-db /run/reports/population.db --genome-models '$GENOME_MODELS' --roster-size ${MAISTRO_RSI_ROSTER_SIZE:-4} --emergency-models '${MAISTRO_RSI_EMERGENCY_MODELS:-}' --local-fallback-model '${MAISTRO_RSI_LOCAL_FALLBACK_MODEL:-}' --evolve-goal \"\$RSI_GOAL\""
-fi
+# The flags are no longer assembled here as a string to be re-split by the
+# inner shell. Their VALUES cross as environment variables and the payload
+# builds an argument array from them, so word-splitting stays under the control
+# of quoted expansions rather than of whatever the values happen to contain.
+ROSTER_SIZE="${MAISTRO_RSI_ROSTER_SIZE:-4}"
 
 echo "RSI (full isolation) -> image=$IMAGE cycles=$CYCLES model=$MODEL gateway=$GATEWAY_URL"
 echo "  reports -> $REPORT_DIR (every $REPORT_EVERY cycles)"
@@ -188,6 +249,59 @@ MEM_LIMIT="${MAISTRO_RSI_MEMORY:-6g}"
 CPU_LIMIT="${MAISTRO_RSI_CPUS:-4}"
 PIDS_LIMIT="${MAISTRO_RSI_PIDS:-1024}"
 
+# The inner command, as a quoted heredoc so the HOST expands nothing in it
+# (#309). Every value it needs arrives as an environment variable below and is
+# expanded by the CONTAINER's bash, inside quotes, as a variable. Nothing the
+# operator or the network supplies becomes shell source -- which matters most
+# here, because the first thing this payload does is source the gateway
+# credentials.
+#
+# `RSI_GOAL` was already carried this way and is the shape the rest now
+# follows; the comment beside it said "never interpolate free text into the
+# inner bash command line" while the line under it interpolated the roster.
+read -r -d '' MAIN_PAYLOAD <<'INNER' || true
+sed 's/\r$//' /run/gateway.env > /tmp/gw.env
+set -a; . /tmp/gw.env; set +a
+export LITELLM_URL="$RSI_GATEWAY_URL" LITELLM_BASE_URL="$RSI_GATEWAY_URL" LITELLM_PROXY_URL="$RSI_GATEWAY_URL"
+unset DB_PASSWORD LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_NEXTAUTH_SECRET LANGFUSE_SALT \
+      API_KEYS MAISTRO_ACCESS_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY MISTRAL_API_KEY \
+      GROQ_API_KEY CEREBRAS_API_KEY COHERE_API_KEY NVIDIA_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY \
+      XAI_API_KEY DEEPSEEK_API_KEY TOGETHER_API_KEY FIREWORKS_API_KEY DEEPINFRA_API_KEY 2>/dev/null || true
+source /workspace/.venv/bin/activate
+
+# Built as arrays, so word-splitting is decided by these quoted expansions
+# rather than by whatever the values contain.
+REVIEW=()
+if [ "$RSI_PROMOTION_REVIEW" = off ]; then
+    REVIEW=(--no-promotion-review)
+fi
+LIVE=()
+if [ -n "$RSI_GENOME_MODELS" ]; then
+    LIVE=(--genome-db /run/reports/population.db
+          --genome-models "$RSI_GENOME_MODELS"
+          --roster-size "$RSI_ROSTER_SIZE"
+          --emergency-models "$RSI_EMERGENCY_MODELS"
+          --local-fallback-model "$RSI_LOCAL_FALLBACK_MODEL"
+          --evolve-goal "$RSI_GOAL")
+fi
+
+python -m maistro_rsi run \
+    --repo /workspace \
+    --test-cmd "$RSI_TEST_CMD" \
+    --cycles "$RSI_CYCLES" --fitness --model "$RSI_MODEL" \
+    --coverage-source "$RSI_COV_SOURCE" \
+    --coverage-pytest-args "$RSI_COV_ARGS" \
+    --targets "$RSI_TARGETS" \
+    --agent-turns "$RSI_AGENT_TURNS" \
+    --scout \
+    "${REVIEW[@]}" \
+    "${LIVE[@]}" \
+    --report-every "$RSI_REPORT_EVERY" \
+    --report-dir /run/reports \
+    --export-patches /run/reports/export \
+    --work-root /tmp/rsi-work
+INNER
+
 exec docker run --rm \
     --network "$NETWORK" \
     --add-host=host.docker.internal:host-gateway \
@@ -199,27 +313,20 @@ exec docker run --rm \
     -v "${ENV_MOUNT}:/run/gateway.env:ro" \
     -v "${REPORT_MOUNT}:/run/reports" \
     -e "RSI_GOAL=$EVOLVE_GOAL" \
-    -e "PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src:packages/maistro-rsi/src:packages/maistro-bootstrap/src" \
+    -e "PYTHONPATH=$PACKAGE_PATHS" \
+    -e "RSI_GATEWAY_URL=$GATEWAY_URL" \
+    -e "RSI_TEST_CMD=$TEST_CMD" \
+    -e "RSI_CYCLES=$CYCLES" \
+    -e "RSI_MODEL=$MODEL" \
+    -e "RSI_COV_SOURCE=$COV_SOURCE" \
+    -e "RSI_COV_ARGS=$COV_ARGS" \
+    -e "RSI_TARGETS=$TARGETS" \
+    -e "RSI_AGENT_TURNS=${MAISTRO_RSI_AGENT_TURNS:-6}" \
+    -e "RSI_REPORT_EVERY=$REPORT_EVERY" \
+    -e "RSI_PROMOTION_REVIEW=$PROMOTION_REVIEW" \
+    -e "RSI_GENOME_MODELS=$GENOME_MODELS" \
+    -e "RSI_ROSTER_SIZE=$ROSTER_SIZE" \
+    -e "RSI_EMERGENCY_MODELS=$EMERGENCY_MODELS" \
+    -e "RSI_LOCAL_FALLBACK_MODEL=$LOCAL_FALLBACK_MODEL" \
     "$IMAGE" \
-    bash -lc "sed 's/\r\$//' /run/gateway.env > /tmp/gw.env; set -a; . /tmp/gw.env; set +a; \
-        export LITELLM_URL='$GATEWAY_URL' LITELLM_BASE_URL='$GATEWAY_URL' LITELLM_PROXY_URL='$GATEWAY_URL'; \
-        unset DB_PASSWORD LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_NEXTAUTH_SECRET LANGFUSE_SALT \
-              API_KEYS MAISTRO_ACCESS_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY MISTRAL_API_KEY \
-              GROQ_API_KEY CEREBRAS_API_KEY COHERE_API_KEY NVIDIA_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY \
-              XAI_API_KEY DEEPSEEK_API_KEY TOGETHER_API_KEY FIREWORKS_API_KEY DEEPINFRA_API_KEY 2>/dev/null || true; \
-        source /workspace/.venv/bin/activate && \
-        python -m maistro_rsi run \
-        --repo /workspace \
-        --test-cmd '$TEST_CMD' \
-        --cycles $CYCLES --fitness --model '$MODEL' \
-        --coverage-source '$COV_SOURCE' \
-        --coverage-pytest-args '$COV_ARGS' \
-        --targets '$TARGETS' \
-        --agent-turns ${MAISTRO_RSI_AGENT_TURNS:-6} \
-        --scout \
-        $REVIEW_FLAG \
-        $LIVE_FLAGS \
-        --report-every $REPORT_EVERY \
-        --report-dir /run/reports \
-        --export-patches /run/reports/export \
-        --work-root /tmp/rsi-work"
+    bash -lc "$MAIN_PAYLOAD"
