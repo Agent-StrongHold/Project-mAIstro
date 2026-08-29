@@ -11,8 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from maistro.graph.definitions import GraphTemplate, NodeTemplate
-from maistro.graph.templates import GraphTemplateConflict, NodeTemplateConflict, revalidated
+from maistro.graph.definitions import GraphTemplate, NodeTemplate, TemplateLifecycle
+from maistro.graph.templates import (
+    GraphTemplateConflict,
+    GraphTemplateNotFound,
+    NodeTemplateConflict,
+    NodeTemplateNotFound,
+    revalidated,
+)
 from maistro.runs.evidence_json import json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -42,7 +48,12 @@ class PgGraphTemplateStore:
                    ON CONFLICT (template_id, version) DO UPDATE
                        SET workspace_id = EXCLUDED.workspace_id,
                            name         = EXCLUDED.name,
-                           payload      = EXCLUDED.payload
+                           payload      = jsonb_set(
+                                          EXCLUDED.payload,
+                                          '{lifecycle}',
+                                          COALESCE(graph_templates.payload->'lifecycle', '"active"'::jsonb),
+                                          true
+                                      )
                        WHERE graph_templates.content_hash = EXCLUDED.content_hash
                    RETURNING template_id""",
                 template.template_id,
@@ -59,7 +70,65 @@ class PgGraphTemplateStore:
             )
         return template
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None:
+        """The raw transition. `promote_audited` is the sanctioned path.
+
+        `jsonb_set` rather than a rewritten payload: the lifecycle is the only
+        thing moving, and rewriting the whole document to change one key would
+        let an in-flight model change ride along with a promotion.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE graph_templates
+                       SET payload = jsonb_set(payload, '{lifecycle}', to_jsonb($3::text), true)
+                   WHERE template_id = $1 AND version = $2
+                   RETURNING template_id""",
+                template_id,
+                version,
+                lifecycle,
+            )
+        if row is None:
+            raise GraphTemplateNotFound(
+                f"no GraphTemplate {template_id!r} version {version} to promote"
+            )
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle:
+        """Absent reads as `active`.
+
+        Rows written before ADR-082926-65bf carry no `lifecycle` key, and every
+        one of them is an active reusable definition. Reading absence as
+        `candidate` would hide the entire existing registry from unversioned
+        resolution on the first deploy.
+        """
+        async with self._pool.acquire() as conn:
+            found = await conn.fetchval(
+                """SELECT COALESCE(payload->>'lifecycle', 'active') FROM graph_templates
+                   WHERE template_id = $1 AND version = $2""",
+                template_id,
+                version,
+            )
+        if found is None:
+            raise GraphTemplateNotFound(
+                f"no GraphTemplate {template_id!r} version {version} is registered"
+            )
+        if found == "candidate":
+            return "candidate"
+        if found == "promoting":
+            return "promoting"
+        return "active"
+
     async def get(self, template_id: str, *, version: int | None = None) -> GraphTemplate | None:
+        """Unversioned resolution returns the latest *active* version.
+
+        `COALESCE(..., 'active') = 'active'` rather than a bare comparison: a
+                row written before the lifecycle existed has no key, so `->>` yields
+                NULL, and every such row *is* an active definition -- `= 'active'`
+                alone would silently empty the registry. Coalescing first keeps those
+                rows and excludes both `candidate` and the transitional `promoting`,
+                which a `!= 'candidate'` test would have let through.
+        """
         async with self._pool.acquire() as conn:
             if version is not None:
                 payload: Any = await conn.fetchval(
@@ -71,6 +140,7 @@ class PgGraphTemplateStore:
                 payload = await conn.fetchval(
                     """SELECT payload FROM graph_templates
                        WHERE template_id = $1
+                         AND COALESCE(payload->>'lifecycle', 'active') = 'active'
                        ORDER BY version DESC
                        LIMIT 1""",
                     template_id,
@@ -136,7 +206,12 @@ class PgNodeTemplateStore:
                        SET workspace_id = EXCLUDED.workspace_id,
                            name         = EXCLUDED.name,
                            node_type    = EXCLUDED.node_type,
-                           payload      = EXCLUDED.payload
+                           payload      = jsonb_set(
+                                          EXCLUDED.payload,
+                                          '{lifecycle}',
+                                          COALESCE(node_templates.payload->'lifecycle', '"active"'::jsonb),
+                                          true
+                                      )
                        WHERE node_templates.content_hash = EXCLUDED.content_hash
                    RETURNING template_id""",
                 template.template_id,
@@ -154,7 +229,60 @@ class PgNodeTemplateStore:
             )
         return template
 
+    async def set_lifecycle(
+        self, template_id: str, version: int, lifecycle: TemplateLifecycle
+    ) -> None:
+        """The raw transition. `promote_audited` is the sanctioned path.
+
+        `jsonb_set` rather than a rewritten payload: the lifecycle is the only
+        thing moving, and rewriting the whole document to change one key would
+        let an in-flight model change ride along with a promotion.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE node_templates
+                       SET payload = jsonb_set(payload, '{lifecycle}', to_jsonb($3::text), true)
+                   WHERE template_id = $1 AND version = $2
+                   RETURNING template_id""",
+                template_id,
+                version,
+                lifecycle,
+            )
+        if row is None:
+            raise NodeTemplateNotFound(
+                f"no NodeTemplate {template_id!r} version {version} to promote"
+            )
+
+    async def lifecycle_of(self, template_id: str, version: int) -> TemplateLifecycle:
+        """Absent reads as `active`.
+
+        Rows written before ADR-082926-65bf carry no `lifecycle` key, and every
+        one of them is an active reusable definition. Reading absence as
+        `candidate` would hide the entire existing registry from unversioned
+        resolution on the first deploy.
+        """
+        async with self._pool.acquire() as conn:
+            found = await conn.fetchval(
+                """SELECT COALESCE(payload->>'lifecycle', 'active') FROM node_templates
+                   WHERE template_id = $1 AND version = $2""",
+                template_id,
+                version,
+            )
+        if found is None:
+            raise NodeTemplateNotFound(
+                f"no NodeTemplate {template_id!r} version {version} is registered"
+            )
+        if found == "candidate":
+            return "candidate"
+        if found == "promoting":
+            return "promoting"
+        return "active"
+
     async def get(self, template_id: str, *, version: int | None = None) -> NodeTemplate | None:
+        """Unversioned resolution returns the latest *active* version.
+
+        Same rule and same NULL-tolerant predicate as its GraphTemplate sibling.
+        """
         async with self._pool.acquire() as conn:
             if version is not None:
                 payload: Any = await conn.fetchval(
@@ -166,6 +294,7 @@ class PgNodeTemplateStore:
                 payload = await conn.fetchval(
                     """SELECT payload FROM node_templates
                        WHERE template_id = $1
+                         AND COALESCE(payload->>'lifecycle', 'active') = 'active'
                        ORDER BY version DESC
                        LIMIT 1""",
                     template_id,
