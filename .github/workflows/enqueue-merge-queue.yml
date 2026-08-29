@@ -10,7 +10,10 @@ on:
   workflow_dispatch:
 
 permissions:
+  checks: read
   contents: read
+  pull-requests: read
+  statuses: read
 
 concurrency:
   group: enqueue-merge-queue
@@ -37,6 +40,7 @@ jobs:
 
       - name: Enqueue every admissible develop PR
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          MERGE_QUEUE_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 scripts/check-enqueue-merge-queue.py
