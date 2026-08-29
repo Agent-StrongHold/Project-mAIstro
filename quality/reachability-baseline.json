@@ -116,8 +116,6 @@
     "maistro.skills.connectors",
     "maistro.skills.forge",
     "maistro.skills.loader",
-    "maistro.tasks.recovery",
-    "maistro.tasks.replay",
     "maistro.testing",
     "maistro.testing.faux_provider",
     "maistro.testing.harness",
