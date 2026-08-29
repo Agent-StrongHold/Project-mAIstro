@@ -128,7 +128,7 @@ It deliberately **does not prove the prose ownership claims**. Reachability prov
 | Reactor loop | `maistro.reactor` (installer-launched) | `0/1` | KEEP | SPEC-013, ADR-086 | loop timing tests | — |
 | Prompts and personas | `maistro.container`, `routes.agents` | `1/13` | KEEP | ADR-060, ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `0/5` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `5/14` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
+| Core CLI | `maistro.cli` console script | `5/15` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
 | Shared contracts and config | imported by every package | `1/46` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `4/4` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `0/20` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |

@@ -153,3 +153,62 @@ def test_the_archive_cannot_write_to_the_database_it_reads(
             conn.execute("DELETE FROM durable_graph_runs")
     finally:
         conn.close()
+
+
+# --- the operator entry point (#44) ----------------------------------------
+
+
+def _cli(*args: str) -> str:
+    """Invoke `maistro archive ...` the way an operator would."""
+    from typer.testing import CliRunner
+
+    from maistro.cli import app
+
+    result = CliRunner().invoke(app, list(args))
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-6")
+def test_an_operator_can_list_archived_runs() -> None:
+    """The reason this criterion needs an entry point and not only a class.
+
+    A library nobody can invoke does not make history reachable: the operator
+    holding a database written before #565 has to be able to open it, and until
+    there is a command they cannot.
+    """
+    output = _cli("archive", "list", str(FIXTURE))
+
+    assert "completed" in output
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-6")
+def test_an_operator_can_reproduce_one_archived_run(archived: ArchivedGraphRun) -> None:
+    output = _cli("archive", "show", str(FIXTURE), archived.run_id)
+
+    assert "ws-legacy" in output
+    assert "first" in output
+    assert "second" in output
+    # The refusal is on the screen, not only in the exception: an operator
+    # reading this must not go looking for a resume command.
+    assert "cannot be" in output
+
+
+def test_the_commands_say_so_rather_than_failing_on_an_unknown_run() -> None:
+    assert "No archived run" in _cli("archive", "show", str(FIXTURE), "no-such-run")
+
+
+def test_listing_an_empty_archive_says_it_is_empty(tmp_path: Path) -> None:
+    """An empty archive and a broken reader must not look the same."""
+    import sqlite3
+
+    empty = tmp_path / "empty.sqlite3"
+    conn = sqlite3.connect(empty)
+    conn.execute(
+        "CREATE TABLE durable_graph_runs "
+        "(run_id TEXT PRIMARY KEY, status TEXT, created_at TEXT, record_json TEXT)"
+    )
+    conn.commit()
+    conn.close()
+
+    assert "No archived runs" in _cli("archive", "list", str(empty))

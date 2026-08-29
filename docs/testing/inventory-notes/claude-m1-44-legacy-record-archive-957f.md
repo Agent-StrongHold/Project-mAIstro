@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +13
 ---
 # claude-m1-44-legacy-record-archive
 
@@ -10,7 +10,7 @@ Attempt identity onto the canonical spine, and `CanonicalDurableRunStore`
 refuses a record whose Run the spine has never seen. That refusal is right for
 new work and leaves every graph run persisted before #565 with no reader.
 
-**`tests/graph/durable_runs/test_legacy_archive.py` (+9)** reads one back:
+**`tests/graph/durable_runs/test_legacy_archive.py` (+13)** reads one back:
 
 - the archived Run reproduces through today's canonical models — workspace,
   project, status and its Graph snapshot;
@@ -39,8 +39,19 @@ migration. The failure this guards against is a model or validator change that
 makes *old* records unloadable, and only a record the old code actually wrote
 can catch it.
 
-Four vulture findings are banked: `attempts_for`, `list_run_ids` and `resume`
+The last four cover `maistro archive`, and that command is why the criterion
+is met rather than merely implemented. A library nobody can invoke does not
+make history reachable — the operator holding a pre-#565 database has to be
+able to open it — and the acceptance ladder agrees: with the reader exported
+but unreachable from any entry point, AC-6 sat at `passing` and design coverage
+*fell* below its floor. `maistro archive list` and `maistro archive show` are
+that entry point, tested through Typer's runner the way an operator invokes
+them, with the refusal to resume printed on screen rather than living only in
+an exception.
+
+Six vulture findings are banked: `attempts_for`, `list_run_ids` and `resume`
 are `core-public-api-surface` (the archive is exported from
 `maistro.graph.durable_runs`, and its callers are operators and downstream
 products, not package-local code), and `row_factory` is the usual
-sqlite3 attribute assignment.
+sqlite3 attribute assignment. The two `_archive.py` command functions join
+`maistro-cli-command-surface`, where every other subcommand already sits.
