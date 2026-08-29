@@ -87,7 +87,6 @@
     "maistro.portability.agents",
     "maistro.portability.export",
     "maistro.portability.skills",
-    "maistro.projects.authorization",
     "maistro.prompts.diff",
     "maistro.quota.ambient",
     "maistro.quota.reconciliation",
