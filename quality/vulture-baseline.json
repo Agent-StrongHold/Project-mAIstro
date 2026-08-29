@@ -869,7 +869,6 @@
         "packages/maistro-core/src/maistro/config/settings.py::unused method '_refuse_to_pretend_to_disable'",
         "packages/maistro-core/src/maistro/constants.py::unused variable 'SANDBOX_MAX_OUTPUT'",
         "packages/maistro-core/src/maistro/constants.py::unused variable 'WS_POLL_INTERVAL'",
-        "packages/maistro-core/src/maistro/container.py::unused function 'build_node_resolver'",
         "packages/maistro-core/src/maistro/container.py::unused method 'durable_invocations_for'",
         "packages/maistro-core/src/maistro/container.py::unused method 'execute_admitted_runs'",
         "packages/maistro-core/src/maistro/container.py::unused method 'list_durable_triggers'",
