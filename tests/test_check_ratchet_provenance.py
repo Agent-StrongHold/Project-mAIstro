@@ -24,7 +24,7 @@ def checker():
 
 def _tree(tmp_path: Path, script: str, name: str = "gate.py") -> Path:
     scripts = tmp_path / "scripts"
-    scripts.mkdir()
+    scripts.mkdir(exist_ok=True)
     (scripts / name).write_text(script, encoding="utf-8")
     return tmp_path
 
@@ -66,6 +66,16 @@ def test_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -> Non
     assert checker.Consumer("gate.py", "quality/debt.json") in found
 
 
+def test_repo_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -> None:
+    root = _tree(
+        tmp_path,
+        'from pathlib import Path\nREPO = Path(__file__).resolve().parents[1]\n'
+        'BASELINE = REPO / "quality" / "debt.json"\n',
+    )
+
+    assert checker.Consumer("gate.py", "quality/debt.json") in checker.consumers(root)
+
+
 def test_direct_function_path_expression_is_not_invisible(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
@@ -89,21 +99,75 @@ def test_documented_candidate_authored_specification_is_allowed(
         "CANDIDATE_AUTHORED",
         {("gate.py", "quality/policy.json"): "the file is the reviewed specification"},
     )
+    monkeypatch.setattr(checker, "TRUSTED_ADAPTERS", {})
 
     assert checker.violations(root) == []
 
 
-def test_stale_exception_fails(checker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    root = _tree(tmp_path, "VALUE = 1\n")
+def test_delegated_consumer_requires_a_real_trusted_adapter(
+    checker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _tree(
+        tmp_path,
+        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        'BASELINE = ROOT / "quality" / "debt.json"\n',
+    )
+    monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
     monkeypatch.setattr(
         checker,
-        "CANDIDATE_AUTHORED",
-        {("gone.py", "quality/gone.json"): "old rationale"},
+        "TRUSTED_ADAPTERS",
+        {("gate.py", "quality/debt.json"): "adapter.py"},
     )
 
     assert checker.violations(root) == [
-        "stale provenance exception gone.py -> quality/gone.json: old rationale"
+        "delegated trusted-base adapter adapter.py does not exist"
     ]
+
+
+def test_delegated_adapter_must_use_shared_resolver(
+    checker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _tree(
+        tmp_path,
+        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        'BASELINE = ROOT / "quality" / "debt.json"\n',
+    )
+    (root / "scripts" / "adapter.py").write_text("def main(): return 0\n", encoding="utf-8")
+    monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
+    monkeypatch.setattr(
+        checker,
+        "TRUSTED_ADAPTERS",
+        {("gate.py", "quality/debt.json"): "adapter.py"},
+    )
+
+    assert checker.violations(root) == [
+        "delegated adapter adapter.py does not use ratchet_provenance"
+    ]
+
+
+def test_delegated_adapter_is_executed(
+    checker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _tree(
+        tmp_path,
+        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        'BASELINE = ROOT / "quality" / "debt.json"\n',
+    )
+    (root / "scripts" / "adapter.py").write_text(
+        'import ratchet_provenance\n'
+        'def probe(): return ratchet_provenance.resolve_baseline(None)\n'
+        'def main(): return 7\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
+    monkeypatch.setattr(
+        checker,
+        "TRUSTED_ADAPTERS",
+        {("gate.py", "quality/debt.json"): "adapter.py"},
+    )
+
+    assert checker.violations(root) == []
+    assert checker.run_delegated(root) == ["adapter.py: trusted-base gate returned 7"]
 
 
 def test_unparseable_checker_fails_closed(checker, tmp_path: Path) -> None:
