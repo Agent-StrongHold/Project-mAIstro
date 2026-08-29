@@ -22,86 +22,21 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from maistro.security.warden.detector import Warden
+from maistro_rsi.sensitive_paths import SENSITIVE_PATH_PATTERNS, matches_sensitive_pattern
 
-# Path fragments that mark the agent's own containment surface: sandbox
-# control, security wiring, the self-modification pipeline itself, and the
-# DAG-synthesis substrate that lets an agent spawn further sub-agents/DAGs
-# (the recursion-depth cap and the two node kinds that dispatch through it).
-# A diff touching any of these isn't blocked — it's escalated to require
-# adversarial review on top of Warden + the full test suite, because a change
-# here changes what *future* self-modifications are allowed to get away with.
-SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
-    "maistro_rsi/sandbox/",
-    "maistro_rsi/quarantine.py",
-    "maistro_rsi/selfbranch.py",
-    "maistro_rsi/runner.py",
-    "maistro_rsi/coordinator.py",
-    "maistro/security/",
-    "maistro/tools/sandbox/",
-    "maistro/graph/depth.py",
-    "maistro/graph/nodes/agent_synth_dag.py",
-    "maistro/graph/nodes/agent_spawn_harness.py",
-    # The driver that wires the quarantine check, and the module that builds the
-    # shell command every cycle executes. `runner.py` and `coordinator.py` were
-    # protected while the code constructing them was not, so a diff editing the
-    # agent's own command template cleared on Warden alone.
-    "maistro_rsi/autorun.py",
-    "maistro_rsi/apply_agents.py",
-    # SafeHarnessRunner composes Warden and the ActionGate but lives under
-    # capabilities/, so the "maistro/security/" pattern above never saw it.
-    "maistro/capabilities/providers/",
-    # Cumulative action-budget enforcement.
-    "maistro/policy/",
-    # The gates themselves, and the ratchet baselines they read. Previously the
-    # only thing standing between the loop and its own CI config was a sentence
-    # in a prompt telling the model not to touch it.
-    ".github/",
-    "quality/",
-    # The sandbox kit: it sets the backend *and* attests the isolation that
-    # makes LocalSandbox safe (see sandbox/microvm.py).
-    "sbx/",
-    # The durable executor carries the actual depth-cap *enforcement* between
-    # nodes (it's what increments/surfaces synth_depth across checkpoints) --
-    # a diff here can defang the cap just as effectively as touching depth.py
-    # itself. Matched at directory granularity: the whole package persists
-    # depth state, so `executor.py` alone left its siblings uncovered.
-    "maistro/graph/durable_runs/",
-    # --- the measurement surface -------------------------------------------
-    # Everything above protects what the loop is *allowed* to do. These
-    # protect how the loop is *scored*, which is the same problem wearing a
-    # different hat: a candidate that edits its own exam passes trivially, and
-    # nothing else in this list notices. `benchmarks/` holds the task corpora,
-    # the graders, and the train/holdout split; `fitness.py` holds the breeding
-    # thresholds; `scorecard.py`, `candidate_fitness.py` and `harvest.py` decide
-    # what gets promoted and what opens a PR. All of them were listed as
-    # improvement targets while being unprotected.
-    "maistro_evolve/benchmarks/",
-    "maistro_evolve/fitness.py",
-    "maistro_evolve/scorecard.py",
-    "maistro_rsi/candidate_fitness.py",
-    "maistro_rsi/harvest.py",
-    # Protecting the exam is not enough while the code that *administers* it is
-    # unprotected. Each of these changes a score without touching a benchmark
-    # file: `harness.py` decides which runners are registered and can redirect
-    # or omit them; `cycle.py` folds results into `eval_scores` before culling,
-    # so it can fold whatever it likes; `tournament.py` turns scores into the
-    # Elo that feeds fitness; `types.py` holds `EvalWeights`, the per-benchmark
-    # weighting. A Warden-clean diff to any one of them was clearing without
-    # adversarial review while the corpus beside it was guarded.
-    "maistro_evolve/harness.py",
-    "maistro_evolve/cycle.py",
-    "maistro_evolve/tournament.py",
-    "maistro_evolve/types.py",
-    # The ratchets and vendoring scripts that assert all of the above is intact.
-    # `scripts/` matched no pattern, so a diff could edit a checker and the list
-    # it guards in one commit and still leave CI green — a guard outside the
-    # surface it guards is not a guard. The `vendor_*.py` scripts additionally
-    # carry the pinned digests of the vendored graders, so weakening one of them
-    # is equivalent to editing the grader itself.
-    "scripts/check_enumerations.py",
-    "scripts/vendor_ifeval.py",
-    "scripts/vendor_bfcl.py",
-)
+# The containment-surface classifier lives in `sensitive_paths` (#303): it is
+# pure string work with no dependencies, and both this gate and
+# `scripts/check-promotion-surface.py` must consult the same matcher rather
+# than two that agree until they don't. Re-exported here because callers --
+# including `scripts/check_enumerations.py` -- import both names from this
+# module.
+__all__ = [
+    "SENSITIVE_PATH_PATTERNS",
+    "AdversarialReview",
+    "QuarantineVerdict",
+    "matches_sensitive_pattern",
+    "quarantine_scan",
+]
 
 
 class AdversarialReview(Protocol):
@@ -124,34 +59,6 @@ class QuarantineVerdict:
     requires_adversarial_review: bool
     flags: tuple[str, ...]
     reason: str | None = None
-
-
-def _normalize_touched_path(path: str) -> str:
-    normalized = path.replace("\\", "/")
-    # removeprefix, not lstrip("./"): lstrip takes a character set and would
-    # eat the leading dot of ".github/..." — turning a containment surface
-    # into an unmatched path. That exact bug shipped once.
-    while normalized.startswith("./"):
-        normalized = normalized.removeprefix("./")
-    return normalized
-
-
-def matches_sensitive_pattern(path: str) -> bool:
-    """True if ``path`` falls on the containment surface.
-
-    Segment-boundary matching, not raw substring: directory patterns match at
-    the path start or after a ``/``; file patterns must match a whole trailing
-    path segment. Raw ``pattern in path`` accepted ``notmaistro/security/x``
-    and rejected nothing adjacent — both directions were wrong.
-    """
-    normalized = _normalize_touched_path(path)
-    for pattern in SENSITIVE_PATH_PATTERNS:
-        if pattern.endswith("/"):
-            if normalized.startswith(pattern) or f"/{pattern}" in normalized:
-                return True
-        elif normalized == pattern or normalized.endswith(f"/{pattern}"):
-            return True
-    return False
 
 
 def _touches_sensitive_surface(touched_paths: list[str]) -> list[str]:
