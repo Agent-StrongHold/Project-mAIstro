@@ -4,11 +4,11 @@ from ci_merge_group_scope import LEGS, classify
 
 
 def test_missing_diff_evidence_fails_closed() -> None:
-    assert classify([]) == {leg: True for leg in LEGS}
+    assert classify([]) == dict.fromkeys(LEGS, True)
 
 
 def test_shared_dependency_change_runs_every_specialized_leg() -> None:
-    assert classify(["uv.lock"]) == {leg: True for leg in LEGS}
+    assert classify(["uv.lock"]) == dict.fromkeys(LEGS, True)
 
 
 def test_docs_only_change_skips_service_legs_but_not_docker() -> None:
@@ -54,4 +54,4 @@ def test_quality_only_change_does_not_claim_service_impact() -> None:
 
 
 def test_ci_workflow_change_runs_everything() -> None:
-    assert classify([".github/workflows/ci.yml"]) == {leg: True for leg in LEGS}
+    assert classify([".github/workflows/ci.yml"]) == dict.fromkeys(LEGS, True)
