@@ -568,6 +568,12 @@ async def test_promoting_a_version_that_does_not_exist_says_so(store: Any, reque
     with pytest.raises(NodeTemplateNotFound):
         await promote_audited(store, template_id, 9, audit=_RecordingAudit(), approval=_approval())
 
+    # The raw transition has its own guard, and `promote_audited` never reaches
+    # it -- it resolves the current lifecycle first and fails there. The only
+    # way to exercise it is the way a caller bypassing the audited path would.
+    with pytest.raises(NodeTemplateNotFound, match="to promote"):
+        await store.set_lifecycle(template_id, 9, "active")
+
 
 async def test_a_template_whose_every_version_is_a_candidate_resolves_to_nothing(
     store: Any, request: Any

@@ -82,3 +82,32 @@ def test_descriptor_version_becomes_template_version() -> None:
     assert template.version == 2
     graph = template.instantiate(project_id="p1")
     assert graph.source_template.template_version == 2
+
+
+def test_a_snapshot_with_no_id_gets_a_generated_template_id() -> None:
+    """The branch that exists because `**identity` was removed.
+
+    `template_id` used to be splatted from a `dict[str, str]`, which told a
+    type checker that any keyword might take a `str` and made every
+    narrowly-typed field on GraphTemplate report as possibly-wrong. Naming the
+    fields costs one conditional, and this is its other side: a snapshot with
+    neither an explicit `template_id` nor an `id` still projects, taking the
+    model's own generated identity.
+    """
+    anonymous = {key: value for key, value in _SNAPSHOT.items() if key != "id"}
+
+    template = snapshot_to_template(anonymous, workspace_id="w1")
+
+    assert template.template_id
+    assert template.workspace_id == "w1"
+    assert [node.name for node in template.nodes] == ["a", "b"]
+
+
+def test_a_snapshot_falls_back_to_its_id_for_a_name() -> None:
+    """`_str_of`'s second candidate. A snapshot with no `name` is still a
+    template somebody has to find in a listing."""
+    unnamed = {key: value for key, value in _SNAPSHOT.items() if key != "name"}
+
+    template = snapshot_to_template(unnamed, workspace_id="w1")
+
+    assert template.name == "sample"

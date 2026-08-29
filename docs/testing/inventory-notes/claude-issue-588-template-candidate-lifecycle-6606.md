@@ -1,39 +1,35 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +39
+  packages/maistro-core/tests: +68
 ---
 # claude-issue-588-template-candidate-lifecycle
 
-Thirteen added tests, no removals, nothing renamed or moved. Thirty-nine
-node IDs because they land in `tests/graph/test_node_template_store.py`,
-whose `backend` fixture is parametrised over memory, SQLite and
-PostgreSQL — so each test is three.
+No removals, nothing renamed or moved. The count is large because these
+land in the three parametrised store suites -- memory, SQLite and
+PostgreSQL -- so most tests are three node IDs.
 
-They are there rather than in a new file precisely for that: the candidate
-lifecycle is a store contract, and this suite is where "the durable stores
-behave like the reference" stays a comparison rather than a claim. A new
-database-free file would have been one node ID per test and proved a third
-as much.
+**`test_node_template_store.py`**, thirteen tests. Six for the lifecycle
+itself (the AC-11 marker, the hash exclusion, three on the audit
+discipline, one on the deliberate absence of a fallback) and seven added
+after Codex's review, one per finding: re-registration does not activate
+or demote, a promotion is not observable until its commit is recorded, a
+cancelled promotion is rolled back, execution refuses a named candidate,
+a candidate-only template is not reported as unregistered, and an
+approval must name an approver and a reason.
 
-Six for the lifecycle itself:
+**`test_template_store.py`**, nine tests -- the GraphTemplate half of the
+same lifecycle. It had none. The lifecycle was implemented on both
+families and proved on one, which is how four code paths reached a PR
+untested, including the `put` guard Codex found could silently activate a
+candidate. The diff-coverage gate is what surfaced it; the tests are what
+close it.
 
-- `test_an_improvement_produces_a_candidate_and_leaves_the_published_version_alone`
-  carries the AC-11 marker
-- `test_promotion_does_not_change_the_content_hash` holds
-  ADR-082926-65bf's hash exclusion
-- three on the audit discipline, one on the deliberate absence of a
-  fallback when every version is a candidate
+**`test_template_adapter.py`**, two tests, on the branch that exists
+because `**identity` was removed to fix the pyright ratchet: a snapshot
+with no `id` still projects and takes a generated identity, and one with
+no `name` falls back to its id.
 
-Seven more after Codex's review of the first version, one per finding, so
-none can regress silently:
-
-- re-registering a candidate does not activate it, and re-registering an
-  active version does not demote it — the hash excludes `lifecycle`, so an
-  idempotent `put` was writing it through
-- a promotion is not observable until its commit is recorded (asserted
-  from a reader's side, mid-audit)
-- a cancelled promotion is rolled back (`CancelledError` is not an
-  `Exception`)
-- execution refuses a candidate even when its version is named
-- a candidate-only template is not reported as unregistered
-- an approval must name an approver and a reason
+Changed-line coverage on the three source files this touches:
+`graph/templates.py` and `graph/sqlite_templates.py` at 100%,
+`graph/template_adapter.py` at 98%. `graph/pg_templates.py` measures 0%
+without a database and is covered by CI's PostgreSQL leg.
