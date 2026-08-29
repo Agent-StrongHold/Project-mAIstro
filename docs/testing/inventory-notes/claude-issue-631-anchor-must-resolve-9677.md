@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  tests/: +11
+  tests/: +16
 ---
 # claude-issue-631-anchor-must-resolve-9677
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
-One new file, eleven tests, nothing moved or deleted.
+One new file, sixteen tests, nothing moved or deleted.
 
 `tests/test_ac_state_anchor_resolution.py` covers the anchor-resolution gate
 (#631). Two tests hold the module universe itself -- that it is not silently
@@ -36,3 +36,26 @@ defect the gate closes, and I had reintroduced it inside the fix.
 Verified by counterfactual as well as by unit test: reintroducing one bare
 anchor into a real spec fails `check-ac-state.py` with exit 1 and names the
 file, the criterion and the string; restoring it passes.
+
+Five more came from the front-matter gate, which rejected the corrected
+anchors outright: `@` cannot start a bare YAML scalar, so a scoped identity
+has to be quoted, and a regex reader that keeps the quotes then yields
+`"'@tool/...'"` -- an identity matching no module and not what the document
+says. Both halves are load-bearing and neither is visible from the other; the
+resolution gate is regex-based and was content with the quotes, the linter is
+YAML-based and was content without them. Four tests pin the quoting (both
+quote characters, the unquoted case that must not change, the unmatched quote
+that must be left alone) and one asserts every anchor in the *real* corpus
+resolves, which is the claim the change actually makes.
+
+That last one is what caught the regression: #628 merged mid-review and
+brought five fresh bare anchors, and the corpus test failed on the merge
+rather than after it.
+
+One test in this file was itself flaky and is now not. It picked a baselined
+module with `next(iter(...))` over a set, so the pick followed the per-process
+hash seed. Roughly one run in five it drew one of the 40 baseline entries that
+are not module identities, and failed. `min(unreachable & universe)` is stable;
+verified across eight explicit hash seeds rather than by re-running and hoping.
+The 40 are #651, named in the comment so the next reader does not re-derive
+them.
