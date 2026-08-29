@@ -25,6 +25,7 @@ from scripts.ratchet_provenance import (
     require_measurement,
     require_metric_version,
     resolve_baseline,
+    resolve_baseline_dir,
 )
 
 LEDGER = "quality/ledger.json"
@@ -556,3 +557,96 @@ class TestTheRemainingResolverPaths:
 
         with pytest.raises(RatchetProvenanceError, match="could not be read"):
             resolve_baseline(repo / LEDGER, root=repo)
+
+
+NOTES_DIR = "quality/notes"
+
+
+@pytest.fixture
+def notes_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A repo whose trunk carries a directory of ledger files.
+
+    The directory form of the `repo` fixture: `resolve_baseline_dir` is what a
+    folded ratchet reads, and folding from many small files is the whole point
+    of the notes scheme (#585), so its failure modes deserve the same real-git
+    treatment as the single-file form.
+    """
+    monkeypatch.delenv(BASE_REV_ENV, raising=False)
+    root = tmp_path / "notes-repo"
+    root.mkdir()
+    _run(root, "init", "-q", "-b", "develop")
+    _write(root, f"{NOTES_DIR}/a.json", {"value": 1})
+    _write(root, f"{NOTES_DIR}/b.json", {"value": 2})
+    _write(root, f"{NOTES_DIR}/README.md", "not a ledger")
+    _commit(root, "trunk notes")
+    _run(root, "remote", "add", "origin", str(root))
+    _run(root, "fetch", "-q", "origin")
+    _run(root, "checkout", "-q", "-b", "candidate")
+    _write(root, "work.txt", "candidate work")
+    _commit(root, "candidate work")
+    return root
+
+
+class TestResolveBaselineDir:
+    def test_every_matching_file_at_the_base_is_read(self, notes_repo: Path) -> None:
+        found = resolve_baseline_dir(notes_repo / NOTES_DIR, base="develop", root=notes_repo)
+
+        assert [item.path.name for item in found] == ["a.json", "b.json"]
+        assert [json.loads(item.text or "")["value"] for item in found] == [1, 2]
+        assert {item.origin for item in found} == {"base"}
+
+    def test_a_file_the_candidate_adds_is_not_in_the_baseline(self, notes_repo: Path) -> None:
+        """The self-approval hole, in the directory form: a candidate that adds
+        its own note must not be judged against it."""
+        _write(notes_repo, f"{NOTES_DIR}/c.json", {"value": 3})
+        _commit(notes_repo, "candidate adds a note")
+
+        found = resolve_baseline_dir(notes_repo / NOTES_DIR, base="develop", root=notes_repo)
+
+        assert [item.path.name for item in found] == ["a.json", "b.json"]
+
+    def test_a_directory_absent_at_the_base_is_an_empty_fold(self, notes_repo: Path) -> None:
+        found = resolve_baseline_dir(notes_repo / "quality/absent", base="develop", root=notes_repo)
+
+        assert found == []
+
+    def test_a_directory_outside_the_repository_is_refused(
+        self, notes_repo: Path, tmp_path: Path
+    ) -> None:
+        """It has no path at the base commit, so there is nothing to read —
+        and silently answering "empty" would be a bound of nothing."""
+        with pytest.raises(RatchetProvenanceError, match="is outside"):
+            resolve_baseline_dir(tmp_path / "elsewhere", base="develop", root=notes_repo)
+
+    def test_an_unreadable_base_tree_raises_rather_than_folding_nothing(
+        self, notes_repo: Path
+    ) -> None:
+        """The discrimination the single-file form makes, made here too.
+
+        A directory genuinely absent at the base is an empty fold; a base whose
+        tree cannot be read is not, and the difference is a ratchet that stops
+        ratcheting. Reproduced by removing the base commit's own tree object —
+        `ls-tree` then fails for the same reason an absent directory does, and
+        only the `cat-file` probe can tell the two apart.
+        """
+        tree = _run(notes_repo, "rev-parse", "develop^{tree}")
+        loose = notes_repo / ".git" / "objects" / tree[:2] / tree[2:]
+        assert loose.is_file(), "expected a loose object; the fixture must not pack"
+        loose.unlink()
+
+        with pytest.raises(
+            RatchetProvenanceError, match="An unreadable oracle is not an empty one"
+        ):
+            resolve_baseline_dir(notes_repo / "quality/absent", base="develop", root=notes_repo)
+
+    def test_a_listed_file_that_cannot_be_read_raises(self, notes_repo: Path) -> None:
+        """`ls-tree` reads the tree; `show` reads the blob. Losing the blob
+        alone is the one state where the directory listing and the contents
+        disagree, and the fold must not quietly drop the file it just named."""
+        blob = _run(notes_repo, "rev-parse", f"develop:{NOTES_DIR}/a.json")
+        loose = notes_repo / ".git" / "objects" / blob[:2] / blob[2:]
+        assert loose.is_file(), "expected a loose object; the fixture must not pack"
+        loose.unlink()
+
+        with pytest.raises(RatchetProvenanceError, match=r"a\.json is listed at"):
+            resolve_baseline_dir(notes_repo / NOTES_DIR, base="develop", root=notes_repo)

@@ -77,7 +77,7 @@ A document tier is the highest rung **all** of its criteria have reached. A pass
 
 Two enforcement modes operate over the same corpus:
 
-- `--ratchet` holds reviewed legacy evidence debt in `quality/ac-state-ceilings.json`. The M0 closeout reconciled every current contradicted/unverifiable completion claim, so both completion-claim counters are now zero; remaining AC-ID/spec evidence retrofit debt stays explicit and non-growing.
+- `--ratchet` holds reviewed legacy evidence debt in a bound folded from `quality/ac-state-notes/` at the base revision (#585, ADR-082926-25a2): debt counters fold by minimum, `design_coverage` by maximum, and a branch writes only its own note so two branches never conflict. The M0 closeout reconciled every current contradicted/unverifiable completion claim, so both completion-claim counters are now zero; remaining AC-ID/spec evidence retrofit debt stays explicit and non-growing.
 - `--mandate <base>` is zero-tolerance for criteria a PR creates or newly claims. A new criterion must be evidenced or carry a visible per-criterion unproven marker with a reason.
 
 Example explicit deferral:
@@ -98,7 +98,7 @@ The `/adr` and `/spec` scaffolds emit lifecycle history immediately. When a reco
 
 Design coverage is decision-weighted: for each taken ADR (`Accepted`, `Fully Specced`, or `Implemented`), measure the fraction of its own and implementing specs' criteria that reach `reachable`, then average one vote per decision. A taken decision with no evidence contributes zero rather than disappearing from the denominator. The generator uses this same ADR-only taken-state set; SPEC-only states such as `In Progress` and `Tests Passing` are not decision states.
 
-The **current reviewed floor is always the value in `quality/ac-state-ceilings.json`**, not a number copied into prose. Accepting a real new decision can legitimately lower the percentage because new work becomes owed; such a denominator change must be banked and explained. Proving criteria raises it and the higher value must likewise be banked so the gain cannot pay for a later regression.
+The **current reviewed floor is always the fold over `quality/ac-state-notes/`**, not a number copied into prose; the gate prints it on every verdict, and `--show-bounds` prints it on demand. Accepting a real new decision can legitimately lower the percentage because new work becomes owed; such a denominator change must be banked and explained. Proving criteria raises it and the higher value must likewise be banked so the gain cannot pay for a later regression.
 
 ## Other dedicated gates
 
