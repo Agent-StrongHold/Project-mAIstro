@@ -32,12 +32,12 @@ tests:
 source:
   - packages/hive-conductor/backend/services/durability.py
 ac-modules:
-  AC-1: '@flat/hive-conductor/services.durability'
-  AC-2: '@flat/hive-conductor/services.durability'
-  AC-3: '@flat/hive-conductor/routes.health'
-  AC-4: '@flat/hive-conductor/services.durability'
-  AC-5: '@flat/hive-conductor/services.durability'
-  AC-6: '@flat/hive-conductor/services.model_store'
+  AC-1: services.durability
+  AC-2: services.durability
+  AC-3: routes.health
+  AC-4: services.durability
+  AC-5: services.durability
+  AC-6: services.model_store
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -77,6 +77,13 @@ actually in use, whether that backend is durable, the initialization error if
 there was one, and whether writes are refused. Every surface that describes
 state durability reads that one record, so `/health`, `/health/ready` and the
 settings record cannot disagree about it.
+
+<!-- ac-state: unproven AC-1 - behavioral evidence passes, but the Hive flat module is intentionally baselined unreachable by the current reachability graph. -->
+<!-- ac-state: unproven AC-2 - behavioral evidence passes, but the Hive flat module is intentionally baselined unreachable by the current reachability graph. -->
+<!-- ac-state: unproven AC-3 - behavioral evidence passes, but the Hive flat module is intentionally baselined unreachable by the current reachability graph. -->
+<!-- ac-state: unproven AC-4 - behavioral evidence passes, but the Hive flat module is intentionally baselined unreachable by the current reachability graph. -->
+<!-- ac-state: unproven AC-5 - behavioral evidence passes, but the Hive flat module is intentionally baselined unreachable by the current reachability graph. -->
+<!-- ac-state: unproven AC-6 - behavioral evidence passes, but the Hive flat module is intentionally baselined unreachable by the current reachability graph. -->
 
 ## Acceptance Criteria
 
