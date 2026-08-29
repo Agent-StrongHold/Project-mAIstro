@@ -37,20 +37,26 @@ test.afterAll(async () => {
   await context.close();
 });
 
-/** Each visible field's accessible name, paired with its placeholder. */
+/**
+ * The visible fields in `scope`, with the placeholder each one carries.
+ *
+ * The *name* is deliberately not computed here. An earlier version read
+ * `aria-label` or the first associated `<label>`, which approximates the
+ * accessible-name algorithm and gets it wrong for a field named through
+ * `aria-labelledby` — a form the source gate explicitly permits, so the two
+ * halves of this issue's evidence disagreed with each other (raised in
+ * review). The assertions below ask Playwright for the browser's computed
+ * name instead.
+ */
 async function fields(scope: string) {
   return page.$$eval(`${scope} input`, (inputs) =>
     inputs
       .filter((input) => (input as HTMLInputElement).type !== "hidden")
-      .map((input) => {
-        const element = input as HTMLInputElement;
-        const label = element.labels?.[0]?.textContent?.trim() ?? "";
-        return {
-          name: element.getAttribute("aria-label") ?? label,
-          placeholder: element.placeholder ?? "",
-          type: element.type,
-        };
-      }),
+      .map((input, index) => ({
+        index,
+        placeholder: (input as HTMLInputElement).placeholder ?? "",
+        type: (input as HTMLInputElement).type,
+      })),
   );
 }
 
@@ -62,13 +68,15 @@ test.describe("Credential fields carry persistent labels", () => {
     });
 
     const found = await fields("form");
-
     expect(found.length).toBeGreaterThanOrEqual(2);
+
     for (const field of found) {
-      expect(field.name, `a field whose placeholder is "${field.placeholder}"`).not.toBe("");
-      // The name may not simply *be* the placeholder: that is the defect, not
-      // a fix for it.
-      if (field.placeholder) expect(field.name).not.toBe(field.placeholder);
+      const input = page.locator("form input").nth(field.index);
+      // The browser's computed name, not an approximation of it.
+      await expect(input).not.toHaveAccessibleName("");
+      // And the name may not simply *be* the placeholder: that is the defect,
+      // not a fix for it.
+      if (field.placeholder) await expect(input).not.toHaveAccessibleName(field.placeholder);
     }
   });
 
@@ -76,11 +84,13 @@ test.describe("Credential fields carry persistent labels", () => {
     await page.goto("/login", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: /^Sign up$/ }).click();
 
-    const secrets = (await fields("form")).filter((field) => field.type === "password");
-    const names = secrets.map((field) => field.name);
+    const secrets = page.locator('form input[type="password"]');
+    await expect(secrets).toHaveCount(2);
 
-    expect(names.length).toBe(2);
-    expect(new Set(names).size).toBe(2);
+    // Distinct computed names. Both fields were called "password" and nothing
+    // else before this change.
+    await expect(secrets.nth(0)).toHaveAccessibleName("Password");
+    await expect(secrets.nth(1)).toHaveAccessibleName("Confirm password");
   });
 
   test("a secret field can be revealed, and the control says which field", async () => {
@@ -88,8 +98,7 @@ test.describe("Credential fields carry persistent labels", () => {
     const password = page.locator('input[autocomplete="current-password"]').first();
     await expect(password).toBeVisible({ timeout: 15000 });
 
-    const toggle = page.getByRole("button", { name: /Password$/ });
-    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    const toggle = page.getByRole("button", { name: "Show Password" });
     await toggle.click();
 
     // The reveal is a real type change, which is what actually shows the
@@ -97,7 +106,28 @@ test.describe("Credential fields carry persistent labels", () => {
     // a password field would stop being offered a saved credential.
     await expect(password).toHaveAttribute("type", "text");
     await expect(password).toHaveAttribute("autocomplete", "current-password");
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // The action name follows the state, and names its own field: a page with
+    // several secret fields otherwise has several buttons all called "Show".
+    await expect(page.getByRole("button", { name: "Hide Password" })).toBeVisible();
+  });
+
+  test("switching between sign in and sign up does not expose a revealed password", async () => {
+    // The form preserves `password` across the switch, and React reuses a
+    // component at the same child position — so without a `key` per form, a
+    // password revealed on one form is still revealed, and still filled, on
+    // the other. The user never asked to show it there (raised in review).
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+    const password = page.locator('input[autocomplete="current-password"]').first();
+    await expect(password).toBeVisible({ timeout: 15000 });
+    await password.fill("hunter2");
+    await page.getByRole("button", { name: "Show Password" }).click();
+    await expect(password).toHaveAttribute("type", "text");
+
+    await page.getByRole("button", { name: /^Sign up$/ }).click();
+
+    const after = page.locator('input[autocomplete="new-password"]').first();
+    await expect(after).toBeVisible();
+    await expect(after).toHaveAttribute("type", "password");
   });
 
   test("axe finds no violation on the sign-in form", async () => {
@@ -121,8 +151,11 @@ test.describe("Credential fields carry persistent labels", () => {
     await page.goto("/credentials", { waitUntil: "domcontentloaded" });
     await expect(page.locator("input").first()).toBeVisible({ timeout: 15000 });
 
-    const unnamed = (await fields("body")).filter((field) => field.name === "");
+    const found = await fields("body");
+    expect(found.length).toBeGreaterThan(0);
 
-    expect(unnamed).toEqual([]);
+    for (const field of found) {
+      await expect(page.locator("body input").nth(field.index)).not.toHaveAccessibleName("");
+    }
   });
 });

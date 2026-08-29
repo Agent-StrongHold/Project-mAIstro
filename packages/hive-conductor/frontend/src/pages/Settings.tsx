@@ -106,17 +106,17 @@ export default function Settings() {
               {editing === key ? (
                 <div style={{ display: "flex", gap: 4 }}>
                   {typeof value === "boolean" ? (
-                    <select className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} style={{ width: 80 }}>
+                    <select aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} style={{ width: 80 }}>
                       <option value="true">true</option>
                       <option value="false">false</option>
                     </select>
                   ) : key.toLowerCase().includes("model") && availableModels.length > 0 ? (
-                    <select className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)}>
+                    <select aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)}>
                       {!availableModels.includes(editVal) && <option value={editVal}>{editVal}</option>}
                       {availableModels.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
                   ) : (
-                    <input className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
+                    <input aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
                   )}
                   <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
                   <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>

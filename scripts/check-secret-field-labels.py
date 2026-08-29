@@ -55,7 +55,11 @@ CREDENTIAL_SURFACES = (
     "components/LlmProviders.tsx",
 )
 
-_PASSWORD_INPUT = re.compile(r'type\s*=\s*"password"')
+#: `type="password"` in every form JSX can express it. The first version matched
+#: the double-quoted spelling only, so `type='password'` and
+#: `type={"password"}` rendered the same forbidden control and passed the gate
+#: -- a rule any reformatting could step around (raised in review of #375).
+_PASSWORD_INPUT = re.compile(r"""(?<![\w-])type\s*=\s*\{?\s*['"`]password['"`]\s*\}?""")
 
 _INPUT_START = re.compile(r"<input\b")
 
@@ -128,7 +132,12 @@ def _tag_attributes(text: str, start: int) -> str:
     return text[start:]
 
 
-_NAMED = ("aria-label", "aria-labelledby", "id=", "id ")
+#: An attribute *name*, not a substring. `data-testid="x"` contains "id=", and
+#: matching substrings therefore read an unnamed field as named -- the same
+#: class of false pass the scanner above exists to avoid, one layer in (raised
+#: in review of #375). The lookbehind is what makes `id` mean `id` and not the
+#: tail of `testid`.
+_NAMED = re.compile(r"""(?<![\w-])(id|aria-label|aria-labelledby)\s*=""")
 
 
 @dataclass(frozen=True)
@@ -181,7 +190,7 @@ def placeholder_named_inputs(root: Path, surfaces: tuple[str, ...]) -> list[Find
         text = _without_comments(path.read_text(encoding="utf-8"))
         for match in _INPUT_START.finditer(text):
             attrs = _tag_attributes(text, match.end())
-            if any(marker in attrs for marker in _NAMED):
+            if _NAMED.search(attrs):
                 continue
             findings.append(
                 Finding(

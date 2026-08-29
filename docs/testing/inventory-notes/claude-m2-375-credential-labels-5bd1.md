@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +17
+  tests/: +24
 ---
 # claude-m2-375-credential-labels-5bd1
 
@@ -52,6 +52,24 @@ revealing a secret is a real `type` change which preserves `autocomplete`, that
 the reveal control names the field it belongs to, that axe finds nothing on the
 sign-in form, and that every field on the credentials page — the surface behind
 authentication, where the placeholder changed with server state — is named.
+
+Review found three more things in the browser half, all fixed with tests:
+
+- The spec **approximated the accessible-name algorithm**, reading `aria-label`
+  or the first associated `<label>`. A field named through `aria-labelledby` —
+  a form the source gate explicitly permits — would have been reported unnamed,
+  so the two halves of this issue's evidence disagreed with each other. It asks
+  Playwright for the browser's computed name now.
+- The reveal toggle changed **both** its accessible name and `aria-pressed`,
+  which announces as "Hide Password, pressed" and leaves the listener to work
+  out which half is the state. It keeps the changing action name, which matches
+  its visible text, and drops `aria-pressed`.
+- **A revealed password survived a switch between sign in and sign up.** React
+  reuses a component at the same child position, `switchMode` deliberately
+  preserves `password`, and the field is therefore still revealed *and* still
+  filled on a form the user never revealed it on. Each form carries a `key`
+  now, and the regression test was confirmed to fail without that fix and pass
+  with it.
 
 `session.ts` changed as a direct consequence. Its setup helper used to fill the
 two account passwords with `input[type="password"]` `nth(0)`/`nth(1)`, because

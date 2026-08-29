@@ -68,6 +68,27 @@ def test_the_shared_component_may_render_one(gate, tmp_path: Path) -> None:
     assert gate.raw_password_inputs(tmp_path, shared) == []
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    ['type="password"', "type='password'", 'type={"password"}', "type={'password'}"],
+)
+def test_every_way_jsx_spells_a_password_input_is_caught(gate, tmp_path: Path, spelling) -> None:
+    """The rule was written against the double-quoted form only, so the other
+    three rendered the same forbidden control and passed (raised in review).
+    A rule any reformatting can step around is not a rule."""
+    surface(tmp_path, f"<input {spelling} />", "pages/Anything.tsx")
+
+    findings = gate.raw_password_inputs(tmp_path, tmp_path / "components" / "shared.tsx")
+
+    assert len(findings) == 1
+
+
+def test_a_word_ending_in_password_is_not_a_password_input(gate, tmp_path: Path) -> None:
+    surface(tmp_path, '<input data-type="not-password" />', "pages/Anything.tsx")
+
+    assert gate.raw_password_inputs(tmp_path, tmp_path / "components" / "shared.tsx") == []
+
+
 # --- rule 2: a control on a credential surface must be able to carry a name --
 
 
@@ -85,6 +106,20 @@ def test_any_of_the_three_naming_attributes_satisfies_it(gate, tmp_path: Path, a
     surface(tmp_path, f"<input {attribute} placeholder='password' />")
 
     assert gate.placeholder_named_inputs(tmp_path, ("pages/Login.tsx",)) == []
+
+
+@pytest.mark.parametrize("decoy", ['data-testid="password"', 'placeholder="grid=x"'])
+def test_an_attribute_that_merely_contains_a_marker_does_not_name_the_field(
+    gate, tmp_path: Path, decoy
+) -> None:
+    """`data-testid=` contains `id=`. Matching markers as substrings therefore
+    read an unnamed field as named — the same class of false pass the tag
+    scanner exists to avoid, one layer in (raised in review)."""
+    surface(tmp_path, f"<input {decoy} />")
+
+    findings = gate.placeholder_named_inputs(tmp_path, ("pages/Login.tsx",))
+
+    assert len(findings) == 1
 
 
 def test_a_naming_attribute_after_a_handler_still_counts(gate, tmp_path: Path) -> None:

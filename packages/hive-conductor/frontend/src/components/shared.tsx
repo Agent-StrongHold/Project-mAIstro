@@ -470,10 +470,17 @@ export function SecretField({
           type="button"
           onClick={() => setRevealed((shown) => !shown)}
           // Named for the field, because a page with several secret fields
-          // otherwise has several buttons all called "Show". `aria-pressed`
-          // carries the state, so the name does not have to change to say it.
+          // otherwise has several buttons all called "Show".
+          //
+          // A changing action name and no `aria-pressed`, which is one of the
+          // two coherent choices (raised in review of #375). The first version
+          // had both: the name went "Show Password" -> "Hide Password" *and*
+          // `aria-pressed` flipped, which announces as "Hide Password,
+          // pressed" and leaves the listener to work out which half is the
+          // state. The other choice -- a fixed name plus `aria-pressed` --
+          // would make the accessible name disagree with the visible "hide",
+          // which is its own failure (WCAG 2.5.3, label in name).
           aria-label={`${revealed ? "Hide" : "Show"} ${label}`}
-          aria-pressed={revealed}
           disabled={disabled}
           style={{
             background: "none", border: "1.3px solid var(--rule)", borderRadius: 4,

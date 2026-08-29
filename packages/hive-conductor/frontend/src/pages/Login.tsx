@@ -217,8 +217,14 @@ export default function Login({ onAuthenticated }: LoginProps) {
           </div>
         )}
 
+        {/* `key={mode}` remounts the form when the user switches between sign
+            in and sign up. Without it React reuses the SecretField at the same
+            child position, so a password revealed on one form stays revealed on
+            the other -- and `switchMode` deliberately preserves `password`, so
+            the credential the user typed appears in plain text on a form they
+            did not reveal it on (raised in review of #375). */}
         {mode === "login" ? (
-          <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <form key="login" onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <TextField
               label="Username"
               value={username}
@@ -244,7 +250,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
             </button>
           </form>
         ) : (
-          <form onSubmit={handleSignup} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <form key="signup" onSubmit={handleSignup} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {/* The rules move out of the placeholders and into hints. A
                 placeholder holding "min 8 characters" vanishes the instant the
                 user starts typing -- exactly when the rule matters. */}
