@@ -56,7 +56,9 @@ async def _admit(
         workspace_id=workspace,
         project_id=root.project_id,
         name="consumer claim recovery",
-        nodes=[Node(node_id=f"n{i}", node_type=_EligibleNode.kind) for i in range(nodes)],
+        nodes=[
+            Node(node_id=f"n{i}", node_type=_EligibleNode.kind) for i in range(nodes)
+        ],
     )
     run = await container.run_store.create_run(
         graph,
