@@ -15,7 +15,7 @@
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 596,
     "criteria_annotated": 214,
-    "markers_found": 313,
+    "markers_found": 308,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 20.5301
+    "design_coverage": 20.1913
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,7 +540,7 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 20.5301,
+    "percent": 20.1913,
     "decisions": 123,
     "decisions_scoring_zero": 96,
     "decisions_declaring_no_criteria": 75,
@@ -1088,8 +1088,8 @@
         "id": "ADR-081226-bb3a",
         "declared_status": "Accepted",
         "criteria": 12,
-        "reachable": 6,
-        "percent": 50.0
+        "reachable": 1,
+        "percent": 8.3333
       },
       {
         "id": "ADR-081226-e626",
@@ -4682,10 +4682,10 @@
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
-        "declared": 4,
+        "declared": 9,
         "covered": 2,
         "passing": 0,
-        "reachable": 6
+        "reachable": 1
       },
       "tier": "declared",
       "criteria": [
@@ -4693,66 +4693,56 @@
           "id": "SPEC-081226-bb3a/AC-1",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Editing an instantiated Node leaves its Template untouched"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-2",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Publishing a new version does not disturb existing objects"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-3",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Instantiation binds to an exact version"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-4",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Editing an instantiated Graph leaves its Template untouched"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-5",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "A GraphTemplate version pins its nested NodeTemplates"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-6",

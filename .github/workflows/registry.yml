@@ -72,3 +72,22 @@ jobs:
         # across 118 ADRs and 151 specs. Verified clean at the time of this
         # change: 268 files, 0 errors, 0 warnings, 0 DAG/dangling findings.
         run: python -m maistro_registry.cli lint . --strict
+
+      - name: Governing citations resolve to active authority (#374)
+        # `lint` checks that a cited document exists. This checks that an
+        # *active* document does not rest its authority on something that is
+        # not itself active -- a Superseded ADR, a Deprecated one, or a
+        # decision still merely Proposed. 47 such citations were already in the
+        # corpus when this was turned on; they are baselined per-identity, so
+        # no new one can land and each existing one stays visible.
+        run: python scripts/check-citation-status.py
+
+      - name: ADR-INDEX agrees with ADR front matter (#379)
+        # The index was outside registry validation entirely, and 32 of its 82
+        # rows carried a status the ADR's own front matter contradicted — every
+        # one saying `Proposed` about a decision that had since been Accepted,
+        # Deferred, Deprecated or Superseded, which inverts the signal the
+        # index exists to carry. Front matter is canonical; the derived columns
+        # are regenerated from it with `--fix`, and the reviewed columns
+        # (`Summary`, `Ver`, `Last Modified`) are never touched.
+        run: python scripts/check-adr-index.py
