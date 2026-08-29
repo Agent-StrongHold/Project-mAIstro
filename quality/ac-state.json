@@ -15,7 +15,7 @@
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 596,
     "criteria_annotated": 214,
-    "markers_found": 307,
+    "markers_found": 310,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 20.1913
+    "design_coverage": 20.3268
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,7 +540,7 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 20.1913,
+    "percent": 20.3268,
     "decisions": 123,
     "decisions_scoring_zero": 96,
     "decisions_declaring_no_criteria": 75,
@@ -1088,8 +1088,8 @@
         "id": "ADR-081226-bb3a",
         "declared_status": "Accepted",
         "criteria": 12,
-        "reachable": 1,
-        "percent": 8.3333
+        "reachable": 3,
+        "percent": 25.0
       },
       {
         "id": "ADR-081226-e626",
@@ -4682,10 +4682,10 @@
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
-        "declared": 9,
+        "declared": 7,
         "covered": 2,
         "passing": 0,
-        "reachable": 1
+        "reachable": 3
       },
       "tier": "declared",
       "criteria": [
@@ -4774,12 +4774,14 @@
           "id": "SPEC-081226-bb3a/AC-8",
           "claimed": false,
           "module": "maistro.personas.model",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/personas/test_catalog_membership.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Persona catalog membership mutates nothing"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-9",
@@ -4796,12 +4798,14 @@
           "id": "SPEC-081226-bb3a/AC-10",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_legacy_import_provenance.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Legacy definitions import with provenance"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-11",
