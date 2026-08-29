@@ -2,12 +2,14 @@ name: Formal Conformance
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, integration, develop]
 
 concurrency:
-  group: formal-conformance-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: formal-conformance-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   formal-conformance:
@@ -58,10 +60,10 @@ jobs:
       # architecture/conformance job so the freeze is operative and its own
       # reachability claim is true rather than baselined away.
       #
-      # The comparison is pinned to the immutable base SHA from the PR event,
-      # not a moving branch ref. The exception decision is reduced by Actions to
-      # a boolean environment value before Bash runs, so neither a branch name
-      # nor a label is interpolated into shell source.
+      # This is a PR-policy check because its exception is a PR label. The queue
+      # runs only after the PR has already passed this check; the merge-group run
+      # validates the combined tree through the formal models below rather than
+      # trying to reconstruct PR label state from a merge_group payload.
       - name: Enforce M1 convergence freeze
         if: github.event_name == 'pull_request'
         env:

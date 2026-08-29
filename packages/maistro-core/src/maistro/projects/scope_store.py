@@ -109,6 +109,19 @@ class ProjectScopeStore(Protocol):
 
         ...
 
+    async def purge_workspace(self, workspace_id: str) -> None:
+        """Tear down every Project row a Workspace owns.
+
+        On the Protocol rather than duck-typed. It was optional, discovered
+        with `getattr(store, "purge_workspace", None)`, and only the in-memory
+        reference defined it -- so on every durable deployment the call was
+        skipped and `WorkspaceStore.delete` left the whole Project tree,
+        its memberships and its scoped resources orphaned, against its own
+        stated contract (Codex, #516). Optional by duck-typing meant absent in
+        production and present in the tests.
+        """
+        ...
+
     async def validate_required_resources(
         self,
         project_id: str,
@@ -378,8 +391,12 @@ class InMemoryProjectScopeStore:
                 f"destination Project cannot see required resources: {', '.join(missing)}"
             )
 
-    def purge_workspace(self, workspace_id: str) -> None:
-        """Internal Workspace teardown helper; not ordinary Project deletion."""
+    async def purge_workspace(self, workspace_id: str) -> None:
+        """Internal Workspace teardown helper; not ordinary Project deletion.
+
+        `async` because the durable implementations must be: a contract that is
+        sync here and async there cannot be one contract.
+        """
 
         project_ids = {
             project.project_id

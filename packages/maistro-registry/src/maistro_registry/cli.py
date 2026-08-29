@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from maistro_registry.citations import CitationProblem, check_citations
 from maistro_registry.dag import Cycle, DuplicateId, find_cycles, find_duplicate_ids
 from maistro_registry.generator import build_registry, write_registry
 from maistro_registry.linker import (
@@ -179,6 +180,20 @@ def cmd_lint(args: argparse.Namespace) -> int:
     duplicates: list[DuplicateId] = find_duplicate_ids(loaded.results)
     for d in duplicates:
         print(f"  DUPLICATE: {d.render()}")
+
+    # Existence is what `check_links` answers; authority is a different
+    # question, and an Accepted spec resting on a Superseded ADR passes the
+    # first while failing the second (#374).
+    #
+    # Reported here, enforced elsewhere. The corpus carries 47 of these, each a
+    # governance judgement someone still has to make, so failing `lint` on them
+    # would turn a clean gate red for a backlog it cannot fix. The ratchet in
+    # `scripts/check-citation-status.py` holds the line instead: it fails on a
+    # *new* one and requires the ledger to shrink when one is resolved. Making
+    # this an error here is the right move once that ledger reaches zero.
+    citations: list[CitationProblem] = check_citations(valid_fms)
+    for problem in citations:
+        print(f"  CITATION: {problem.render()}")
 
     extra = len(cycles) + len(dangling) + len(duplicates)
     return _exit_status(loaded.results, strict=args.strict, quiet_ok=args.quiet, extra_errors=extra)
