@@ -57,8 +57,8 @@ usage() {
 #
 # Skips things that are not pullable images:
 #   * `scratch`, which is the empty base and has no registry entry;
-#   * a reference to an earlier build stage, tracked via `AS <alias>` and the
-#     numeric stage indexes seen so far;
+#   * a reference to an earlier build stage, tracked via `AS <alias>` or its
+#     numeric stage index;
 #   * an unresolved build argument, which cannot be resolved without build args.
 #     It is reported on stderr rather than dropped silently, since it means this
 #     script no longer covers that image.
@@ -85,7 +85,6 @@ base_images() {
 			# Registered after the image is judged, so `FROM x AS builder`
 			# followed by `FROM builder` resolves in that order.
 			if (alias != "") stage[alias] = 1
-			stage_index++
 			next
 		}
 
@@ -137,7 +136,7 @@ main() {
 	local images
 	images="$(base_images "$@")"
 	if [[ -z ${images} ]]; then
-		echo "::error::no external images found in: $*" >&2
+		echo "::error::no base images found in: $*" >&2
 		exit 1
 	fi
 
