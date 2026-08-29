@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "_comment": "Every script under scripts/ whose code opens a path under quality/ and does NOT resolve it from the base revision (#542). Checked by scripts/check-ratchet-provenance.py: a script reading a ledger with no row here fails, a row for a script that has since been converted must be pruned, and a row the base did not carry needs a grant in quality/ratchet-authorizations.json -- so this gate obeys the rule it enforces. DECISIONS: CONVERT_PENDING = should be base-resolved and is not yet; needs 'owner'. CANDIDATE_AUTHORED = the ledger is the specification rather than a tolerance, so a candidate editing it is the intended workflow (#542 group 3); needs 'safeguard' naming what makes that safe. NOT_A_RATCHET = reads a quality/ path but judges no floor. Converted scripts are ABSENT from this file; that is what makes the list shrink.",
+  "scripts": {
+    "check-citation-status.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 follow-up",
+      "reason": "citation-baseline.json records citations of non-active authority the repo has agreed to carry, which is a tolerance ledger by group 1's definition: a candidate that cites a Superseded ADR and appends the citation in the same commit raises its own floor. Not converted in this change only because the conversion is mechanical and the inventory is what makes the remainder visible; it is debt with a name on it, not a decision."
+    },
+    "check-convergence-matrix.py": {
+      "decision": "NOT_A_RATCHET",
+      "reason": "Reads reachability-baseline.json to recompute the matrix's unreachable share (#605); it judges no floor of its own and tolerates nothing. The monotonicity question for that ledger belongs to check-reachability.py, which owns it, and answering it twice in two scripts would let the two disagree about what the base said."
+    },
+    "check-execution-lifecycles.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 follow-up",
+      "reason": "execution-lifecycles.json classifies every work-state enum, and an unclassified new enum is the finding. A candidate that adds a second lifecycle and classifies it in the same commit is the group 1 shape exactly, and the stakes are the convergence program's central claim that Run/NodeRun/Attempt is the one execution identity."
+    },
+    "check-image-inventory.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 follow-up",
+      "reason": "image-inventory.json closes the set of shipped Docker images so coverage is not whatever security.yml happens to name (#346). Adding an image and its inventory row in one commit re-opens that set silently, which is the same defect the gate was built to stop, one level up."
+    },
+    "check-model-egress.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 2",
+      "reason": "model-egress.json is an allowlist of modules permitted to call a model endpoint directly. #542 puts it in group 2 for a reason: a PR that adds an egress target and appends it to the allowlist in one commit is self-approving an externally reachable surface, which is worse than self-approving a lint tolerance."
+    },
+    "check-promotion-surface.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 2",
+      "reason": "promotion-surface-baseline.json exempts modules from adversarial review on the RSI self-modification path. A candidate that adds a sensitive module and its own exemption in one commit removes the review that stands between the system and its own code, so this is group 2 by consequence even though #542 predates the gate."
+    },
+    "check-public-routes.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 2",
+      "reason": "public-routes.json is what makes a path public: the argument, not a record of one. A PR that exposes a route and appends it here in the same commit self-approves an unauthenticated surface, which is the group 2 case #542 says to handle explicitly rather than fold into the tolerance ledgers."
+    },
+    "check-radon-baseline.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 1",
+      "reason": "radon-baseline.json records complexity the repo has agreed to carry. Textbook group 1: a candidate that writes a more complex function, runs --update and commits both takes the gate red to green while the number it guards rises, which is #534's reproduction verbatim."
+    },
+    "check-reachability-dispositions.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 1",
+      "reason": "Requires reachability-dispositions.json to stay 1:1 with reachability-baseline.json. It must convert together with check-reachability.py, since a split conversion would judge the two halves of one fact against two different trees and could report a disagreement that neither tree has."
+    },
+    "check-reachability.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 1",
+      "reason": "reachability-baseline.json records modules nothing imports, and the ratchet's whole contract is that the list only shrinks. Read from the candidate, a commit that orphans a module and baselines it in the same breath satisfies that contract while breaking what it stands for."
+    },
+    "check-retired-guidance.py": {
+      "decision": "CANDIDATE_AUTHORED",
+      "safeguard": "registry.yml validates that every cited ADR resolves and is Accepted, so a fabricated retirement cannot be recorded without a real accepted decision behind it",
+      "reason": "retired-guidance.json says which normative text an accepted decision has retired. A new ADR legitimately changes that in the same commit that adds the ADR, so base-resolution would make the intended workflow impossible: the candidate editing this oracle is not self-approval, it is the decision arriving. #542 group 3, decided rather than deferred."
+    },
+    "check-shell-execution.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 2",
+      "reason": "shell-execution.json declares every shell=True with a vouched-for caller. A candidate that introduces a shell invocation and declares it in the same commit vouches for itself, and the thing being self-approved is command execution — group 2 by consequence, on the same argument as the egress allowlist."
+    },
+    "check-vulture-baseline.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 1",
+      "reason": "vulture-baseline.json records dead code the repo has agreed to carry, each entry with a disposition. Group 1: the disposition makes the entry reviewable but not prior, and a single commit can add the dead code, bank it and explain it."
+    },
+    "check_ac_state_impl.py": {
+      "decision": "NOT_A_RATCHET",
+      "reason": "The two quality/ paths it names are outputs and inputs, not its comparison ledger: ac-state.json is the report it writes (gitignored), and reachability-baseline.json is read to grade the reachable rung, a fact check-reachability.py owns. Its actual bound is folded from quality/ac-state-notes/, which ac_state_notes.py already resolves at the base revision (#585, ADR-082926-25a2)."
+    },
+    "check_enumerations.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 1",
+      "reason": "enumeration-baseline.json records enumerations the repo tolerates as unclosed. Group 1 by #542's own listing, and the same argument as the other tolerance ledgers: the entry and the thing it excuses can arrive in one commit."
+    },
+    "check_mutation_baseline.py": {
+      "decision": "CONVERT_PENDING",
+      "owner": "#542 group 1",
+      "reason": "mutation-baseline.json records surviving mutants and mutation-history.json the score over time. Group 1, with the extra wrinkle that the history file is append-only evidence rather than a tolerance, so the conversion has to judge the baseline at the base while leaving the history candidate-written."
+    },
+    "pip_audit_gate.py": {
+      "decision": "CANDIDATE_AUTHORED",
+      "safeguard": "the ledger is two-way: an entry for a dependency that was removed, or that production code now imports, fails as stale, so a row cannot outlive the fact it describes",
+      "reason": "direct-dependency-exceptions.json records why a declared dependency has no production import. The disposition and the dependency genuinely arrive together — adding a framework-loaded package and saying why it has no import is one act, not two — and the two-way check means a row that stops being true fails rather than accumulating. #542 group 3, decided rather than deferred."
+    }
+  }
+}

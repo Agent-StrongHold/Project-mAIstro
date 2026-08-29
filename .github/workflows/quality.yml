@@ -721,6 +721,23 @@ jobs:
                 || github.event.before }}
         run: uv run python scripts/check-wiring-reads.py
 
+      # Converting the ratchets one at a time fixes the ones converted; it does
+      # not stop the next one being written the old way. #542 was filed against
+      # 13 scripts reading a `quality/` ledger from the candidate tree, and by
+      # the time this gate existed there were 21. Seven arrived in between,
+      # unnoticed, because nothing was counting. So every such script is either
+      # base-resolved or carries a written decision, and the list may only
+      # shrink. Same RATCHET_BASE_REV as above, and for the same reason: this
+      # gate reads its own inventory at the base, so a change cannot add an
+      # unconverted ratchet and the row excusing it in one commit.
+      - name: ratchet provenance inventory (no ratchet judges its own tree)
+        env:
+          RATCHET_BASE_REV: >-
+            ${{ github.event_name == 'pull_request'
+                && github.event.pull_request.base.sha
+                || github.event.before }}
+        run: uv run python scripts/check-ratchet-provenance.py
+
       # The reachability ratchet says *how much* is unwired; the convergence
       # matrix says *who owns what* and which subsystem each unreachable module
       # belongs to. It is the M0 planning surface (#28), so it is checked rather
