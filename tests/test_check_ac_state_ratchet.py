@@ -398,3 +398,81 @@ def test_a_notes_module_that_fails_to_load_leaves_nothing_behind(
         gate._load_notes_module()
 
     assert "_ac_state_notes" not in sys.modules
+
+
+# --- the stacked case, at the ratchet (#609) ---------------------------------
+
+
+def _note(ceilings, name: str, **overrides) -> None:
+    """Write one more note beside the baseline the `ceilings` fixture writes."""
+    (ceilings.dir / f"{name}.json").write_text(
+        json.dumps(
+            {
+                "branch": name,
+                "measured_with_tests": True,
+                "counters": {**TOTALS, **overrides},
+            }
+        )
+    )
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_stack_that_banked_its_measurement_passes(gate, ceilings) -> None:
+    """Two notes, both new relative to the base: the shape that used to fail.
+
+    The old rule asked for exactly one changed note, found two, answered "none",
+    and compared the measurement against the base fold — so the stack's own
+    improvement read as unbanked and no amount of re-banking helped.
+    """
+    ceilings(design_coverage=20.0)
+    _note(ceilings, "parent-branch", design_coverage=21.0)
+    _note(ceilings, "stacked-branch", design_coverage=22.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 22.0}, measured=True, bank=False) == 0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_stack_that_measured_above_every_note_is_still_told_to_bank(
+    gate, ceilings, capsys
+) -> None:
+    """The half that must not get weaker: the fold is `max`, so measuring above
+    all of them is still slack a later regression could spend."""
+    ceilings(design_coverage=20.0)
+    _note(ceilings, "parent-branch", design_coverage=21.0)
+    _note(ceilings, "stacked-branch", design_coverage=22.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
+    out = capsys.readouterr().out
+    assert "unbanked improvement" in out
+    assert "23.0, floor still says 22.0" in out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_banking_below_what_was_measured_is_still_refused(gate, ceilings, capsys) -> None:
+    """#609's AC-4. One note, the case that already worked, unchanged."""
+    ceilings(design_coverage=20.0)
+    _note(ceilings, "understated", design_coverage=21.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
+    assert "unbanked improvement" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_weak_note_beside_a_strong_one_buys_no_slack(gate, ceilings, capsys) -> None:
+    """A candidate cannot lower the claim by adding a note: the fold is `max`."""
+    ceilings(design_coverage=20.0)
+    _note(ceilings, "real", design_coverage=22.0)
+    _note(ceilings, "cheat", design_coverage=1.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
+    assert "23.0, floor still says 22.0" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_regression_is_still_refused_against_the_stacked_claim(gate, ceilings, capsys) -> None:
+    ceilings(design_coverage=20.0)
+    _note(ceilings, "parent-branch", design_coverage=21.0)
+    _note(ceilings, "stacked-branch", design_coverage=22.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 19.0}, measured=True, bank=False) == 1
+    assert "moved away from its recorded state" in capsys.readouterr().out
