@@ -8,6 +8,7 @@ on:
     workflows: ["Gates Ran"]
     types: [completed]
   workflow_dispatch:
+  pull_request:
 
 permissions:
   checks: read
@@ -16,11 +17,25 @@ permissions:
   statuses: read
 
 concurrency:
-  group: enqueue-merge-queue
+  group: enqueue-merge-queue-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
+  format-probe:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Print Ruff formatter diff
+        run: uv run ruff format --diff --check scripts/check-enqueue-merge-queue.py
+
   enqueue:
+    if: github.event_name != 'pull_request'
     name: enqueue-merge-queue
     runs-on: ubuntu-latest
     timeout-minutes: 10
