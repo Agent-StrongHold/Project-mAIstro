@@ -12,9 +12,13 @@ So the matrix is checked, not trusted:
    so a new subsystem package cannot land unclassified and no module is counted
    twice. This is what makes "covers every significant subsystem" verifiable
    rather than asserted.
-3. Each row's unreachable count is recomputed from the same import graph
-   `check-reachability.py` ratchets, so the matrix cannot claim a subsystem is
-   wired when the reachability gate says otherwise.
+3. Each row's unreachable *share* -- one of `none`, `few`, `some`, `most`, `all`
+   -- is recomputed from the same import graph `check-reachability.py` ratchets,
+   so the matrix cannot claim a subsystem is wired when the reachability gate
+   says otherwise. The share, not a transcribed `19/62`, because the denominator
+   is the subsystem's module count: any PR that adds a module anywhere used to
+   invalidate that cell for every other open PR, on a line none of them wrote
+   (#605, ADR-082926-061d). `--census` prints the exact counts.
 4. Every disposition comes from the fixed vocabulary.
 5. Every ADR/SPEC id cited resolves to a file in `docs/adr` or `docs/specs`, so a
    row cannot point at a decision that does not exist.
@@ -25,13 +29,14 @@ So the matrix is checked, not trusted:
    surface most needs to get right -- the Ownership table's whole subject is
    who owns each subsystem *today* -- and it was the one thing nothing checked.
 
-Run: `python scripts/check-convergence-matrix.py`
+Run: `python scripts/check-convergence-matrix.py` (`--census` for the exact counts)
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import sys
 from collections.abc import Callable
@@ -52,7 +57,41 @@ _DISPOSITION_COLUMNS = ("Unreachable", "Disposition", "Governing ADR/spec")
 
 _CODE_SPAN = re.compile(r"`([^`]+)`")
 _DECISION_ID = re.compile(r"\b(ADR|SPEC)-[0-9][0-9A-Za-z-]*")
-_UNREACHABLE_CELL = re.compile(r"^(\d+)\s*/\s*(\d+)$")
+#: The Unreachable cell's vocabulary, widest share last. Each entry is the word
+#: and the largest share it covers; `all` is exact and handled before the scan,
+#: so a subsystem one module short of wholly unreachable reads `most`.
+#: Boundaries are inclusive at the top: exactly a fifth is `few`, exactly a half
+#: is `some` (SPEC-082926-061d).
+SHARE_BANDS: tuple[tuple[str, float], ...] = (
+    ("none", 0.0),
+    ("few", 0.20),
+    ("some", 0.50),
+    ("most", 1.0),
+)
+
+SHARE_WORDS: tuple[str, ...] = (*(word for word, _ in SHARE_BANDS), "all")
+
+_UNREACHABLE_CELL = re.compile(rf"^({'|'.join(SHARE_WORDS)})$")
+
+
+def share_word(unreachable: int, total: int) -> str:
+    """The word the matrix must state for a subsystem, from the counts.
+
+    `total` of zero cannot happen for a row the partition check accepts -- a row
+    owning no module fails by name before this is reached -- but it is answered
+    rather than divided by, so a caller exploring the vocabulary gets `none`
+    instead of an exception.
+    """
+    if unreachable <= 0 or total <= 0:
+        return "none"
+    if unreachable >= total:
+        return "all"
+    fraction = unreachable / total
+    *narrower, (widest, _) = SHARE_BANDS
+    for word, ceiling in narrower:
+        if fraction <= ceiling:
+            return word
+    return widest
 
 
 def _load_reachability() -> object:
@@ -539,6 +578,38 @@ def _partition_failures(
     return failures
 
 
+def _percent(part: int, whole: int) -> str:
+    return f"{100.0 * part / whole:.1f}%" if whole else "0.0%"
+
+
+def census(modules: list[str], unreachable: set[str], owners: dict[str, str]) -> list[str]:
+    """One line per subsystem: the exact counts behind the word in the matrix.
+
+    This is the answer to "but what is the actual number", which the matrix
+    deliberately no longer carries. Sorted by share, widest first, because the
+    question that brings someone here is almost always "what is worst".
+    """
+    totals: dict[str, int] = {}
+    misses: dict[str, int] = {}
+    for module in modules:
+        subsystem = owners.get(module)
+        if subsystem is None:
+            continue
+        totals[subsystem] = totals.get(subsystem, 0) + 1
+        misses[subsystem] = misses.get(subsystem, 0) + (module in unreachable)
+    width = max((len(name) for name in totals), default=0)
+    width = max(width, len("subsystem"))
+    rows = sorted(totals, key=lambda name: (-misses[name] / totals[name], name))
+    return [
+        f"{'subsystem':<{width}}  unreachable / total   share  word",
+        *(
+            f"{name:<{width}}  {misses[name]:>11} / {totals[name]:<5} "
+            f"{_percent(misses[name], totals[name]):>6}  {share_word(misses[name], totals[name])}"
+            for name in rows
+        ),
+    ]
+
+
 def _row_failures(
     header: list[str],
     rows: list[list[str]],
@@ -562,14 +633,18 @@ def _row_failures(
         spans = _CODE_SPAN.findall(row[unreachable_column])
         match = _UNREACHABLE_CELL.match(spans[0]) if spans else None
         if match is None:
-            failures.append(f"{key}: Unreachable cell must be `<unreachable>/<total>`")
+            failures.append(
+                f"{key}: Unreachable cell must be one of "
+                f"{', '.join(f'`{word}`' for word in SHARE_WORDS)}"
+            )
         elif key in totals:
-            stated = (int(match.group(1)), int(match.group(2)))
-            actual = (misses[key], totals[key])
+            stated = match.group(1)
+            actual = share_word(misses[key], totals[key])
             if stated != actual:
                 failures.append(
-                    f"{key}: Unreachable says {stated[0]}/{stated[1]}, code says "
-                    f"{actual[0]}/{actual[1]}"
+                    f"{key}: Unreachable says `{stated}`, code says `{actual}` "
+                    f"({misses[key]} of {totals[key]} modules, "
+                    f"{_percent(misses[key], totals[key])})"
                 )
         cell = row[disposition_column]
         verdict = cell.split()[0].strip("*_`") if cell.split() else ""
@@ -585,22 +660,40 @@ def _row_failures(
     return failures
 
 
-def main() -> int:
+CENSUS_COMMAND = "python scripts/check-convergence-matrix.py --census"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
     if not MATRIX.exists():
         print(f"FAIL: {MATRIX} is missing", file=sys.stderr)
         return 1
     text = MATRIX.read_text()
     modules = production_modules()
     unreachable = unreachable_modules()
+    if args == ["--census"]:
+        rows = parse_table(text, OWNERSHIP_MARKER)
+        prefixes, _ = _prefixes(rows[1:], rows[0].index("Modules"))
+        owners = _assign(modules, prefixes)
+        for line in census(modules, unreachable, owners):
+            print(line)
+        return 0
+    if args:
+        print(f"usage: {CENSUS_COMMAND.rsplit(' ', 1)[0]} [--census]", file=sys.stderr)
+        return 2
     failures = audit(text, modules, unreachable)
     if failures:
-        print(f"FAIL: {MATRIX.relative_to(ROOT)} does not match the code it describes\n")
+        # `os.path.relpath` rather than `Path.relative_to`: the latter raises when
+        # the matrix is outside the repo, which turned a reportable failure into a
+        # traceback the moment a test pointed the gate at a stand-in.
+        print(f"FAIL: {os.path.relpath(MATRIX, ROOT)} does not match the code it describes\n")
         for failure in failures:
             print(f"  - {failure}")
         print(
             "\nUpdate the matrix row (or the code) so the two agree. The matrix is the "
             "M0 planning surface; a stale row is a wrong plan."
         )
+        print(f"For the exact per-subsystem counts behind each word, run:\n  {CENSUS_COMMAND}")
         return 1
     subsystems = len(parse_table(text, OWNERSHIP_MARKER)) - 1
     print(
