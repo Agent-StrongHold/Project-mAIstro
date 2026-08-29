@@ -206,6 +206,13 @@ class Container:
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
     pg_pool: Any = None
+    #: Whether this container opened `pg_pool` itself. False for a pool the
+    #: caller supplied: `aclose()` closes what it owns and leaves the rest, and
+    #: closing a caller's pool out from under it is the mirror-image bug of
+    #: leaking one (#335, ADR-082926-730d).
+    owns_pg_pool: bool = False
+    #: Set by `aclose()`, so a second call does not close a pool twice.
+    closed: bool = False
     # Agent-harness DAG node adapters (dispatch/poll/cancel), keyed by
     # harness_type (e.g. "rsi_cycle"). Empty by default -- see
     # _wire_harness_adapters for why this container never auto-populates
@@ -264,6 +271,33 @@ class Container:
             from maistro.capabilities.bootstrap import default_capability_registry
 
             self.capabilities = default_capability_registry()
+
+    async def aclose(self) -> None:
+        """Release what this container opened. Idempotent.
+
+        Only what it opened: a pool the caller supplied stays open, because the
+        caller still holds it and closing it here would turn a shutdown into a
+        broken caller (#335, ADR-082926-730d). Until this existed nothing closed
+        a pool at all, which is why a leaked one had no symptom short of the
+        server running out of connection slots.
+        """
+        if self.closed:
+            return
+        # Marked closed before the await, so a close that raises does not leave
+        # the container looking open and invite a second attempt at a pool that
+        # is already going down.
+        self.closed = True
+        if self.owns_pg_pool and self.pg_pool is not None:
+            try:
+                await self.pg_pool.close()
+            except Exception:
+                logger.exception("container: the PostgreSQL pool did not close cleanly")
+            finally:
+                from maistro.persistence import forget_pool
+
+                forget_pool(self.pg_pool)
+                self.pg_pool = None
+                self.owns_pg_pool = False
 
     async def route_request(
         self,
@@ -910,6 +944,7 @@ async def create_container(
     # exists to have fixed, reintroduced by the change that generalised it.
     supplied_pg_pool = pg_pool
     pg_pool = None
+    owns_pg_pool = False
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -925,7 +960,10 @@ async def create_container(
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_postgres_backend(config.database_url, embeddings)
+        ) = await _wire_postgres_backend(
+            config.database_url, embeddings, supplied_pool=supplied_pg_pool
+        )
+        owns_pg_pool = supplied_pg_pool is None
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
@@ -1182,6 +1220,7 @@ async def create_container(
         audit_log=audit_log,
         db_pool=db_pool,
         pg_pool=pg_pool,
+        owns_pg_pool=owns_pg_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
@@ -1423,14 +1462,13 @@ def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
     """Which asyncpg pool the PostgreSQL-backed subsystems should use.
 
     A supplied pool wins over whatever the URL produced. The caller naming a
-    concrete pool is more specific than a string naming a server, and opening a
-    second pool against the same database while the given one sits unused is
-    how "PostgreSQL is configured and nothing is durable" happens.
+    concrete pool is more specific than a string naming a server.
 
-    It replaces the pool only. The learnings, outcome, session and quota stores
-    are already built by the time this is called and keep whatever the URL
-    selected — that split is #122's contract, and #135's is that a caller
-    holding a pool can reach the durable-event stores with it.
+    Since #335 the two can no longer differ when a URL is configured:
+    `_wire_postgres_backend` is handed the supplied pool and builds its stores
+    against it, so `from_url` *is* `supplied` in that case. This stays because
+    the URL branch is not the only way `from_url` can be set, and because a
+    preference expressed once is cheaper to read than the absence of one.
     """
     return supplied if supplied is not None else from_url
 
@@ -1438,6 +1476,8 @@ def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
 async def _wire_postgres_backend(
     database_url: str,
     embeddings: EmbeddingClient | None = None,
+    *,
+    supplied_pool: Any = None,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -1465,8 +1505,12 @@ async def _wire_postgres_backend(
     from maistro.persistence.pg_quota import PgQuotaTracker
     from maistro.persistence.pg_sessions import PgSessionStore
 
+    dsn = _asyncpg_dsn(database_url)
     try:
-        pool = await get_pool(_asyncpg_dsn(database_url))
+        # A supplied pool is the pool. Opening a second one against the same
+        # database and then preferring the caller's left the stores below bound
+        # to a pool nothing owned or closed (#335, ADR-082926-730d).
+        pool = supplied_pool if supplied_pool is not None else await get_pool(dsn)
     except (OSError, asyncpg.PostgresError) as exc:
         # Redacted, and raised as a config error rather than propagated. A
         # PostgreSQL DSN carries `user:password@` as a matter of course, and
@@ -1485,12 +1529,15 @@ async def _wire_postgres_backend(
             await _require_supported_postgres(conn)
             await _require_postgres_schema(conn)
     except BaseException:
-        # A failed preflight means no container, so the pool it opened has no
-        # owner. Leaving it holding connections to a database the operator is
-        # about to fix is how a retry finds the server still busy.
-        from maistro.persistence import close_pool
+        # A failed preflight means no container, so a pool *this function*
+        # opened has no owner. Leaving it holding connections to a database the
+        # operator is about to fix is how a retry finds the server still busy.
+        # A supplied pool is not ours to close: the caller still holds it, and
+        # closing it here would turn a configuration error into a broken caller.
+        if supplied_pool is None:
+            from maistro.persistence import close_pool
 
-        await close_pool()
+            await close_pool(dsn)
         raise
 
     pg_learning_store = PgLearningStore(pool)
