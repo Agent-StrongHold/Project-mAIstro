@@ -80,17 +80,20 @@ class NodeResult(BaseModel):
     #: persisted Attempt said the node produced nothing (#566). Duck-typed
     #: serialization writes the runtime model's real fields instead.
     #:
-    #: ``JsonValue`` rather than ``dict[str, Any]`` on the read-back side,
-    #: because the write side accepts *every* ``BaseModel`` and a ``RootModel``
-    #: serializes to its root -- a list, or a bare scalar. Against a dict-only
-    #: branch such an output serialized correctly and then failed validation on
-    #: the way back in, which is a worse failure than the one this fixes: the
-    #: old contract lost it silently, and a half-fixed one would raise.
+    #: ``JsonValue`` *beside* ``dict[str, Any]``, not instead of it. The write
+    #: side accepts every ``BaseModel``, and a ``RootModel`` serializes to its
+    #: root -- a list, or a bare scalar -- which a dict-only branch could not
+    #: read back. But ``JsonValue`` alone narrows the write side: a mapping
+    #: Pydantic can serialize without it already being JSON, say
+    #: ``{"created_at": datetime.now(UTC)}``, then falls past both branches into
+    #: the model one and raises from Pydantic's internals. The dict branch keeps
+    #: those callers; ``JsonValue`` adds the shapes a serialized root model
+    #: takes. Order matters: dict first, so a mapping never reaches the rest.
     #:
     #: Reading a record back gives the JSON value, not the original class: the
     #: envelope never recorded which model it was, and inventing one would be a
     #: guess.
-    output: JsonValue | SerializeAsAny[BaseModel] | None = None
+    output: dict[str, Any] | JsonValue | SerializeAsAny[BaseModel] | None = None
     latency_ms: int = 0
     error_code: str | None = None  # http status / exception class / "timeout"
     error_message: str | None = None

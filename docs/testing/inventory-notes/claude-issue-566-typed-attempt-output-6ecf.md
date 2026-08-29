@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
+  packages/maistro-core/tests: +9
 ---
 # claude-issue-566-typed-attempt-output-6ecf
 
-One file, eight tests, after a Codex review cut this change back to what it
+One file, nine tests, after two Codex reviews cut this change back to what it
 can actually prove.
 
 `test_typed_attempt_output.py` holds the serialization contract for

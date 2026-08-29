@@ -14,6 +14,7 @@ through each concrete store.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,22 @@ def test_a_scalar_root_model_output_survives() -> None:
     result = NodeResult(success=True, output=ScoreOutput(1.5))
 
     assert NodeResult.model_validate_json(result.model_dump_json()).output == 1.5
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-1")
+def test_a_mapping_pydantic_serializes_is_still_accepted() -> None:
+    """`JsonValue` alone would have narrowed the write side.
+
+    A mapping whose values are not already JSON -- a `datetime` here -- was
+    accepted by the original `dict[str, Any]` branch. With only `JsonValue` it
+    falls past both branches into the model one and raises from Pydantic's
+    internals, so this is a construction-time regression, not a read-back one.
+    """
+    result = NodeResult(success=True, output={"created_at": datetime(2026, 8, 29, tzinfo=UTC)})
+
+    assert NodeResult.model_validate_json(result.model_dump_json()).output == {
+        "created_at": "2026-08-29T00:00:00Z"
+    }
 
 
 @pytest.mark.ac("SPEC-082926-2844/AC-1")

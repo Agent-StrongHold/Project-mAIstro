@@ -72,18 +72,36 @@ already correct and is unchanged.
 
 ## The contract
 
-`NodeResult.output` is `dict[str, Any] | SerializeAsAny[BaseModel] | None`.
+`NodeResult.output` is
+`dict[str, Any] | JsonValue | SerializeAsAny[BaseModel] | None`.
+
 `SerializeAsAny` makes Pydantic serialize the *runtime* model's own fields
-rather than the declared union member's empty schema.
+rather than the declared union member's empty schema. The fix is in the type,
+so it holds wherever a `NodeResult` is serialized — every store, every
+envelope, every caller. No call site pre-dumps, and none has to remember to.
 
-The fix is in the type, so it holds wherever a `NodeResult` is serialized —
-every store, every envelope, every caller. No call site pre-dumps, and none
-has to remember to.
+Each of the three write branches is load-bearing, and the order is too:
 
-Reading a record back gives the output as a mapping, not as the original
-class. The envelope never recorded which model produced it, so reviving a class
-here would be a guess; the fields are what the record promised and the fields
-are what it returns.
+- **`dict[str, Any]` first**, so a mapping never reaches the branches after it.
+  A caller may pass values Pydantic can serialize that are not already JSON —
+  `{"created_at": datetime.now(UTC)}` — and the other two branches would reject
+  or mangle it.
+- **`JsonValue`** for the shapes a serialized model actually takes on the way
+  back in. The write side accepts *every* `BaseModel`, and a `RootModel`
+  serializes to its root: a list, or a bare scalar. A dict-only read branch
+  serialized those correctly and then raised on validation, which is worse than
+  the loss this spec fixes — the old contract dropped them silently.
+- **`SerializeAsAny[BaseModel]`** for the model itself, on the way out.
+
+**A read-back is a JSON value, not the original class**, and not necessarily a
+mapping: an object-rooted model returns a mapping, a list-rooted one a list, a
+scalar-rooted one a scalar. The envelope never recorded which model produced
+it, so reviving a class here would be a guess; the record returns the shape it
+stored.
+
+A downstream implementation of this contract must accept all three shapes on
+read. Rejecting a non-mapping would reject records this implementation
+considers valid.
 
 ## What was already emptied
 
@@ -133,6 +151,18 @@ Feature: Attempt typed output serialization
     Given a node result whose output is a plain mapping
     When the result is serialized and revalidated
     Then the output is the same mapping
+
+  @AC-1
+  Scenario: A root-shaped output survives as its own shape
+    Given a node result whose output is a model rooted in a list or a scalar
+    When the result is serialized and revalidated
+    Then the output is that list or scalar, not a mapping
+
+  @AC-1
+  Scenario: A mapping Pydantic serializes is still accepted
+    Given a node result whose output maps a key to a value that is not JSON
+    When the result is constructed and serialized
+    Then it is accepted and the value serializes to its JSON form
 
   @AC-1
   Scenario: An absent output is unchanged
