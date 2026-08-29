@@ -19,7 +19,6 @@ from maistro.orchestrator.master import (
     MasterOrchestrator,
     OrchestratorResult,
     WorkItem,
-    WorkItemStatus,
 )
 from maistro.orchestrator.planner import (
     PlanTemplate,
@@ -63,5 +62,4 @@ __all__ = [
     "WaveResult",
     "WaveTask",
     "WorkItem",
-    "WorkItemStatus",
 ]
