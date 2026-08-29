@@ -28,7 +28,9 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/runs/test_consumption_node_fidelity.py
+  - packages/maistro-core/tests/runs/test_human_pause_reasons.py
 source:
+  - packages/maistro-core/src/maistro/graph/nodes/base.py
   - packages/maistro-core/src/maistro/runs/consumption.py
   - packages/maistro-core/src/maistro/runs/execution.py
   - packages/maistro-core/src/maistro/runs/reconciliation.py
@@ -37,6 +39,8 @@ ac-modules:
   AC-2: maistro.runs.consumption
   AC-3: maistro.runs.reconciliation
   AC-4: maistro.runs.service
+  AC-5: maistro.graph.nodes.base
+  AC-6: maistro.runs.reconciliation
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -106,6 +110,30 @@ action: WAITING means the system owes a retry decision, PAUSED that a person
 does. Collapsing them makes a prompt nobody can see indistinguishable from a
 provider being down — the reading #230 removed one level up for cancellation.
 
+Which pauses count as "a person" is declared once, in `HUMAN_PAUSE_REASONS`
+beside the `pause_until` that carries the reason, and both readers — this
+consumer and the durable graph executor — import it. They previously held two
+hand-written copies naming two reasons each while nodes raised four, so
+`human.review_and_edit` and `human.delegate_to_role` parked WAITING on both
+paths. A second literal set is a second thing to forget, and nothing failed
+while it was forgotten; a structural test over the node package's AST now
+fails when a node pauses for a reason the declared set does not name. System
+waits are declared too, as `SYSTEM_PAUSE_REASONS`, so a new pausing node has
+to classify itself rather than receiving WAITING by default.
+
+The Run inherits the disposition its last active NodeRun parked with. Parking
+the NodeRun PAUSED and the Run WAITING would reintroduce the same collapse one
+level up, where the run list and the dashboard actually read it.
+
+**Not in scope here: resuming.** This spec covers what a pause *records*. A
+parked schedule Run has no tick that resumes it — `execute_admitted_runs`
+polls QUEUED — and requeueing one re-runs its node from the start, which for a
+node that dispatched before pausing would repeat the dispatch. That is #641.
+Likewise the runtime still counts a successful pause as a failed execution,
+because `ExecutionYielded` crosses a broad `except Exception`; that is #642.
+Both are real and neither is fixed by this change, so they are named here
+rather than left for a reader to discover from the code.
+
 ## Acceptance Criteria
 
 ```gherkin
@@ -146,6 +174,25 @@ Feature: Schedule consumer node invocation fidelity
     When the consumer tick executes it
     Then its NodeRun is WAITING
     And its Attempt is YIELDED
+
+  @AC-5
+  Scenario: Every human pause reason is read the same way on both paths
+    Given a node that pauses awaiting a human review or a role delegate
+    When either the schedule consumer or the durable graph executor reads it
+    Then both treat it as a pause a person is owed an action for
+
+  @AC-5
+  Scenario: A node cannot pause for an undeclared reason
+    Given a node that pauses for a reason the declared set does not name
+    When the node package is checked
+    Then the check fails rather than defaulting that node to WAITING
+
+  @AC-6
+  Scenario: A Run parks in the state its last NodeRun parked in
+    Given a scheduled Run whose only NodeRun pauses awaiting a person
+    When the consumer tick executes it
+    Then the NodeRun is PAUSED
+    And the Run is PAUSED rather than WAITING
 
   @AC-4
   Scenario: The node sees its own NodeRun and Attempt ids

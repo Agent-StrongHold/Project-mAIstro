@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +14
+  packages/maistro-core/tests: +33
 ---
 # claude-issue-545-schedule-node-fidelity-cb03
 
-Two new files, fourteen tests, nothing moved or deleted.
+Three new files, thirty-three tests, nothing moved or deleted.
 
 `test_consumption_node_fidelity.py` holds the four ways the schedule consumer's
 node invocation differed from the durable graph executor's (#545). Two tests for
@@ -36,3 +36,31 @@ direct tests rather than coverage borrowed from the paths above them. The
 already-settled case is parametrised over all four settled statuses, and its
 fixture sets `finished_at` because the model refuses a terminal NodeRun
 without one; a fixture the store could not really hold would prove nothing.
+
+`test_human_pause_reasons.py` (+19) arrived from a Codex review that found the
+two readers of a pause reason each naming two of the four reasons production
+nodes actually raise. Four tests pin what the readers now decide (every human
+reason on both paths, every system reason on neither, absent metadata on
+neither), two pin the Run inheriting its NodeRun's parked state (AC-6), and the
+rest hold the sets themselves.
+
+The load-bearing one is structural: it walks the node package's AST for
+`pause_until` calls and fails when a node pauses for a reason the declared set
+does not name. A test that merely listed today's reasons would pass again the
+moment a fifth was added and forgotten, which is precisely the failure it
+exists to catch — the previous allowlists were wrong for as long as they were,
+because nothing failed while they were.
+
+It was checked by counterfactual, not by inspection: swapping one node's
+constant back to a bare literal fails it, and restoring the constant passes it.
+It also earned its keep on first run, flagging three reasons the set it was
+written against did not have (`awaiting_remote_delegation`, `awaiting_harness`,
+`waiting_on_jira_subtasks`). Those turned out to be system waits, so WAITING
+was already the right answer for them — but nothing had established that, which
+is why they are now declared as `SYSTEM_PAUSE_REASONS` rather than left to
+arrive at WAITING by default.
+
+Two findings from the same review are filed rather than fixed here: #641 (a
+yielded schedule Run has no resume path, and requeueing it repeats a dispatch)
+and #642 (a successful pause increments `executions_failed`). Both are named in
+the spec so a reader meets them there rather than in the code.

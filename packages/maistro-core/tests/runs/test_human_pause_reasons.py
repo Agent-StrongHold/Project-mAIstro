@@ -95,6 +95,7 @@ class TestTheSetIsDeclaredOnce:
         assert not (HUMAN_PAUSE_REASONS & SYSTEM_PAUSE_REASONS)
         assert PAUSE_REASONS == HUMAN_PAUSE_REASONS | SYSTEM_PAUSE_REASONS
 
+    @pytest.mark.ac("SPEC-082926-d90e/AC-5")
     def test_no_node_pauses_for_an_undeclared_reason(self) -> None:
         """A new pausing node must classify itself, not default to WAITING.
 
@@ -127,6 +128,7 @@ class TestTheSetIsDeclaredOnce:
 class TestBothReadersAgree:
     """The two paths a HITL node can execute on must reach the same answer."""
 
+    @pytest.mark.ac("SPEC-082926-d90e/AC-5")
     @pytest.mark.parametrize("reason", sorted(EXPECTED_HUMAN))
     def test_every_human_reason_is_a_human_pause_on_both_paths(self, reason: str) -> None:
         result = NodeResult(success=True, metadata={"paused_reason": reason})
@@ -161,9 +163,11 @@ class TestTheRunInheritsThePause:
     def _node_run(self, status: RunStatus) -> NodeRun:
         return NodeRun(run_id="r", node_id="n", ordinal=1, status=status)
 
+    @pytest.mark.ac("SPEC-082926-d90e/AC-6")
     def test_a_paused_node_run_parks_its_run_paused(self) -> None:
         assert _parked_run_status(self._node_run(RunStatus.PAUSED)) is RunStatus.PAUSED
 
+    @pytest.mark.ac("SPEC-082926-d90e/AC-6")
     def test_a_waiting_node_run_parks_its_run_waiting(self) -> None:
         assert _parked_run_status(self._node_run(RunStatus.WAITING)) is RunStatus.WAITING
 
