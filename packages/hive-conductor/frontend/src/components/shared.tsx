@@ -1,4 +1,17 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  // Aliased: the un-prefixed name would shadow the DOM `KeyboardEvent` this
+  // file already uses for a window-level listener.
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 
 export function PageHeader({ title, subtitle, actions, helpHref }: { title: string; subtitle?: string; actions?: ReactNode; helpHref?: string }) {
   return (
@@ -55,36 +68,120 @@ export function StatCard({ label, value, highlight }: { label: string; value: st
 
 /* ── Modal ───────────────────────────────────────────────────── */
 
-export function Modal({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+type ModalProps = {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+  wide?: boolean;
+  /** Announced with the title. Give a dialog whose whole content is one
+   *  sentence — a confirmation, a warning — its sentence here, so a screen
+   *  reader reads it on open rather than only when focus reaches it. */
+  description?: string;
+  /** Whether Escape and a backdrop click may close this dialog. Set false for
+   *  a dialog holding unsaved or destructive work, where a stray Escape would
+   *  discard it with no confirmation and no undo (#371). The close button is
+   *  unaffected: a dialog with no way out is worse than a dismissible one. */
+  dismissible?: boolean;
+};
 
-  if (!open) return null;
+/**
+ * A real `<dialog>`, opened with `showModal()` (#371).
+ *
+ * The previous implementation was two nested `<div>`s. It had no `role`, no
+ * `aria-modal` and no accessible name, so assistive technology saw a stack of
+ * generic containers appear; focus stayed wherever the invoking button left
+ * it, Tab walked straight out into the page behind, and the background stayed
+ * in the tab order and in the accessibility tree. Escape closed it, which was
+ * the only dialog behaviour it had.
+ *
+ * Rebuilding those by hand means a focus trap, an inert background, top-layer
+ * stacking for nested dialogs and focus restoration — four things the platform
+ * already does, each with its own edge cases. `showModal()` gives all four,
+ * and gives them to every consumer at once, which is what this issue's
+ * definition of done asks for.
+ *
+ * Two things are still ours. The `cancel` event is always prevented, so the
+ * browser never closes the dialog behind React's back and leaves `open` true
+ * with nothing on screen; the close travels through `onClose` like every other
+ * close. And focus restoration is done explicitly rather than relied on,
+ * because a dialog that unmounts its invoker has nothing for the browser to
+ * restore to and the caller is better placed to notice.
+ */
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  wide,
+  description,
+  dismissible = true,
+}: ModalProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const invoker = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      invoker.current = document.activeElement as HTMLElement | null;
+      dialog.showModal();
+    } else if (!open && dialog.open) {
+      dialog.close();
+    }
+  }, [open]);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || !open) return;
+    // `cancel` fires for Escape. Preventing it unconditionally keeps the DOM
+    // and React's `open` in step; whether the dialog then closes is the
+    // `dismissible` decision, made in one place.
+    const onCancel = (event: Event) => {
+      event.preventDefault();
+      if (dismissible) onClose();
+    };
+    dialog.addEventListener("cancel", onCancel);
+    return () => dialog.removeEventListener("cancel", onCancel);
+  }, [open, dismissible, onClose]);
+
+  useEffect(() => {
+    if (open) return;
+    const previous = invoker.current;
+    invoker.current = null;
+    if (previous?.isConnected) previous.focus();
+  }, [open]);
 
   return (
-    <div
-      onClick={onClose}
-      style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
+    <dialog
+      ref={dialogRef}
+      className="modal-dialog"
+      aria-labelledby={titleId}
+      aria-describedby={description ? descriptionId : undefined}
+      // The dialog element *is* the panel, so a click whose target is the
+      // element itself landed on the backdrop around it. Comparing targets
+      // rather than stopping propagation inside also fixes a drag that starts
+      // in a text field and ends outside closing the dialog.
+      onClick={(e) => { if (dismissible && e.target === dialogRef.current) onClose(); }}
+      style={{ maxWidth: wide ? 640 : 420 }}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--paper)", color: "var(--ink)", borderRadius: 8,
-          width: "100%", maxWidth: wide ? 640 : 420, maxHeight: "80vh",
-          overflow: "auto", position: "relative", boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1.3px solid var(--rule)" }}>
-          <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 700 }}>{title}</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "var(--pencil)", lineHeight: 1 }}>✕</button>
-        </div>
-        <div style={{ padding: 16 }}>{children}</div>
-      </div>
-    </div>
+      {open ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1.3px solid var(--rule)" }}>
+            <h2 id={titleId} style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 700, margin: 0 }}>{title}</h2>
+            <button onClick={onClose} aria-label={`Close ${title}`} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "var(--pencil)", lineHeight: 1 }}>✕</button>
+          </div>
+          <div style={{ padding: 16 }}>
+            {description ? (
+              <div id={descriptionId} style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink)", marginBottom: 16 }}>{description}</div>
+            ) : null}
+            {children}
+          </div>
+        </>
+      ) : null}
+    </dialog>
   );
 }
 
@@ -188,12 +285,226 @@ export function SearchInput({ value, onChange, placeholder }: { value: string; o
   );
 }
 
+/* ── Credential fields (#375) ────────────────────────────────── */
+
+/**
+ * A labelled field, with the label associated rather than adjacent.
+ *
+ * Every credential surface in this app named its inputs with placeholder text.
+ * A placeholder is not an accessible name: it disappears the moment there is a
+ * value, so a screen-reader user who tabs back to a half-filled form is told
+ * nothing, and it can change with state — the LLM key field said "API key" or
+ * "key stored — replace?" depending on the server's answer, so the field's
+ * *name* changed under the user. The setup wizard had two fields whose whole
+ * name was "password", one for the admin account and one for the daily user,
+ * indistinguishable to anything that cannot see the layout.
+ *
+ * So the name comes from a real `<label htmlFor>` that stays on screen, and
+ * everything else a user needs — the hint, the error, whether a secret is
+ * already stored — is associated through `aria-describedby` instead of being
+ * squeezed into the name.
+ */
+export type FieldProps = {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  /** Standing help. Announced with the field, not instead of its name. */
+  hint?: string;
+  /** Set when this field is why the form failed; sets `aria-invalid` too. */
+  error?: string;
+  required?: boolean;
+  autoComplete?: string;
+  autoFocus?: boolean;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  style?: CSSProperties;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+};
+
+const FIELD_LABEL: CSSProperties = {
+  display: "block",
+  fontFamily: "var(--mono)",
+  fontSize: 9,
+  color: "var(--pencil)",
+  marginBottom: 3,
+};
+
+const FIELD_NOTE: CSSProperties = {
+  fontFamily: "var(--mono)",
+  fontSize: 9,
+  color: "var(--pencil)",
+  marginTop: 3,
+};
+
+function useFieldIds(hint?: string, error?: string) {
+  const id = useId();
+  const hintId = hint ? `${id}-hint` : undefined;
+  const errorId = error ? `${id}-error` : undefined;
+  const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+  return { id, hintId, errorId, describedBy };
+}
+
+function FieldNotes({
+  hintId,
+  hint,
+  errorId,
+  error,
+}: {
+  hintId?: string;
+  hint?: string;
+  errorId?: string;
+  error?: string;
+}) {
+  return (
+    <>
+      {hint ? <div id={hintId} style={FIELD_NOTE}>{hint}</div> : null}
+      {error ? (
+        // `role="alert"` so a failure that appears after submit is announced.
+        // Without it the message is on screen and silent, which is the state a
+        // sighted user never experiences and every other user always does.
+        <div id={errorId} role="alert" style={{ ...FIELD_NOTE, color: "var(--danger)" }}>
+          {error}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+export function TextField({
+  label,
+  value,
+  onChange,
+  hint,
+  error,
+  required,
+  autoComplete,
+  autoFocus,
+  placeholder,
+  disabled,
+  className = "input-field",
+  style,
+  onKeyDown,
+}: FieldProps) {
+  const { id, hintId, errorId, describedBy } = useFieldIds(hint, error);
+  return (
+    <div style={style}>
+      <label htmlFor={id} style={FIELD_LABEL}>{label}</label>
+      <input
+        id={id}
+        className={className}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        aria-describedby={describedBy}
+        aria-invalid={error ? true : undefined}
+        required={required}
+        autoComplete={autoComplete}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        disabled={disabled}
+      />
+      <FieldNotes hintId={hintId} hint={hint} errorId={errorId} error={error} />
+    </div>
+  );
+}
+
+export type SecretFieldProps = FieldProps & {
+  /**
+   * Whether the server already holds a secret for this field. Announced as a
+   * description — never folded into the label, and never showing any part of
+   * the stored value, which the client does not have and must not display.
+   */
+  stored?: boolean;
+  storedNote?: string;
+};
+
+export function SecretField({
+  label,
+  value,
+  onChange,
+  hint,
+  error,
+  required,
+  autoComplete = "off",
+  autoFocus,
+  placeholder,
+  disabled,
+  className = "input-field",
+  style,
+  onKeyDown,
+  stored,
+  storedNote = "A secret is already stored. Entering a new one replaces it.",
+}: SecretFieldProps) {
+  const [revealed, setRevealed] = useState(false);
+  const { id, hintId, errorId } = useFieldIds(hint, error);
+  const storedId = stored ? `${id}-stored` : undefined;
+  const describedBy = [storedId, hintId, errorId].filter(Boolean).join(" ") || undefined;
+
+  return (
+    <div style={style}>
+      <label htmlFor={id} style={FIELD_LABEL}>{label}</label>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input
+          id={id}
+          className={className}
+          // Revealing changes the input's `type`, which is what actually shows
+          // the characters. `autoComplete` is passed through unchanged either
+          // way: a password manager keys off it, and a field that silently
+          // stopped being a password field would stop being offered a
+          // credential.
+          type={revealed ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          aria-describedby={describedBy}
+          aria-invalid={error ? true : undefined}
+          required={required}
+          autoComplete={autoComplete}
+          autoFocus={autoFocus}
+          placeholder={placeholder}
+          disabled={disabled}
+          style={{ flex: 1, minWidth: 0 }}
+        />
+        <button
+          type="button"
+          onClick={() => setRevealed((shown) => !shown)}
+          // Named for the field, because a page with several secret fields
+          // otherwise has several buttons all called "Show".
+          //
+          // A changing action name and no `aria-pressed`, which is one of the
+          // two coherent choices (raised in review of #375). The first version
+          // had both: the name went "Show Password" -> "Hide Password" *and*
+          // `aria-pressed` flipped, which announces as "Hide Password,
+          // pressed" and leaves the listener to work out which half is the
+          // state. The other choice -- a fixed name plus `aria-pressed` --
+          // would make the accessible name disagree with the visible "hide",
+          // which is its own failure (WCAG 2.5.3, label in name).
+          aria-label={`${revealed ? "Hide" : "Show"} ${label}`}
+          disabled={disabled}
+          style={{
+            background: "none", border: "1.3px solid var(--rule)", borderRadius: 4,
+            padding: "3px 8px", cursor: "pointer", color: "var(--pencil)",
+            fontFamily: "var(--mono)", fontSize: 9, flexShrink: 0,
+          }}
+        >
+          {revealed ? "hide" : "show"}
+        </button>
+      </div>
+      {stored ? <div id={storedId} style={FIELD_NOTE}>{storedNote}</div> : null}
+      <FieldNotes hintId={hintId} hint={hint} errorId={errorId} error={error} />
+    </div>
+  );
+}
+
 /* ── ConfirmDialog ───────────────────────────────────────────── */
 
 export function ConfirmDialog({ open, onClose, onConfirm, title, message }: { open: boolean; onClose: () => void; onConfirm: () => void; title: string; message: string }) {
   return (
-    <Modal open={open} onClose={onClose} title={title}>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink)", marginBottom: 16 }}>{message}</div>
+    // The message is the dialog's description rather than loose content: a
+    // confirmation whose whole point is the sentence should have that sentence
+    // read out when the dialog opens, not only if focus happens to reach it.
+    <Modal open={open} onClose={onClose} title={title} description={message}>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button onClick={onClose} style={{ border: "1.3px solid var(--ink)", background: "var(--paper)", color: "var(--ink)", padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10 }}>Cancel</button>
         <button onClick={() => { onConfirm(); onClose(); }} style={{ border: "1.3px solid var(--danger, #c4452a)", background: "var(--danger, #c4452a)", color: "var(--paper)", padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10 }}>Confirm</button>

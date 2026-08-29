@@ -1,17 +1,112 @@
-# Keep the build context lean: source + pyproject + uv.lock + tests only.
+# The RSI runner's build context — the same rules as the root `.dockerignore`.
+#
+# Two files rather than one because BuildKit reads THIS one and ignores the
+# root, while the classic builder does the reverse. Letting them drift means
+# the protection depends on which builder happens to run (#308).
+#
+# scripts/check-build-context.py fails if their rule sets diverge — in content
+# or in order, because Docker resolves a path by the last rule that matches it.
+# Edit both or neither.
+
+# ---- VCS metadata --------------------------------------------------------
+# `.git` carries every secret ever committed and later removed, which is the
+# whole point of history. The RSI runner bakes a fresh repo from the copied
+# tree instead of inheriting one.
+/.git
+
+# ---- Virtual environments and caches ------------------------------------
+# Large, host-specific, and `.venv` can hold credentials cached by tooling.
+/.venv
 **/.venv
-**/node_modules
+/venv/
 **/__pycache__
-**/*.pyc
-**/*.pyo
-.git
-.pytest_cache
-.mypy_cache
-.ruff_cache
+**/*.py[cod]
+/.pytest_cache
+/.mypy_cache
+/.ruff_cache
+/.hypothesis
+**/node_modules
+**/.next
+**/.turbo
+
+# ---- Build and test output ----------------------------------------------
 **/dist
+# ...except the one generated bundle a build actually needs. This root file
+# also governs `docker build -f packages/hive-conductor/backend/Dockerfile .`,
+# and that Dockerfile copies `frontend/dist/`. Without the exception `**/dist`
+# strips it from the context and the backend image fails at its COPY, after
+# the base image and the apt layer are already built (Codex, #510).
+!packages/hive-conductor/frontend/dist
+!packages/hive-conductor/frontend/dist/**
 **/build
 **/*.egg-info
 **/.coverage
 **/coverage.xml
 **/htmlcov
+bandit.json
+semgrep.json
+
+# ---- Local run data ------------------------------------------------------
+# RSI reports hold exported patches, promotion records and scorecards from
+# previous runs. Copying them in would hand a candidate the full history of
+# every candidate before it.
+/rsi-reports/
+**/rsi-reports/
+/.conductor/
+*.sqlite
+*.sqlite3
+population.db
+
+# ---- Editor and OS noise -------------------------------------------------
 **/.DS_Store
+**/*.swp
+/.idea/
+/.vscode/
+
+# ---- Secrets. The reason this file exists. LAST ON PURPOSE. --------------
+# Docker resolves a path by the LAST rule that matches it, so a re-inclusion
+# written below a denial wins. `!packages/hive-conductor/frontend/dist/**` is
+# one, and above it sat every secret rule -- so a `.env` under that path would
+# have been re-included by an exception written for a JavaScript bundle
+# (Codex, #510). Putting the secret denials last makes them final by
+# construction: no exception can be added later without being visibly written
+# beneath them.
+#
+# `.env` holds the database password, the LiteLLM gateway key and every
+# provider key the deployment has. `.env.example` is deliberately NOT denied:
+# it ships as documentation and carries no value.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+gateway.env
+**/gateway.env
+# Each private-key pattern is written twice. Docker matches relative to the
+# context root, so a bare `*.p12` denies `client.p12` and NOT
+# `packages/provider/client.p12` -- and this build copies the whole `packages`
+# tree, so the recursive form is the one that was doing the work (Codex, #510).
+*.pem
+**/*.pem
+*.p12
+**/*.p12
+*.pfx
+**/*.pfx
+id_rsa*
+**/id_rsa*
+id_ed25519*
+**/id_ed25519*
+*.age
+**/*.age
+.age-key*
+**/.age-key*
+recovery-phrase*
+**/recovery-phrase*
+/secrets/
+**/secrets/
+# Top-level only: `**/vault/` would strip
+# packages/maistro-core/tests/vault/ out of every image. An operator's vault
+# directory lives at the root; a package named for the subsystem it tests does
+# not stop being source because of its name.
+/vault/

@@ -26,6 +26,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py
+  - packages/maistro-core/tests/runs/test_recovery_events.py
   - packages/maistro-core/tests/test_container_wiring.py
   - packages/maistro-core/tests/test_container_chat_runs.py
 ac-modules:
@@ -35,6 +36,7 @@ ac-modules:
   AC-4: maistro.graph.durable_runs.attempt_executor
   AC-5: maistro.container
   AC-6: maistro.container
+  AC-7: maistro.runs.recovery_events
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -121,6 +123,20 @@ Three rules bind every row:
   state compensates the Run to `CANCELLED` with the sanitized
   `admission_incomplete` category while still answering the turn, and
   repeated compensation never rewrites a settled Run.
+- **AC-7**: Every disposition this table applies is announced on the canonical
+  Event stream after it is persisted, naming the Run, NodeRun and Attempt it
+  settled and which row it took — so a parked NodeRun can be told apart from a
+  paused one, and the two meanings of a cancelled Attempt can be told apart
+  from each other. A caller with no sink wired reconciles unchanged.
+
+### Amendment, 2026-08-29
+
+AC-7 added. The table decided dispositions from the day it was accepted, and
+none of them said so anywhere: a parked NodeRun read the same whether recovery
+parked it or a person paused it. The decision is now announced on the canonical
+Event stream after it is persisted (#462), which is the half of that issue's
+observability criterion the gauges do not answer — they count stranded work,
+they do not say what was decided about any of it.
 
 ## Consequences
 

@@ -1,0 +1,46 @@
+name: Enqueue Merge Queue
+
+# Repository-owned merge-queue admission. This workflow runs only from the
+# protected default branch after Gates Ran completes. It never checks out or
+# executes pull-request-controlled code.
+on:
+  workflow_run:
+    workflows: ["Gates Ran"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: read
+  statuses: read
+
+concurrency:
+  group: enqueue-merge-queue
+  cancel-in-progress: false
+
+jobs:
+  enqueue:
+    name: enqueue-merge-queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted controller
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Create short-lived merge-bot token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MAISTRO_MERGE_APP_ID }}
+          private-key: ${{ secrets.MAISTRO_MERGE_APP_PRIVATE_KEY }}
+
+      - name: Enqueue every admissible develop PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_QUEUE_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/check-enqueue-merge-queue.py

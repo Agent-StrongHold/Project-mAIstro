@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPut } from "../lib/api";
 import { LlmProviders } from "../components/LlmProviders";
-import { PageHeader } from "../components/shared";
+import { PageHeader, SecretField } from "../components/shared";
 
 type ConfigField = {
   name: string;
@@ -181,12 +181,17 @@ export default function Credentials() {
               </a>
 
               <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-                <input
-                  className="input-field"
-                  type="password"
-                  placeholder={row.placeholder || "Paste token here"}
+                {/* Named for the integration rather than by a placeholder that
+                    disappears on the first keystroke (#375). Whether a token is
+                    already configured is described, never shown: the client
+                    does not hold the stored value and must not imply it does. */}
+                <SecretField
+                  label={`${row.label} token`}
                   value={drafts[row.id] ?? ""}
-                  onChange={(e) => setDrafts((d) => ({ ...d, [row.id]: e.target.value }))}
+                  onChange={(next) => setDrafts((d) => ({ ...d, [row.id]: next }))}
+                  stored={row.configured}
+                  storedNote={`A ${row.label} token is already stored. Entering a new one replaces it.`}
+                  hint={row.placeholder || undefined}
                   autoComplete="off"
                   style={{ flex: 1 }}
                 />
@@ -240,7 +245,12 @@ export default function Credentials() {
                         marginBottom: 6,
                       }}
                     >
+                      {/* `htmlFor`/`id`: the <label> was beside the control, not
+                          bound to it, so the field's only name was its
+                          placeholder (#375). `required` is on the input too --
+                          the red asterisk says so to people who can see it. */}
                       <label
+                        htmlFor={`${row.id}-${f.name}`}
                         style={{
                           fontFamily: "var(--hand)",
                           fontSize: 11,
@@ -254,6 +264,8 @@ export default function Credentials() {
                         )}
                       </label>
                       <input
+                        id={`${row.id}-${f.name}`}
+                        required={f.required}
                         className="input-field"
                         type="text"
                         placeholder={f.placeholder}

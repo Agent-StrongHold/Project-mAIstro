@@ -41,10 +41,24 @@ const DEFAULT_WIDGETS: Widget[] = [
 type Tab = { name: string; widgets: Widget[] };
 const DEFAULT_TABS: Tab[] = [{ name: "Overview", widgets: DEFAULT_WIDGETS }];
 
-function saveTabs(tabs: Tab[], activeIdx: number) {
-  fetch("/v1/dashboard/layout", { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tabs, activeTab: activeIdx, updatedAt: new Date().toISOString() }) }).catch(() => {});
+// Returns why the save did not land, or null. The server answers 503 when the
+// layout was not persisted (#340); before this returned anything, every edit
+// stayed on screen looking saved and the user was never told (nor given a
+// chance to retry) that it had been lost.
+async function saveTabs(tabs: Tab[], activeIdx: number): Promise<string | null> {
+  try {
+    const r = await fetch("/v1/dashboard/layout", { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tabs, activeTab: activeIdx, updatedAt: new Date().toISOString() }) });
+    if (r.ok) return null;
+    const body = await r.json().catch(() => null);
+    const detail = body?.detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail.message === "string") return detail.message;
+    return `the dashboard was not saved (HTTP ${r.status})`;
+  } catch {
+    return "the dashboard was not saved: the server could not be reached";
+  }
 }
-function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (i: number) => void) {
+function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (i: number) => void, onSaveError: (e: string | null) => void) {
   const initialized = useRef(false);
   useEffect(() => {
     fetch("/v1/dashboard/layout", { credentials: "same-origin" })
@@ -59,7 +73,7 @@ function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (
           setTabs([{ name: "Overview", widgets: d.widgets }]);
           initialized.current = true;
         } else if (!initialized.current) {
-          saveTabs(tabs, 0);
+          saveTabs(tabs, 0).then(onSaveError);
           initialized.current = true;
         }
       })
@@ -1171,7 +1185,13 @@ export default function Dashboard() {
   const [future, setFuture] = useState<Tab[][]>([]);
   const agents = useAgents();
   const metrics = useMetrics();
-  useServerTabs(tabs, setTabs, setActiveIdx);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Every mutation goes through here, so there is one place a failed save is
+  // noticed rather than one per call site.
+  const persist = useCallback((next: Tab[], idx: number) => {
+    saveTabs(next, idx).then(setSaveError);
+  }, []);
+  useServerTabs(tabs, setTabs, setActiveIdx, setSaveError);
 
   const widgets = tabs[activeIdx]?.widgets || [];
 
@@ -1180,7 +1200,7 @@ export default function Dashboard() {
     setFuture([]);
     const newTabs = tabs.map((t, i) => i === activeIdx ? { ...t, widgets: next } : t);
     setTabs(newTabs);
-    saveTabs(newTabs, activeIdx);
+    persist(newTabs, activeIdx);
   }, [tabs, activeIdx]);
 
   const undo = () => {
@@ -1189,7 +1209,7 @@ export default function Dashboard() {
     setFuture(f => [...f, tabs]);
     setHistory(h => h.slice(0, -1));
     setTabs(prev);
-    saveTabs(prev, activeIdx);
+    persist(prev, activeIdx);
   };
 
   const redo = () => {
@@ -1198,7 +1218,7 @@ export default function Dashboard() {
     setHistory(h => [...h, tabs]);
     setFuture(f => f.slice(0, -1));
     setTabs(next);
-    saveTabs(next, activeIdx);
+    persist(next, activeIdx);
   };
 
   const addTab = () => {
@@ -1207,7 +1227,7 @@ export default function Dashboard() {
     const newTabs = [...tabs, { name, widgets: [] }];
     setTabs(newTabs);
     setActiveIdx(newTabs.length - 1);
-    saveTabs(newTabs, newTabs.length - 1);
+    persist(newTabs, newTabs.length - 1);
   };
 
   const renameTab = (i: number) => {
@@ -1215,7 +1235,7 @@ export default function Dashboard() {
     if (!name) return;
     const newTabs = tabs.map((t, idx) => idx === i ? { ...t, name } : t);
     setTabs(newTabs);
-    saveTabs(newTabs, activeIdx);
+    persist(newTabs, activeIdx);
   };
 
   const removeTab = (i: number) => {
@@ -1225,14 +1245,20 @@ export default function Dashboard() {
     const newIdx = Math.min(activeIdx, newTabs.length - 1);
     setTabs(newTabs);
     setActiveIdx(newIdx);
-    saveTabs(newTabs, newIdx);
+    persist(newTabs, newIdx);
   };
   const addWidget = (type: string, size: Widget["size"], config?: any, title?: string) => update([...widgets, { id: `w-${Date.now()}`, type, title: title || CATALOG.find(c => c.type === type)?.label || type, size, config }]);
   const removeWidget = (id: string) => update(widgets.filter(w => w.id !== id));
   const updateWidget = (id: string, w: Widget) => update(widgets.map(x => x.id === id ? w : x));
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter Variable', 'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
+      {saveError && (
+        <div role="alert" data-testid="dashboard-save-error" style={{ marginBottom: "1rem", padding: "0.6rem 0.8rem", borderRadius: 8, border: `1px solid ${C.danger}`, color: C.danger, fontSize: "0.72rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <span>Your dashboard changes were not saved — {saveError}</span>
+          <button onClick={() => persist(tabs, activeIdx)} style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.danger}`, background: "transparent", color: C.danger, fontSize: "0.68rem", cursor: "pointer" }}>Retry</button>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.1rem" }}>
         <div>
           <h1 style={{ fontSize: "1.5rem", fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>Live Operations</h1>

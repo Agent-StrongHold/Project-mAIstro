@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiGet } from "../lib/api";
+import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
 
@@ -253,14 +254,15 @@ export default function Setup() {
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600 }}>
                 Name your hive
               </div>
+              <TextField label="Conductor name" value={conductorName} onChange={setConductorName} placeholder="Hive Conductor" />
               <div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>CONDUCTOR NAME</div>
-                <input className="input-field" placeholder="Hive Conductor" value={conductorName} onChange={(e) => setConductorName(e.target.value)} />
-              </div>
-              <div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>ROUTER MODEL</div>
+                {/* One label for whichever control this branch renders, so the
+                    field keeps its name when the models list arrives and the
+                    <input> becomes a <select> (#375). */}
+                <label htmlFor="setup-router-model" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>Router model</label>
                 {availableModels.length > 0 ? (
                   <select
+                    id="setup-router-model"
                     className="input-field"
                     value={routerModel}
                     onChange={(e) => setRouterModel(e.target.value)}
@@ -274,6 +276,7 @@ export default function Setup() {
                   </select>
                 ) : (
                   <input
+                    id="setup-router-model"
                     className="input-field"
                     placeholder={modelsLoading ? "Loading models from gateway…" : "gemini-3.1-flash-lite"}
                     value={routerModel}
@@ -334,16 +337,19 @@ export default function Setup() {
               </div>
               <div className="card" style={{ borderLeft: "3px solid var(--danger)" }}>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginBottom: 6 }}>ADMIN (BREAK-GLASS)</div>
+                {/* Both password fields on this step were named "password" and
+                    nothing else, one for each account -- identical to anything
+                    that cannot see which card they sit in (#375). */}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <input className="input-field" placeholder="admin" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)} style={{ flex: 1 }} />
-                  <input className="input-field" type="password" placeholder="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} style={{ flex: 1 }} />
+                  <TextField label="Admin username" value={adminUsername} onChange={setAdminUsername} autoComplete="username" required style={{ flex: 1 }} />
+                  <SecretField label="Admin password" value={adminPassword} onChange={setAdminPassword} autoComplete="new-password" required style={{ flex: 1 }} />
                 </div>
               </div>
               <div className="card" style={{ borderLeft: "3px solid var(--accent)" }}>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--accent)", marginBottom: 6 }}>DAILY USER</div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <input className="input-field" placeholder="username" value={userUsername} onChange={(e) => setUserUsername(e.target.value)} style={{ flex: 1 }} />
-                  <input className="input-field" type="password" placeholder="password" value={userPassword} onChange={(e) => setUserPassword(e.target.value)} style={{ flex: 1 }} />
+                  <TextField label="Daily user username" value={userUsername} onChange={setUserUsername} autoComplete="username" required style={{ flex: 1 }} />
+                  <SecretField label="Daily user password" value={userPassword} onChange={setUserPassword} autoComplete="new-password" required style={{ flex: 1 }} />
                 </div>
               </div>
             </div>
