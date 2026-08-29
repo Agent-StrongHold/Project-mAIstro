@@ -77,11 +77,15 @@ def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
     memory_bytes = max(config.memory_mb, 1) * 1024 * 1024
     file_bytes = max(config.max_file_mb, 1) * 1024 * 1024
     cpu_seconds = math.ceil(max(config.timeout_s, 1) * max(config.cpu_cores, 0.01))
+    cpu_budget = cpu_seconds + _CPU_GRACE_SECONDS
+    processes = max(config.max_processes, 1)
+    # Soft and hard written out rather than `(x,) * 2`: the repeat form types as
+    # `tuple[int, ...]`, which is not the `tuple[int, int]` `setrlimit` takes.
     return {
         resource.RLIMIT_AS: (memory_bytes, memory_bytes),
         resource.RLIMIT_FSIZE: (file_bytes, file_bytes),
-        resource.RLIMIT_CPU: (cpu_seconds + _CPU_GRACE_SECONDS,) * 2,
-        resource.RLIMIT_NPROC: (max(config.max_processes, 1),) * 2,
+        resource.RLIMIT_CPU: (cpu_budget, cpu_budget),
+        resource.RLIMIT_NPROC: (processes, processes),
     }
 
 
