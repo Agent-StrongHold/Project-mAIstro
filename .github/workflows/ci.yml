@@ -647,6 +647,21 @@ jobs:
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
 
+      # The other three real images, built here rather than only in
+      # security.yml's `containers` job -- which runs on main-targeted PRs,
+      # merge groups into main, and the nightly schedule, and therefore never
+      # on a develop PR. That gap is how `Dockerfile.research` reached a state
+      # where it could not be built at all and nothing said so for as long as
+      # it took someone to try (#346).
+      #
+      # Build only: scanning stays in security.yml, because a Trivy database
+      # download on every PR is a cost this job should not carry. What this
+      # buys is the cheap half -- "does it still build" -- on the branch where
+      # the change is actually made.
+      - run: docker build -f Dockerfile . -t maistro-engine:ci
+      - run: docker build -f Dockerfile.research . -t maistro-engine-research:ci
+      - run: docker build -f Dockerfile.rsi-runner . -t maistro-rsi-runner:ci
+
   workflow-lint:
     runs-on: ubuntu-latest
     env:
