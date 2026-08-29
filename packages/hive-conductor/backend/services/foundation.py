@@ -133,7 +133,7 @@ class Foundation:
         from services.settings_store import EphemeralSettingsRecordStore
         from services.settings_store import configure as configure_settings
 
-        stores.restore_all()
+        durability.restore_stores(stores)
         stores.initialize_stores()
         configure_settings(EphemeralSettingsRecordStore())
         durability.record(
@@ -165,11 +165,11 @@ class Foundation:
         self.state = None
         self.state_available = False
         try:
-            stores.restore_all()
+            durability.restore_stores(stores)
             stores.initialize_stores()
         except Exception as seed_exc:  # pragma: no cover - seeding is in-memory
             logger.error("seeding degraded stores failed: %s", seed_exc)
-        stores.degrade_all(reason)
+        durability.degrade_stores(stores, reason)
         configure_settings(RefusingSettingsRecordStore(reason))
         durability.record(
             StateStatus(
