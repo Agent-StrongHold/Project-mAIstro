@@ -576,7 +576,15 @@ class Container:
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            reconciler = AttemptLifecycleReconciler(self.run_store)
+            # The Container's bus, so the sweep's dispositions land on the
+            # canonical Event stream rather than only in Run state (#462). A
+            # Container built without one still sweeps; the events are how the
+            # decision becomes inspectable, not how it is made.
+            reconciler = AttemptLifecycleReconciler(
+                self.run_store,
+                events=self.event_bus,
+                source="maistro.container.recover_abandoned_attempts",
+            )
             for attempt in reclaimed:
                 try:
                     await reconciler.reconcile(attempt)
