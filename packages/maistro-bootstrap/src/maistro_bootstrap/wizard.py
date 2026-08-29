@@ -92,6 +92,34 @@ def _select_str(message: str, choices: list[str]) -> str:
     return str(val)
 
 
+def preflight_lines(runtime: str, runtime_hint: str, env: dict[str, Any]) -> list[str]:
+    """The preflight banner, as values.
+
+    A function rather than four `console.print` calls inline, so what the
+    installer tells an operator about isolation is assertable without driving
+    the interactive wizard. That claim is the whole of #81, and it was the one
+    part of that change no test could reach.
+    """
+    sandbox = env["sandbox"]
+    # The sandbox line sits next to the hypervisor inventory on purpose: the two
+    # used to be conflated, and "kvm" on the Virtualization line reads as "this
+    # host can isolate untrusted code" when the engine ships no VM backend at
+    # all. Yellow when nothing can isolate, because that is a refusal waiting to
+    # happen rather than a note.
+    style = "dim" if sandbox["sandbox_binary_present"] else "yellow"
+    return [
+        f"[dim]Container runtime:[/dim] {runtime} — {runtime_hint}",
+        f"[dim]Admin:[/dim] {env['admin_hint']}",
+        f"[dim]Virtualization:[/dim] {', '.join(env['virtualization'])}",
+        f"[{style}]Sandbox:[/{style}] {sandbox['summary']}\n",
+    ]
+
+
+def print_preflight(runtime: str, runtime_hint: str, env: dict[str, Any]) -> None:
+    for line in preflight_lines(runtime, runtime_hint, env):
+        console.print(line)
+
+
 def collect_answers_interactive() -> InstallAnswersV1:
     console.print(
         Panel.fit(
@@ -100,16 +128,7 @@ def collect_answers_interactive() -> InstallAnswersV1:
         )
     )
     det, hint = detect_container_runtime()
-    env = environment_report()
-    console.print(f"[dim]Container runtime:[/dim] {det} — {hint}")
-    console.print(f"[dim]Admin:[/dim] {env['admin_hint']}")
-    console.print(f"[dim]Virtualization:[/dim] {', '.join(env['virtualization'])}")
-    # Printed next to the hypervisor inventory on purpose: the two used to be
-    # conflated, and "kvm" on the Virtualization line reads as "this host can
-    # isolate untrusted code" when the engine ships no VM backend at all (#81).
-    sandbox = env["sandbox"]
-    style = "dim" if sandbox["sandbox_binary_present"] else "yellow"
-    console.print(f"[{style}]Sandbox:[/{style}] {sandbox['summary']}\n")
+    print_preflight(det, hint, environment_report())
 
     stack_bringup = _stack_bringup()
     features = _feature_set()

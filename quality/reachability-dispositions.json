@@ -45,26 +45,12 @@
       "id": "agents-namespace-shims",
       "subsystem": "Agents",
       "disposition": "CONNECT",
-      "rationale": "One-line package __init__ shims whose only job is to expose an agent implementation. They are unreachable because nothing constructs the agents beneath them, not because the shim is wrong.",
+      "rationale": "Three modules. maistro.agents.auditor and maistro.agents.feedback are package __init__.py markers whose siblings hold real code (checks.py; extractor/loop/tracker): they become reachable exactly when those siblings do, and deleting one would break the package below it. maistro.agents.spawner is a genuine re-export shim. Fourteen former members were deleted (#618): nine docstring-only modules with no code, and five package markers standing over nothing at all. The earlier rationale here described all seventeen as 'shims whose only job is to expose an agent implementation', which was wrong for every one of the fourteen -- and its claim that the markers had siblings with real code was false for frank and mason before this change and for forge, scribe and warden_at_arms after it (Codex, #618). tests/test_no_placeholder_modules.py derives the set rather than listing it, and exempts an __init__.py only while its package holds something else.",
       "root": "maistro.agents.factory / the agent roster",
       "modules": [
         "maistro.agents.auditor",
-        "maistro.agents.cache",
-        "maistro.agents.exporter",
         "maistro.agents.feedback",
-        "maistro.agents.forge",
-        "maistro.agents.forge.strategy",
-        "maistro.agents.frank",
-        "maistro.agents.identity",
-        "maistro.agents.importer",
-        "maistro.agents.mason",
-        "maistro.agents.registry",
-        "maistro.agents.scribe",
-        "maistro.agents.scribe.strategy",
-        "maistro.agents.spawner",
-        "maistro.agents.streaming",
-        "maistro.agents.warden_at_arms",
-        "maistro.agents.warden_at_arms.strategy"
+        "maistro.agents.spawner"
       ]
     },
     {

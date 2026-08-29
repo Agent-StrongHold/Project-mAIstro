@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SecretField } from "./shared";
 
 interface ProviderRow {
   name: string;
@@ -108,16 +109,20 @@ export function LlmProviders() {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {data.providers.map((p) => (
           <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <div style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600, width: 110 }}>
-              {p.label}
-            </div>
-            <input
-              type="password"
-              placeholder={p.has_key ? "key stored — replace?" : "API key"}
+            {/* The placeholder used to be this field's only name, and it read
+                "API key" or "key stored — replace?" depending on the server's
+                answer: the field's *name* changed under the user, and vanished
+                entirely once they typed. The name is now the provider, fixed;
+                whether a key is stored is a description (#375). */}
+            <SecretField
+              label={`${p.label} API key`}
               value={keys[p.name] || ""}
-              onChange={(e) => setKeys((k) => ({ ...k, [p.name]: e.target.value }))}
+              onChange={(next) => setKeys((k) => ({ ...k, [p.name]: next }))}
+              stored={p.has_key}
+              storedNote={`A key for ${p.label} is already stored. Entering a new one replaces it.`}
               disabled={!data.vault_available || busy === p.name}
-              style={{ flex: 1, minWidth: 160, fontFamily: "var(--mono)", fontSize: 10, padding: "4px 8px" }}
+              className=""
+              style={{ flex: 1, minWidth: 200 }}
             />
             <button
               className="btn"

@@ -208,9 +208,9 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
         did=user_did,
     )
 
-    # v0 fix: persist the Setup-chosen default_model into stores.settings so
-    # the Settings page reflects what the user actually picked (was showing
-    # the hardcoded legacy cerebras- alias regardless of Setup choice).
+    # v0 fix: persist the Setup-chosen default_model so the Settings page
+    # reflects what the user actually picked (was showing the hardcoded legacy
+    # cerebras- alias regardless of Setup choice).
     from config import get_settings
 
     chosen_default_model = body.get("default_model") or get_settings().chat_default_model
@@ -227,16 +227,37 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
         "completed_at": now_ts.isoformat(),
     }
 
-    try:
-        stores.settings.default_model = chosen_default_model
-    except Exception as exc:
-        # best-effort — don't fail Setup over a settings shape mismatch.
-        import logging as _logging
+    # Was `stores.settings.default_model = ...` — an in-place mutation of a
+    # module-level object, so the Setup wizard's choice never outlived the
+    # process (#334). It goes through the durable record now.
+    #
+    # Deliberately NOT inside the old best-effort `except Exception`. That
+    # handler was written for a settings *shape* mismatch, and wrapping a
+    # durable write in it reproduced the exact defect this change exists to
+    # remove: setup returning `setup_complete: true` while the operator's model
+    # choice was silently lost at the next restart (Codex, #334). A failure here
+    # means the install has no durable configuration, which is not a state to
+    # report success from.
+    from services import settings_store
 
-        _logging.getLogger("hive.setup").warning(
-            "default_model_set_failed: %s",
-            exc,
+    try:
+        settings_store.save(
+            settings_store.current().model_copy(update={"default_model": chosen_default_model})
         )
+    except settings_store.SettingsPersistenceError as exc:
+        logging.getLogger("hive.setup").error("setup could not persist settings: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"setup did not complete: settings were not persisted ({exc})",
+        ) from exc
+    except settings_store.SettingsSecretError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"setup did not complete: field {exc.field!r} carries "
+                f"{exc.credential_type} material; store the secret in the vault"
+            ),
+        ) from exc
 
     kv = _get_kv()
     if kv is not None:

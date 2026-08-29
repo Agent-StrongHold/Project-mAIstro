@@ -86,15 +86,27 @@ class Foundation:
 
             import stores
 
+            from services.settings_store import PersistedSettingsRecordStore
+            from services.settings_store import configure as configure_settings
+
             stores.configure_persistence(persisted)
             stores.initialize_stores()
+            configure_settings(PersistedSettingsRecordStore(persisted, self.state.flush))
             self.state.flush()
             logger.info("Stores wired to SQLite persistence")
         except Exception as exc:
             logger.warning("State unavailable (%s) — using in-memory stores", exc)
             import stores
 
+            from services.settings_store import EphemeralSettingsRecordStore
+            from services.settings_store import configure as configure_settings
+
             stores.initialize_stores()
+            # Explicitly, so the settings surface reports `durable: false`
+            # rather than letting an in-memory write wear the shape of a
+            # durable one (#334). Whether reaching this branch at all should be
+            # allowed is #333.
+            configure_settings(EphemeralSettingsRecordStore())
 
     def _init_privilege(self, settings: Settings, data_dir: Path) -> None:
         if not settings.conductor_admin_public_key:
