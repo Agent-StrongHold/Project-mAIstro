@@ -46,9 +46,13 @@ def _read_sha(value: object, *, field: str) -> str:
         raise BaseRevisionError(f"GitHub event field {field!r} is missing or is not a SHA")
     sha = value.strip()
     if len(sha) not in _VALID_SHA_LENGTHS or any(ch not in _HEX for ch in sha):
-        raise BaseRevisionError(f"GitHub event field {field!r} is not a valid commit SHA: {value!r}")
+        raise BaseRevisionError(
+            f"GitHub event field {field!r} is not a valid commit SHA: {value!r}"
+        )
     if set(sha) == {"0"}:
-        raise BaseRevisionError(f"GitHub event field {field!r} is git's null SHA, not a base revision")
+        raise BaseRevisionError(
+            f"GitHub event field {field!r} is git's null SHA, not a base revision"
+        )
     return sha.lower()
 
 
