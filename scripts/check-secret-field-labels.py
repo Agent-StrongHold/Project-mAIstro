@@ -60,6 +60,16 @@ _PASSWORD_INPUT = re.compile(r'type\s*=\s*"password"')
 _INPUT_START = re.compile(r"<input\b")
 
 
+def _blank(out: list[str], text: str, start: int, opener: str, closer: str) -> int:
+    """Blank one comment in place and return the index just past it."""
+    end = text.find(closer, start + len(opener))
+    end = len(text) if end < 0 else end + (len(closer) if closer != "\n" else 0)
+    for position in range(start, end):
+        if out[position] != "\n":
+            out[position] = " "
+    return end
+
+
 def _without_comments(text: str) -> str:
     """`text` with comment bodies blanked, offsets and line breaks preserved.
 
@@ -73,27 +83,17 @@ def _without_comments(text: str) -> str:
     while index < len(text):
         char = text[index]
         if quote:
-            if char == "\\":
-                index += 2
-                continue
+            index += 2 if char == "\\" else 1
             if char == quote:
                 quote = ""
-        elif char in "\"'`":
+            continue
+        if char in "\"'`":
             quote = char
         elif text.startswith("/*", index):
-            end = text.find("*/", index + 2)
-            end = len(text) if end < 0 else end + 2
-            for position in range(index, end):
-                if out[position] != "\n":
-                    out[position] = " "
-            index = end
+            index = _blank(out, text, index, "/*", "*/")
             continue
         elif text.startswith("//", index):
-            end = text.find("\n", index)
-            end = len(text) if end < 0 else end
-            for position in range(index, end):
-                out[position] = " "
-            index = end
+            index = _blank(out, text, index, "//", "\n")
             continue
         index += 1
     return "".join(out)
@@ -126,6 +126,7 @@ def _tag_attributes(text: str, start: int) -> str:
             return text[start:index]
         index += 1
     return text[start:]
+
 
 _NAMED = ("aria-label", "aria-labelledby", "id=", "id ")
 
@@ -194,7 +195,10 @@ def placeholder_named_inputs(root: Path, surfaces: tuple[str, ...]) -> list[Find
 
 
 def audit(root: Path = FRONTEND, shared: Path = SHARED) -> list[Finding]:
-    return [*raw_password_inputs(root, shared), *placeholder_named_inputs(root, CREDENTIAL_SURFACES)]
+    return [
+        *raw_password_inputs(root, shared),
+        *placeholder_named_inputs(root, CREDENTIAL_SURFACES),
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:

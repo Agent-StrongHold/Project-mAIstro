@@ -139,6 +139,39 @@ def test_a_missing_credential_surface_fails(gate, tmp_path: Path) -> None:
     assert "missing" in findings[0].message
 
 
+def test_an_unterminated_input_tag_is_read_to_the_end_of_the_file(gate, tmp_path: Path) -> None:
+    """A half-written tag is a syntax error the type-checker will catch. This
+    gate must not hang or crash on it first, and must not read it as named."""
+    surface(tmp_path, '<input placeholder="password"')
+
+    findings = gate.placeholder_named_inputs(tmp_path, ("pages/Login.tsx",))
+
+    assert [f.line for f in findings] == [1]
+
+
+def test_main_prints_every_finding_and_fails(gate, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        gate, "audit", lambda: [gate.Finding("pages/Login.tsx", 12, "named by its placeholder")]
+    )
+
+    exit_code = gate.main([])
+    printed = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "pages/Login.tsx:12: named by its placeholder" in printed
+    # The remedy, not just the complaint: a gate that only says "no" sends the
+    # reader to the source to work out what it wanted.
+    assert "persistent associated label" in printed
+
+
+def test_main_fails_when_the_frontend_is_missing(gate, monkeypatch, tmp_path: Path) -> None:
+    """Better than passing vacuously. A moved or renamed tree would otherwise
+    make this gate report OK about nothing at all."""
+    monkeypatch.setattr(gate, "FRONTEND", tmp_path / "gone")
+
+    assert gate.main([]) == 1
+
+
 def test_the_gate_runs_as_a_script_too() -> None:
     import subprocess
 

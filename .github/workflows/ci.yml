@@ -79,6 +79,14 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # One seam further in: a control the user can reach but not name. Every
+      # password and API-key field in the Conductor took its accessible name
+      # from placeholder text, which disappears once the field has a value and
+      # changed with server state on two of those surfaces (#375). This refuses
+      # a raw `type="password"` outside the shared components, and refuses a
+      # control on a credential surface that has no way to carry a label.
+      - name: Credential fields are not named by their placeholders
+        run: python3 scripts/check-secret-field-labels.py
       # An accepted decision can retire a rule that is written down somewhere
       # else, and the retired phrasing then outlives it. `maistro-core`'s own
       # CLAUDE.md told agents "No `org_id` in core" long after ADR-068
