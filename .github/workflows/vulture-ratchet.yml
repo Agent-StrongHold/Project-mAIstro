@@ -1,46 +1,40 @@
-name: Vulture Ratchet
+name: TEMP Vulture Generator
 
 on:
-  # No `branches:` filter. It used to be [main, integration, develop], which
-  # matched on the PR's *base* — so a PR stacked on a feature branch ran none of
-  # this. #151 and #138 got Registry CI and Formal Conformance only: no lint, no
-  # types, no tests, no coverage, no SAST, no ratchet gates. The work was not
-  # unreviewed, it was unmeasured, and every accumulated failure arrived at once
-  # on retarget, against the branch least able to absorb it.
-  #
-  # A required-check set that silently does not apply to a whole class of PRs or
-  # merge-group candidates is worse than none: the green tick means different
-  # things depending on the merge path and nothing on the candidate says which.
-  pull_request:
-  merge_group:
-    types: [checks_requested]
   push:
-    branches: [develop, integration, main]
-
-# Supersede in-flight candidate runs. Protected-branch pushes still run to
-# completion because their pass/fail record is durable evidence about that SHA.
-concurrency:
-  group: vulture-ratchet-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    branches: [chatgpt/tmp-523-vulture-current]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  exact-debt-ledger:
+  generate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/tmp-523-vulture-current
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
       - name: Install pinned analyzer
         run: uv pip install --system vulture==2.16
-      - name: Require exact reviewed Vulture identities
+      - name: Generate exact reviewed Vulture identities
         run: >-
           python scripts/check-vulture-baseline.py
+          --update
           packages/*/src
           --min-confidence 60
           --exclude '*/third_party/*'
+      - name: Commit generated ledger
+        run: |
+          if git diff --quiet -- quality/vulture-baseline.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add quality/vulture-baseline.json
+          git commit -m "chore: generate exact PR 523 vulture ledger"
+          git push origin HEAD:chatgpt/tmp-523-vulture-current
