@@ -1125,3 +1125,50 @@ class TestPassingPerRoot:
 
         monkeypatch.setattr(check.subprocess, "run", fake_run)
         assert check._passing_in_root(tmp_path) is None
+
+
+class TestTheEntryPointSurfaceIsWiredToTheImplementation:
+    """Patching the documented surface has to change the behaviour behind it.
+
+    `scripts/check-ac-state.py` became a thin entry point over
+    `scripts/check_ac_state_impl.py`, and preserved its public surface by
+    copying `vars(_impl)` into its own globals. A re-exported function still
+    closes over the *implementation's* globals, so a caller rebinding a name on
+    the entry point rebound something nothing read — and every one of this
+    file's own monkeypatching tests silently stopped testing what it names.
+
+    The class below is what those five failures were reporting, stated directly
+    so a future re-split cannot reintroduce it quietly. It is the same defect
+    the ladder in `check_ac_state_impl` exists to catch, one level up: a name
+    that looks like the thing and is not wired to it.
+    """
+
+    def test_patching_the_entry_point_reaches_the_code_that_runs(self, check, monkeypatch):
+        import check_ac_state_impl
+
+        sentinel = Path("/patched-by-the-entry-point")
+        monkeypatch.setattr(check, "SPEC_DIR", sentinel)
+
+        assert sentinel == check_ac_state_impl.SPEC_DIR
+
+    def test_the_entry_point_reads_through_to_the_implementation(self, check):
+        import check_ac_state_impl
+
+        assert check.RATCHETED is check_ac_state_impl.RATCHETED
+        assert check._is_reachable is check_ac_state_impl._is_reachable
+
+    def test_a_name_the_entry_point_owns_is_not_pushed_down(self, check, monkeypatch):
+        """`main` exists on both, and the entry point's is the merge guard. A
+        proxy that forwarded every write would replace the implementation's
+        `main` with the guard and recurse."""
+        import check_ac_state_impl
+
+        before = check_ac_state_impl.main
+        monkeypatch.setattr(check, "main", lambda argv: 0)
+
+        assert check_ac_state_impl.main is before
+
+    def test_an_unknown_name_is_still_an_attribute_error(self, check):
+        name = "not_a_real_name"
+        with pytest.raises(AttributeError, match=f"no attribute '{name}'"):
+            getattr(check, name)
