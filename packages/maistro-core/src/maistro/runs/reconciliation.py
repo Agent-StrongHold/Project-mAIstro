@@ -32,6 +32,19 @@ from maistro.runs.recovery_events import RecoveryEventSink, recovery_event
 from maistro.runs.store import RunIntegrityError
 
 
+def _parked_run_status(node_run: NodeRun) -> RunStatus:
+    """The state to park the parent Run in, given how its NodeRun parked.
+
+    Only PAUSED carries over. `_pause_node_run` returns the NodeRun unchanged
+    when it was already terminal or already parked, so its status is not
+    guaranteed to be a parked one, and forwarding it blindly could transition
+    the Run to a *terminal* state on a path that only ever means "park". The
+    default stays WAITING: the same answer this code gave before it could tell
+    the two apart.
+    """
+    return RunStatus.PAUSED if node_run.status is RunStatus.PAUSED else RunStatus.WAITING
+
+
 def _awaits_human(attempt: Attempt) -> bool:
     """Whether a yielded Attempt recorded that it waits on a person."""
     result = attempt.result
@@ -209,7 +222,7 @@ class AttemptLifecycleReconciler:
             # reconciles this already-durable row lands on the same answer as
             # the one that wrote it.
             paused = await self._pause_node_run(node_run, persisted)
-            await self._park_run_if_inactive(paused.run_id)
+            await self._park_run_if_inactive(paused.run_id, _parked_run_status(paused))
             await self._announce(persisted, paused, cancellation)
             return paused
 
@@ -474,13 +487,26 @@ class AttemptLifecycleReconciler:
             for node_run in node_runs
         )
 
-    async def _park_run_if_inactive(self, run_id: str) -> Run:
+    async def _park_run_if_inactive(
+        self,
+        run_id: str,
+        parked_as: RunStatus = RunStatus.WAITING,
+    ) -> Run:
+        """Park the Run when its last active NodeRun parks, in the same state.
+
+        `parked_as` carries the distinction `_pause_node_run` just drew rather
+        than discarding it. This used to be unconditionally WAITING, so a Run
+        whose only NodeRun stopped on a human prompt was recorded as awaiting a
+        *system* retry decision -- the exact collapse of PAUSED into WAITING
+        that `_pause_node_run` exists to prevent, reintroduced one level up
+        where the run list and the dashboard actually read it.
+        """
         run = await self._require_run(run_id)
         if run.status is not RunStatus.RUNNING:
             return run
         if await self._has_active_node_run(run_id):
             return run
-        return await self._store.transition_run(run_id, RunStatus.WAITING)
+        return await self._store.transition_run(run_id, parked_as)
 
     async def _require_run(self, run_id: str) -> Run:
         run = await self._store.get_run(run_id)

@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, Any
 
+from maistro.graph.nodes.base import HUMAN_PAUSE_REASONS
 from maistro.runs.execution import ExecutionYielded
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.service import RunExecutionService
@@ -210,14 +211,13 @@ class ScheduleAttemptExecutor:
         )
 
 
-#: Pause reasons that mean a person, not the system, is the one owed an action.
-#: The same two the durable graph executor treats as a human pause, so a HITL
-#: node reaching PAUSED does not depend on which path executed it.
-_HUMAN_PAUSE_REASONS = frozenset({"awaiting_human_answer", "awaiting_human_approval"})
-
-
 def _awaits_human_answer(result: Any) -> bool:
-    return str((result.metadata or {}).get("paused_reason") or "") in _HUMAN_PAUSE_REASONS
+    """Whether this pause waits on a person rather than on the system.
+
+    Imported, not re-spelled: the durable graph executor reads the same set,
+    so a HITL node reaching PAUSED cannot depend on which path executed it.
+    """
+    return str((result.metadata or {}).get("paused_reason") or "") in HUMAN_PAUSE_REASONS
 
 
 def _pause_evidence(result: Any) -> dict[str, Any]:
