@@ -13,8 +13,6 @@ not a second importer API, until a production consumer is ready to use it.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -25,9 +23,10 @@ if TYPE_CHECKING:
     from maistro.types.agent import AgentIdentity
     from maistro.types.skill import SkillDefinition
 
+from maistro.graph.import_provenance import SOURCE_IMPORT_PROVENANCE, import_provenance
+
 logger = logging.getLogger("maistro.agents.importers")
 
-SOURCE_IMPORT_PROVENANCE = "source_import_provenance"
 LEGACY_DEFINITION_SNAPSHOT = "legacy_definition_snapshot"
 
 
@@ -84,11 +83,6 @@ def _source_format(identity: AgentIdentity) -> str:
     return "legacy_agent_identity"
 
 
-def _snapshot_hash(snapshot: dict[str, Any]) -> str:
-    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def agent_identity_to_node_template(
     identity: AgentIdentity,
     *,
@@ -111,13 +105,13 @@ def agent_identity_to_node_template(
         raise ValueError("node_type must be a non-empty string")
 
     snapshot = _reusable_snapshot(identity)
-    provenance = {
-        "source_format": _source_format(identity),
-        "source_definition": "AgentIdentity",
-        "source_name": identity.name,
-        "source_version": identity.version,
-        "source_hash": _snapshot_hash(snapshot),
-    }
+    provenance = import_provenance(
+        snapshot,
+        source_format=_source_format(identity),
+        source_definition="AgentIdentity",
+        source_name=identity.name,
+        source_version=identity.version,
+    )
     return NodeTemplate(
         workspace_id=workspace_id,
         name=identity.name,

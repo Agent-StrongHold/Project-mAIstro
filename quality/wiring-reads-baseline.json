@@ -1,4 +1,5 @@
 {
+  "metric_definition_version": "1",
   "roots": {
     "maistro.container.Container": {
       "source": "packages/maistro-core/src/maistro/container.py",
