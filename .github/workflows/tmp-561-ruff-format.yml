@@ -1,0 +1,39 @@
+name: tmp-561-ruff-format
+
+on:
+  push:
+    branches:
+      - chatgpt/tmp-561-format-current
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.12.5"
+      - run: uv sync --locked --extra dev
+      - name: Format exact PR files
+        run: |
+          uv run ruff format \
+            packages/maistro-server/src/maistro_server/api/projects.py \
+            packages/maistro-server/tests/api/test_projects_api.py
+      - name: Commit formatter output and remove generator
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-561-ruff-format.yml
+          git add \
+            packages/maistro-server/src/maistro_server/api/projects.py \
+            packages/maistro-server/tests/api/test_projects_api.py
+          git commit -m "style: apply Ruff formatter to PR 561"
+          git push origin HEAD:${{ github.ref_name }}
