@@ -40,12 +40,12 @@ def test_pull_request_does_not_fall_back_to_merge_group_base() -> None:
 
 
 def test_missing_pull_request_object_fails_closed() -> None:
-    with pytest.raises(BaseRevisionError, match="pull_request.*missing or is not an object"):
+    with pytest.raises(BaseRevisionError, match=r"pull_request.*missing or is not an object"):
         resolve_base_revision("pull_request", {})
 
 
 def test_non_object_pull_request_base_fails_closed() -> None:
-    with pytest.raises(BaseRevisionError, match="pull_request.base.*missing or is not an object"):
+    with pytest.raises(BaseRevisionError, match=r"pull_request.base.*missing or is not an object"):
         resolve_base_revision("pull_request", {"pull_request": {"base": "develop"}})
 
 
