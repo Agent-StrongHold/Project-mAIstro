@@ -732,6 +732,15 @@ jobs:
       - name: security inventory (SECURITY.md's checkable claims match the code)
         run: uv run python scripts/check-security-inventory.py
 
+      # Trivy and Grype covered two images. The repository has nine
+      # Dockerfiles, and the one whose own header calls the browser surface
+      # "the single largest remaining CVE source" was not among the two —
+      # unnoticed because nothing enumerated them. This closes the set: every
+      # Dockerfile carries a disposition, and a shipped one must name the jobs
+      # that build and scan it (#346).
+      - name: image inventory (every Dockerfile is dispositioned; shipped ones name live jobs)
+        run: uv run python scripts/check-image-inventory.py
+
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
       # reads its vocabulary out of the file's own legend tables, so a legend

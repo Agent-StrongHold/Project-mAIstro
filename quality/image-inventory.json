@@ -1,0 +1,88 @@
+{
+  "_comment": "One disposition and one owner for every Dockerfile in the repository (#346). PUBLISHED = pushed to a registry by release.yml; must be built, scanned, SBOM'd and signed, and the release must consume the tested digest. DISTRIBUTED = built from this repo by an operator or a shipped script but never pushed to a registry; must be built and scanned in CI, but has no published digest to sign. INTERNAL = built only by this repository's own CI or test tooling and never run outside it; must justify itself in prose. RETIRED = superseded; names what replaced_by it and the issue that owns its removal. Checked by scripts/check-image-inventory.py: every Dockerfile on disk must appear exactly once, no entry may name a Dockerfile that is not on disk, and every PUBLISHED or DISTRIBUTED entry must name workflow jobs that actually exist. Adding an image without its jobs fails CI -- that is the point.",
+  "images": [
+    {
+      "id": "maistro-engine",
+      "dockerfile": "Dockerfile",
+      "disposition": "PUBLISHED",
+      "rationale": "The maistro-engine API image. Chainguard/Wolfi runtime, browser surface deliberately split out into Dockerfile.research so this one can go near-zero-CVE.",
+      "built_by": [".github/workflows/security.yml:containers", ".github/workflows/release.yml:images"],
+      "scanned_by": [".github/workflows/security.yml:containers"],
+      "published_by": ".github/workflows/release.yml:images"
+    },
+    {
+      "id": "hive-conductor",
+      "dockerfile": "packages/hive-conductor/Dockerfile",
+      "disposition": "PUBLISHED",
+      "rationale": "The Agent Conductor image: frontend build plus a Chainguard/Wolfi runtime over a self-contained venv.",
+      "built_by": [".github/workflows/security.yml:containers", ".github/workflows/ci.yml:docker-build", ".github/workflows/release.yml:images"],
+      "scanned_by": [".github/workflows/security.yml:containers"],
+      "published_by": ".github/workflows/release.yml:images"
+    },
+    {
+      "id": "maistro-engine-research",
+      "dockerfile": "Dockerfile.research",
+      "disposition": "DISTRIBUTED",
+      "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign.",
+      "built_by": [".github/workflows/security.yml:containers"],
+      "scanned_by": [".github/workflows/security.yml:containers"],
+      "published_by": null
+    },
+    {
+      "id": "maistro-rsi-runner",
+      "dockerfile": "Dockerfile.rsi-runner",
+      "disposition": "DISTRIBUTED",
+      "rationale": "Full-isolation RSI runner: the entire self-improvement loop executes inside it and agent-authored code only ever runs there, so its contents are a containment boundary rather than a convenience. Built by tools/run_rsi_isolated.sh and tools/run_rsi_evolve_isolated.sh on an operator's machine; never pushed.",
+      "built_by": [".github/workflows/security.yml:containers"],
+      "scanned_by": [".github/workflows/security.yml:containers"],
+      "published_by": null
+    },
+    {
+      "id": "sbx-template",
+      "dockerfile": "deploy/sbx/template/Dockerfile",
+      "disposition": "INTERNAL",
+      "rationale": "Docker Sandboxes template, built host-side by deploy/sbx/build.sh. It is FROM docker/sandbox-templates:shell-docker and copies preseed tars that build.sh produces in the same run, so CI cannot build it from a checkout alone -- there is nothing for a scan job to build. Scanning it needs the preseed step first, which is its own piece of work; tracked on #346 rather than claimed here.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    },
+    {
+      "id": "sbx-tests",
+      "dockerfile": "deploy/sbx/template/Dockerfile.tests",
+      "disposition": "INTERNAL",
+      "rationale": "The image RSI's nested test containers run under --network=none. Built by the same deploy/sbx/build.sh pass as sbx-template and shares its precondition; same reason it is not yet scanned, same owner.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    },
+    {
+      "id": "hive-conductor-e2e-api",
+      "dockerfile": "packages/hive-conductor/tests/Dockerfile",
+      "disposition": "INTERNAL",
+      "rationale": "Five lines: pytest and httpx over the e2e directory. Built only by packages/hive-conductor/docker-compose.test.yml's api-tests service, runs only this repository's own tests, never leaves CI or a developer's machine.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    },
+    {
+      "id": "hive-conductor-e2e-playwright",
+      "dockerfile": "packages/hive-conductor/tests/Dockerfile.playwright",
+      "disposition": "INTERNAL",
+      "rationale": "The browser half of the same e2e harness, built only by docker-compose.test.yml's playwright service. Same reasoning as hive-conductor-e2e-api.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    },
+    {
+      "id": "hive-conductor-backend-legacy",
+      "dockerfile": "packages/hive-conductor/backend/Dockerfile",
+      "disposition": "RETIRED",
+      "replaced_by": "packages/hive-conductor/Dockerfile",
+      "removal_owner": "#351",
+      "rationale": "Orphaned: no workflow, compose file, script or document references it. It also carries exactly the anti-pattern #351 exists to remove -- `pip install -r requirements.txt 2>/dev/null || pip install fastapi uvicorn httpx pydantic bcrypt`, which swallows the failure and silently installs five unpinned packages instead. It is inventoried rather than deleted here because removal is #351's scope; being listed is what keeps it visible until then.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    }
+  ]
+}
