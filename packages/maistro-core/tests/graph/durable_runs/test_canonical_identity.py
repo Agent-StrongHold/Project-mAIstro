@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from maistro.graph import Graph, Node
@@ -78,6 +79,7 @@ def _resolver(node_id: str, graph: Any) -> Any:
     return _Step()
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
 async def test_a_graph_run_is_findable_in_the_canonical_store() -> None:
     """The symptom #44 exists to remove: graph Runs invisible to the spine."""
     run_store, workspace_id, project_id = await _spine()
@@ -98,6 +100,7 @@ async def test_a_graph_run_is_findable_in_the_canonical_store() -> None:
     assert canonical.status is RunStatus.COMPLETED
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
 async def test_the_identity_is_the_stores_not_the_records() -> None:
     """The record's `run` is a projection of a row that already exists, rather
     than an id minted here and persisted afterwards."""
@@ -117,6 +120,7 @@ async def test_the_identity_is_the_stores_not_the_records() -> None:
     assert record.run.run_id in {run.run_id for run in listed}
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
 async def test_without_a_canonical_store_the_previous_behaviour_is_unchanged() -> None:
     """`run_store` is opt-in: a caller with no spine wired still runs, exactly
     as it did before, rather than failing to start."""
@@ -137,6 +141,7 @@ async def test_without_a_canonical_store_the_previous_behaviour_is_unchanged() -
     assert record.status is RunStatus.COMPLETED
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
 async def test_the_adopted_run_keeps_what_admission_recorded_on_it() -> None:
     """Adoption, not re-creation: the Run the graph executes is the admitted
     row, so whatever admission put on it — scope, actor, provenance — is what
@@ -164,6 +169,7 @@ async def test_the_adopted_run_keeps_what_admission_recorded_on_it() -> None:
     assert len(await run_store.list_by_status(RunStatus.COMPLETED, limit=10)) == 1
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
 async def test_a_pinned_run_id_without_a_spine_stays_where_it_was() -> None:
     """The pre-convergence path is untouched: a caller pinning an id with no
     canonical store wired still runs, and nothing reaches the spine."""
@@ -180,6 +186,7 @@ async def test_a_pinned_run_id_without_a_spine_stays_where_it_was() -> None:
     assert await run_store.get_run("pinned-run-1") is None
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_frontier_node_runs_are_findable_in_the_canonical_store() -> None:
     """The second construction site. A NodeRun minted in the record alone is a
     node nothing outside this record can see — the same defect as the Run."""
@@ -201,6 +208,7 @@ async def test_frontier_node_runs_are_findable_in_the_canonical_store() -> None:
     assert [item.node_id for item in canonical] == ["step"]
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_attempts_are_findable_in_the_canonical_store() -> None:
     """The third site. Physical execution history is the canonical store's."""
     run_store, workspace_id, project_id = await _spine()
@@ -221,6 +229,7 @@ async def test_attempts_are_findable_in_the_canonical_store() -> None:
         assert [item.attempt_id for item in canonical] == [item.attempt_id for item in mirrored]
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_a_settled_attempt_does_not_read_differently_per_store() -> None:
     """Identity without lifecycle would be worse than neither: a canonical row
     frozen at CREATED while the record calls the same Attempt finished is a
@@ -242,6 +251,7 @@ async def test_a_settled_attempt_does_not_read_differently_per_store() -> None:
         assert canonical.status is attempt.status
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
 async def test_without_a_canonical_store_nothing_reaches_the_spine() -> None:
     """The opt-in holds all the way down: no `run_store`, no canonical rows,
     and the record carries the whole execution exactly as it did before."""
@@ -257,6 +267,7 @@ async def test_without_a_canonical_store_nothing_reaches_the_spine() -> None:
     assert await run_store.get_run(record.run_id) is None
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_the_run_and_its_node_reach_their_terminal_status_canonically() -> None:
     """Identity without lifecycle is a row that lies. A canonical Run left
     RUNNING after the graph finished is exactly as wrong as one that is
@@ -305,6 +316,7 @@ class _Ask(BaseNode[_AskIn, _AskOut]):
         return _AskOut(text="UNREACHABLE")
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_a_node_answered_out_of_a_pause_walks_the_statuses_it_must() -> None:
     """The canonical row is behind by more than one edge here: it paused, and
     the answer moved the record to QUEUED without the store seeing it. Jumping
@@ -345,6 +357,7 @@ async def test_a_node_answered_out_of_a_pause_walks_the_statuses_it_must() -> No
     assert [item.status for item in node_runs] == [RunStatus.COMPLETED]
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_resuming_a_pre_convergence_record_takes_the_old_path() -> None:
     """A record written before the convergence carries a Run the canonical
     store never saw. Minting its NodeRuns there would attach them to nothing,
@@ -386,6 +399,7 @@ class _Boom(BaseNode[_StepIn, _StepOut]):
         raise ValueError("intentional test failure")
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-3")
 async def test_a_failed_node_settles_canonically_too() -> None:
     """Failure is the half a mirror is most tempting to skip and least safe to:
     a canonical Run left RUNNING because its graph failed is work nothing will
@@ -417,6 +431,7 @@ async def test_a_failed_node_settles_canonically_too() -> None:
     assert "intentional test failure" in str(node_runs[0].error)
 
 
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
 async def test_the_traversal_executor_takes_the_same_path() -> None:
     """Two entrypoints, one rule. `attempt_executor` is what the package
     exports, but `executor` is a public entrypoint too, and if only one of them

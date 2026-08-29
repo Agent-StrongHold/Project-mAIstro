@@ -10,7 +10,7 @@ which Workspace a Run belongs to.
 from __future__ import annotations
 
 import logging
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.agents.intents import IntentRegistry
 from maistro.archive.protocols import ArchiveStore
@@ -20,6 +20,9 @@ from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.store import RunStore
 from maistro.scheduling.store import ScheduleStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.graph.durable_runs.continuation import GraphContinuationStore
 
 __all__ = ["wire_chat_admission", "wire_execution_spine"]
 
@@ -130,6 +133,30 @@ async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
     return InMemoryScheduleStore()
 
 
+async def _pg_continuation_store(pg_pool: Any) -> GraphContinuationStore:
+    """The durable continuation store, or an in-memory one with a warning.
+
+    Same shape as `_pg_schedule_store` and for the same reason: `021` may not
+    have run on a caller-supplied pool, and `UndefinedTableError` on the first
+    graph checkpoint is a worse answer than starting without the table and
+    saying so. A durable pool that ends up with ephemeral graph continuations
+    means a restart loses every paused HITL frontier -- which is exactly the
+    defect this convergence removes, so it is warned about rather than silent.
+    """
+    if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.graph_continuations"):
+        from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
+
+        return PgGraphContinuationStore(pg_pool)
+
+    from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
+
+    logger.warning(
+        "graph_continuations table is absent; durable graph runs will not survive a "
+        "restart. Run alembic migration 021 to make them durable."
+    )
+    return InMemoryGraphContinuationStore()
+
+
 async def wire_execution_spine(
     conn: Any,
     *,
@@ -138,7 +165,12 @@ async def wire_execution_spine(
     pg_pool: Any = None,
     archive_store: ArchiveStore | None = None,
 ) -> tuple[
-    ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter, GraphTemplateStore, ScheduleStore
+    ProjectScopeStore,
+    RunStore,
+    WorkspaceRoutingAdmitter,
+    GraphTemplateStore,
+    ScheduleStore,
+    GraphContinuationStore,
 ]:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
@@ -156,7 +188,11 @@ async def wire_execution_spine(
     The Graph template store is wired here rather than separately because a
     Run's Graph and the template it was instantiated from must live in the same
     database — a registry pointing at one and a spine at another is how a Run
-    ends up citing a template version nothing can resolve.
+    ends up citing a template version nothing can resolve. The graph
+    continuation store is here for the same reason and a sharper one: a
+    continuation is half of a durable graph run and the canonical Run is the
+    other half (#44), so a restart that finds them in different databases finds
+    traversal state whose Run cannot be resolved at all.
 
     `archive_store` reaches the two stores that can use it (#273). It is the
     Container's own `archive_store`, so a deployment gets one archive tier
@@ -170,6 +206,7 @@ async def wire_execution_spine(
     run_store: RunStore
     template_store: GraphTemplateStore
     schedule_store: ScheduleStore
+    continuation_store: GraphContinuationStore
     if pg_pool is not None and await _spine_is_migrated(pg_pool):
         # No ensure_schema: these tables come from `alembic/versions/012` and
         # `014`. A store that quietly created its own tables would be a second
@@ -185,7 +222,9 @@ async def wire_execution_spine(
         )
         template_store = PgGraphTemplateStore(pg_pool)
         schedule_store = await _pg_schedule_store(pg_pool)
+        continuation_store = await _pg_continuation_store(pg_pool)
     elif conn is not None:
+        from maistro.graph.durable_runs.continuation import SqliteGraphContinuationStore
         from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.runs.sqlite_store import SqliteRunStore
@@ -199,11 +238,15 @@ async def wire_execution_spine(
         await sqlite_template_store.ensure_schema()
         sqlite_schedule_store = SqliteScheduleStore(conn)
         await sqlite_schedule_store.ensure_schema()
+        sqlite_continuation_store = SqliteGraphContinuationStore(conn)
+        await sqlite_continuation_store.ensure_schema()
+        continuation_store = sqlite_continuation_store
         project_scope_store = sqlite_scope_store
         run_store = sqlite_run_store
         template_store = sqlite_template_store
         schedule_store = sqlite_schedule_store
     else:
+        from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
         from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
         from maistro.runs.store import InMemoryRunStore
@@ -213,6 +256,7 @@ async def wire_execution_spine(
         run_store = InMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()
+        continuation_store = InMemoryGraphContinuationStore()
 
     # The Project store refuses to delete a Project that owns Runs, and only
     # the Run store can answer that. PostgreSQL has a foreign key for it; this
@@ -237,7 +281,14 @@ async def wire_execution_spine(
     # submission names later (#158) are built on first use, because they do not
     # exist yet at startup.
     await admitter.admitter_for(workspace_id)
-    return project_scope_store, run_store, admitter, template_store, schedule_store
+    return (
+        project_scope_store,
+        run_store,
+        admitter,
+        template_store,
+        schedule_store,
+        continuation_store,
+    )
 
 
 async def wire_node_template_store(

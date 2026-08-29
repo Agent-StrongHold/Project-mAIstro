@@ -27,6 +27,7 @@ from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
 from .protocol import DurableRunStore
+from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
 NodeResolver = traversal.NodeResolver
@@ -252,7 +253,7 @@ async def _walk(
             execution_store=execution_store,
             run_store=spine,
         )
-        await traversal._mirror_lifecycle(record, run_store=spine)
+        await mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
 
@@ -261,7 +262,7 @@ async def _walk(
         store=store,
         max_steps=max_steps,
     )
-    await traversal._mirror_lifecycle(record, run_store=spine)
+    await mirror_lifecycle(record, run_store=spine)
     return record
 
 
@@ -369,7 +370,7 @@ async def _persist_cancelled_run(
         graph_state=state,
         resume_at=None,
     )
-    await traversal._mirror_lifecycle(cancelled, run_store=run_store)
+    await mirror_lifecycle(cancelled, run_store=run_store)
     return cancelled
 
 
