@@ -7,7 +7,7 @@
         "db_pool": "Consumed by injection \u2014 passed to wire_execution_spine and _wire_sqlite_durable_events before the Container is constructed. The field is an unread second reference, kept because downstream products construct a Container and reach the pool through it.",
         "elevation_store": "Consumed by injection \u2014 passed to Sentinel at construction. The field is an unread second reference.",
         "golden_record_store": "InMemoryGoldenRecordStore is constructed and only stored. No production reader.",
-        "harness_registry": "Returned by _wire_hierarchy alongside `hierarchy` and only stored. No production reader.",
+        "harness_registry": "Returned by _wire_hierarchy alongside `hierarchy` and only stored. No production reader; the orchestrator surface is reached through maistro.orchestrator directly.",
         "hierarchy": "HierarchicalOrchestrator is returned by _wire_hierarchy and only stored. No production reader; the orchestrator surface is reached through maistro.orchestrator directly.",
         "identity_linker": "IdentityLinker is constructed and only stored. No production reader.",
         "node_template_store": "Consumed by the importing product and by the rest of #556. Core has no NodeTemplate-facing route: the catalog surface (AC-8), the legacy adapter (AC-10) and the improvement-candidate path (AC-11) are the readers, and each is a separate item on that issue. Exposed now rather than after them because the store is what makes AC-12 checkable at all -- a NodeTemplate that survives a restart is the precondition for provenance resolving after one -- and a durable store no deployment can reach would be the defect this ledger exists to keep visible.",
