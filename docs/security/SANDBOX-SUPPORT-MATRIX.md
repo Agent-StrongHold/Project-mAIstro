@@ -125,10 +125,28 @@ going through Python at all.
 
 Every sandbox is `--unshare-all --die-with-parent --new-session --cap-drop ALL`,
 with a private `/proc`, `/dev` and tmpfs `/tmp`, read-only binds of the host's
-runtime directories, and exactly one writable path: the sandbox's own workdir,
-bound at `/work`. The environment is `--clearenv`'d and repopulated only from
-`SandboxConfig.env`. Network requires `--share-net`, which is reachable only
-through a policy whose `network_allowed` is true.
+runtime directories, and exactly one writable **host** path: the sandbox's own
+workdir, bound at `/work`. The sandbox's own `/` and `/tmp` are writable tmpfs
+and vanish with it — that distinction is asserted rather than assumed, because
+"one writable path" read literally is false and the property that matters is
+that nothing a workload writes outlives the sandbox except under `/work`. The
+environment is `--clearenv`'d and repopulated only from `SandboxConfig.env`.
+Network requires `--share-net`, which is reachable only through a policy whose
+`network_allowed` is true.
+
+### Resource budgets (#80)
+
+`SandboxConfig.memory_mb` and `cpu_cores` were declared and applied by nothing
+until #80: a caller could ask for 256 MB and watch the workload allocate two
+gigabytes. They are now rlimits, set between `fork` and `exec` so they land on
+`bwrap` and every process inside inherits them.
+
+| Budget | Limit | Enforced? |
+|---|---|---|
+| `memory_mb` | `RLIMIT_AS` | **Yes** — measured: a 1 GB allocation raises `MemoryError`. |
+| `cpu_cores` | `RLIMIT_CPU`, read as a rate: `ceil(timeout_s × cpu_cores)` CPU-seconds plus a 2-second start-up grace | **Yes** — measured: a busy loop is killed by the kernel, before the wall-clock timeout. |
+| `max_file_mb` | `RLIMIT_FSIZE` | **Yes** — measured: `dd` stops at the ceiling. The workdir is a host directory, so without this a workload fills the host's disk while never leaving its sandbox. |
+| `max_processes` | `RLIMIT_NPROC` | **Best effort.** The kernel does not enforce `RLIMIT_NPROC` for a parent holding `CAP_SYS_ADMIN` or `CAP_SYS_RESOURCE`, so a Conductor running privileged bounds a fork bomb by the wall-clock timeout and the process-group kill instead. Set regardless — it costs nothing and holds wherever the process is unprivileged — but not claimed as a guarantee. |
 
 `--new-session` is load-bearing beyond its name: without a fresh session the
 sandboxed process keeps the caller's controlling terminal and can push
@@ -148,6 +166,30 @@ a host write with no sandbox involved.
   empty network namespace — is asserted against the kernel wherever `bwrap`
   exists. CI installs `bubblewrap` in `ci.yml`'s `test` job and `quality.yml`'s
   `coverage (no services)` job so these run rather than skip.
+- **The conformance and escape suite** is
+  `packages/maistro-core/tests/sandbox/test_escape_conformance.py` (#80). It
+  covers the classes ADR-093 and SPEC-190 name — filesystem, process,
+  namespace, device, host socket, credential, privilege — plus resource
+  exhaustion and cleanup, and every expectation in it was measured against a
+  live sandbox before it was written down. The bubblewrap lane in CI *is* the
+  designated conformance lane: Tiers 1 and 2 have no backend to conform, so
+  there is nothing a hardware-capable runner would additionally exercise until
+  one ships.
+
+  What it establishes, concretely: the host's `/etc/passwd` and `/home` are not
+  there to read; `/usr` is read-only; `/proc/1/root` is the sandbox's root and
+  not the host's; fewer than ten PIDs are visible; `unshare -Ur`, `chroot` and
+  `mount` are all refused; no block device, no `/dev/kvm`, no `mknod`;
+  `/proc/net/unix` and `/proc/net/tcp` are empty and no container socket is
+  reachable; the environment holds only what the config put in it; `CapEff` is
+  zero and `NoNewPrivs` is 1, so the `sudo` and `su` that *are* visible under
+  the read-only `/usr` cannot escalate.
+
+  What it does **not** establish is the thing ADR-093 already says it cannot: a
+  user-namespace sandbox exposes the full host syscall surface, so this is a
+  guardrail against accidents and prompt-injection mistakes, not a boundary
+  against hostile code. Tier 1 remains the answer for that, and the ladder
+  refuses rather than substituting this for it.
 
 ## Adding a Tier 1 or Tier 2 backend
 
