@@ -18,6 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 # `uv sync` runs against the clone at /workspace inside the container.
 COPY pyproject.toml uv.lock /opt/lockseed/
 COPY packages/ /opt/lockseed/packages/
-RUN cd /opt/lockseed && uv sync --frozen --no-install-workspace || true
+# `|| true` removed. The seeding is the entire purpose of this image: RSI's
+# nested test containers run with `--network=none`, so `uv sync --frozen
+# --offline` against the clone at /workspace can only succeed from this cache.
+# Swallowing the failure produced an image that built green with an empty
+# cache and failed later, inside a network-isolated container, as an
+# unresolvable dependency error rather than as the build error it was (#351).
+RUN cd /opt/lockseed && uv sync --frozen --no-install-workspace
 
 WORKDIR /workspace
