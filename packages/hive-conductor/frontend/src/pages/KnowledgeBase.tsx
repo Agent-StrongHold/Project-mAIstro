@@ -116,7 +116,7 @@ Current memories:\n${entries.slice(0, 15).map(e => `- [${e.namespace}] ${e.value
   const totalFields = Object.values(PROFILE_SECTIONS).reduce((n, s) => n + s.fields.length, 0);
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter Variable', 'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
       <div style={{ marginBottom: "1rem" }}>
         <h1 style={{ fontSize: "1.3rem", fontWeight: 700, margin: 0, fontFamily: "Georgia, serif" }}>Inner Temple</h1>
         <p style={{ fontSize: "0.7rem", color: C.muted, margin: "2px 0 0" }}>Your personal chamber — identity, preferences, and everything Fantasia knows about you</p>
