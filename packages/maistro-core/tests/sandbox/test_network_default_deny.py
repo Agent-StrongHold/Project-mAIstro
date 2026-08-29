@@ -16,7 +16,6 @@ over unrestricted egress while the audit line said "scoped".
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,7 @@ from maistro.sandbox import (
     NoSuitableBackendError,
     SandboxConfig,
     SandboxSelector,
+    detect_host_capabilities,
 )
 from maistro.sandbox.backends.bubblewrap import BubblewrapSandboxBackend
 from maistro.sandbox.backends.fake import FakeSandboxBackend
@@ -45,8 +45,14 @@ from maistro.sandbox.policy import (
     floor_for_mode,
 )
 
-HAS_BWRAP = shutil.which("bwrap") is not None
-requires_bwrap = pytest.mark.skipif(HAS_BWRAP is False, reason="bubblewrap is not installed")
+#: Capability, not binary presence. A host can have `bwrap` on PATH and be
+#: unable to build the namespace with it -- Ubuntu 24.04 restricting
+#: unprivileged user namespaces is the case that taught us -- and a suite keyed
+#: on `which` would run the kernel assertions there and fail.
+HAS_BWRAP = detect_host_capabilities().supports("bubblewrap")
+requires_bwrap = pytest.mark.skipif(
+    HAS_BWRAP is False, reason="this host cannot build a bubblewrap sandbox"
+)
 
 
 # --- the default -------------------------------------------------------------
