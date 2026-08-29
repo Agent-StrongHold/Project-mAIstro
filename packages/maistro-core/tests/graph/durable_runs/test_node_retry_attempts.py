@@ -26,6 +26,8 @@ from pydantic import BaseModel
 
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, run_durable_graph
+from maistro.graph.durable_runs import executor as traversal
+from maistro.graph.durable_runs.executor import MAX_NODE_VISITS
 from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -177,16 +179,72 @@ async def test_a_pause_is_not_a_failure_to_retry() -> None:
     assert node.calls == 1
 
 
-@pytest.mark.parametrize("declared", [0, -1, "many", None, 99])
+@pytest.mark.parametrize("declared", [0, -1, "many", None])
 async def test_an_unusable_budget_is_one_try_not_zero(declared: Any) -> None:
     """Refusing to run the node at all is a stranger reading of "retries" than
     declining to repeat it, and a typo in a policy must not silently skip work.
-    A budget above the ceiling is capped rather than honoured."""
+
+    The node fails, so the budget is actually consulted: a node that succeeded
+    would report one call whatever the policy said, which is the assertion
+    passing for a reason unrelated to the thing under test.
+    """
     run_store, workspace_id, project_id = await _spine()
-    node = _FlakyStep(failures=0)
+    node = _FlakyStep(failures=1)
     graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": declared})
 
     record = await _run(graph, node, run_store)
 
-    assert record.status is RunStatus.COMPLETED
+    assert record.status is RunStatus.FAILED
     assert node.calls == 1
+
+
+async def test_a_budget_above_the_ceiling_is_capped_rather_than_honoured() -> None:
+    """A graph asking for a thousand tries has a bug, and honouring it would
+    turn one node into an unbounded loop inside a frontier nothing else can
+    see past."""
+    run_store, workspace_id, project_id = await _spine()
+    node = _FlakyStep(failures=999)
+    graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": 999})
+
+    record = await _run(graph, node, run_store)
+
+    assert record.status is RunStatus.FAILED
+    assert node.calls == MAX_NODE_VISITS
+
+
+@pytest.mark.parametrize(
+    ("failures", "expected_status", "expected_calls"),
+    [(2, RunStatus.COMPLETED, 3), (99, RunStatus.FAILED, 3)],
+)
+async def test_the_other_walk_reaches_the_same_verdict(
+    failures: int, expected_status: RunStatus, expected_calls: int
+) -> None:
+    """`maistro.graph.durable_runs.executor` keeps a second walk, reached by
+    importing it directly rather than through the package's `run_durable_graph`.
+
+    Its fold now asks `first_exhausted_failure` -- the same rule -- instead of
+    carrying its own copy, so this pins the two to one answer. Written as a
+    test rather than left to review because a divergence here is invisible:
+    both walks would keep passing their own suites.
+
+    One budget, two outcomes: the node that succeeds on its third try and the
+    node that never succeeds both spend exactly three visits. The count is the
+    part that could drift -- one fold reads the pre-fold state and the other
+    reads the record's, and they agree only while neither counts the visit
+    being decided.
+    """
+    run_store, workspace_id, project_id = await _spine()
+    node = _FlakyStep(failures=failures)
+    graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": 3})
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+
+    record = await traversal.run_durable_graph(
+        graph,
+        store=InMemoryDurableRunStore(),
+        node_resolver=lambda node_id, _graph: node,
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+
+    assert record.status is expected_status
+    assert node.calls == expected_calls

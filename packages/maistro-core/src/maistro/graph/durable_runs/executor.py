@@ -859,7 +859,7 @@ async def _checkpoint_next_frontier(
     )
 
 
-def _visit_budget(spec: GraphNode | None) -> int:
+def _visit_budget(spec: GraphNode) -> int:
     """How many times this node may be attempted, from its own policy.
 
     One by default, which is exactly today's behaviour: a graph that says
@@ -876,8 +876,6 @@ def _visit_budget(spec: GraphNode | None) -> int:
     honouring it would turn one node into an unbounded loop inside a frontier
     nothing else can see past.
     """
-    if spec is None:
-        return 1
     try:
         declared = int(spec.policies.get("max_attempts", 1))
     except (TypeError, ValueError):
@@ -904,31 +902,42 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     return visits < _visit_budget(item.spec)
 
 
+def first_exhausted_failure(
+    prior_state: GraphExecutionState, failures: tuple[_FrontierItem, ...]
+) -> _FrontierItem | None:
+    """The failure with no visit left, if any -- the one that fails the Run.
+
+    All or nothing, deliberately. One node in a frontier with no budget left
+    fails the Run now rather than after its neighbours have spent theirs --
+    the Run is going to fail either way, and the extra work would be spent on
+    a result nobody will read.
+
+    Shared by both folds rather than written twice. Two spellings of "may this
+    node be tried again" is the shape of defect #44 exists to remove, at the
+    scale of one rule: they would agree today and diverge on whichever budget
+    question is asked next.
+    """
+    return next((item for item in failures if not _may_revisit_after(prior_state, item)), None)
+
+
 async def _fold_failures(
     record: DurableRunRecord,
     failures: tuple[_FrontierItem, ...],
     *,
     store: DurableRunStore,
 ) -> DurableRunRecord:
-    """Fail the Run, or send back the nodes whose own policy says try again.
-
-    All or nothing, deliberately. One node in a frontier with no budget left
-    fails the Run now rather than after its neighbours have spent theirs --
-    the Run is going to fail either way, and the extra work would be spent on
-    a result nobody will read.
-    """
-    retryable = tuple(item for item in failures if _may_revisit_after(record.graph_state, item))
-    if len(retryable) != len(failures):
-        first = next(item for item in failures if item not in retryable)
+    """Fail the Run, or send back the nodes whose own policy says try again."""
+    exhausted = first_exhausted_failure(record.graph_state, failures)
+    if exhausted is not None:
         return await _mark_failed(
             record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
+            error_code=exhausted.result.error_code or "NodeFailure",
+            error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
             store=store,
         )
     return await _checkpoint_next_frontier(
         record,
-        tuple(item.node_id for item in retryable),
+        tuple(item.node_id for item in failures),
         (),
         store=store,
     )

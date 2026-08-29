@@ -228,25 +228,22 @@ async def _fold_failures(
     already counted this visit; asking the pre-fold state keeps the budget
     meaning "tries" rather than "tries minus the one being decided".
 
-    All or nothing, deliberately. One node in a frontier with no budget left
-    fails the Run now rather than after its neighbours have spent theirs --
-    the Run is going to fail either way, and the extra work would be spent on
-    a result nobody will read.
+    Which failures are out of budget is `traversal.first_exhausted_failure`,
+    the same rule the other fold asks -- not a second copy of it.
     """
-    retryable = tuple(item for item in failures if traversal._may_revisit_after(prior_state, item))
-    if len(retryable) != len(failures):
-        first = next(item for item in failures if item not in retryable)
+    exhausted = traversal.first_exhausted_failure(prior_state, failures)
+    if exhausted is not None:
         return await traversal._mark_failed(
             record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
+            error_code=exhausted.result.error_code or "NodeFailure",
+            error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
             store=store,
         )
     return await _checkpoint_advancement(
         record,
         prior_state,
         (),
-        tuple(item.node_id for item in retryable),
+        tuple(item.node_id for item in failures),
         (),
         store=store,
     )
