@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.sandbox.fence import SandboxFence
 from maistro.sandbox.network import DENY_ALL, EgressGrant
 
 # Type alias for clarity
@@ -53,6 +54,10 @@ class SandboxConfig:
     #: frozen with the rest of the config so nothing can widen it after the
     #: sandbox is running.
     egress: EgressGrant = DENY_ALL
+    #: The Attempt fence this sandbox executes under (#79). Injected into
+    #: the sandbox environment so anything it publishes can prove it is
+    #: still the current execution. `None` for work with nothing to commit.
+    fence: SandboxFence | None = None
 
 
 @dataclass

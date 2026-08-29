@@ -1,6 +1,12 @@
 """Sandbox subsystem — protocol, policy, selector, backends."""
 
+from maistro.sandbox.commit import fenced_commit
 from maistro.sandbox.detect import HostCapabilities, detect_host_capabilities
+from maistro.sandbox.fence import (
+    SandboxFence,
+    StaleExecutionFence,
+    assert_fence_is_current,
+)
 from maistro.sandbox.network import (
     DENY_ALL,
     EgressGrant,
@@ -43,13 +49,17 @@ __all__ = [
     "HostCapabilities",
     "NoSuitableBackendError",
     "SandboxConfig",
+    "SandboxFence",
     "SandboxInstance",
     "SandboxProtocol",
     "SandboxSelector",
+    "StaleExecutionFence",
     "TierMismatchError",
     "WorkloadPolicy",
+    "assert_fence_is_current",
     "build_selector",
     "detect_host_capabilities",
+    "fenced_commit",
     "floor_for_mode",
     "tier_satisfies",
 ]
