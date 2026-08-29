@@ -254,6 +254,70 @@ def resolve_baseline(path: Path, *, base: str | None = None, root: Path = ROOT) 
     return Baseline(text=shown.stdout, origin="base", base_sha=commit, path=path)
 
 
+def resolve_baseline_dir(
+    directory: Path, *, suffix: str = ".json", base: str | None = None, root: Path = ROOT
+) -> list[Baseline]:
+    """Every ledger file in `directory` as of the base revision.
+
+    The directory form of `resolve_baseline`, for a ratchet whose bound is
+    folded from many small files instead of read from one (#585). Listing at
+    the base rather than in the worktree is what makes the fold trustworthy:
+    a candidate that adds, edits or deletes a note changes nothing about the
+    bound it is judged against.
+
+    An empty result is a real answer — no notes yet, so nothing to compare
+    against. An unreadable base is not, and raises like the single-file form.
+    """
+    rev = _base_rev(base, root=root)
+    if rev is None:
+        if not directory.is_dir():
+            return []
+        return [
+            Baseline(
+                text=path.read_text(encoding="utf-8"),
+                origin="worktree",
+                base_sha=None,
+                path=path,
+            )
+            for path in sorted(directory.glob(f"*{suffix}"))
+        ]
+
+    base_sha = _resolve_commit(rev, root=root)
+    _refuse_self_reference(base_sha, root=root)
+    commit = _merge_base(base_sha, root=root)
+    try:
+        rel = directory.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise RatchetProvenanceError(
+            f"{directory} is outside {root}, so it has no path at {commit}"
+        ) from exc
+
+    listed = _git(["ls-tree", "--name-only", f"{commit}:{rel}"], root=root)
+    if listed.returncode != 0:
+        # Same discrimination as `resolve_baseline`: a directory that is genuinely
+        # absent at the base is an empty fold; a base that cannot be read is not.
+        readable = _git(["cat-file", "-e", f"{commit}^{{tree}}"], root=root)
+        if readable.returncode != 0:
+            raise RatchetProvenanceError(
+                f"base commit {commit} could not be read: "
+                f"{(readable.stderr or listed.stderr).strip()}\n"
+                "An unreadable oracle is not an empty one."
+            )
+        return []
+
+    baselines: list[Baseline] = []
+    for name in sorted(n for n in listed.stdout.splitlines() if n.endswith(suffix)):
+        shown = _git(["show", f"{commit}:{rel}/{name}"], root=root)
+        if shown.returncode != 0:
+            raise RatchetProvenanceError(
+                f"{rel}/{name} is listed at {commit} but could not be read: {shown.stderr.strip()}"
+            )
+        baselines.append(
+            Baseline(text=shown.stdout, origin="base", base_sha=commit, path=directory / name)
+        )
+    return baselines
+
+
 def head_sha(root: Path = ROOT) -> str | None:
     """The candidate commit, for the provenance record. None outside a repo."""
     proc = _git(["rev-parse", "HEAD"], root=root)
