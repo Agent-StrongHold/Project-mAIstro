@@ -45,26 +45,17 @@
       "id": "agents-namespace-shims",
       "subsystem": "Agents",
       "disposition": "CONNECT",
-      "rationale": "One-line package __init__ shims whose only job is to expose an agent implementation. They are unreachable because nothing constructs the agents beneath them, not because the shim is wrong.",
+      "rationale": "Eight modules, two kinds, and the distinction matters. Seven are empty package __init__.py markers (auditor, feedback, forge, frank, mason, scribe, warden_at_arms) whose siblings hold real code: they become reachable exactly when those siblings do, and deleting one would break the package below it. One -- maistro.agents.spawner -- is a genuine re-export shim. None is unreachable because the shim is wrong. Nine former members were docstring-only files with no code and no reference anywhere in the tree. They were deleted rather than connected: a CONNECT tranche must terminate at an entry point, and no entry point can reach an empty file (#618). tests/test_no_placeholder_modules.py derives that set rather than listing it, so the same placeholder cannot come back.",
       "root": "maistro.agents.factory / the agent roster",
       "modules": [
         "maistro.agents.auditor",
-        "maistro.agents.cache",
-        "maistro.agents.exporter",
         "maistro.agents.feedback",
         "maistro.agents.forge",
-        "maistro.agents.forge.strategy",
         "maistro.agents.frank",
-        "maistro.agents.identity",
-        "maistro.agents.importer",
         "maistro.agents.mason",
-        "maistro.agents.registry",
         "maistro.agents.scribe",
-        "maistro.agents.scribe.strategy",
         "maistro.agents.spawner",
-        "maistro.agents.streaming",
-        "maistro.agents.warden_at_arms",
-        "maistro.agents.warden_at_arms.strategy"
+        "maistro.agents.warden_at_arms"
       ]
     },
     {
