@@ -647,6 +647,16 @@
       "modules": [
         "scripts/secret_env.py"
       ]
+    },
+    {
+      "id": "disabled-autonomous-merge-gate",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Orphaned by `14a67dd` (\"ci: disable autonomous merge safety gate for now\"), which deleted `.github/workflows/autonomous-merge.yml` -- the only thing that invoked this script. CONNECT rather than LIBRARY because that commit message says \"for now\": the gate is meant to run again once #562 decides whether a generated `quality/` ledger counts as trusted surface, at which point it needs a workflow back and this entry pruned. Recorded rather than deleted so the intent survives the pause; a LIBRARY disposition would read as \"this was always meant to be import-only\", which is the opposite of true -- it is a gate with nothing currently running it.",
+      "modules": [
+        "scripts/check-autonomous-merge.py"
+      ],
+      "root": ".github/workflows/autonomous-merge.yml, restored once #562 decides whether a generated quality/ ledger is part of the trusted surface and the check can pass for an ordinary change"
     }
   ]
 }

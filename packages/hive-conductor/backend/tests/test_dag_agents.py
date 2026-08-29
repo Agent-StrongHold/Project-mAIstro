@@ -85,12 +85,16 @@ _DELEGATE_DAG = {"nodes": [{"id": "d", "kind": "agent.delegate_remote"}]}
 class _StubContainer:
     """Stands in for the core Container the bridge exposes."""
 
-    def __init__(self, delegator=None, peers=None, runs=None) -> None:
+    def __init__(self, delegator=None, peers=None, runs=None, graph_runs=None) -> None:
         # Distinct sentinels, built here rather than in the signature: the tests
         # assert identity, so each field must be its own object.
         self.a2a_delegator = delegator if delegator is not None else object()
         self.guest_peers = peers if peers is not None else object()
         self.run_store = runs if runs is not None else object()
+        # The durable graph store the Container now carries (#44). Distinct from
+        # `run_store` on purpose: the whole point of the test below is that the
+        # two are one line apart and must not be swapped.
+        self.graph_run_store = graph_runs if graph_runs is not None else object()
 
 
 def _with_container(monkeypatch, container) -> None:
@@ -202,3 +206,46 @@ def test_ordinary_node_kinds_are_unaffected_by_the_wiring(monkeypatch) -> None:
         "only", {"nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {}}]}
     )
     assert type(node).__name__ == "TransformAliasKeysNode"
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
+def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_dag_id) -> None:
+    """The defect #44 exists to remove, at the surface that had it.
+
+    This module used to hold an unconditional module-level
+    `InMemoryDurableRunStore`, so a DAG the Conductor ran produced a run_id the
+    audit trail named and nothing could fetch: not `GET /v1/runs/{id}`, not
+    retention, not another replica resuming it. With the Container's
+    `graph_run_store` the Run is a row on the spine.
+    """
+    import services.dag_agents as dag_agents
+
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+    from maistro.runs.model import RunStatus as CanonicalRunStatus
+
+    projects = InMemoryProjectScopeStore()
+    root = asyncio.run(projects.create_root("w-spine"))
+    run_store = InMemoryRunStore(project_store=projects)
+    container = _StubContainer(
+        runs=run_store,
+        graph_runs=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+    )
+    _with_container(monkeypatch, container)
+
+    assert dag_agents.get_run_store() is container.graph_run_store
+
+    _graph, record = asyncio.run(
+        run_registered_dag(synth_dag_id, workspace_id="w-spine", project_id=root.project_id)
+    )
+
+    canonical = asyncio.run(run_store.get_run(record.run_id))
+    assert canonical is not None, "the Run the Conductor executed is on the spine"
+    assert canonical.status is CanonicalRunStatus.COMPLETED
+    node_runs = asyncio.run(run_store.list_node_runs(record.run_id))
+    assert [item.node_id for item in node_runs] == [item.node_id for item in record.node_runs]
+    assert asyncio.run(run_store.list_attempts(node_runs[0].node_run_id))

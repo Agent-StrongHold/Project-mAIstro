@@ -20,7 +20,7 @@
         "contexts": [
           "docker-build", "hive-conductor-e2e", "hive-conductor-e2e-ui",
           "lint-and-type-check", "security", "test", "wheel-imports", "workflow-lint",
-          "autonomous-merge-admissibility", "block", "formal-conformance",
+          "block", "formal-conformance",
           "Gate C — canonical clean install", "Validate ADR/spec front-matter",
           "exact-debt-ledger", "Quality gate (Pillars 1–4, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)", "Supply chain (pip-audit)",
@@ -64,7 +64,7 @@
         "contexts": [
           "docker-build", "hive-conductor-e2e", "hive-conductor-e2e-ui",
           "lint-and-type-check", "security", "test", "wheel-imports", "workflow-lint",
-          "autonomous-merge-admissibility", "block", "formal-conformance",
+          "block", "formal-conformance",
           "Gate C — canonical clean install", "Validate ADR/spec front-matter",
           "exact-debt-ledger", "Quality gate (Pillars 1–4, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)", "Supply chain (pip-audit)",
