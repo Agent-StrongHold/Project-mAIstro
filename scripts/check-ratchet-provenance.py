@@ -37,12 +37,18 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ),
 }
 
-# (candidate-controlled consumer, ledger) -> trusted enforcement adapter.
-# This is for large, mature measurement code where rewriting the whole checker
-# just to split its oracle would create more risk than the provenance fix removes.
 TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
     ("check_enumerations.py", "quality/enumeration-baseline.json"): (
         "check-enumerations-provenance.py"
+    ),
+    ("check-reachability.py", "quality/reachability-baseline.json"): (
+        "check-reachability-provenance.py"
+    ),
+    ("check-reachability-dispositions.py", "quality/reachability-baseline.json"): (
+        "check-reachability-dispositions-provenance.py"
+    ),
+    ("check-reachability-dispositions.py", "quality/reachability-dispositions.json"): (
+        "check-reachability-dispositions-provenance.py"
     ),
 }
 
@@ -166,8 +172,6 @@ def violations(root: Path = ROOT) -> list[str]:
         )
 
     for key, reason in sorted(CANDIDATE_AUTHORED.items()):
-        # Synthetic-tree tests intentionally contain only one checker. Staleness
-        # is meaningful on the repository inventory, not on such partial trees.
         if root == ROOT and key not in live_keys:
             errors.append(f"stale provenance exception {key[0]} -> {key[1]}: {reason}")
     return errors
@@ -188,12 +192,13 @@ def _load_module(path: Path, name: str) -> ModuleType:
 
 
 def run_delegated(root: Path = ROOT) -> list[str]:
-    """Execute each live delegated trusted-base gate once."""
     live_keys = {(c.script, c.ledger) for c in consumers(root)}
     failures: list[str] = []
+    seen_adapters: set[str] = set()
     for index, (key, adapter_name) in enumerate(sorted(TRUSTED_ADAPTERS.items())):
-        if key not in live_keys:
+        if key not in live_keys or adapter_name in seen_adapters:
             continue
+        seen_adapters.add(adapter_name)
         adapter = root / "scripts" / adapter_name
         try:
             module = _load_module(adapter, f"_ratchet_adapter_{index}")
