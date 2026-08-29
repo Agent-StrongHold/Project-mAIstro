@@ -239,84 +239,51 @@ def _finding_count(rules: list[dict[str, Any]]) -> int:
     return sum(len(rule.get("findings") or []) for rule in rules)
 
 
-def main(argv: list[str]) -> int:
-    update = "--update" in argv
-    scan_args = [arg for arg in argv if arg != "--update"]
-    scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*"]
-
-    candidate = _load_baseline()
-    candidate_rules = list(candidate["rules"])
-    findings = _run_vulture(scan_args)
-    candidate_classification = _classify(findings, candidate_rules)
-    _print_summary(findings, candidate_classification)
-
+def _candidate_has_unbankable_findings(
+    classification: Classification, *, update: bool
+) -> bool:
+    _print_findings("Unreachable-code findings must be fixed:", classification.never_allowlist)
     _print_findings(
-        "Unreachable-code findings must be fixed:", candidate_classification.never_allowlist
+        "Unclassified vulture findings need owner/category/rationale:", classification.unclassified
     )
-    _print_findings(
-        "Unclassified vulture findings need owner/category/rationale:",
-        candidate_classification.unclassified,
-    )
-    if candidate_classification.never_allowlist or candidate_classification.unclassified:
-        if update:
-            print(
-                "\n--update refused: unreachable-code and unclassified findings are never "
-                "banked — fix or classify them first.",
-                file=sys.stderr,
-            )
-        return 1
-
-    if update:
-        _write_baseline(candidate, candidate_classification)
-        print(f"\nwrote {BASELINE} — review the diff before committing")
-        return 0
-
-    prov = _provenance()
-    try:
-        trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
-        trusted = trusted_ref.loads(default={"version": int(METRIC_DEFINITION_VERSION), "rules": []})
-        if not isinstance(trusted, dict):
-            raise prov.RatchetProvenanceError("vulture: trusted ledger is not a JSON object")
-        trusted_rules = list(trusted.get("rules") or [])
-        prov.require_measurement(findings, ratchet=RATCHET, what="Vulture findings")
-        prov.require_metric_version(
-            METRIC_DEFINITION_VERSION,
-            recorded=str(trusted.get("version")) if trusted.get("version") is not None else None,
-            ratchet=RATCHET,
-            baseline=trusted_ref,
+    failed = bool(classification.never_allowlist or classification.unclassified)
+    if failed and update:
+        print(
+            "\n--update refused: unreachable-code and unclassified findings are never "
+            "banked — fix or classify them first.",
+            file=sys.stderr,
         )
-        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
-    except prov.RatchetProvenanceError as exc:
-        print(f"FAIL: {exc}", file=sys.stderr)
-        return 1
+    return failed
 
-    # The trusted rules are part of the oracle too. A candidate cannot broaden a
-    # regex or invent a new category and thereby classify its own new finding as
-    # accepted debt. Such a finding is unclassified against the base and fails.
-    trusted_classification = _classify(findings, trusted_rules)
-    _print_findings(
-        "Findings not classified by the TRUSTED baseline rules:",
-        trusted_classification.unclassified,
+
+def _trusted_state(findings: list[Finding], prov: ModuleType) -> tuple[object, list[dict[str, Any]], dict[str, str]]:
+    trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
+    trusted = trusted_ref.loads(default={"version": int(METRIC_DEFINITION_VERSION), "rules": []})
+    if not isinstance(trusted, dict):
+        raise prov.RatchetProvenanceError("vulture: trusted ledger is not a JSON object")
+    trusted_rules = list(trusted.get("rules") or [])
+    prov.require_measurement(findings, ratchet=RATCHET, what="Vulture findings")
+    prov.require_metric_version(
+        METRIC_DEFINITION_VERSION,
+        recorded=str(trusted.get("version")) if trusted.get("version") is not None else None,
+        ratchet=RATCHET,
+        baseline=trusted_ref,
     )
-    _print_findings(
-        "Unreachable-code findings are never authorizable:",
-        trusted_classification.never_allowlist,
-    )
+    authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    return trusted_ref, trusted_rules, authorized
 
-    trusted_deltas = _rule_deltas(trusted_rules, trusted_classification)
-    candidate_deltas = _rule_deltas(candidate_rules, candidate_classification)
-    trusted_added = [
-        finding for delta in trusted_deltas for finding in delta.added
-    ]
-    unauthorized = [finding for finding in trusted_added if finding.stable_key not in authorized]
 
-    # Authorization is permission to record new debt, not a substitute for the
-    # candidate actually banking it. Candidate deltas expose grants that have
-    # not been recorded yet as well as stale rows that should shrink.
-    candidate_added = [finding for delta in candidate_deltas for finding in delta.added]
-    candidate_removed = [entry for delta in candidate_deltas for entry in delta.removed]
-    candidate_unbanked_rules = [delta.rule_id for delta in candidate_deltas if delta.unbanked]
-
+def _report_trusted_result(
+    *,
+    prov: ModuleType,
+    trusted_ref: object,
+    trusted_rules: list[dict[str, Any]],
+    trusted_added: list[Finding],
+    authorized: dict[str, str],
+    findings: list[Finding],
+    trusted_deltas: list[RuleDelta],
+    candidate_deltas: list[RuleDelta],
+) -> None:
     print(
         prov.Provenance(
             ratchet=RATCHET,
@@ -333,11 +300,52 @@ def main(argv: list[str]) -> int:
             ),
         ).render()
     )
-
     if trusted_added:
         _print_deltas(trusted_deltas, title="Vulture debt changed against the TRUSTED baseline:")
     if candidate_deltas:
         _print_deltas(candidate_deltas, title="Candidate ledger bookkeeping still needs attention:")
+
+
+def _enforce_trusted(
+    findings: list[Finding],
+    candidate_rules: list[dict[str, Any]],
+    candidate_classification: Classification,
+) -> int:
+    prov = _provenance()
+    try:
+        trusted_ref, trusted_rules, authorized = _trusted_state(findings, prov)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    trusted_classification = _classify(findings, trusted_rules)
+    _print_findings(
+        "Findings not classified by the TRUSTED baseline rules:",
+        trusted_classification.unclassified,
+    )
+    _print_findings(
+        "Unreachable-code findings are never authorizable:",
+        trusted_classification.never_allowlist,
+    )
+
+    trusted_deltas = _rule_deltas(trusted_rules, trusted_classification)
+    candidate_deltas = _rule_deltas(candidate_rules, candidate_classification)
+    trusted_added = [finding for delta in trusted_deltas for finding in delta.added]
+    unauthorized = [finding for finding in trusted_added if finding.stable_key not in authorized]
+    candidate_added = [finding for delta in candidate_deltas for finding in delta.added]
+    candidate_removed = [entry for delta in candidate_deltas for entry in delta.removed]
+    candidate_unbanked_rules = [delta.rule_id for delta in candidate_deltas if delta.unbanked]
+
+    _report_trusted_result(
+        prov=prov,
+        trusted_ref=trusted_ref,
+        trusted_rules=trusted_rules,
+        trusted_added=trusted_added,
+        authorized=authorized,
+        findings=findings,
+        trusted_deltas=trusted_deltas,
+        candidate_deltas=candidate_deltas,
+    )
 
     if unauthorized:
         print(
@@ -365,6 +373,26 @@ def main(argv: list[str]) -> int:
             or candidate_unbanked_rules
         )
     )
+
+
+def main(argv: list[str]) -> int:
+    update = "--update" in argv
+    scan_args = [arg for arg in argv if arg != "--update"]
+    scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*"]
+
+    candidate = _load_baseline()
+    candidate_rules = list(candidate["rules"])
+    findings = _run_vulture(scan_args)
+    candidate_classification = _classify(findings, candidate_rules)
+    _print_summary(findings, candidate_classification)
+
+    if _candidate_has_unbankable_findings(candidate_classification, update=update):
+        return 1
+    if update:
+        _write_baseline(candidate, candidate_classification)
+        print(f"\nwrote {BASELINE} — review the diff before committing")
+        return 0
+    return _enforce_trusted(findings, candidate_rules, candidate_classification)
 
 
 if __name__ == "__main__":
