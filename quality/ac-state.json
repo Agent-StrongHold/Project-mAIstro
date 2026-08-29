@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 589,
+    "criteria_declared": 595,
     "criteria_annotated": 214,
-    "markers_found": 305,
+    "markers_found": 306,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 19.8104
+    "design_coverage": 20.1236
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,9 +540,9 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 19.8104,
-    "decisions": 122,
-    "decisions_scoring_zero": 96,
+    "percent": 20.1236,
+    "decisions": 123,
+    "decisions_scoring_zero": 97,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
@@ -1088,8 +1088,8 @@
         "id": "ADR-081226-bb3a",
         "declared_status": "Accepted",
         "criteria": 12,
-        "reachable": 5,
-        "percent": 41.6667
+        "reachable": 0,
+        "percent": 0.0
       },
       {
         "id": "ADR-081226-e626",
@@ -1290,8 +1290,8 @@
       {
         "id": "ADR-082826-08f0",
         "declared_status": "Accepted",
-        "criteria": 6,
-        "reachable": 6,
+        "criteria": 7,
+        "reachable": 7,
         "percent": 100.0
       },
       {
@@ -1300,6 +1300,13 @@
         "criteria": 6,
         "reachable": 5,
         "percent": 83.3333
+      },
+      {
+        "id": "ADR-082826-d9f5",
+        "declared_status": "Accepted",
+        "criteria": 5,
+        "reachable": 5,
+        "percent": 100.0
       },
       {
         "id": "ADR-085",
@@ -4675,10 +4682,10 @@
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
-        "declared": 5,
+        "declared": 10,
         "covered": 2,
         "passing": 0,
-        "reachable": 5
+        "reachable": 0
       },
       "tier": "declared",
       "criteria": [
@@ -4686,66 +4693,56 @@
           "id": "SPEC-081226-bb3a/AC-1",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Editing an instantiated Node leaves its Template untouched"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-2",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Publishing a new version does not disturb existing objects"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-3",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Instantiation binds to an exact version"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-4",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "Editing an instantiated Graph leaves its Template untouched"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-5",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [
-            "packages/maistro-core/tests/test_graph_definitions.py"
-          ],
+          "covered_by": [],
           "form": "gherkin",
           "scenario": [
             "A GraphTemplate version pins its nested NodeTemplates"
           ],
-          "rung": "reachable"
+          "rung": "declared"
         },
         {
           "id": "SPEC-081226-bb3a/AC-6",
@@ -13475,7 +13472,7 @@
       "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 6,
+      "own_criteria": 7,
       "own_detail": [
         {
           "id": "ADR-082826-08f0/AC-1",
@@ -13528,6 +13525,15 @@
           "module": "maistro.container",
           "covered_by": [
             "packages/maistro-core/tests/test_container_chat_runs.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-08f0/AC-7",
+          "claimed": false,
+          "module": "maistro.runs.recovery_events",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_recovery_events.py"
           ],
           "rung": "reachable"
         }
@@ -13610,15 +13616,64 @@
     {
       "id": "ADR-082826-d9f5",
       "file": "docs/adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md",
-      "declared_status": "Proposed",
+      "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 0,
-      "own_detail": [],
+      "own_criteria": 5,
+      "own_detail": [
+        {
+          "id": "ADR-082826-d9f5/AC-1",
+          "claimed": false,
+          "module": "maistro.graph.durable_runs.executor",
+          "covered_by": [
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_identity.py",
+            "packages/hive-conductor/backend/tests/test_dag_agents.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-d9f5/AC-2",
+          "claimed": false,
+          "module": "maistro.graph.durable_runs.execution_store",
+          "covered_by": [
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py",
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_identity.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-d9f5/AC-3",
+          "claimed": false,
+          "module": "maistro.graph.durable_runs.spine",
+          "covered_by": [
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py",
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_identity.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-d9f5/AC-4",
+          "claimed": false,
+          "module": "maistro.graph.durable_runs.canonical_store",
+          "covered_by": [
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_durable_store.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-d9f5/AC-5",
+          "claimed": false,
+          "module": "maistro.graph.durable_runs.continuation",
+          "covered_by": [
+            "packages/maistro-core/tests/graph/durable_runs/test_canonical_durable_store.py"
+          ],
+          "rung": "reachable"
+        }
+      ],
       "scenarios_without_ac_tag": [],
       "gherkin_parse_errors": [],
       "declared_unproven": [],
-      "tier": "unmeasured"
+      "tier": "reachable"
     },
     {
       "id": "ADR-083",

@@ -3,10 +3,13 @@ id: ADR-082826-d9f5
 title: "The durable Graph store becomes a projection over the canonical Run store"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-28
+accepted: 2026-08-28
 history:
   - status: Proposed
+    date: 2026-08-28
+  - status: Accepted
     date: 2026-08-28
 substrate: []
 implements: []
@@ -20,7 +23,17 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/graph/durable_runs/test_canonical_identity.py
+  - packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py
+  - packages/maistro-core/tests/graph/durable_runs/test_canonical_durable_store.py
+  - packages/hive-conductor/backend/tests/test_dag_agents.py
+ac-modules:
+  AC-1: maistro.graph.durable_runs.executor
+  AC-2: maistro.graph.durable_runs.execution_store
+  AC-3: maistro.graph.durable_runs.spine
+  AC-4: maistro.graph.durable_runs.canonical_store
+  AC-5: maistro.graph.durable_runs.continuation
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -116,6 +129,30 @@ executor" and is the same change either way.
 view over durable records, so `AttemptExecutionService` speaks `RunStore`
 against graph work today. The Attempt half of the seam exists; what moves is
 where the identities come from.
+
+## Acceptance Criteria
+
+- **AC-1**: A Run executed by either durable Graph entrypoint is created by
+  `RunStore`, so it resolves through `get_run`, appears in `list_by_status`,
+  and carries the scope and provenance of a canonical row. A caller with no
+  `RunStore` wired still runs, on the pre-convergence path.
+- **AC-2**: Every NodeRun and Attempt of such a Run is created by `RunStore`
+  too, with the guards that used to be duplicated in
+  `DurableRunExecutionStore` enforced once. A record's own precondition — that
+  this Run is finished with a node — still refuses an Attempt the aggregate
+  cannot carry.
+- **AC-3**: Lifecycle applied in the aggregate is written back to the store
+  that owns the entity, by walking the shortest legal path through
+  `RUN_TRANSITIONS` rather than jumping or overwriting, so a canonical row
+  never reads differently from the record for the same entity. A terminal
+  status raises rather than silently doing nothing.
+- **AC-4**: `CanonicalDurableRunStore` satisfies `DurableRunStore` by writing
+  the record's two halves to the two stores that own them and assembling reads
+  from both. It refuses a record whose Run the spine has never seen rather than
+  minting a second identity for it.
+- **AC-5**: Graph continuation state is persisted beside the canonical Run in
+  the same database the spine chose — in memory, SQLite, or PostgreSQL — and a
+  paused HITL frontier is answerable and resumable across a process restart.
 
 ## Consequences
 

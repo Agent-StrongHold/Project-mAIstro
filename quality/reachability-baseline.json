@@ -179,6 +179,7 @@
     "protocols.agent",
     "protocols.telemetry",
     "routes.projects",
+    "scripts/check-autonomous-merge.py",
     "scripts/check_assertion_quality.py",
     "scripts/check_mutation_baseline.py",
     "scripts/generate_repo_tasks.py",

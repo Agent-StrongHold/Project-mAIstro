@@ -23,6 +23,8 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
+from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
+from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
@@ -177,6 +179,13 @@ class Container:
     #: families. Optional exactly as `template_store` is, and for the same
     #: reason: a Container built directly still routes requests.
     node_template_store: NodeTemplateStore | None = None
+    #: Durable graph execution over the canonical spine (#44). A
+    #: `DurableRunStore` in interface only: Run, NodeRuns and Attempts are the
+    #: `run_store`'s rows and the Graph continuation is persisted beside them,
+    #: so a graph Run resolves through `GET /v1/runs/{id}` and appears in
+    #: `list_by_status` like every other Run. Optional the same way the rest of
+    #: the spine is -- a Container built directly still routes requests.
+    graph_run_store: DurableRunStore | None = None
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -576,7 +585,15 @@ class Container:
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            reconciler = AttemptLifecycleReconciler(self.run_store)
+            # The Container's bus, so the sweep's dispositions land on the
+            # canonical Event stream rather than only in Run state (#462). A
+            # Container built without one still sweeps; the events are how the
+            # decision becomes inspectable, not how it is made.
+            reconciler = AttemptLifecycleReconciler(
+                self.run_store,
+                events=self.event_bus,
+                source="maistro.container.recover_abandoned_attempts",
+            )
             for attempt in reclaimed:
                 try:
                     await reconciler.reconcile(attempt)
@@ -935,6 +952,7 @@ async def create_container(
         task_admitter,
         graph_template_store,
         schedule_store,
+        graph_continuations,
     ) = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
@@ -1157,6 +1175,7 @@ async def create_container(
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
         node_template_store=node_template_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
