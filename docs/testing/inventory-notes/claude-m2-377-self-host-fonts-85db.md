@@ -30,10 +30,20 @@ replaced)**:
   appearing in `index.html`, so the origin test above could not see it.
 
 **Not counted here, because it is a Playwright spec rather than a pytest
-node:** `frontend/e2e/offline.spec.ts` is the check the issue's definition of
-done actually asks for. It aborts every request that would leave the app's
-origin — the air gap, applied at the browser — then asks the page to render and
-both families to resolve through `document.fonts.check`. Asserting "the `<link>`
-tags are gone" would prove nothing durable; the next import, icon set or
-analytics snippet puts the dependency straight back, and only a test that cuts
-the network notices.
+node:** `packages/hive-conductor/tests/e2e/offline-assets.spec.ts` is the check
+the issue's definition of done actually asks for. It aborts every request that
+would leave the app's origin — the air gap, applied at the browser — then asks
+the app to load and both families to resolve. Asserting "the `<link>` tags are
+gone" would prove nothing durable; the next import, icon set or analytics
+snippet puts the dependency straight back, and only a test that cuts the
+network notices.
+
+Two things about it were measured rather than assumed. It lives in
+`tests/e2e/`, not `frontend/e2e/`, because `frontend/e2e/` is run by no
+workflow — a spec placed there would never have executed, which is a worse
+outcome than not writing it. And it reads the face out of `document.fonts` and
+checks its status instead of calling `document.fonts.check()`: run against a
+build with no `@font-face` at all, `check()` reported an invented family as
+available, because a CSS font shorthand always resolves to something. The
+assertion now fails when asked for a family nothing ships, which was confirmed
+by asking for one.
