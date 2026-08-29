@@ -162,9 +162,39 @@ def test_an_unresolvable_entry_is_not_also_reported_as_newly_reachable(
 
 
 @pytest.mark.ac("SPEC-082926-f1c3/AC-2")
-def test_the_committed_baseline_passes_the_gate_it_now_carries(check, baseline, universe):
-    """A gate nothing currently satisfies would be reverted on the next merge."""
+def test_the_committed_baseline_passes_the_gate_it_now_carries(check, baseline, universe, capsys):
+    """A gate nothing currently satisfies would be reverted on the next merge.
+
+    Both levels, because they can disagree: the predicate can be clean while
+    `main` still returns 1 through a branch that reads the set a second time.
+    """
     assert check.unknown_baseline_entries(baseline, universe) == []
+    assert check.main() == 0
+    assert "name NO module" not in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-f1c3/AC-3")
+def test_a_newly_unreachable_module_is_still_reported_by_its_label(
+    check, baseline, tmp_path, monkeypatch, capsys
+):
+    """Storage moved to identities; the report did not.
+
+    `scripts/mutation_ratchet.py` is findable where `mutation_ratchet` is one
+    grep away from the wrong thing — the reason `_display_name` exists. The
+    identity comes with it, so the baseline line can be written from the
+    failure without consulting the spec.
+    """
+    labelled = sorted(entry for entry in baseline if check.display_name(entry) != entry)
+    assert labelled, "some baselined module must have a label distinct from its identity"
+    victim = labelled[0]
+
+    code = _run_gate(check, monkeypatch, tmp_path, sorted(baseline - {victim}))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "NEWLY UNREACHABLE" in out
+    assert check.display_name(victim) in out
+    assert victim in out
 
 
 # --- AC-3: the rewrite moves no verdict ---

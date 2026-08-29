@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +13
+  tests/: +14
 ---
 # claude-issue-651-baseline-identity-7c50
 
-All thirteen are `tests/test_reachability_baseline_identity.py`, the suite for
+All fourteen are `tests/test_reachability_baseline_identity.py`, the suite for
 SPEC-082926-f1c3: the reachability baseline stores the scoped module identities
 the walk produces, not the labels the report prints.
 
