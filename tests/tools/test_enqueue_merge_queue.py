@@ -56,11 +56,33 @@ def green_checks() -> list[dict[str, str]]:
     ]
 
 
-def test_admissible_requires_both_exact_head_signals(enqueue: ModuleType) -> None:
+def test_admission_turns_on_gates_ran_for_this_exact_head(enqueue: ModuleType) -> None:
     assert enqueue.is_admissible(candidate(enqueue), green_statuses(), green_checks())
 
     assert not enqueue.is_admissible(candidate(enqueue), [], green_checks())
-    assert not enqueue.is_admissible(candidate(enqueue), green_statuses(), [])
+
+
+def test_a_red_admissibility_check_does_not_refuse_admission(enqueue: ModuleType) -> None:
+    """The freeze this controller shipped with, asserted so it cannot return.
+
+    Requiring `autonomous-merge-admissibility` made the queue unreachable for
+    the ordinary change rather than the risky one: the quality gates compel a
+    PR that moves any measured counter to re-commit its `quality/` ledger, and
+    that edit is exactly what the check calls a trusted-surface change. A PR
+    adding one AC-marked test failed it by construction and could never be
+    enqueued (#564).
+    """
+    absent: list[dict[str, str]] = []
+    red = [
+        {
+            "name": "autonomous-merge-admissibility",
+            "conclusion": "failure",
+            "completed_at": "2026-08-29T00:02:00Z",
+        }
+    ]
+
+    assert enqueue.is_admissible(candidate(enqueue), green_statuses(), absent)
+    assert enqueue.is_admissible(candidate(enqueue), green_statuses(), red)
 
 
 def test_latest_signal_wins(enqueue: ModuleType) -> None:
@@ -82,7 +104,9 @@ def test_latest_signal_wins(enqueue: ModuleType) -> None:
     ]
 
     assert not enqueue.is_admissible(candidate(enqueue), statuses, green_checks())
-    assert not enqueue.is_admissible(candidate(enqueue), green_statuses(), checks)
+    # The later admissibility conclusion no longer changes the verdict; the
+    # later `gates-ran` one still does, which is what this test is for.
+    assert enqueue.is_admissible(candidate(enqueue), green_statuses(), checks)
 
 
 def test_wrong_base_draft_and_closed_are_refused(enqueue: ModuleType) -> None:

@@ -72,12 +72,34 @@ def is_admissible(
     statuses: list[dict[str, Any]],
     checks: list[dict[str, Any]],
 ) -> bool:
+    """Whether the queue may take this PR. `gates-ran` is the gate.
+
+    ``autonomous-merge-admissibility`` is deliberately **not** consulted here,
+    and ``checks`` is carried so `run` can still report it. Requiring it made
+    the queue unreachable for the ordinary case rather than for the risky one:
+    the quality gates *compel* a change that moves any measured counter to
+    re-commit the corresponding `quality/` ledger, and that script classes
+    every `quality/**` edit as a trusted-surface change and returns red. A PR
+    that adds one `@pytest.mark.ac` test therefore fails it by construction,
+    is refused admission, and never merges -- while the changes the check
+    exists to catch, those touching workflows and gate scripts, were already
+    reaching a human because they fail it too.
+
+    So this gated on a signal that cannot distinguish the two, and the repo
+    decided (#564) to run the queue without it until #562's split lands:
+    definitions and grants stay red, generated measurements stop being red
+    once their ratchet is base-resolved. At that point the check can gate
+    again and mean something.
+
+    The signal is still produced, still reported per PR, and still visible on
+    every pull request. It stops being a merge boundary; it does not stop
+    being evidence.
+    """
     return (
         candidate.state == "open"
         and not candidate.draft
         and candidate.base_ref == BASE_BRANCH
         and latest_status_state(statuses, GATES_CONTEXT) == "success"
-        and latest_check_conclusion(checks, ADMISSION_CHECK) == "success"
     )
 
 
@@ -198,9 +220,13 @@ def run(api: GitHubApi) -> int:
         candidate = candidate_from_pr(api.pull_request(listed.number))
         statuses = api.statuses(candidate.head_sha)
         checks = api.admission_checks(candidate.head_sha)
+        admissibility = latest_check_conclusion(checks, ADMISSION_CHECK) or "not-reported"
         if not is_admissible(candidate, statuses, checks):
             print(f"PR #{candidate.number}: not admissible on {candidate.head_sha}")
             continue
+        # Reported, not enforced. A reader of this log can still see which
+        # enqueued PRs the admissibility check objected to.
+        print(f"PR #{candidate.number}: autonomous-merge-admissibility={admissibility}")
         outcome = api.enqueue(candidate)
         print(f"PR #{candidate.number}: {outcome} on {candidate.head_sha}")
         if outcome in {"accepted", "already-requested"}:
