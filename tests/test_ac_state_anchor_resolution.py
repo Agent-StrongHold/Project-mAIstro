@@ -176,3 +176,103 @@ class TestScopedIdentitiesSurviveYaml:
         specs = check.collect_specs({}, check.load_unreachable(), None)
 
         assert check.unresolvable_anchors(specs, check.load_module_universe()) == []
+
+
+class TestTheReportAndItsCallSite:
+    """The wrapper and the two call sites `main` reaches them through.
+
+    `unresolvable_anchors` is the decision and is covered above. It is not the
+    gate: the gate is `_report_unresolvable_anchors` returning True and `main`
+    stopping on it *before any counting*. A decision function that is right
+    while its call site never runs is the failure this whole spec is about, one
+    level up, so both are exercised here rather than assumed.
+    """
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-2")
+    def test_the_report_names_the_file_the_criterion_and_the_string(self, check, capsys) -> None:
+        assert check._report_unresolvable_anchors([_spec("not_a_real_module_at_all")]) is True
+
+        out = capsys.readouterr().out
+        assert "docs/specs/SPEC-000-thing.md" in out
+        assert "SPEC-000/AC-1" in out
+        assert "'not_a_real_module_at_all'" in out
+        assert "@tool/ac_state_notes" in out, "the error carries an example of each shape"
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-3")
+    def test_a_clean_corpus_reports_nothing_and_does_not_fail(self, check, capsys) -> None:
+        """The other half. A gate that printed on every run would be noise."""
+        assert check._report_unresolvable_anchors([_spec("maistro.runs.store")]) is False
+        assert capsys.readouterr().out == ""
+
+
+def _corpus(tmp_path: Path, anchor: str, *, status: str = "Accepted") -> Path:
+    """A two-document tree: one ADR, one spec implementing it, one criterion."""
+    root = tmp_path / "repo"
+    (root / "docs" / "specs").mkdir(parents=True)
+    (root / "docs" / "adr").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "tests" / "test_nothing.py").write_text("def test_nothing():\n    assert True\n")
+    (root / "docs" / "adr" / "ADR-000000-0000-thing.md").write_text(
+        "---\nid: ADR-000000-0000\nkind: adr\nstatus: Accepted\nlayer: Governance\n---\n\n"
+        "# ADR-000000-0000: Thing\n"
+    )
+    (root / "docs" / "specs" / "SPEC-000000-0000-thing.md").write_text(
+        f"---\nid: SPEC-000000-0000\nkind: spec\nstatus: {status}\nlayer: Governance\n"
+        "implements:\n  - maistro-engine#ADR-000000-0000\n"
+        f"ac-modules:\n  AC-1: '{anchor}'\n---\n\n"
+        "# SPEC-000000-0000: Thing\n\n## Acceptance Criteria\n\n- **AC-1** It works.\n"
+    )
+    return root
+
+
+@pytest.fixture
+def standalone(check, tmp_path, monkeypatch):
+    """Point the module at a throwaway tree, so `main` runs in about a second.
+
+    Against the repository's own corpus this would restate today's ledger and
+    go red as unrelated documents changed. `ROOT` moves with `SPEC_DIR` and
+    `ADR_DIR` because `working_tree_facts` takes paths relative to it — and
+    `load_module_universe` is stubbed for the same reason: it loads
+    `check-reachability.py` from `ROOT / "scripts"`, which the throwaway tree
+    does not have, and an unloadable graph correctly reports *nothing*. Leaving
+    it to find an empty universe would make both tests below pass for the one
+    reason that proves neither.
+    """
+
+    def _use(root: Path):
+        monkeypatch.setattr(check, "ROOT", root)
+        monkeypatch.setattr(check, "SPEC_DIR", root / "docs" / "specs")
+        monkeypatch.setattr(check, "ADR_DIR", root / "docs" / "adr")
+        monkeypatch.setattr(check, "configured_test_roots", lambda: [root / "tests"])
+        monkeypatch.setattr(check, "load_module_universe", lambda: {"maistro.runs.store"})
+        return check.main(["--out", str(root / "out.json")])
+
+    return _use
+
+
+class TestMainStopsBeforeCounting:
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-2")
+    def test_an_unresolvable_anchor_fails_the_gate(self, standalone, tmp_path, capsys) -> None:
+        """Exit 1 from `main` itself, not from a function `main` might not call."""
+        code = standalone(_corpus(tmp_path, "not_a_real_module_at_all"))
+
+        assert code == 1
+        assert "FAIL: ac-modules anchors that name no module" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-3")
+    def test_a_resolvable_anchor_lets_the_run_finish(self, standalone, tmp_path) -> None:
+        """The control, and the only route to the counting `main` does after.
+
+        `completion_claims_unverifiable` is read back because it is produced by
+        `_completion_claims`, which this PR extracted from `main` to keep the
+        added branch under the complexity ceiling. An extraction nothing calls
+        is how a refactor loses behaviour quietly.
+        """
+        import json
+
+        root = _corpus(tmp_path, "maistro.runs.store", status="Implemented")
+
+        assert standalone(root) == 0
+        payload = json.loads((root / "out.json").read_text())
+        assert payload["totals"]["completion_claims_unverifiable"] == 0
+        assert [c["id"] for c in payload["completion_claims_contradicted"]] == ["SPEC-000000-0000"]

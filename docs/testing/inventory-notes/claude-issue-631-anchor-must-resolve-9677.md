@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  tests/: +16
+  tests/: +20
 ---
 # claude-issue-631-anchor-must-resolve-9677
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
-One new file, sixteen tests, nothing moved or deleted.
+One new file, twenty tests, nothing moved or deleted.
 
 `tests/test_ac_state_anchor_resolution.py` covers the anchor-resolution gate
 (#631). Two tests hold the module universe itself -- that it is not silently
@@ -59,3 +59,25 @@ are not module identities, and failed. `min(unreachable & universe)` is stable;
 verified across eight explicit hash seeds rather than by re-running and hoping.
 The 40 are #651, named in the comment so the next reader does not re-derive
 them.
+
+The last four exist because the diff-coverage gate found the shape of this
+whole spec repeated one level up in my own change. `unresolvable_anchors` is
+the decision and was well covered; `_report_unresolvable_anchors` and the two
+`main` call sites that reach it were not covered at all, so the *gate* -- as
+opposed to the predicate behind it -- was unproven. A decision function that
+is right while nothing calls it is exactly the failure mode this PR closes.
+
+Two of them exercise the wrapper directly, in both directions. The other two
+run `main` end to end against a throwaway two-document corpus in `tmp_path`:
+one with an unresolvable anchor, which must exit 1 before any counting, and
+one clean, which must reach the counting and produce the
+`completion_claims_contradicted` row that `_completion_claims` -- extracted
+from `main` in this PR to keep the added branch under the complexity ceiling
+-- is responsible for. An extraction nothing calls is how a refactor loses
+behaviour quietly.
+
+The throwaway corpus stubs `load_module_universe`, which is not incidental:
+it loads `check-reachability.py` from `ROOT / "scripts"`, and against a tmp
+tree that fails and the gate then correctly reports *nothing*. Without the
+stub both tests would have passed for the one reason that proves neither, and
+the first version of them did.
