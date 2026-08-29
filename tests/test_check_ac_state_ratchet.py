@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -400,46 +401,113 @@ def test_a_notes_module_that_fails_to_load_leaves_nothing_behind(
     assert "_ac_state_notes" not in sys.modules
 
 
-# --- the stacked case, at the ratchet (#609) ---------------------------------
+# --- the stacked case, at the ratchet (#609, rebuilt for #616) ----------------
+#
+# The first version of these built on the `ceilings` fixture, which points
+# `ac_state_notes.ROOT` at a directory that is not a Git repository. Provenance
+# then falls back to reading the worktree, so the *base* fold and the *worktree*
+# fold were the same set of notes — and every one of these passed with the fold
+# stubbed out entirely, which is exactly the pre-#609 behaviour they claimed to
+# rule out. They proved nothing about the wiring (Codex, #609).
+#
+# So they run against a real repository now: `develop` holds only the weaker
+# note, the branch adds the stronger ones, and the two folds genuinely differ.
+# `test_the_harness_can_tell_the_two_folds_apart` is the control that keeps this
+# honest — without it, a future fixture change could quietly collapse them again
+# and nothing here would notice.
 
 
-def _note(ceilings, name: str, **overrides) -> None:
-    """Write one more note beside the baseline the `ceilings` fixture writes."""
-    (ceilings.dir / f"{name}.json").write_text(
+def _git(*args: str, cwd: Path) -> str:
+    proc = subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=60
+    )
+    return proc.stdout.strip()
+
+
+def _write_note(notes_dir: Path, name: str, *, with_tests: bool = True, **counters) -> None:
+    (notes_dir / f"{name}.json").write_text(
         json.dumps(
             {
-                "branch": name,
-                "measured_with_tests": True,
-                "counters": {**TOTALS, **overrides},
+                "branch": None if name == "_baseline" else name,
+                "measured_with_tests": with_tests,
+                "counters": {**TOTALS, **counters},
             }
         )
     )
 
 
+@pytest.fixture
+def stacked(gate, tmp_path, monkeypatch):
+    """A real repository whose base and worktree folds are different.
+
+    Returns a callable: `stacked(base=20.0, "parent"=21.0, ...)` commits the
+    base note on `develop`, then leaves the named notes in the worktree on a
+    branch off it — the shape a stacked PR has, where both notes are new
+    relative to the base.
+    """
+    root = tmp_path / "repo"
+    notes_dir = root / "quality" / "ac-state-notes"
+    notes_dir.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "develop", str(root)], check=True, timeout=60)
+    _git("config", "user.email", "t@example.com", cwd=root)
+    _git("config", "user.name", "T", cwd=root)
+    monkeypatch.setattr(gate.ac_state_notes, "NOTES_DIR", notes_dir)
+    monkeypatch.setattr(gate.ac_state_notes, "ROOT", root)
+
+    def build(base: float, **worktree: float) -> Path:
+        _write_note(notes_dir, "_baseline", design_coverage=base)
+        _git("add", "-A", cwd=root)
+        _git("commit", "-qm", "base", cwd=root)
+        # A remote-tracking ref, because that is what the resolver looks for.
+        _git("update-ref", "refs/remotes/origin/develop", "HEAD", cwd=root)
+        _git("checkout", "-q", "-b", "stacked", cwd=root)
+        for name, value in worktree.items():
+            _write_note(notes_dir, name, design_coverage=value)
+        # Committed, because a stacked PR's notes are: the resolver refuses a
+        # base that resolves to HEAD itself, and rightly — the baseline would
+        # then be read from the commit under judgement.
+        _git("add", "-A", cwd=root)
+        _git("commit", "-qm", "stack", cwd=root)
+        return root
+
+    build.dir = notes_dir
+    return build
+
+
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_stack_that_banked_its_measurement_passes(gate, ceilings) -> None:
+def test_the_harness_can_tell_the_two_folds_apart(gate, stacked) -> None:
+    """The control, and the reason the rest of this block is evidence.
+
+    If the base fold and the worktree fold ever read the same notes again, this
+    fails and the tests below stop being able to distinguish the fix from its
+    absence — which is what happened the first time.
+    """
+    stacked(20.0, parent=21.0, own=22.0)
+
+    assert gate.ac_state_notes.bounds().counters["design_coverage"] == 20.0
+    assert gate.ac_state_notes.banked_bound().counters["design_coverage"] == 22.0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_stack_that_banked_its_measurement_passes(gate, stacked) -> None:
     """Two notes, both new relative to the base: the shape that used to fail.
 
     The old rule asked for exactly one changed note, found two, answered "none",
     and compared the measurement against the base fold — so the stack's own
     improvement read as unbanked and no amount of re-banking helped.
     """
-    ceilings(design_coverage=20.0)
-    _note(ceilings, "parent-branch", design_coverage=21.0)
-    _note(ceilings, "stacked-branch", design_coverage=22.0)
+    stacked(20.0, parent=21.0, own=22.0)
 
     assert gate.ratchet({**TOTALS, "design_coverage": 22.0}, measured=True, bank=False) == 0
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
 def test_a_stack_that_measured_above_every_note_is_still_told_to_bank(
-    gate, ceilings, capsys
+    gate, stacked, capsys
 ) -> None:
     """The half that must not get weaker: the fold is `max`, so measuring above
     all of them is still slack a later regression could spend."""
-    ceilings(design_coverage=20.0)
-    _note(ceilings, "parent-branch", design_coverage=21.0)
-    _note(ceilings, "stacked-branch", design_coverage=22.0)
+    stacked(20.0, parent=21.0, own=22.0)
 
     assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
     out = capsys.readouterr().out
@@ -448,31 +516,82 @@ def test_a_stack_that_measured_above_every_note_is_still_told_to_bank(
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_banking_below_what_was_measured_is_still_refused(gate, ceilings, capsys) -> None:
+def test_banking_below_what_was_measured_is_still_refused(gate, stacked, capsys) -> None:
     """#609's AC-4. One note, the case that already worked, unchanged."""
-    ceilings(design_coverage=20.0)
-    _note(ceilings, "understated", design_coverage=21.0)
+    stacked(20.0, understated=21.0)
 
     assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
     assert "unbanked improvement" in capsys.readouterr().out
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_weak_note_beside_a_strong_one_buys_no_slack(gate, ceilings, capsys) -> None:
+def test_a_weak_note_beside_a_strong_one_buys_no_slack(gate, stacked, capsys) -> None:
     """A candidate cannot lower the claim by adding a note: the fold is `max`."""
-    ceilings(design_coverage=20.0)
-    _note(ceilings, "real", design_coverage=22.0)
-    _note(ceilings, "cheat", design_coverage=1.0)
+    stacked(20.0, real=22.0, cheat=1.0)
 
     assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
     assert "23.0, floor still says 22.0" in capsys.readouterr().out
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_regression_is_still_refused_against_the_stacked_claim(gate, ceilings, capsys) -> None:
-    ceilings(design_coverage=20.0)
-    _note(ceilings, "parent-branch", design_coverage=21.0)
-    _note(ceilings, "stacked-branch", design_coverage=22.0)
+def test_deleting_every_note_cannot_reach_the_bound_that_judges_regressions(
+    gate, stacked, capsys
+) -> None:
+    """The deletion the worktree fold does not catch, caught by the other half.
+
+    `regressions` is folded at the base, which nothing in the worktree can
+    reach — so emptying the directory does not lower the line a regression is
+    judged against.
+    """
+    root = stacked(20.0, own=22.0)
+    for note in (root / "quality" / "ac-state-notes").glob("*.json"):
+        note.unlink()
 
     assert gate.ratchet({**TOTALS, "design_coverage": 19.0}, measured=True, bank=False) == 1
     assert "moved away from its recorded state" in capsys.readouterr().out
+
+
+# --- the fold's own error paths (#616) ---------------------------------------
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_worktree_note_in_the_wrong_mode_is_refused(gate, stacked, capsys) -> None:
+    """`_mode_mismatch` only ever saw the notes at the *base*.
+
+    A stacked branch carries notes the base has never seen, so one banked
+    without `--run-tests` was folded into a `--run-tests` target — mixing two
+    measurement modes this gate treats as incomparable everywhere else, in the
+    direction that can only loosen the bound (Codex, #609).
+    """
+    root = stacked(20.0, parent=21.0)
+    _write_note(root / "quality" / "ac-state-notes", "own", with_tests=False, design_coverage=22.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 22.0}, measured=True, bank=False) == 1
+    out = capsys.readouterr().out
+    assert "banked without --run-tests" in out
+    assert "own" in out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_note_in_the_right_mode_is_not_refused(gate, stacked) -> None:
+    """The other side, or a check that refused everything would satisfy the
+    test above."""
+    stacked(20.0, parent=21.0, own=22.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 22.0}, measured=True, bank=False) == 0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_malformed_worktree_note_is_a_diagnostic_not_a_traceback(gate, stacked, capsys) -> None:
+    """The base notes parse, so `bounds()` succeeds and the failure lands on the
+    fold — which was read outside the handler, so the gate exited with a
+    traceback instead of its own message (Codex, #609).
+
+    `_baseline.json` specifically: the old one-note rule skipped it and the fold
+    does not, which is what made this newly reachable.
+    """
+    root = stacked(20.0, own=22.0)
+    (root / "quality" / "ac-state-notes" / "_baseline.json").write_text("{not json")
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 22.0}, measured=True, bank=False) == 1
+    assert "the banked AC-state fold could not be read" in capsys.readouterr().out

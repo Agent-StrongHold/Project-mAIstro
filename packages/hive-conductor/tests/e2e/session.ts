@@ -31,7 +31,7 @@ export async function setupIfNeeded(page: Page) {
   //   ["Hive", "Hardware", "Accounts", "Modules", "Confirm"]
   // Wait for the first wizard control so a slow cold render cannot race the
   // setup flow after the backend has already told us setup is required.
-  const conductorName = page.locator('input[placeholder="Hive Conductor"]');
+  const conductorName = page.getByLabel("Conductor name", { exact: true });
   await conductorName.waitFor({ state: "visible", timeout: 15000 });
 
   // 1/5 — Hive
@@ -44,12 +44,18 @@ export async function setupIfNeeded(page: Page) {
 
   // 3/5 — Accounts. These are the same credentials loginAsPM() logs in with
   // below, so the accounts this creates are the ones the rest of the suite
-  // depends on. Both password fields share placeholder="password" (admin
-  // card first, daily-user card second), hence nth() rather than placeholder.
-  await page.locator('input[placeholder="admin"]').fill(ADMIN_USER);
-  await page.locator('input[type="password"]').nth(0).fill(ADMIN_PASS);
-  await page.locator('input[placeholder="username"]').fill(PM_USER);
-  await page.locator('input[type="password"]').nth(1).fill(PM_PASS);
+  // depends on.
+  //
+  // Selected by label. This step used to need `nth(0)`/`nth(1)` over
+  // `input[type="password"]`, because both password fields had
+  // placeholder="password" and nothing else — the very defect #375 fixed, and
+  // the reason a test had to identify a credential field by its position in
+  // the DOM. Now each one is named, so the selector says which account it is
+  // filling in and stops depending on card order.
+  await page.getByLabel("Admin username", { exact: true }).fill(ADMIN_USER);
+  await page.getByLabel("Admin password", { exact: true }).fill(ADMIN_PASS);
+  await page.getByLabel("Daily user username", { exact: true }).fill(PM_USER);
+  await page.getByLabel("Daily user password", { exact: true }).fill(PM_PASS);
   await page.locator("button", { hasText: /next/i }).click();
 
   // 4/5 — Modules (skip)

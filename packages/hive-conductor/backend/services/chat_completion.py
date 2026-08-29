@@ -1260,8 +1260,22 @@ async def _tool_memory_edit(
 async def _tool_create_dashboard_widget(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    """Add a widget to the user's dashboard."""
+    """Add a widget to the user's dashboard, and say so only if it was stored.
+
+    This used to write `routes.dashboard_layout._LAYOUTS` and call
+    `_save_to_disk()` inside `except Exception: pass`, then return
+    `{"created": True}` whatever happened — so a chat that could not persist a
+    widget still told the user it had made one. It now goes through the same
+    durable path the API does (#340), and reports the failure it gets.
+    """
     from uuid import uuid4
+
+    from services import dashboard_layouts
+
+    if not user_id:
+        # The old `user_id or "dev"` pooled every unidentified caller into one
+        # layout. A widget with nowhere to go is not a widget that was created.
+        return {"created": False, "error": "no principal to attach the widget to"}
 
     widget_id = f"w-{str(uuid4())[:8]}"
     title = args.get("title", "New Widget")
@@ -1269,47 +1283,44 @@ async def _tool_create_dashboard_widget(
     size = args.get("size", "2")
     config = args.get("config", {})
     tab_name = args.get("tab", "")
-    # Store in the layout via the route
+
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340).
+    layout = dict(dashboard_layouts.effective(user_id).layout)
+    widget = {
+        "id": widget_id,
+        "type": widget_type,
+        "title": title,
+        "size": size,
+        "config": config,
+    }
+
+    if layout.get("tabs"):
+        tabs = [dict(tab) for tab in layout["tabs"]]
+        target_idx = layout.get("activeTab", 0)
+        if tab_name:
+            for i, tab in enumerate(tabs):
+                if tab.get("name", "").lower() == tab_name.lower():
+                    target_idx = i
+                    break
+            else:
+                tabs.append({"name": tab_name, "widgets": []})
+                target_idx = len(tabs) - 1
+        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
+        layout["tabs"] = tabs
+    else:
+        existing = layout.get("widgets", [])
+        layout["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
+        layout["activeTab"] = 0
+        layout.pop("widgets", None)
+
     try:
-        from routes.dashboard_layout import _LAYOUTS, _save_to_disk
+        dashboard_layouts.save(user_id, layout)
+    except dashboard_layouts.LayoutError as exc:
+        logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
+        return {"created": False, "error": f"the widget was not saved: {exc}"}
 
-        uid = user_id or "dev"
-        layout = _LAYOUTS.get(uid, {})
-        widget = {
-            "id": widget_id,
-            "type": widget_type,
-            "title": title,
-            "size": size,
-            "config": config,
-        }
-
-        if layout.get("tabs"):
-            # New tabs format
-            tabs = layout["tabs"]
-            active = layout.get("activeTab", 0)
-            # Find target tab by name or use active
-            target_idx = active
-            if tab_name:
-                for i, t in enumerate(tabs):
-                    if t.get("name", "").lower() == tab_name.lower():
-                        target_idx = i
-                        break
-                else:
-                    # Create new tab
-                    tabs.append({"name": tab_name, "widgets": []})
-                    target_idx = len(tabs) - 1
-            tabs[target_idx].setdefault("widgets", []).append(widget)
-        else:
-            # Legacy or empty — create tabs structure
-            existing = layout.get("widgets", [])
-            layout["tabs"] = [{"name": "Overview", "widgets": [*existing, widget]}]
-            layout["activeTab"] = 0
-            layout.pop("widgets", None)
-
-        _LAYOUTS[uid] = layout
-        _save_to_disk()
-    except Exception:
-        pass
     return {
         "created": True,
         "widget_id": widget_id,

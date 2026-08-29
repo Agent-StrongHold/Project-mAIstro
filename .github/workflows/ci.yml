@@ -86,6 +86,14 @@ jobs:
       # to the tree (#81).
       - name: Deployment docs name only components that exist
         run: python3 scripts/check-deployment-claims.py
+      # One seam further in: a control the user can reach but not name. Every
+      # password and API-key field in the Conductor took its accessible name
+      # from placeholder text, which disappears once the field has a value and
+      # changed with server state on two of those surfaces (#375). This refuses
+      # a raw `type="password"` outside the shared components, and refuses a
+      # control on a credential surface that has no way to carry a label.
+      - name: Credential fields are not named by their placeholders
+        run: python3 scripts/check-secret-field-labels.py
       # An accepted decision can retire a rule that is written down somewhere
       # else, and the retired phrasing then outlives it. `maistro-core`'s own
       # CLAUDE.md told agents "No `org_id` in core" long after ADR-068
@@ -109,6 +117,16 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # `SENSITIVE_PATH_PATTERNS` decides which self-modifications need
+      # adversarial review, and it was a hand-written list that kept falling
+      # one entry behind: `local_loop.py` fast-forwards the baseline,
+      # `merge.py` decides which candidates land, `code_fixer.py` runs
+      # candidate code, and none of the three escalated (#303). This derives
+      # the requirement from the import graph reachable out of the promotion
+      # and execution entry points instead of enumerating it, so a new module
+      # on that path fails the build rather than waiting to be noticed.
+      - name: Every module the promotion path reaches escalates
+        run: python3 scripts/check-promotion-surface.py
       # The same rule, in the two file types the Compose gate cannot read.
       # `maistro-canvas/frontend` carried
       # `postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders` twice -- once
