@@ -35,6 +35,7 @@ from maistro.sandbox.backends.bubblewrap import (
     BubblewrapUnavailableError,
 )
 from maistro.sandbox.backends.fake import FakeSandboxBackend
+from maistro.sandbox.network import EgressGrant, EgressMode
 from maistro.sandbox.policy import WorkloadPolicy
 
 #: Capability, not binary presence. A host can have `bwrap` on PATH and be
@@ -197,14 +198,25 @@ def test_the_sandbox_is_unshared_capability_dropped_and_detached(tmp_path: Path)
     assert "--new-session" in argv
 
 
-def test_the_network_is_absent_unless_the_config_grants_it(tmp_path: Path) -> None:
+def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
+    """`network=True` used to be the whole story. It is not any more (#77):
+    egress comes from an explicit `EgressGrant` carrying a reason, so a config
+    that merely says "network" gets none."""
     backend = _backend(tmp_path)
 
-    without = backend.build_argv(SandboxConfig(network=False), tmp_path, ["true"])
-    with_net = backend.build_argv(SandboxConfig(network=True), tmp_path, ["true"])
+    argv = backend.build_argv(SandboxConfig(network=True), tmp_path, ["true"])
 
-    assert "--share-net" not in without
-    assert "--share-net" in with_net
+    assert "--share-net" not in argv
+
+
+def test_an_explicit_host_grant_is_what_shares_the_network(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    granted = SandboxConfig(
+        egress=EgressGrant(mode=EgressMode.HOST, reason="first-party tool needs egress")
+    )
+
+    assert "--share-net" in backend.build_argv(granted, tmp_path, ["true"])
+    assert "--share-net" not in backend.build_argv(SandboxConfig(), tmp_path, ["true"])
 
 
 def test_the_environment_is_cleared_rather_than_inherited(tmp_path: Path) -> None:
