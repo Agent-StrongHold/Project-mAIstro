@@ -9,19 +9,20 @@ the list was derived by reading that tree rather than by copying a template. A
 directive nobody can trace to a real fetch is a permission granted to an
 attacker for free.
 
-## The one third-party origin
+## No third-party origins
 
-`frontend/index.html` loads Inter, JetBrains Mono and Caveat from Google Fonts,
-so `style-src` admits `fonts.googleapis.com` and `font-src` admits
-`fonts.gstatic.com` — nothing else, and neither origin can serve script under
-this policy.
+There are none. `frontend/index.html` used to load Inter, JetBrains Mono and
+Caveat from Google Fonts, which is why `style-src` admitted
+`fonts.googleapis.com` and `font-src` admitted `fonts.gstatic.com`. #377
+self-hosted the two families anything actually referenced — Vite emits their
+woff2 files as same-origin assets — and dropped Caveat, which nothing used.
+Every directive below is now `'self'` or `'none'`, and the only widening any
+deployment can produce is the two development origins named further down.
 
-That is an allowlist, not an endorsement. Self-hosting the three families would
-be strictly better for a product that runs on a mini-PC that may have no
-internet at all, and it would remove the last third-party origin from the
-policy. It is a frontend change with its own testing — offline rendering,
-layout shift on the fallback stack, three families' worth of licensing — and
-doing it inside a CSP change would mean shipping two things and testing one.
+The test that anchors this reads `index.html` and asserts the set of external
+origins there and the set in the policy are both empty. That is what keeps the
+policy honest when someone adds a CDN: the failure arrives in CI rather than in
+a header nobody reads.
 
 ## Why no `'unsafe-inline'` in `style-src`
 
@@ -37,12 +38,6 @@ CSSOM rather than writing a `style` attribute, and CSP governs the attribute.
 from __future__ import annotations
 
 from maistro.security.content_security_policy import NONE, SELF, ContentSecurityPolicy
-
-#: Google Fonts' stylesheet host, referenced from `frontend/index.html`.
-FONT_STYLESHEET_ORIGIN = "https://fonts.googleapis.com"
-
-#: The host those stylesheets fetch the font files from.
-FONT_FILE_ORIGIN = "https://fonts.gstatic.com"
 
 #: Vite's dev server, which the SPA's HMR client opens a WebSocket back to.
 #: Only ever added to a development policy.
@@ -72,8 +67,11 @@ def conductor_policy(*, development: bool = False) -> ContentSecurityPolicy:
         "default-src": (SELF,),
         # No inline, no eval, no CDN. Vite emits the bundle as a served module.
         "script-src": (SELF,),
-        "style-src": (SELF, FONT_STYLESHEET_ORIGIN),
-        "font-src": (SELF, FONT_FILE_ORIGIN),
+        # Both were third-party before #377 self-hosted the typefaces. The
+        # stylesheet Vite emits and the woff2 files it references are served
+        # from this origin, so neither directive needs anything else.
+        "style-src": (SELF,),
+        "font-src": (SELF,),
         # `data:` for avatars and generated thumbnails the API returns inline;
         # `blob:` for images the browser builds itself, which the canvas and
         # deck surfaces do.

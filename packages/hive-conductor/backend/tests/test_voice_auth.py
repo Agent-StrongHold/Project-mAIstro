@@ -78,10 +78,12 @@ def configured(account: str, monkeypatch: pytest.MonkeyPatch) -> str:
 def no_llm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Answer the utterance without a real model. Records the contained request.
 
-    Voice has two construction paths: the normal build_llm_port path and a
-    direct HTTP adapter when LiteLLM base/key settings are present. Stub both so
-    developer environment or .env credentials can never turn this test into a
-    network call.
+    Stubbing `build_llm_port` alone is now sufficient. Voice used to construct
+    an `HttpOpenAIProtocolLLM` directly whenever LiteLLM base/key settings were
+    present, so this fixture also had to stub the adapter class or a developer
+    `.env` could turn the test into a live network call. #440 collapsed voice
+    onto the builder the chat routes use, which leaves one seam to stub --
+    `test_voice_intent_contract.py` pins that there is only one.
     """
     captured: dict[str, Any] = {}
 
@@ -91,11 +93,7 @@ def no_llm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             captured["tools"] = req.tools
             return {"choices": [{"message": {"role": "assistant", "content": "on it"}}]}
 
-    monkeypatch.setattr("routes.voice.build_llm_port", lambda: FakeLLM(), raising=False)
-    monkeypatch.setattr(
-        "adapters.llm_http.HttpOpenAIProtocolLLM",
-        lambda **_kwargs: FakeLLM(),
-    )
+    monkeypatch.setattr("routes.voice.build_llm_port", lambda: FakeLLM())
     return captured
 
 
@@ -185,7 +183,7 @@ class TestTheCredentialResolvesToARealAccount:
         )
 
         assert response.status_code == 200
-        assert response.json()["actions_taken"] == []
+        assert "actions_taken" not in response.json()
         assert no_llm["tools"] is None
 
     def test_the_utterance_and_its_room_reach_the_model(
