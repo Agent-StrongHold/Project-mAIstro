@@ -198,3 +198,143 @@ class TestRoundTrip:
 
         recorded = json.loads(path.read_text(encoding="utf-8"))
         assert recorded["categories"]["undefined-marker-kind"]["disposition"].strip()
+
+
+ENTRY = ROOT / "scripts" / "check-contract-markers.py"
+
+
+@pytest.fixture(scope="module")
+def entry():
+    """The script CI actually runs, loaded as a module so `main` is callable.
+
+    Loaded separately from `impl` on purpose. The entry point is where the exit
+    codes and the operator-facing output live, and neither is exercised by
+    testing the measurement underneath it: a `main` that computed the right
+    findings and then returned 0 for all of them would pass every test above.
+    """
+    spec = importlib.util.spec_from_file_location("contract_markers_entry_under_test", ENTRY)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _aim(entry, impl, root: Path, baseline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point both modules at a throwaway tree instead of the repository."""
+    for module in (entry, impl):
+        monkeypatch.setattr(module, "ROOT", root, raising=False)
+        monkeypatch.setattr(module, "BASELINE", baseline, raising=False)
+
+
+class TestTheEntryPoint:
+    """Exit codes and output, which the measurement tests cannot reach."""
+
+    def test_a_clean_corpus_exits_zero(
+        self, entry, impl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[behavioral]", tests="[tests/test_thing.py]"),
+            test=_MARKED,
+        )
+        baseline = tmp_path / "baseline.json"
+        baseline.write_text("{}", encoding="utf-8")
+        _aim(entry, impl, root, baseline, monkeypatch)
+
+        assert entry.main([]) == 0
+        assert "every contract claim is either evidenced" in capsys.readouterr().out
+
+    def test_an_unevidenced_claim_exits_one_and_names_it(
+        self, entry, impl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """The exit code is the whole point: CI reads it, not the prose."""
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[boundary]", tests="[tests/test_thing.py]"),
+            test=_MARKED,
+        )
+        baseline = tmp_path / "baseline.json"
+        baseline.write_text("{}", encoding="utf-8")
+        _aim(entry, impl, root, baseline, monkeypatch)
+
+        assert entry.main([]) == 1
+        out = capsys.readouterr().out
+        assert "ADR-001-thing.md" in out
+        assert "--update" in out
+
+    def test_update_writes_the_baseline_and_exits_zero(
+        self, entry, impl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[boundary]", tests="[tests/test_thing.py]"),
+            test=_MARKED,
+        )
+        baseline = tmp_path / "quality" / "baseline.json"
+        baseline.parent.mkdir(parents=True)
+        _aim(entry, impl, root, baseline, monkeypatch)
+
+        assert entry.main(["--update"]) == 0
+        assert json.loads(baseline.read_text(encoding="utf-8"))
+
+    def test_banking_then_rechecking_passes(
+        self, entry, impl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A banked finding is explained, so the next run is green.
+
+        The two halves have to agree, and only the entry point runs both.
+        """
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[boundary]", tests="[tests/test_thing.py]"),
+            test=_MARKED,
+        )
+        baseline = tmp_path / "quality" / "baseline.json"
+        baseline.parent.mkdir(parents=True)
+        _aim(entry, impl, root, baseline, monkeypatch)
+
+        assert entry.main(["--update"]) == 0
+        assert entry.main([]) == 0
+
+    def test_a_category_banked_without_a_disposition_fails(
+        self, entry, impl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """Banking a finding and explaining it have to be the same act.
+
+        A baseline entry with an empty disposition records that something was
+        seen without recording why it was accepted, which is the shape a later
+        regression can hide inside. So it fails even though every finding in it
+        is recorded.
+        """
+        root = _corpus(
+            tmp_path,
+            doc=_doc(kinds="[boundary]", tests="[tests/test_thing.py]"),
+            test=_MARKED,
+        )
+        baseline = tmp_path / "quality" / "baseline.json"
+        baseline.parent.mkdir(parents=True)
+        _aim(entry, impl, root, baseline, monkeypatch)
+
+        assert entry.main(["--update"]) == 0
+        banked = json.loads(baseline.read_text(encoding="utf-8"))
+        banked["categories"]["declared-kind-unproven"]["disposition"] = "   "
+        baseline.write_text(json.dumps(banked), encoding="utf-8")
+
+        assert entry.main([]) == 1
+        assert "have to be the same act" in capsys.readouterr().out
+
+    def test_report_truncates_and_says_how_much_it_withheld(self, entry, capsys) -> None:
+        """A gate that prints 200 lines is a gate nobody reads to the end."""
+        entry._report("things", [f"line {n}" for n in range(25)])
+
+        out = capsys.readouterr().out
+        assert "25 things:" in out
+        assert "line 19" in out
+        assert "line 20" not in out
+        assert "... and 5 more" in out
+
+    def test_report_prints_nothing_for_an_empty_class(self, entry, capsys) -> None:
+        entry._report("things", [])
+
+        assert capsys.readouterr().out == ""
