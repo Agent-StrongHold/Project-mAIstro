@@ -725,8 +725,11 @@ jobs:
       # matrix says *who owns what* and which subsystem each unreachable module
       # belongs to. It is the M0 planning surface (#28), so it is checked rather
       # than trusted: the rows must partition every production module, and each
-      # row's unreachable count is recomputed from the same import graph. A row
-      # that drifts out of date is a wrong plan, silently.
+      # row's unreachable *share* -- `none`/`few`/`some`/`most`/`all` -- is
+      # recomputed from the same import graph. A row that drifts out of date is
+      # a wrong plan, silently. The share rather than a transcribed `19/62`,
+      # because the denominator moved whenever any PR added a module anywhere
+      # (#605); `--census` prints the exact counts.
       - name: convergence matrix (subsystem ownership stays current)
         run: uv run python scripts/check-convergence-matrix.py
 

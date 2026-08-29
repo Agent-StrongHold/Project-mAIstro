@@ -16,7 +16,6 @@ substrate:
 implements: []
 related:
   - maistro-engine#ADR-082226-ff3c
-  - maistro-engine#ADR-082926-25a2
 supersedes: []
 blocks: []
 blocked-by: []

@@ -19,7 +19,6 @@ implements:
   - maistro-engine#ADR-082926-061d
 related:
   - maistro-engine#ADR-082526-aef8
-  - maistro-engine#ADR-082926-25a2
 supersedes: []
 superseded-by: []
 blocks: []
