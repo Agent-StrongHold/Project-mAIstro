@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import os
 import re
@@ -1082,30 +1083,41 @@ def mandate_violations(
     return violations
 
 
-CEILINGS = ROOT / "quality" / "ac-state-ceilings.json"
+#: Same by-path load as `check-wiring-reads`, and for the same reason: the tests
+#: load this script with `spec_from_file_location`, which puts nothing on
+#: `sys.path` for a sibling to be found on.
+_NOTES_SOURCE = Path(__file__).resolve().parent / "ac_state_notes.py"
 
-#: Counters that may only go down. Each is a way a completion claim can outrun
-#: its evidence, so a rise is a new contradiction entering the repository.
-RATCHETED = (
-    "completion_claims_contradicted",
-    "completion_claims_unverifiable",
-    "specs_awaiting_retrofit",
-    "markers_without_criterion",
-    "criteria_claimed_but_unproven",
-    "scenarios_without_ac_tag",
-    "gherkin_parse_errors",
-    # The chain checked for absence rather than breakage (#164).
-    "specs_implementing_nothing",
-    "adrs_without_implementing_spec",
-    "specs_declaring_no_criteria",
-)
 
-#: Counters that may only go **up**. Design coverage is the first of these, and
-#: the direction is the whole reason it exists: a ratchet on debt says the
-#: repository did not get worse, and only a floor under progress says it got
-#: better. `_compare` handled one direction for ten counters before this, so the
-#: asymmetry is named here rather than left implicit in a comparison operator.
-FLOORED = ("design_coverage",)
+def _load_notes_module() -> Any:
+    spec = importlib.util.spec_from_file_location("_ac_state_notes", _NOTES_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_NOTES_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+ac_state_notes = _load_notes_module()
+RatchetProvenanceError = ac_state_notes.provenance().RatchetProvenanceError
+
+# The bound is folded from per-branch notes now, not read off one shared line
+# (#585, ADR-082926-25a2). `quality/ac-state-ceilings.json` is retired; its
+# final content lives on as `quality/ac-state-notes/_baseline.json`.
+#
+# The counter names and their directions are unchanged and live in
+# `ac_state_notes`, which is what folds them. Re-exported here because this
+# script's own help text and comparison read them.
+RATCHETED = ac_state_notes.RATCHETED
+FLOORED = ac_state_notes.FLOORED
 
 
 def _mode_mismatch(run_tests: bool) -> str | None:
@@ -1113,31 +1125,41 @@ def _mode_mismatch(run_tests: bool) -> str | None:
 
     This runs first because the report is written to disk before the ratchet
     would otherwise reach its own mode check — so a wrong-mode invocation used to
-    overwrite the committed `ac-state.json` with an unmeasured payload and *then*
-    complain. Failing before any measurement leaves the artefact untouched.
+    overwrite the report with an unmeasured payload and *then* complain. Failing
+    before any measurement leaves the artefact untouched.
+
+    Every note has to agree with the run's mode, not just one: without
+    `--run-tests` no criterion reaches the `passing` rung, so counters banked in
+    the two modes are not comparable and a fold across both would be a bound
+    nobody measured.
     """
-    if not CEILINGS.is_file():
+    try:
+        notes, _origin, _sha = ac_state_notes.load_notes()
+    except (ac_state_notes.AcStateNoteError, RatchetProvenanceError) as exc:
+        return f"FAIL: the AC-state notes could not be read: {exc}"
+    mismatched = [note.name for note in notes if note.measured_with_tests != run_tests]
+    if not mismatched:
         return None
-    recorded = json.loads(CEILINGS.read_text(encoding="utf-8"))
-    if recorded.get("measured_with_tests") == run_tests:
-        return None
-    want = "with" if recorded.get("measured_with_tests") else "without"
+    want = "with" if not run_tests else "without"
     return (
-        f"FAIL: ceilings were banked {want} --run-tests; re-run in that mode. The passing "
-        "rung is unreachable without it, so the counters are not comparable. Nothing was "
+        f"FAIL: {len(mismatched)} note(s) were banked {want} --run-tests: "
+        f"{', '.join(mismatched)}. Re-run in that mode. The passing rung is "
+        "unreachable without it, so the counters are not comparable. Nothing was "
         "measured or written."
     )
 
 
-def _bank(recorded: dict[str, Any], totals: dict[str, Any], measured: bool) -> int:
-    recorded["measured_with_tests"] = measured
-    recorded["ceilings"] = {name: totals[name] for name in (*RATCHETED, *FLOORED)}
-    CEILINGS.write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
+def _bank(totals: dict[str, Any], measured: bool) -> int:
+    """Write this branch's own note. No shared line, so no conflict (#585)."""
+    path = ac_state_notes.write_note(totals, measured_with_tests=measured)
     try:
-        shown = CEILINGS.relative_to(ROOT)
-    except ValueError:  # a test may point CEILINGS outside the repo
-        shown = CEILINGS
+        shown = path.relative_to(ROOT)
+    except ValueError:  # a test may point the notes directory outside the repo
+        shown = path
     print(f"banked {shown}; review the diff before committing")
+    print(
+        "This file is yours alone — another branch banking its own note will not conflict with it."
+    )
     return 0
 
 
@@ -1173,6 +1195,90 @@ def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str
     return regressions, improvements
 
 
+def _own_note() -> Any | None:
+    """This candidate's own note from the worktree, or None if it has not banked.
+
+    Read from the worktree on purpose, unlike the fold: this is the candidate's
+    own record of what it measured, and the question it answers — "did you bank
+    what you measured?" — is only about the candidate. Found by what the change
+    did rather than by the branch name, because CI has no branch name to offer;
+    see `ac_state_notes.own_note`.
+    """
+    return ac_state_notes.own_note()
+
+
+def _show_bounds() -> int:
+    """Print the folded bound. The single line it replaces was readable at a
+    glance, and a fold is not — so it gets a command instead of a file."""
+    try:
+        bound = ac_state_notes.bounds()
+    except (ac_state_notes.AcStateNoteError, RatchetProvenanceError) as exc:
+        print(f"FAIL: the AC-state bound could not be established: {exc}")
+        return 1
+    if bound.empty:
+        print(bound.describe())
+        return 1
+    print(bound.describe())
+    for name in (*RATCHETED, *FLOORED):
+        if name in bound.counters:
+            arrow = "floor" if name in FLOORED else "ceiling"
+            print(f"  {name:<34} {arrow:>7} {bound.counters[name]}")
+    return 0
+
+
+def _compact() -> int:
+    """Fold the notes into the baseline and drop the ones that say nothing new.
+
+    Maintenance, run by a person, never by the gate: a gate that prunes its own
+    evidence is a gate that can lose it. Reads the worktree rather than the base
+    — this rewrites files, so it must see the ones it is about to rewrite.
+    """
+    notes_dir = ac_state_notes.NOTES_DIR
+    if not notes_dir.is_dir():
+        print(f"nothing to compact: {notes_dir} does not exist")
+        return 0
+    paths = sorted(notes_dir.glob("*.json"))
+    try:
+        notes = [
+            ac_state_notes.Note.parse(path.name, path.read_text(encoding="utf-8")) for path in paths
+        ]
+    except ac_state_notes.AcStateNoteError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    if not notes:
+        print(f"nothing to compact: no notes in {notes_dir}")
+        return 0
+
+    before = ac_state_notes.fold(notes)
+    stale = {note.name for note in ac_state_notes.stale(notes)}
+    baseline = notes_dir / ac_state_notes.BASELINE_NAME
+    merged = ac_state_notes.Note(
+        name=ac_state_notes.BASELINE_NAME,
+        branch=None,
+        measured_with_tests=all(note.measured_with_tests for note in notes),
+        counters=before,
+    )
+    baseline.write_text(merged.as_json(), encoding="utf-8")
+    for path in paths:
+        if path.name in stale and path.name != ac_state_notes.BASELINE_NAME:
+            path.unlink()
+
+    after = ac_state_notes.fold(
+        [
+            ac_state_notes.Note.parse(path.name, path.read_text(encoding="utf-8"))
+            for path in sorted(notes_dir.glob("*.json"))
+        ]
+    )
+    if after != before:  # pragma: no cover - the fold is idempotent by construction
+        print("FAIL: compaction changed the bound; nothing should have been dropped")
+        return 1
+    print(
+        f"compacted {len(paths)} note(s) into {ac_state_notes.BASELINE_NAME}; "
+        f"removed {len(stale - {ac_state_notes.BASELINE_NAME})} that contributed nothing"
+    )
+    return 0
+
+
 def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     """Compare the measured state against its reviewed bounds, in both directions.
 
@@ -1194,21 +1300,50 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     run. Comparing them anyway would produce a gate that fails or passes
     according to how it was invoked.
     """
-    if not CEILINGS.is_file():
-        print(f"FAIL: {CEILINGS} is missing; run with --ratchet --bank to create it")
-        return 1
-    recorded = json.loads(CEILINGS.read_text(encoding="utf-8"))
     if bank:
-        return _bank(recorded, totals, measured)
-    if recorded.get("measured_with_tests") != measured:
-        want = "with" if recorded.get("measured_with_tests") else "without"
+        return _bank(totals, measured)
+    # The mode guard again, here and not only in `_mode_mismatch`. That one runs
+    # before measuring so a wrong-mode invocation cannot overwrite the report;
+    # this one is the comparison's own precondition, and `ratchet()` is called
+    # directly by tests and by any future caller that skips `main`.
+    mismatch = _mode_mismatch(measured)
+    if mismatch is not None:
+        print(mismatch)
+        return 1
+    try:
+        bound = ac_state_notes.bounds()
+    except (ac_state_notes.AcStateNoteError, RatchetProvenanceError) as exc:
+        print(f"FAIL: the AC-state bound could not be established: {exc}")
+        return 1
+    if bound.empty:
         print(
-            f"FAIL: ceilings were banked {want} --run-tests; re-run in that mode. "
-            "The passing rung is unreachable without it, so the counters are not comparable."
+            "FAIL: no AC-state notes at the base revision, so there is nothing to "
+            "compare against.\nBank one: python scripts/check-ac-state.py "
+            "--run-tests --ratchet --bank"
         )
         return 1
 
-    regressions, improvements = _compare(recorded["ceilings"], totals)
+    # Two comparisons, because the two halves of this gate answer to different
+    # oracles (#585).
+    #
+    # A **regression** is judged against the base-resolved fold, which the
+    # candidate cannot write. That is #534's property: the thing being judged
+    # does not supply the judge.
+    #
+    # **Slack** is judged against the candidate's own note, because a candidate
+    # that improves is *supposed* to be above the base fold — that is what
+    # improving means — and comparing the improvement against the base would
+    # make every genuine gain unpassable. What must not happen is banking less
+    # than you measured, and that is exactly `measured == own note`.
+    #
+    # A branch that has not banked has no note, so the base fold plays both
+    # roles and the old exact-equality behaviour is what it gets — along with
+    # the message telling it to bank.
+    own = _own_note()
+    target = own.counters if own is not None else bound.counters
+    regressions, _ = _compare(bound.counters, totals)
+    exact_regressions, improvements = _compare(target, totals)
+    regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
     if regressions:
         print("FAIL: the repository moved away from its recorded state\n")
         for line in regressions:
@@ -1221,18 +1356,25 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
             "justify it in the diff (retiring an ADR and accepting a new one both do this "
             "legitimately; see ADR-082226-ff3c)."
         )
+        print(f"\nThe bound was {bound.describe()}.")
     if improvements:
         print(
             "FAIL: unbanked improvement — the recorded bound holds slack a regression could spend\n"
         )
         for line in improvements:
             print(f"  - {line}")
-        print("\nBank it: python scripts/check-ac-state.py --run-tests --ratchet --bank")
+        print(
+            f"\nThe bound was {bound.describe()}.\n"
+            "Bank it: python scripts/check-ac-state.py --run-tests --ratchet --bank\n"
+            "That writes only quality/ac-state-notes/<your-branch>.json, so it "
+            "cannot conflict with another branch doing the same (#585)."
+        )
     if regressions or improvements:
         return 1
     print(
         f"OK: {len(RATCHETED)} debt counters sit exactly on their ceilings and "
-        f"{len(FLOORED)} progress counter sits exactly on its floor"
+        f"{len(FLOORED)} progress counter sits exactly on its floor "
+        f"({bound.describe()})"
     )
     return 0
 
@@ -1243,12 +1385,25 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--ratchet",
         action="store_true",
-        help="fail when any debt counter differs from quality/ac-state-ceilings.json",
+        help="fail when any debt counter differs from the bound folded from quality/ac-state-notes/",
     )
     ap.add_argument(
         "--bank",
         action="store_true",
-        help="rewrite the ceilings from this measurement (review the diff)",
+        help="write this branch's own note from this measurement (review the diff)",
+    )
+    ap.add_argument(
+        "--show-bounds",
+        action="store_true",
+        help="print the folded bound and where it came from, then exit",
+    )
+    ap.add_argument(
+        "--compact",
+        action="store_true",
+        help=(
+            "fold quality/ac-state-notes/ into _baseline.json and drop the notes that "
+            "contribute nothing (maintenance; never part of the gate)"
+        ),
     )
     ap.add_argument(
         "--run-tests",
@@ -1264,6 +1419,11 @@ def main(argv: list[str]) -> int:
         ),
     )
     args = ap.parse_args(argv)
+
+    if args.show_bounds:
+        return _show_bounds()
+    if args.compact:
+        return _compact()
 
     if args.mandate and not args.run_tests:
         # Without a measured run nothing reaches `reachable`, so every touched
@@ -1511,7 +1671,7 @@ def _criterion_mandate(
         )
     print(
         "\nFAIL: a criterion this change declares is not proven by it.\n\n"
-        "  Legacy criteria are grandfathered on quality/ac-state-ceilings.json;\n"
+        "  Legacy criteria are grandfathered on the folded quality/ac-state-notes/ bound;\n"
         "  these are not legacy — this change created them, or ticked their box.\n"
         "  Reaching `reachable` needs an AC-N id, a module annotation the\n"
         "  reachability graph can get to, and a passing @pytest.mark.ac test.\n\n"
@@ -1581,7 +1741,7 @@ def chain_mandate(
         if introduced[name]:
             print(f"  {name} — {_ABSENCE_HELP[name][0]}\n  {_ABSENCE_HELP[name][1]}\n")
     print(
-        "  Pre-existing violations stay on quality/ac-state-ceilings.json and fall\n"
+        "  Pre-existing violations stay on the folded quality/ac-state-notes/ bound and fall\n"
         "  over time. These are not pre-existing: this change put them there, and\n"
         "  a ceiling comparing totals would have let an unrelated fix pay for them."
     )

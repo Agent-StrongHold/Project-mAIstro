@@ -173,6 +173,7 @@
     "protocols.agent",
     "protocols.telemetry",
     "routes.projects",
+    "scripts/ac_state_notes.py",
     "scripts/check-autonomous-merge.py",
     "scripts/check_assertion_quality.py",
     "scripts/check_mutation_baseline.py",
