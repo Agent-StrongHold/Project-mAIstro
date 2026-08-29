@@ -1,16 +1,20 @@
 ---
 inventory-delta:
-  tests/: +20
+  tests/: +27
 ---
 # claude-655-merge-latency-baseline-4c1e
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
-`tests/test_measure_merge_latency.py` — 20 node IDs for the merge-queue
-latency measurement behind `docs/ci/MERGE-LATENCY.md` (#654/#655). Twenty
-distinct test functions, none parametrised, so the node count equals the
-function count.
+`tests/test_measure_merge_latency.py` — 27 node IDs for the merge-queue
+latency measurement behind `docs/ci/MERGE-LATENCY.md` (#654/#655).
+Twenty-seven distinct test functions, none parametrised, so the node count
+equals the function count. Seven of them exist because Codex's review of the
+first push found real defects: the dequeue rate that counts abandoned PRs,
+interpolated percentiles, success-only wall-clock, and the page-boundary
+cohort exclusion (per-PR, because dropping only the boundary candidate makes
+its PR look better).
 
 The suite pins the arithmetic the way `test_measure_ci_cost.py` pins #161's:
 the places a plausible implementation gives a wrong number. Three matter most

@@ -25,21 +25,41 @@ queue re-spends the whole gate set on one merge.
 
 ## Definitions
 
-- **Queue residency** — first merge-group run start for the PR → `merged_at`.
-  What a contributor waits after the PR is ready, including every requeue.
-- **Candidate wall-clock** — one synthetic queue candidate, earliest run start
-  → latest run update, counted only when every observed run concluded.
-- **Requeue rate** — merged PRs that needed more than one candidate. The queue
-  branch embeds the candidate SHA, so a requeue is a new SHA under the same
-  `pr-N`; each one is a full re-execution of the required set.
+- **Queue residency** — first observed merge-group run start for the PR →
+  `merged_at`, including every requeue. A **lower bound** on ready-to-merge
+  latency: workflow start trails queue admission by Actions scheduling delay
+  and any wait for one of the queue's build slots, and neither appears in the
+  Actions run listing. (The upgrade path is the PR timeline's
+  `added_to_merge_queue` event, at one extra API call per PR.)
+- **Clean candidate wall-clock** — one synthetic queue candidate, earliest run
+  start → latest run update, counted only when every observed run concluded
+  `success`. An ejected candidate is cancelled mid-run, so its short
+  wall-clock is excluded rather than allowed to flatter this figure.
+- **Requeue rate** — merged PRs that needed more than one candidate: how often
+  a PR that *did* land paid for the gate set more than once.
+- **Dequeue rate** — candidates that landed no merge, over all candidates run.
+  Unlike the requeue rate this does not condition on merging: the candidates
+  of a PR ejected and never requeued count, so a queue that fails PRs outright
+  gets a worse number, not a better one.
+- **Boundary cohort** — the API pages individual workflow runs, so the oldest
+  fetched runs can belong to a candidate cut by the page boundary. When the
+  listing is truncated, every PR with a candidate near the old edge is
+  excluded rather than scored from partial history.
 
 ## Measurement — 2026-08-29, before #654/#655
 
-Window: 2026-08-29 15:27 → 20:49 UTC (the API's newest page of merge-group
-runs at measurement time), base `develop`, over `ci.yml` + `quality.yml` runs —
-the two workflows that dominate candidate wall-clock. Wall-clock over the full
-workflow set is at most minutes longer per candidate; residency and requeue
-figures are exact for the window regardless.
+Collected via the GitHub API's merge-group run listing for **`ci.yml` and
+`quality.yml` only** — the two workflows that dominate candidate wall-clock —
+at the newest **30 runs each** (the listing page available at measurement
+time), then folded through this script's `candidates → drop_boundary_cohort →
+summarize → figures` pipeline. That is narrower than the script's default
+sweep (`--pages 3`, all merge-group workflows), so a rerun today reproduces
+the arithmetic but not this exact window; the residency, requeue, and dequeue
+figures are insensitive to the workflow subset (any one workflow's runs name
+every candidate), while a full-workflow sweep can read candidate wall-clock
+minutes higher if a smaller workflow finishes last. Window: 2026-08-29
+15:27 → 20:49 UTC, base `develop`. PR #632 was excluded as the boundary
+cohort — its first candidate starts at the window's old edge.
 
 | PR | attempts | merged | residency (min) |
 |---:|---:|:---|---:|
@@ -49,7 +69,6 @@ figures are exact for the window regardless.
 | 623 | 3 | yes | 65.0 |
 | 627 | 4 | yes | 61.2 |
 | 628 | 1 | yes | 14.0 |
-| 632 | 2 | yes | 58.6 |
 | 634 | 2 | yes | 18.1 |
 | 635 | 1 | yes | 12.1 |
 | 639 | 2 | no | — |
@@ -60,23 +79,26 @@ figures are exact for the window regardless.
 
 | | value |
 |---|---:|
-| PRs seen in queue | 14 (12 merged) |
-| queue candidates run | 28 |
-| requeued merged PRs | 6 (**50% requeue rate**) |
-| residency, median / p90 | **18.1 / 62.3 min** |
-| candidate wall-clock, median / p90 | 13.2 / 15.7 min |
+| PRs seen in queue | 13 (11 merged) |
+| queue candidates run | 26 |
+| requeued merged PRs | 5 (**45% requeue rate**) |
+| dequeued candidates | 15 of 26 (**58% landed no merge**) |
+| residency, median / p90 (lower bound) | **14.4 / 62.3 min** |
+| clean candidate wall-clock, median / p90 | 13.5 / 15.5 min |
 
 ## What the numbers say
 
 A clean pass through the queue costs ~14 minutes. A requeued PR waits ~60 —
-four to five candidate-widths — and half of the merged PRs in the window were
-requeued. The queue ran the full gate set 28 times to land 12 merges: **2.3
-gate-set executions per merge**, on top of the PR-head and protected-push runs
-of the same content. That multiplier, not the 14-minute clean pass, is the
-"before" that #654's evidence reuse and #655's scoped merge-group legs are
-meant to collapse; re-run this measurement after each slice lands and append
-the row here.
+four candidate-widths — and 5 of the 11 merged PRs in the window were
+requeued. The queue ran the full gate set 26 times to land 11 merges: **2.4
+gate-set executions per merge** (58% of candidates landed nothing), on top of
+the PR-head and protected-push runs of the same content. That multiplier, not
+the 14-minute clean pass, is the "before" that #654's evidence reuse and
+#655's scoped merge-group legs are meant to collapse; re-run this measurement
+after each slice lands and append the row here.
 
 Not attributed here: *why* candidates were ejected (flake, conflict, or a real
-failure) — the Actions API records the re-run, not the reason. The requeue
-rate therefore bounds flake-plus-conflict cost without splitting it.
+failure) — the Actions API records the re-run, not the reason. The dequeue
+rate therefore bounds flake-plus-conflict cost without splitting it. And the
+residency figures understate true ready-to-merge latency by the pre-run queue
+wait, which grows exactly when the queue is busiest.

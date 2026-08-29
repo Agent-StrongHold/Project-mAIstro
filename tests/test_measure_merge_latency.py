@@ -111,6 +111,58 @@ class TestCandidates:
         )
         assert cands[(652, "ddd")]["done"] is False
 
+    def test_one_failed_run_makes_the_whole_candidate_unsuccessful(self, latency):
+        cands = latency.candidates(
+            [
+                _run(496, "aaa", "15:00:00", "15:14:00"),
+                _run(496, "aaa", "15:00:30", "15:05:00", conclusion="cancelled"),
+            ],
+            "develop",
+        )
+        assert cands[(496, "aaa")]["success"] is False
+
+
+class TestBoundaryCohort:
+    def _cands(self, latency):
+        return latency.candidates(
+            [
+                _run(496, "aaa", "15:00:00", "15:14:00"),
+                _run(628, "bbb", "15:30:00", "15:44:00"),
+            ],
+            "develop",
+        )
+
+    def test_a_truncated_listing_drops_candidates_at_the_old_edge(self, latency):
+        """The API pages runs, not candidates: the oldest fetched runs can
+        belong to a candidate whose remaining runs fell off the last page.
+        Scoring that partial candidate would shorten its wall-clock and could
+        hide an earlier attempt, so the boundary cohort goes."""
+        kept = latency.drop_boundary_cohort(self._cands(latency), truncated=True)
+        assert set(kept) == {(628, "bbb")}
+
+    def test_the_whole_pr_leaves_with_its_boundary_candidate(self, latency):
+        """Dropping only the boundary candidate would make its PR look
+        *better*: one attempt fewer, and a residency clocked from the requeue
+        instead of the real first entry. The PR's history starts before the
+        window, so the PR cannot be scored from it."""
+        cands = latency.candidates(
+            [
+                _run(496, "aaa", "15:00:00", "15:14:00", conclusion="failure"),
+                _run(496, "bbb", "15:30:00", "15:44:00"),
+                _run(628, "ccc", "15:31:00", "15:45:00"),
+            ],
+            "develop",
+        )
+        kept = latency.drop_boundary_cohort(cands, truncated=True)
+        assert set(kept) == {(628, "ccc")}
+
+    def test_an_untruncated_listing_keeps_every_candidate(self, latency):
+        kept = latency.drop_boundary_cohort(self._cands(latency), truncated=False)
+        assert set(kept) == {(496, "aaa"), (628, "bbb")}
+
+    def test_an_empty_truncated_listing_stays_empty(self, latency):
+        assert latency.drop_boundary_cohort({}, truncated=True) == {}
+
 
 class TestSummarize:
     def _cands(self, latency):
@@ -137,17 +189,22 @@ class TestSummarize:
         assert pr639["merged"] is False
         assert pr639["residency_min"] is None
 
-    def test_only_completed_candidates_contribute_wall_clock(self, latency):
+    def test_only_completed_successful_candidates_contribute_wall_clock(self, latency):
+        """An ejected candidate is cancelled mid-run, so its wall-clock is
+        short for the wrong reason — including it would pull the 'clean pass'
+        figure down exactly when the queue is at its least clean."""
         cands = latency.candidates(
             [
                 _run(650, "fff", "19:30:00", "19:44:00"),
                 _run(652, "ggg", "20:49:00", "20:55:00", conclusion=None),
+                _run(639, "hhh", "16:00:00", "16:05:00", conclusion="cancelled"),
             ],
             "develop",
         )
         rows = {p["pr"]: p for p in latency.summarize(cands, {})}
         assert rows[650]["candidate_wall_min"] == [pytest.approx(14.0)]
         assert rows[652]["candidate_wall_min"] == []
+        assert rows[639]["candidate_wall_min"] == []
 
 
 class TestFigures:
@@ -174,14 +231,30 @@ class TestFigures:
         assert figs["candidates"] == 4
         assert figs["requeue_rate"] == pytest.approx(0.5)
 
+    def test_dequeue_rate_counts_abandoned_prs_too(self, latency):
+        """PR 639 here is ejected and never merged. The requeue rate cannot
+        see it — it conditions on merging — so the dequeue rate exists: every
+        candidate that landed no merge counts, and a queue that fails PRs
+        outright gets a worse number, not a better one."""
+        figs = latency.figures(self._prs(latency))
+        assert figs["dequeued_candidates"] == 2
+        assert figs["dequeue_rate"] == pytest.approx(0.5)
+
     def test_no_merged_prs_does_not_divide_by_zero(self, latency):
         figs = latency.figures([])
         assert figs["requeue_rate"] == 0.0
+        assert figs["dequeue_rate"] == 0.0
         assert figs["median_residency"] == 0.0
 
-    def test_percentiles_are_nearest_rank(self, latency):
+    def test_percentiles_interpolate_between_ranks(self, latency):
+        """`round(q * (n - 1))` on an even-sized sample is neither nearest-rank
+        nor a conventional median, and ties-to-even picks a middle element by
+        the parity of the sample size. Interpolation gives the median every
+        statistics library would report."""
         assert latency.percentile([], 0.9) == 0.0
         assert latency.percentile([1.0, 2.0, 3.0], 0.5) == 2.0
+        assert latency.percentile([1.0, 2.0, 3.0, 4.0], 0.5) == pytest.approx(2.5)
+        assert latency.percentile([0.0, 10.0], 0.9) == pytest.approx(9.0)
         assert latency.percentile([10.0], 0.9) == 10.0
 
 
@@ -206,8 +279,9 @@ class TestRender:
         out = latency.render(prs, latency.figures(prs), "develop")
         assert "496" in out and "58.1" in out
         assert "requeue rate" in out
-        assert "residency, median / p90" in out
-        assert "candidate wall, med / p90" in out
+        assert "dequeued candidates" in out
+        assert "residency, median / p90" in out and "lower bound" in out
+        assert "clean candidate, med / p90" in out
 
 
 class _Response(io.BytesIO):
@@ -254,9 +328,23 @@ class TestCollect:
             raise AssertionError(path)
 
         monkeypatch.setattr(latency, "_get", fake_get)
-        runs, merged_at = latency.collect("develop", 3, None)
+        runs, merged_at, truncated = latency.collect("develop", 3, None)
         assert runs == [{"id": 1}]
         assert list(merged_at) == [496]
+        assert truncated is False
+
+    def test_a_full_final_page_reports_the_listing_as_truncated(self, latency, monkeypatch):
+        """Older runs may exist beyond a full last page, so the oldest fetched
+        candidates may be missing runs — the caller must know to drop them."""
+
+        def fake_get(path, token):
+            if "actions/runs" in path:
+                return {"workflow_runs": [{"id": i} for i in range(100)]}
+            return []
+
+        monkeypatch.setattr(latency, "_get", fake_get)
+        _runs, _merged_at, truncated = latency.collect("develop", 1, None)
+        assert truncated is True
 
 
 class TestMain:
@@ -267,6 +355,7 @@ class TestMain:
             lambda base, pages, token: (
                 [_run(628, "aaa", "15:00:00", "15:14:00")],
                 {628: latency._when("2026-08-29T15:20:00Z")},
+                False,
             ),
         )
         assert latency.main([]) == 0
@@ -289,6 +378,6 @@ class TestMain:
     ):
         """Zero merge-group runs means the queue is off or the base is wrong.
         Empty statistics would read as an implausibly fast queue."""
-        monkeypatch.setattr(latency, "collect", lambda base, pages, token: ([], {}))
+        monkeypatch.setattr(latency, "collect", lambda base, pages, token: ([], {}, False))
         assert latency.main(["--pages", "1"]) == 1
         assert "nothing to measure" in capsys.readouterr().out

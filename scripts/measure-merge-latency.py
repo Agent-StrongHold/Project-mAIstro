@@ -106,7 +106,9 @@ def candidates(runs: list[dict[str, Any]], base: str) -> dict[tuple[int, str], d
             continue
         started = _when(run.get("run_started_at"))
         finished = _when(run.get("updated_at"))
-        row = out.setdefault(key, {"runs": 0, "started": None, "finished": None, "done": True})
+        row = out.setdefault(
+            key, {"runs": 0, "started": None, "finished": None, "done": True, "success": True}
+        )
         row["runs"] += 1
         if started and (row["started"] is None or started < row["started"]):
             row["started"] = started
@@ -114,7 +116,45 @@ def candidates(runs: list[dict[str, Any]], base: str) -> dict[tuple[int, str], d
             row["finished"] = finished
         if run.get("conclusion") is None:
             row["done"] = False
+        if run.get("conclusion") != "success":
+            row["success"] = False
     return out
+
+
+#: How far a candidate's workflow runs can start apart. All of a candidate's
+#: workflows trigger on the same merge_group event, so their run creations sit
+#: within a couple of minutes of each other; five is comfortable slack.
+_COHORT_MARGIN_S = 300.0
+
+
+def drop_boundary_cohort(
+    cands: dict[tuple[int, str], dict[str, Any]], truncated: bool
+) -> dict[tuple[int, str], dict[str, Any]]:
+    """Drop candidates the listing's page boundary may have cut through.
+
+    The API pages individual workflow runs, not candidates, so the oldest
+    fetched runs can belong to a candidate whose remaining runs fell off the
+    last page — which would shorten its wall-clock and could hide an earlier
+    attempt. When the listing was truncated, every candidate starting within
+    `_COHORT_MARGIN_S` of the oldest fetched start is the boundary cohort and
+    is excluded; a candidate starting later than that has all of its runs
+    inside the window, because its runs were all created after the cut.
+
+    The exclusion is per-PR, not per-candidate: dropping only the boundary
+    candidate would leave its PR looking *better* — fewer attempts, and a
+    residency clocked from a later requeue — when the truth is that its
+    history starts before the window and cannot be scored from it.
+    """
+    if not truncated:
+        return cands
+    starts = [row["started"] for row in cands.values() if row["started"]]
+    if not starts:
+        return cands
+    cutoff = min(starts) + dt.timedelta(seconds=_COHORT_MARGIN_S)
+    boundary_prs = {
+        pr for (pr, _sha), row in cands.items() if not row["started"] or row["started"] <= cutoff
+    }
+    return {key: row for key, row in cands.items() if key[0] not in boundary_prs}
 
 
 def summarize(
@@ -124,7 +164,10 @@ def summarize(
 
     `residency_min` exists only for PRs that actually merged and whose first
     candidate start is known; an ejected-and-abandoned PR has attempts but no
-    residency, and counting it as zero would flatter the queue.
+    residency, and counting it as zero would flatter the queue. It runs from
+    the first *observed workflow start*, which trails queue admission by
+    scheduling delay and any wait for a free queue slot — a lower bound on
+    ready-to-merge latency, and labelled as such in the report.
     """
     per_pr: dict[int, list[dict[str, Any]]] = {}
     for (pr, _sha), row in cands.items():
@@ -138,7 +181,7 @@ def summarize(
         walls = [
             (row["finished"] - row["started"]).total_seconds() / 60
             for row in rows
-            if row["done"] and row["started"] and row["finished"]
+            if row["done"] and row["success"] and row["started"] and row["finished"]
         ]
         out.append(
             {
@@ -153,26 +196,45 @@ def summarize(
 
 
 def percentile(values: list[float], q: float) -> float:
-    """Nearest-rank percentile; empty input is 0 rather than a crash."""
+    """Linearly interpolated percentile; empty input is 0 rather than a crash.
+
+    Interpolation, not `round(q * (n - 1))`: for an even-sized sample that
+    rounding is neither nearest-rank nor a conventional median, and Python's
+    ties-to-even makes which middle element wins depend on the sample size's
+    parity — a median that moves when one more PR merges is not a median.
+    """
     if not values:
         return 0.0
     ordered = sorted(values)
-    rank = max(0, min(len(ordered) - 1, round(q * (len(ordered) - 1))))
-    return ordered[rank]
+    rank = q * (len(ordered) - 1)
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (rank - low) * (ordered[high] - ordered[low])
 
 
 def figures(prs: list[dict[str, Any]]) -> dict[str, float]:
-    """The report's headline numbers, over one observation window."""
+    """The report's headline numbers, over one observation window.
+
+    Two rates on purpose. The requeue rate conditions on merging — how often a
+    PR that *did* land paid for the gate set more than once. The dequeue rate
+    does not: every candidate that landed no merge counts, including those of
+    PRs ejected and never requeued, so a queue that fails PRs outright gets a
+    worse number, not a better one.
+    """
     merged = [p for p in prs if p["merged"]]
     residencies = [p["residency_min"] for p in merged if p["residency_min"] is not None]
     walls = [w for p in prs for w in p["candidate_wall_min"]]
     requeued = [p for p in merged if p["attempts"] > 1]
+    candidates_run = sum(p["attempts"] for p in prs)
+    dequeued = candidates_run - len(merged)
     return {
         "prs_seen": float(len(prs)),
         "prs_merged": float(len(merged)),
-        "candidates": float(sum(p["attempts"] for p in prs)),
+        "candidates": float(candidates_run),
         "requeued_prs": float(len(requeued)),
         "requeue_rate": len(requeued) / len(merged) if merged else 0.0,
+        "dequeued_candidates": float(dequeued),
+        "dequeue_rate": dequeued / candidates_run if candidates_run else 0.0,
         "median_residency": percentile(residencies, 0.5),
         "p90_residency": percentile(residencies, 0.9),
         "median_candidate_wall": percentile(walls, 0.5),
@@ -199,10 +261,13 @@ def render(prs: list[dict[str, Any]], figs: dict[str, float], base: str) -> str:
         f"queue candidates run      : {figs['candidates']:.0f}",
         f"requeued merged PRs       : {figs['requeued_prs']:.0f} "
         f"({figs['requeue_rate']:.0%} requeue rate)",
+        f"dequeued candidates       : {figs['dequeued_candidates']:.0f} of "
+        f"{figs['candidates']:.0f} ({figs['dequeue_rate']:.0%} landed no merge)",
         f"residency, median / p90   : {figs['median_residency']:.1f} / "
-        f"{figs['p90_residency']:.1f} min (first queue run -> merged)",
-        f"candidate wall, med / p90 : {figs['median_candidate_wall']:.1f} / "
-        f"{figs['p90_candidate_wall']:.1f} min (one full gate-set pass)",
+        f"{figs['p90_residency']:.1f} min (first queue run -> merged; "
+        f"lower bound, excludes pre-run queue wait)",
+        f"clean candidate, med / p90: {figs['median_candidate_wall']:.1f} / "
+        f"{figs['p90_candidate_wall']:.1f} min (all-success gate-set passes only)",
     ]
     return "\n".join(lines)
 
@@ -223,19 +288,25 @@ def _get(path: str, token: str | None) -> dict[str, Any]:
 
 def collect(
     base: str, pages: int, token: str | None
-) -> tuple[list[dict[str, Any]], dict[int, dt.datetime]]:
-    """Recent merge-group runs, plus `merged_at` for recently closed PRs.
+) -> tuple[list[dict[str, Any]], dict[int, dt.datetime], bool]:
+    """Recent merge-group runs, `merged_at` for recently closed PRs, and
+    whether the runs listing was truncated.
 
     Both listings page newest-first; `pages` bounds the runs window and the
     closed-PR sweep is sized to comfortably cover the PRs those runs name.
+    `truncated` is True when the last fetched page was full — older runs may
+    exist, so the oldest candidates may be missing runs and the caller must
+    drop the boundary cohort rather than score partial candidates.
     """
     runs: list[dict[str, Any]] = []
+    truncated = False
     for page in range(1, pages + 1):
         listing = _get(
             f"/repos/{REPO}/actions/runs?event=merge_group&per_page=100&page={page}", token
         )
         batch = listing.get("workflow_runs", [])
         runs.extend(batch)
+        truncated = len(batch) == 100
         if not batch:
             break
     merged_at: dict[int, dt.datetime] = {}
@@ -251,7 +322,7 @@ def collect(
             merged = _when(pull.get("merged_at"))
             if merged:
                 merged_at[pull["number"]] = merged
-    return runs, merged_at
+    return runs, merged_at, truncated
 
 
 def main(argv: list[str]) -> int:
@@ -262,12 +333,12 @@ def main(argv: list[str]) -> int:
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     try:
-        runs, merged_at = collect(args.base, args.pages, token)
+        runs, merged_at, truncated = collect(args.base, args.pages, token)
     except (urllib.error.URLError, KeyError, TimeoutError) as exc:
         print(f"FAIL: could not read the GitHub API: {exc}")
         return 1
 
-    prs = summarize(candidates(runs, args.base), merged_at)
+    prs = summarize(drop_boundary_cohort(candidates(runs, args.base), truncated), merged_at)
     if not prs:
         print(f"FAIL: no merge-group runs found for base {args.base}; nothing to measure")
         return 1
