@@ -9,7 +9,7 @@ on:
   # No `paths:` filter, deliberately (#162). This job validates the ADR -> spec
   # -> AC chain, which is the fifth of the five mandates #160 wants CI to hold,
   # so it has to be a *required* check. A required check whose workflow never
-  # triggers never reports, and classic branch protection leaves the PR waiting
+  # triggers never reports, and branch protection or a merge queue then waits
   # on an `Expected` status forever — so a paths-filtered check cannot be
   # required as-is. See docs/ci/REQUIRED-CHECKS.md.
   #
@@ -19,6 +19,8 @@ on:
   # repository. Removing it costs ~20s of runner time on the PRs it did not
   # already match, and buys a check that can be required by name.
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches:
       - main
@@ -29,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: registry-ci-${{ github.ref }}
+  group: registry-ci-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
   cancel-in-progress: true
 
 jobs:

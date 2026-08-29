@@ -21,9 +21,13 @@ from maistro.tasks.queue import TaskQueue
 
 
 async def test_without_a_connection_the_spine_is_in_memory() -> None:
-    scope_store, run_store, admitter, _templates, _schedules = await wire_execution_spine(
-        None, workspace_id="w1"
-    )
+    (
+        scope_store,
+        run_store,
+        admitter,
+        _templates,
+        _schedules,
+    ) = await wire_execution_spine(None, workspace_id="w1")
 
     assert isinstance(scope_store, InMemoryProjectScopeStore)
     assert isinstance(run_store, InMemoryRunStore)
@@ -32,9 +36,13 @@ async def test_without_a_connection_the_spine_is_in_memory() -> None:
 
 async def test_with_a_connection_the_spine_is_durable() -> None:
     async with aiosqlite.connect(":memory:") as conn:
-        scope_store, run_store, _admitter, _templates, _schedules = await wire_execution_spine(
-            conn, workspace_id="w1"
-        )
+        (
+            scope_store,
+            run_store,
+            _admitter,
+            _templates,
+            _schedules,
+        ) = await wire_execution_spine(conn, workspace_id="w1")
 
         assert type(scope_store).__name__ == "SqliteProjectScopeStore"
         assert type(run_store).__name__ == "SqliteRunStore"
@@ -43,9 +51,13 @@ async def test_with_a_connection_the_spine_is_durable() -> None:
 async def test_the_root_project_exists_before_the_first_submission() -> None:
     """Resolved eagerly: a Run store refuses a Graph in a Project that isn't
     there, so a lazy root turns misconfiguration into a first-task failure."""
-    scope_store, _run_store, _admitter, _templates, _schedules = await wire_execution_spine(
-        None, workspace_id="w1"
-    )
+    (
+        scope_store,
+        _run_store,
+        _admitter,
+        _templates,
+        _schedules,
+    ) = await wire_execution_spine(None, workspace_id="w1")
 
     root = await scope_store.root_for_workspace("w1")
 
@@ -58,9 +70,13 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
     same store the wiring handed back, in both backends."""
     conn = await aiosqlite.connect(":memory:") if durable else None
     try:
-        _scope_store, run_store, admitter, _templates, _schedules = await wire_execution_spine(
-            conn, workspace_id="w1"
-        )
+        (
+            _scope_store,
+            run_store,
+            admitter,
+            _templates,
+            _schedules,
+        ) = await wire_execution_spine(conn, workspace_id="w1")
         queue = TaskQueue(admitter=admitter)
 
         task = await queue.submit(TaskCreate(description="ship it", task_type="code"))
@@ -75,9 +91,13 @@ async def test_a_queue_on_the_wired_spine_admits_a_resolvable_run(durable: bool)
 
 
 async def test_the_workspace_is_the_one_asked_for() -> None:
-    _scope_store, run_store, admitter, _templates, _schedules = await wire_execution_spine(
-        None, workspace_id="tenant-a"
-    )
+    (
+        _scope_store,
+        run_store,
+        admitter,
+        _templates,
+        _schedules,
+    ) = await wire_execution_spine(None, workspace_id="tenant-a")
     queue = TaskQueue(admitter=admitter)
 
     task = await queue.submit(TaskCreate(description="ship it"))
@@ -118,9 +138,13 @@ async def test_a_pool_without_the_spine_tables_falls_back_and_says_so(caplog) ->
             return False
 
     with caplog.at_level(logging.WARNING):
-        _scope, run_store, _admitter, _templates, _schedules = await wire_execution_spine(
-            None, workspace_id="w1", pg_pool=_PoolWithoutTheSpine()
-        )
+        (
+            _scope,
+            run_store,
+            _admitter,
+            _templates,
+            _schedules,
+        ) = await wire_execution_spine(None, workspace_id="w1", pg_pool=_PoolWithoutTheSpine())
 
     assert isinstance(run_store, InMemoryRunStore)
     assert "canonical_runs" in caplog.text
@@ -158,6 +182,68 @@ async def test_a_pool_without_the_schedules_table_falls_back_and_says_so(
     assert isinstance(schedules, InMemoryScheduleStore)
     assert "schedules" in caplog.text
     assert "alembic upgrade head" in caplog.text
+
+
+async def test_a_pool_without_the_node_templates_table_falls_back_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The branch a deployment between 019 and 020 actually takes (#556).
+
+    Written and never executed, this would be a comment with a syntax — the
+    same gap the diff-coverage gate found in #522's purge bound. So it is run:
+    a pool whose database lacks the table gets a working in-process registry
+    and a warning that says how to fix it, rather than an `UndefinedTableError`
+    on the first `put`.
+    """
+    import logging
+
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+    from maistro.runs.wiring import _pg_node_template_store
+
+    class _PoolAtRevision019:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return False
+
+    with caplog.at_level(logging.WARNING):
+        templates = await _pg_node_template_store(_PoolAtRevision019())
+
+    assert isinstance(templates, InMemoryNodeTemplateStore)
+    assert "node_templates" in caplog.text
+    assert "alembic upgrade head" in caplog.text
+
+
+async def test_a_migrated_pool_gets_the_durable_node_template_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The other side of it, and the reason the warning above is a warning:
+    a migrated database must NOT be told to migrate."""
+    import logging
+
+    from maistro.graph.pg_templates import PgNodeTemplateStore
+    from maistro.runs.wiring import _pg_node_template_store
+
+    class _PoolAtRevision020:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return True
+
+    with caplog.at_level(logging.WARNING):
+        templates = await _pg_node_template_store(_PoolAtRevision020())
+
+    assert isinstance(templates, PgNodeTemplateStore)
+    assert "alembic upgrade head" not in caplog.text
+
+
+def test_the_spine_preflight_does_not_demand_the_node_templates_table() -> None:
+    """A database at `019` must not lose its Runs over a table it never had.
+
+    The same reasoning `schedules` carries, asserted for the same reason: the
+    tempting fix for a future "why aren't my NodeTemplates durable" is to add
+    this table to that tuple, and that fix would drop every pre-020 deployment
+    to an in-memory spine.
+    """
+    from maistro.runs.wiring import SPINE_PG_TABLES
+
+    assert "node_templates" not in SPINE_PG_TABLES
 
 
 def test_the_spine_preflight_does_not_demand_the_schedules_table() -> None:

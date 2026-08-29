@@ -14,7 +14,7 @@ from typing import Any, Final
 
 from maistro.agents.intents import IntentRegistry
 from maistro.archive.protocols import ArchiveStore
-from maistro.graph.templates import GraphTemplateStore
+from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.store import RunStore
@@ -71,6 +71,35 @@ async def _spine_is_migrated(pg_pool: Any) -> bool:
         ", ".join(missing),
     )
     return False
+
+
+async def _pg_node_template_store(pg_pool: Any) -> NodeTemplateStore:
+    """The PostgreSQL NodeTemplate registry, or an in-memory one with a warning.
+
+    Probed separately from `SPINE_PG_TABLES`, for the reason `_pg_schedule_store`
+    records: a Run does not need a NodeTemplate to exist, so a database migrated
+    to `019` but not `020` has a perfectly good durable spine. Folding
+    `node_templates` into that tuple would drop such a deployment's Runs to
+    in-memory over a table it never asked for.
+
+    Warned rather than silent: a durable pool that ends up with ephemeral
+    NodeTemplates is the shape of #122, and every Node instantiated from one
+    would record provenance naming a template that vanishes on restart.
+    """
+    if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.node_templates"):
+        from maistro.graph.pg_templates import PgNodeTemplateStore
+
+        return PgNodeTemplateStore(pg_pool)
+
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+
+    logger.warning(
+        "PostgreSQL pool has no `node_templates` table, so NodeTemplates are in-process "
+        "and lost on restart, and every Node instantiated from one records provenance "
+        "nothing can resolve afterwards. Run `alembic upgrade head` against this "
+        "database to make them durable (#556)."
+    )
+    return InMemoryNodeTemplateStore()
 
 
 async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
@@ -209,6 +238,44 @@ async def wire_execution_spine(
     # exist yet at startup.
     await admitter.admitter_for(workspace_id)
     return project_scope_store, run_store, admitter, template_store, schedule_store
+
+
+async def wire_node_template_store(
+    conn: Any,
+    *,
+    pg_pool: Any = None,
+) -> NodeTemplateStore:
+    """The reusable-NodeTemplate registry, on the backend the spine chose (#556).
+
+    A separate function rather than a sixth element of `wire_execution_spine`'s
+    tuple, for the reason `wire_chat_admission` is separate: the spine is what a
+    process needs to execute anything, and this is one thing built on top of it.
+    A process that executes Runs and never instantiates a NodeTemplate should
+    not have to unpack an element it ignores.
+
+    That reasoning arrived as a review finding rather than a design choice, and
+    the finding was right on a stronger ground than symmetry: `maistro-core` is
+    shared substrate, `wire_execution_spine` is exported, and every downstream
+    caller unpacking five values would meet `ValueError: too many values to
+    unpack` on upgrade. That every in-repo caller needed editing was the
+    evidence — it was a required migration for consumers this repository cannot
+    see.
+
+    The backend order is the spine's own, so a Workspace's Runs and the
+    NodeTemplates they instantiate land in one database.
+    """
+    if pg_pool is not None and await _spine_is_migrated(pg_pool):
+        return await _pg_node_template_store(pg_pool)
+    if conn is not None:
+        from maistro.graph.sqlite_templates import SqliteNodeTemplateStore
+
+        store = SqliteNodeTemplateStore(conn)
+        await store.ensure_schema()
+        return store
+
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+
+    return InMemoryNodeTemplateStore()
 
 
 def wire_chat_admission(

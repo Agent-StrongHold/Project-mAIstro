@@ -13,9 +13,9 @@
     "specs_with_ac_heading": 170,
     "specs_with_ac_ids": 32,
     "specs_awaiting_retrofit": 139,
-    "criteria_declared": 589,
+    "criteria_declared": 590,
     "criteria_annotated": 214,
-    "markers_found": 300,
+    "markers_found": 301,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -1290,8 +1290,8 @@
       {
         "id": "ADR-082826-08f0",
         "declared_status": "Accepted",
-        "criteria": 6,
-        "reachable": 6,
+        "criteria": 7,
+        "reachable": 7,
         "percent": 100.0
       },
       {
@@ -4754,12 +4754,14 @@
           "id": "SPEC-081226-bb3a/AC-7",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_node_template_store.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Publishing a version keeps the old one addressable"
           ],
-          "rung": "declared"
+          "rung": "covered"
         },
         {
           "id": "SPEC-081226-bb3a/AC-8",
@@ -4811,12 +4813,14 @@
           "id": "SPEC-081226-bb3a/AC-12",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_node_template_store.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Templates and provenance survive restart"
           ],
-          "rung": "declared"
+          "rung": "covered"
         }
       ]
     },
@@ -13465,7 +13469,7 @@
       "declared_status": "Accepted",
       "specs": [],
       "measurable_specs": 0,
-      "own_criteria": 6,
+      "own_criteria": 7,
       "own_detail": [
         {
           "id": "ADR-082826-08f0/AC-1",
@@ -13518,6 +13522,15 @@
           "module": "maistro.container",
           "covered_by": [
             "packages/maistro-core/tests/test_container_chat_runs.py"
+          ],
+          "rung": "reachable"
+        },
+        {
+          "id": "ADR-082826-08f0/AC-7",
+          "claimed": false,
+          "module": "maistro.runs.recovery_events",
+          "covered_by": [
+            "packages/maistro-core/tests/runs/test_recovery_events.py"
           ],
           "rung": "reachable"
         }
@@ -13596,6 +13609,19 @@
         "AC-5"
       ],
       "tier": "passing"
+    },
+    {
+      "id": "ADR-082826-d9f5",
+      "file": "docs/adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md",
+      "declared_status": "Proposed",
+      "specs": [],
+      "measurable_specs": 0,
+      "own_criteria": 0,
+      "own_detail": [],
+      "scenarios_without_ac_tag": [],
+      "gherkin_parse_errors": [],
+      "declared_unproven": [],
+      "tier": "unmeasured"
     },
     {
       "id": "ADR-083",
