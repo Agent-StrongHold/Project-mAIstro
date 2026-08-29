@@ -73,8 +73,8 @@ def matrix(
     """
     ownership = ownership or [("Pkg", "`pkg`"), ("Other", "`other`")]
     disposition = disposition or [
-        ("Pkg", "`1/3`", "KEEP", "ADR-019"),
-        ("Other", "`0/1`", "RETIRE", "—"),
+        ("Pkg", "`some`", "KEEP", "ADR-019"),
+        ("Other", "`none`", "RETIRE", "—"),
     ]
     rows = [(row[0], row[1], *(row[2:5] if len(row) > 2 else ABSENT)) for row in ownership]
     own = "\n".join(
@@ -116,38 +116,38 @@ def test_an_unclassified_module_fails_by_name(gate) -> None:
         gate,
         matrix(
             ownership=[("Pkg", "`pkg`")],
-            disposition=[("Pkg", "`1/3`", "KEEP", "ADR-019")],
+            disposition=[("Pkg", "`some`", "KEEP", "ADR-019")],
         ),
     )
     assert any("other" in failure and "match no matrix row" in failure for failure in failures)
 
 
-def test_a_stale_reachability_count_fails_with_both_numbers(gate) -> None:
+@pytest.mark.ac("SPEC-082926-061d/AC-6")
+def test_a_stale_share_fails_with_both_words_and_the_exact_counts(gate) -> None:
     failures = audit(
         gate,
         matrix(
             disposition=[
-                ("Pkg", "`0/3`", "KEEP", "ADR-019"),
-                ("Other", "`0/1`", "RETIRE", "—"),
+                ("Pkg", "`none`", "KEEP", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
             ]
         ),
     )
-    assert failures == ["Pkg: Unreachable says 0/3, code says 1/3"]
+    assert failures == ["Pkg: Unreachable says `none`, code says `some` (1 of 3 modules, 33.3%)"]
 
 
-def test_a_wrong_total_fails_even_when_the_unreachable_count_is_right(gate) -> None:
-    """A subsystem that grew modules is drift too — the row no longer describes
-    the same thing it did when it was reviewed."""
+@pytest.mark.ac("SPEC-082926-061d/AC-6")
+def test_a_word_outside_the_vocabulary_lists_the_five(gate) -> None:
     failures = audit(
         gate,
         matrix(
             disposition=[
-                ("Pkg", "`1/2`", "KEEP", "ADR-019"),
-                ("Other", "`0/1`", "RETIRE", "—"),
+                ("Pkg", "`quite a lot`", "KEEP", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
             ]
         ),
     )
-    assert failures == ["Pkg: Unreachable says 1/2, code says 1/3"]
+    assert failures == ["Pkg: Unreachable cell must be one of `none`, `few`, `some`, `most`, `all`"]
 
 
 def test_a_prefix_matching_nothing_fails(gate) -> None:
@@ -156,9 +156,9 @@ def test_a_prefix_matching_nothing_fails(gate) -> None:
         matrix(
             ownership=[("Pkg", "`pkg`"), ("Other", "`other`"), ("Ghost", "`ghost`")],
             disposition=[
-                ("Pkg", "`1/3`", "KEEP", "ADR-019"),
-                ("Other", "`0/1`", "RETIRE", "—"),
-                ("Ghost", "`0/0`", "RETIRE", "—"),
+                ("Pkg", "`some`", "KEEP", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
+                ("Ghost", "`none`", "RETIRE", "—"),
             ],
         ),
     )
@@ -170,7 +170,7 @@ def test_rows_present_in_only_one_table_are_named(gate) -> None:
         gate,
         matrix(
             ownership=[("Pkg", "`pkg`"), ("Other", "`other`")],
-            disposition=[("Pkg", "`1/3`", "KEEP", "ADR-019")],
+            disposition=[("Pkg", "`some`", "KEEP", "ADR-019")],
         ),
     )
     assert "rows in the ownership table only: Other" in failures
@@ -181,8 +181,8 @@ def test_an_invented_disposition_fails(gate) -> None:
         gate,
         matrix(
             disposition=[
-                ("Pkg", "`1/3`", "PROBABLY-FINE", "ADR-019"),
-                ("Other", "`0/1`", "RETIRE", "—"),
+                ("Pkg", "`some`", "PROBABLY-FINE", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
             ]
         ),
     )
@@ -192,8 +192,8 @@ def test_an_invented_disposition_fails(gate) -> None:
 def test_a_citation_with_no_file_fails(gate) -> None:
     text = matrix(
         disposition=[
-            ("Pkg", "`1/3`", "KEEP", "ADR-999"),
-            ("Other", "`0/1`", "RETIRE", "—"),
+            ("Pkg", "`some`", "KEEP", "ADR-999"),
+            ("Other", "`none`", "RETIRE", "—"),
         ]
     )
     failures = gate.audit(text, MODULES, UNREACHABLE, decision_exists=lambda _: False)
@@ -208,9 +208,9 @@ def test_longest_prefix_wins_so_a_narrow_row_takes_its_modules(gate) -> None:
         matrix(
             ownership=[("Pkg", "`pkg`"), ("Deep", "`pkg.a`"), ("Other", "`other`")],
             disposition=[
-                ("Pkg", "`0/1`", "KEEP", "ADR-019"),
-                ("Deep", "`1/2`", "MIGRATE", "ADR-019"),
-                ("Other", "`0/1`", "RETIRE", "—"),
+                ("Pkg", "`none`", "KEEP", "ADR-019"),
+                ("Deep", "`some`", "MIGRATE", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
             ],
         ),
     )
@@ -221,9 +221,9 @@ def test_a_module_claimed_twice_at_equal_specificity_is_rejected(gate) -> None:
     text = matrix(
         ownership=[("Pkg", "`pkg`"), ("Twin", "`pkg`"), ("Other", "`other`")],
         disposition=[
-            ("Pkg", "`1/3`", "KEEP", "ADR-019"),
-            ("Twin", "`0/0`", "KEEP", "ADR-019"),
-            ("Other", "`0/1`", "RETIRE", "—"),
+            ("Pkg", "`some`", "KEEP", "ADR-019"),
+            ("Twin", "`none`", "KEEP", "ADR-019"),
+            ("Other", "`none`", "RETIRE", "—"),
         ],
     )
     failures = audit(gate, text)
@@ -244,7 +244,7 @@ def owned(life: str = "—", store: str = "—", auth: str = "—") -> list[tupl
 
 
 #: Pkg as MIGRATE, so a test about one rule does not also trip the KEEP rule.
-MIGRATING = [("Pkg", "`1/3`", "MIGRATE", "ADR-019"), ("Other", "`0/1`", "RETIRE", "—")]
+MIGRATING = [("Pkg", "`some`", "MIGRATE", "ADR-019"), ("Other", "`none`", "RETIRE", "—")]
 
 
 def test_a_lifecycle_owner_that_nothing_reaches_fails(gate) -> None:
@@ -307,7 +307,7 @@ def test_an_abbreviation_that_names_two_modules_fails(gate) -> None:
             ("Pkg", "`pkg`, `two`", "`a.deep` (unreachable)", "—", "—"),
             ("Other", "`other`"),
         ],
-        disposition=[("Pkg", "`0/2`", "MIGRATE", "ADR-019"), ("Other", "`0/1`", "RETIRE", "—")],
+        disposition=[("Pkg", "`0/2`", "MIGRATE", "ADR-019"), ("Other", "`none`", "RETIRE", "—")],
     )
     failures = gate.audit(text, modules, {"pkg.a.deep"}, decision_exists=lambda _: True)
 
@@ -323,7 +323,7 @@ def test_an_abbreviated_owner_resolves_against_the_rows_own_prefixes(gate) -> No
 def test_a_planned_owner_is_not_a_claim_about_today(gate) -> None:
     text = matrix(
         ownership=owned(life="`pkg.a.deep` (planned)"),
-        disposition=[("Pkg", "`1/3`", "CONNECT", "ADR-019"), ("Other", "`0/1`", "RETIRE", "—")],
+        disposition=[("Pkg", "`some`", "CONNECT", "ADR-019"), ("Other", "`none`", "RETIRE", "—")],
     )
 
     assert audit(gate, text) == []
@@ -411,9 +411,9 @@ def test_rows_present_only_in_the_disposition_table_are_named(gate) -> None:
         matrix(
             ownership=[("Pkg", "`pkg`"), ("Other", "`other`")],
             disposition=[
-                ("Pkg", "`1/3`", "KEEP", "ADR-019"),
-                ("Other", "`0/1`", "RETIRE", "—"),
-                ("Ghost", "`0/0`", "RETIRE", "—"),
+                ("Pkg", "`some`", "KEEP", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
+                ("Ghost", "`none`", "RETIRE", "—"),
             ],
         ),
     )
@@ -428,8 +428,8 @@ def test_the_same_rows_in_a_different_order_fails(gate) -> None:
         gate,
         matrix(
             disposition=[
-                ("Other", "`0/1`", "RETIRE", "—"),
-                ("Pkg", "`1/3`", "KEEP", "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
+                ("Pkg", "`some`", "KEEP", "ADR-019"),
             ]
         ),
     )
@@ -454,4 +454,221 @@ def test_an_ownership_table_without_an_owner_column_fails(gate) -> None:
 
 
 def test_the_shipped_matrix_matches_the_shipped_code(gate) -> None:
-    assert gate.main() == 0
+    assert gate.main([]) == 0
+
+
+# --- the share is derived, so two branches do not collide (#605) --------------
+#
+# The defect this replaced was not a wrong number; it was a *shared line*. The
+# denominator was the subsystem's module count, so any PR that added a module
+# anywhere rewrote a cell every other open PR also carried. These tests are the
+# pair from the issue, run rather than described.
+
+#: A subsystem the size of a real one: eight modules, three of them unreachable
+#: (37.5%, `some`). Two branches each add one reached module — the pair from the
+#: issue. The eight is not decoration: the defect is invisible at three modules,
+#: because every share word is a boundary away.
+_BASE = [f"pkg.m{n}" for n in range(8)] + ["other"]
+_UNREACHABLE_BASE = {"pkg.m0", "pkg.m1", "pkg.m2"}
+_BRANCH_A = "pkg.added_by_a"
+_BRANCH_B = "pkg.added_by_b"
+
+_PAIR_MATRIX = matrix(
+    disposition=[
+        ("Pkg", "`some`", "KEEP", "ADR-019"),
+        ("Other", "`none`", "RETIRE", "—"),
+    ]
+)
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-1")
+@pytest.mark.parametrize(
+    "added",
+    [
+        pytest.param((), id="base"),
+        pytest.param((_BRANCH_A,), id="branch-a-alone"),
+        pytest.param((_BRANCH_B,), id="branch-b-alone"),
+        pytest.param((_BRANCH_A, _BRANCH_B), id="both-merged"),
+    ],
+)
+def test_two_branches_adding_a_module_to_one_subsystem_do_not_collide(
+    gate, added: tuple[str, ...]
+) -> None:
+    """Neither branch edits the row, and the row is right in all four worlds.
+
+    3 of 8, 3 of 9, 3 of 10 — 37.5%, 33.3%, 30.0% — and every one is `some`.
+    Nothing to write means nothing to conflict on.
+    """
+    failures = gate.audit(
+        _PAIR_MATRIX,
+        sorted([*_BASE, *added]),
+        _UNREACHABLE_BASE,
+        decision_exists=lambda _: True,
+    )
+    assert failures == []
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-1")
+def test_the_transcribed_count_would_have_failed_that_same_pair(gate) -> None:
+    """The counterfactual, so the fix is measured against the defect it replaced.
+
+    Under the old grammar the cell held `3/8`. Each branch alone makes it `3/9`
+    and the merge makes it `3/10`, so both branches had to edit the same line —
+    and whichever value the merge kept, it was wrong.
+    """
+
+    def old_cell(added: tuple[str, ...]) -> tuple[int, int]:
+        modules = [*_BASE, *added]
+        owned = [m for m in modules if m.startswith("pkg.")]
+        return len(_UNREACHABLE_BASE), len(owned)
+
+    base = old_cell(())
+    assert base == (3, 8)
+    assert old_cell((_BRANCH_A,)) != base
+    assert old_cell((_BRANCH_B,)) != base
+    assert old_cell((_BRANCH_A, _BRANCH_B)) != base
+
+    # And the share, over the same four worlds, does not move at all.
+    assert {
+        gate.share_word(*old_cell(added))
+        for added in ((), (_BRANCH_A,), (_BRANCH_B,), (_BRANCH_A, _BRANCH_B))
+    } == {"some"}
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-4")
+def test_the_share_is_computed_from_the_reachability_baseline(gate) -> None:
+    """The unreachable set is the gate's only source for what is unreachable.
+
+    Marking `pkg.b` unreachable — nothing else changed — must move `pkg` from
+    `some` to `most`, because 2 of 3 is more than half.
+    """
+    text = matrix(
+        disposition=[
+            ("Pkg", "`some`", "KEEP", "ADR-019"),
+            ("Other", "`none`", "RETIRE", "—"),
+        ]
+    )
+    failures = gate.audit(text, MODULES, {"pkg.a.deep", "pkg.b"}, decision_exists=lambda _: True)
+    assert failures == ["Pkg: Unreachable says `some`, code says `most` (2 of 3 modules, 66.7%)"]
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-4")
+@pytest.mark.parametrize(
+    ("unreachable", "total", "word"),
+    [
+        (0, 10, "none"),
+        (1, 10, "few"),
+        (2, 10, "few"),
+        (3, 10, "some"),
+        (5, 10, "some"),
+        (6, 10, "most"),
+        (9, 10, "most"),
+        (10, 10, "all"),
+        (1, 1, "all"),
+        (0, 0, "none"),
+    ],
+)
+def test_the_vocabulary_boundaries_are_inclusive_at_the_top(
+    gate, unreachable: int, total: int, word: str
+) -> None:
+    assert gate.share_word(unreachable, total) == word
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-5")
+def test_the_census_names_the_counts_the_matrix_no_longer_carries(gate) -> None:
+    owners = {"pkg.a": "Pkg", "pkg.a.deep": "Pkg", "pkg.b": "Pkg", "other": "Other"}
+    lines = gate.census(MODULES, UNREACHABLE, owners)
+
+    assert lines[0].split() == ["subsystem", "unreachable", "/", "total", "share", "word"]
+    body = {line.split()[0]: line for line in lines[1:]}
+    assert body["Pkg"].split()[1:] == ["1", "/", "3", "33.3%", "some"]
+    assert body["Other"].split()[1:] == ["0", "/", "1", "0.0%", "none"]
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-5")
+def test_the_census_puts_the_worst_subsystem_first(gate) -> None:
+    owners = {"pkg.a": "Pkg", "pkg.a.deep": "Pkg", "pkg.b": "Pkg", "other": "Other"}
+    lines = gate.census(MODULES, UNREACHABLE, owners)
+    assert [line.split()[0] for line in lines[1:]] == ["Pkg", "Other"]
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-6")
+def test_the_failure_message_names_the_census_command(gate) -> None:
+    """The gate's own output has to say where the exact numbers went."""
+    assert "--census" in gate.CENSUS_COMMAND
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-3")
+def test_the_disposition_prose_is_read_only_for_its_verdict_and_citations(gate) -> None:
+    """#378's hand-written rationale must survive the derived column beside it."""
+    prose = "KEEP — the 43 rooted scripts are the gate set, per ADR-019, and stay so"
+    failures = audit(
+        gate,
+        matrix(
+            disposition=[
+                ("Pkg", "`some`", prose, "ADR-019"),
+                ("Other", "`none`", "RETIRE", "—"),
+            ]
+        ),
+    )
+    assert failures == []
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-5")
+def test_the_census_skips_a_module_no_row_owns(gate) -> None:
+    """The partition check owns that failure; the census must not divide by it."""
+    owners = {"pkg.a": "Pkg", "pkg.a.deep": "Pkg", "pkg.b": "Pkg"}
+    lines = gate.census([*MODULES, "orphan"], UNREACHABLE, owners)
+
+    assert [line.split()[0] for line in lines[1:]] == ["Pkg"]
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-5")
+def test_a_subsystem_owning_nothing_reports_no_share_rather_than_dividing(gate) -> None:
+    assert gate._percent(0, 0) == "0.0%"
+    assert gate.share_word(0, 0) == "none"
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-5")
+def test_the_census_command_runs_against_the_shipped_matrix(gate, capsys) -> None:
+    assert gate.main(["--census"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split() == ["subsystem", "unreachable", "/", "total", "share", "word"]
+    assert any(line.split()[-1] in gate.SHARE_WORDS for line in lines[1:])
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-6")
+def test_an_unknown_flag_is_refused_rather_than_ignored(gate, capsys) -> None:
+    """Silently auditing on a typo'd flag would report a pass nobody asked for."""
+    assert gate.main(["--sensus"]) == 2
+    assert "--census" in capsys.readouterr().err
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-6")
+def test_a_failing_run_prints_the_census_command_beside_the_failures(
+    gate, tmp_path, monkeypatch, capsys
+) -> None:
+    """The gate's own output, not just the docstring, has to say where to look.
+
+    Pointed at a synthetic matrix: it cannot partition the real repository's
+    modules, so `main` takes its failure path against real inputs.
+    """
+    stand_in = tmp_path / "CONVERGENCE-MATRIX.md"
+    stand_in.write_text(matrix())
+    monkeypatch.setattr(gate, "MATRIX", stand_in)
+
+    assert gate.main([]) == 1
+
+    out = capsys.readouterr().out
+    assert "does not match the code it describes" in out
+    assert gate.CENSUS_COMMAND in out
+
+
+def test_a_missing_matrix_fails_rather_than_passing_vacuously(
+    gate, tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(gate, "MATRIX", tmp_path / "gone.md")
+
+    assert gate.main([]) == 1
+    assert "is missing" in capsys.readouterr().err
