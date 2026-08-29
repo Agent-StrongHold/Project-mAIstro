@@ -75,9 +75,7 @@ async def test_owner_can_create_and_read_canonical_project_tree(api) -> None:
     assert fetched.status_code == 200
     assert fetched.json()["name"] == "Delivery"
 
-    children = client.get(
-        f"/workspaces/{workspace_id}/projects/{root['project_id']}/children"
-    )
+    children = client.get(f"/workspaces/{workspace_id}/projects/{root['project_id']}/children")
     assert children.status_code == 200
     assert [item["project_id"] for item in children.json()] == [created["project_id"]]
 
@@ -125,9 +123,7 @@ async def test_non_member_cannot_discover_project_or_root(api) -> None:
 
     assert client.get(f"/workspaces/{workspace.workspace_id}/projects/root").status_code == 404
     assert (
-        client.get(
-            f"/workspaces/{workspace.workspace_id}/projects/{child.project_id}"
-        ).status_code
+        client.get(f"/workspaces/{workspace.workspace_id}/projects/{child.project_id}").status_code
         == 404
     )
 
@@ -139,9 +135,7 @@ async def test_cross_workspace_project_id_is_hidden(api) -> None:
     second_root = await projects.root_for_workspace(second.workspace_id)
     _as_user(app, "alice")
 
-    response = client.get(
-        f"/workspaces/{first.workspace_id}/projects/{second_root.project_id}"
-    )
+    response = client.get(f"/workspaces/{first.workspace_id}/projects/{second_root.project_id}")
 
     assert response.status_code == 404
 
