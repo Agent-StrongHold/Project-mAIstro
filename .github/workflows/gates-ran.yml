@@ -8,9 +8,9 @@ name: Gates Ran
 #
 # `workflow_run` is deliberate. A job inside ci.yml cannot know whether
 # quality.yml, Gate C, or another sibling workflow ran. Each producer completion
-# re-evaluates the same candidate, so an early evaluation may be red while
-# siblings are still running and the last completion settles the aggregate
-# verdict.
+# re-evaluates the same candidate. While sibling evidence is still absent or
+# unfinished, this publisher emits a pending `gates-ran` status. Only complete
+# evidence can become green, and a hard non-execution finding becomes red.
 #
 # A workflow_run workflow runs from the protected default branch and its native
 # job check is attached to that default-branch execution, not the candidate SHA.
@@ -151,31 +151,39 @@ jobs:
       - name: Evaluate required execution evidence
         id: evaluate
         if: steps.target.outputs.head_sha != ''
-        continue-on-error: true
         env:
           BASE_BRANCH: ${{ steps.target.outputs.base_branch }}
-        run: >-
-          python3 scripts/check-gates-ran.py
-          --check-runs check-runs.json
-          --require-complete
-          --base-branch "$BASE_BRANCH"
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/check-gates-ran.py \
+            --check-runs check-runs.json \
+            --require-complete \
+            --base-branch "$BASE_BRANCH"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       # Required checks are allowed by GitHub to be `skipped` and still satisfy
-      # branch protection. This explicit status is the stricter aggregate: it is
-      # green only when the evaluator saw real execution evidence.
+      # branch protection. This explicit status is stricter: green means every
+      # required enforcement actually completed. Missing/unfinished evidence is
+      # pending so GitHub's merge queue waits instead of ejecting a healthy
+      # candidate simply because a fast sibling finished first.
       - name: Publish gates-ran on the exact candidate head
         if: always() && steps.target.outputs.head_sha != ''
         uses: actions/github-script@v7
         env:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-          EVALUATION_OUTCOME: ${{ steps.evaluate.outcome }}
+          EVALUATION_EXIT_CODE: ${{ steps.evaluate.outputs.exit_code }}
         with:
           script: |
-            const passed = process.env.EVALUATION_OUTCOME === 'success';
-            const state = passed ? 'success' : 'failure';
-            const description = passed
+            const code = Number(process.env.EVALUATION_EXIT_CODE || '1');
+            const state = code === 0 ? 'success' : code === 2 ? 'pending' : 'failure';
+            const description = code === 0
               ? 'All required checks executed on this exact head'
-              : 'Required execution evidence is missing or non-executed';
+              : code === 2
+                ? 'Required execution evidence is still arriving'
+                : 'Required execution evidence is missing or non-executed';
 
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
@@ -187,6 +195,6 @@ jobs:
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
 
-            if (!passed) {
+            if (state === 'failure') {
               core.setFailed(description);
             }
