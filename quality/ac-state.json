@@ -15,7 +15,7 @@
     "specs_awaiting_retrofit": 139,
     "criteria_declared": 595,
     "criteria_annotated": 214,
-    "markers_found": 306,
+    "markers_found": 308,
     "markers_without_criterion": 2,
     "criteria_claimed_but_unproven": 0,
     "gherkin_criteria": 238,
@@ -26,7 +26,7 @@
     "specs_implementing_nothing": 76,
     "adrs_without_implementing_spec": 33,
     "specs_declaring_no_criteria": 7,
-    "design_coverage": 20.1236
+    "design_coverage": 20.2591
   },
   "markers_without_criterion": [
     "ADR-070126-6386/persist",
@@ -540,9 +540,9 @@
   ],
   "design_coverage": {
     "definition": "mean over Accepted|Fully Specced|Implemented ADRs of the fraction of their criteria (own, plus every implementing spec's) at the `reachable` rung; an ADR declaring no criteria contributes 0 (ADR-082226-ff3c)",
-    "percent": 20.1236,
+    "percent": 20.2591,
     "decisions": 123,
-    "decisions_scoring_zero": 97,
+    "decisions_scoring_zero": 96,
     "decisions_declaring_no_criteria": 75,
     "per_decision": [
       {
@@ -1088,8 +1088,8 @@
         "id": "ADR-081226-bb3a",
         "declared_status": "Accepted",
         "criteria": 12,
-        "reachable": 0,
-        "percent": 0.0
+        "reachable": 2,
+        "percent": 16.6667
       },
       {
         "id": "ADR-081226-e626",
@@ -4682,10 +4682,10 @@
       "gherkin_parse_errors": [],
       "scenarios_without_ac_tag": [],
       "distribution": {
-        "declared": 10,
+        "declared": 8,
         "covered": 2,
         "passing": 0,
-        "reachable": 0
+        "reachable": 2
       },
       "tier": "declared",
       "criteria": [
@@ -4737,12 +4737,14 @@
           "id": "SPEC-081226-bb3a/AC-5",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_template_runtime_exclusion.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "A GraphTemplate version pins its nested NodeTemplates"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-6",
@@ -4783,12 +4785,14 @@
           "id": "SPEC-081226-bb3a/AC-9",
           "claimed": false,
           "module": "maistro.graph.definitions",
-          "covered_by": [],
+          "covered_by": [
+            "packages/maistro-core/tests/graph/test_template_runtime_exclusion.py"
+          ],
           "form": "gherkin",
           "scenario": [
             "Execution state is not reusable semantic content"
           ],
-          "rung": "declared"
+          "rung": "reachable"
         },
         {
           "id": "SPEC-081226-bb3a/AC-10",
