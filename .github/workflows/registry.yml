@@ -72,3 +72,12 @@ jobs:
         # across 118 ADRs and 151 specs. Verified clean at the time of this
         # change: 268 files, 0 errors, 0 warnings, 0 DAG/dangling findings.
         run: python -m maistro_registry.cli lint . --strict
+
+      - name: Governing citations resolve to active authority (#374)
+        # `lint` checks that a cited document exists. This checks that an
+        # *active* document does not rest its authority on something that is
+        # not itself active -- a Superseded ADR, a Deprecated one, or a
+        # decision still merely Proposed. 47 such citations were already in the
+        # corpus when this was turned on; they are baselined per-identity, so
+        # no new one can land and each existing one stays visible.
+        run: python scripts/check-citation-status.py
