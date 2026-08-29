@@ -88,9 +88,13 @@ def _expr_path(node: ast.AST, env: dict[str, str]) -> str | None:
         if left is None or right is None:
             return None
         return _join(left, right)
-    if isinstance(node, ast.Call) and node.args:
-        if isinstance(node.func, ast.Name) and node.func.id in {"Path", "PurePath"}:
-            return _expr_path(node.args[0], env)
+    if (
+        isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"Path", "PurePath"}
+    ):
+        return _expr_path(node.args[0], env)
     return None
 
 
