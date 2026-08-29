@@ -23,8 +23,9 @@ import json
 import os
 import string
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 _HEX = frozenset(string.hexdigits)
 _VALID_SHA_LENGTHS = {40, 64}
