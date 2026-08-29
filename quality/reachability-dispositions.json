@@ -356,21 +356,6 @@
       ]
     },
     {
-      "id": "sandbox",
-      "subsystem": "Sandbox isolation",
-      "disposition": "CONNECT",
-      "rationale": "ADR-093's sandbox protocol, policy, selector and fake backend. #42 executes an Attempt inside an ExecutionRuntime, which is what makes the sandbox reachable.",
-      "root": "ExecutionRuntime attempt execution (#42)",
-      "modules": [
-        "maistro.sandbox",
-        "maistro.sandbox.backends",
-        "maistro.sandbox.backends.fake",
-        "maistro.sandbox.policy",
-        "maistro.sandbox.protocol",
-        "maistro.sandbox.selector"
-      ]
-    },
-    {
       "id": "sessions-search",
       "subsystem": "Sessions",
       "disposition": "CONNECT",
