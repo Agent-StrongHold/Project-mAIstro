@@ -5,7 +5,7 @@
     "completion_claims_contradicted": 0,
     "completion_claims_unverifiable": 0,
     "criteria_claimed_but_unproven": 0,
-    "design_coverage": 24.4993,
+    "design_coverage": 24.6109,
     "gherkin_parse_errors": 0,
     "markers_without_criterion": 2,
     "scenarios_without_ac_tag": 0,
