@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  tests/: +23
+  tests/: +28
 ---
 # claude-issue-542-base-resolved-ledgers-a428
 
-All twenty-three are `tests/test_check_ratchet_provenance.py`, the suite for
-the ratchet-provenance inventory (#542). Nothing removed or moved.
+Twenty-three are `tests/test_check_ratchet_provenance.py`, the suite for the
+ratchet-provenance inventory (#542). Nothing removed or moved.
 
 They are written against synthetic trees in `tmp_path` rather than the
 repository's own 21 ledger-reading scripts. Asserting over the real corpus
@@ -29,3 +29,21 @@ Fixing that broke `test_a_path_expression_is_a_use`, because `ast.walk` yields
 the inner `ROOT / "quality"` of `ROOT / "quality" / "x"` as well as the whole
 expression, so every named ledger also reported an unnamed one. Only the
 outermost expression of each chain is considered now.
+
+
+The remaining five are `TestANewlyPublicRouteIsNotSelfApproved` in
+`tests/test_check_public_routes.py`, added with that gate's conversion to a
+base-resolved registry. They pass a trusted registry directly rather than
+staging a git history: what is under test is the rule, and the part that reads
+the base is exercised against the real repository by the gate's own run.
+
+Two of the five are the ones that keep the rule from over-reaching. A route the
+base already declared must pass — judging it again every run would make an old
+exemption indistinguishable from a new one — and *removing* a route must pass
+with no ceremony, because closing a public route is the direction this gate
+wants and ceremony there discourages the fix.
+
+No test was deleted for this. The existing `bench` fixture gained a substituted
+`trusted_registry` returning the no-base state, because a bench registry lives
+in `tmp_path` and therefore has no path at the base revision; the cases it
+serves keep testing the consistency rules they were written for.

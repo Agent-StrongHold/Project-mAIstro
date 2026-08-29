@@ -14,6 +14,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -41,7 +42,16 @@ def gate():
 
 @pytest.fixture
 def bench(tmp_path: Path, gate, monkeypatch: pytest.MonkeyPatch):
-    """Point the gate at a middleware source and a registry we control."""
+    """Point the gate at a middleware source and a registry we control.
+
+    A bench registry lives outside the repository, so it has no path at the
+    base revision and `trusted_registry` correctly refuses to invent one. The
+    substituted resolver returns the state a developer with no base revision
+    gets -- `trusted=None`, which `audit` reads as "consistency only, not
+    monotonicity" -- so these cases keep testing the rules they were written
+    for. The base-resolved rule has its own tests below, which substitute a
+    trusted registry rather than a git history.
+    """
 
     def _set(source: str, routes: dict) -> None:
         middleware = tmp_path / "auth.py"
@@ -50,6 +60,15 @@ def bench(tmp_path: Path, gate, monkeypatch: pytest.MonkeyPatch):
         registry.write_text(json.dumps({"routes": routes}), encoding="utf-8")
         monkeypatch.setattr(gate, "MIDDLEWARE", middleware)
         monkeypatch.setattr(gate, "REGISTRY", registry)
+        prov = gate._provenance()
+        monkeypatch.setattr(
+            gate,
+            "trusted_registry",
+            lambda base=None: (
+                None,
+                prov.Baseline(text=None, origin="worktree", base_sha=None, path=registry),
+            ),
+        )
 
     return _set
 
@@ -230,3 +249,61 @@ class TestTheRepositorysOwnRegistry:
 
         assert gate.main() == 1
         assert "/v1/voice/" in capsys.readouterr().out
+
+
+class TestANewlyPublicRouteIsNotSelfApproved:
+    """#542 group 2. The consistency check proves whoever exposed the route
+    also wrote it down; it says nothing about whether anyone else agreed, and
+    exposing a route and signing for it are one act by one author.
+
+    A trusted registry is passed directly rather than staged in a git history:
+    what is under test is the rule, and `trusted_registry` -- the part that
+    reads the base -- is exercised against the real repository below.
+    """
+
+    _MIDDLEWARE: ClassVar[str] = '_PUBLIC_PREFIXES = ("/v1/thing/",)\n'
+    _ENTRY: ClassVar[dict[str, object]] = {
+        "kind": "prefix",
+        "owner": "@someone",
+        "exposes": "a thing",
+        "risk": "low",
+        "disposition": "permanent",
+        "reason": "the health probe the load balancer calls",
+    }
+
+    def test_a_route_the_base_did_not_declare_fails(self, gate, bench) -> None:
+        bench(self._MIDDLEWARE, {"/v1/thing/": self._ENTRY})
+
+        failures = gate.audit(trusted={})
+
+        assert any("newly public" in f for f in failures), failures
+
+    def test_a_route_the_base_already_declared_passes(self, gate, bench) -> None:
+        """The route was public before this change, so this change is not what
+        exposed it. Judging it again every run would make an old exemption
+        indistinguishable from a new one."""
+        bench(self._MIDDLEWARE, {"/v1/thing/": self._ENTRY})
+
+        assert gate.audit(trusted={"/v1/thing/": self._ENTRY}) == []
+
+    def test_a_grant_from_the_base_permits_it(self, gate, bench) -> None:
+        bench(self._MIDDLEWARE, {"/v1/thing/": self._ENTRY})
+
+        failures = gate.audit(trusted={}, authorized={"/v1/thing/": "#542 -- owner: deliberate"})
+
+        assert failures == []
+
+    def test_without_a_base_the_rule_does_not_apply(self, gate, bench) -> None:
+        """A developer running this locally on a tree with no base revision
+        gets the consistency check, and the provenance block says so rather
+        than the run quietly counting as a monotonicity check."""
+        bench(self._MIDDLEWARE, {"/v1/thing/": self._ENTRY})
+
+        assert gate.audit(trusted=None) == []
+
+    def test_removing_a_route_needs_no_grant(self, gate, bench) -> None:
+        """Closing a public route is the direction this gate wants. It has to
+        pass with no ceremony, or the ceremony discourages the fix."""
+        bench("_PUBLIC_PREFIXES = ()\n", {})
+
+        assert gate.audit(trusted={"/v1/gone/": self._ENTRY}) == []

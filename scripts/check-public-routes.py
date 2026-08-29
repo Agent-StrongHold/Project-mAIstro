@@ -38,15 +38,39 @@ Usage
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import sys
 from datetime import date
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "auth.py"
 REGISTRY = ROOT / "quality" / "public-routes.json"
+RATCHET = "public-routes"
+METRIC_DEFINITION_VERSION = "1"
+
+#: Loaded by path, and registered in `sys.modules` before execution: this
+#: script is itself loaded with `spec_from_file_location` by its tests, which
+#: puts nothing on `sys.path` for a sibling import, and `@dataclass` resolves
+#: field types through `sys.modules[cls.__module__]`.
+_PROVENANCE_SOURCE = Path(__file__).resolve().parent / "ratchet_provenance.py"
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 #: Module-level names in `auth.py` holding public paths, and the `kind` a
 #: registry entry must declare for a path found in each. The kinds are distinct
@@ -147,11 +171,39 @@ def _entry_problems(path: str, entry: Any, kind: str, today: date) -> list[str]:
     return _expiry_problems(path, entry, today)
 
 
-def audit(today: date | None = None) -> list[str]:
-    """One message per disagreement between the middleware and the registry."""
+def trusted_registry(base: str | None = None) -> tuple[dict[str, Any] | None, Any]:
+    """The registry as of the base revision, and where that was.
+
+    Its own function so a test can substitute the trusted state without
+    standing up a git history -- the same reason `REGISTRY` is a module global
+    rather than a default argument.
+    """
+    prov = _provenance()
+    baseline = prov.resolve_baseline(REGISTRY, base=base, root=ROOT)
+    loaded = baseline.loads(default=None)
+    if loaded is None:
+        return None, baseline
+    return loaded.get("routes", {}), baseline
+
+
+def audit(
+    today: date | None = None,
+    trusted: dict[str, Any] | None = None,
+    authorized: dict[str, str] | None = None,
+) -> list[str]:
+    """One message per disagreement between the middleware and the registry.
+
+    `trusted` is the registry as of the base revision. Without it this is the
+    consistency check it always was -- the middleware and the registry agree --
+    which proves that whoever exposed the route also wrote it down, and nothing
+    about whether anyone else agreed. With it, a path that is public now and was
+    not declared at the base is a *new* unauthenticated surface, and needs a
+    grant that landed before this change (#542 group 2).
+    """
     today = today or date.today()
     declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
     registry = json.loads(REGISTRY.read_text(encoding="utf-8")).get("routes", {})
+    authorized = authorized or {}
 
     failures: list[str] = []
     for path, kind in sorted(declared.items()):
@@ -163,6 +215,13 @@ def audit(today: date | None = None) -> list[str]:
             )
             continue
         failures.extend(_entry_problems(path, entry, kind, today))
+        if trusted is not None and path not in trusted and path not in authorized:
+            failures.append(
+                f"  {path}: newly public, and the registry did not carry it at the base. "
+                "Exposing a route and signing for it in one commit is one act by one "
+                "author; record the grant in quality/ratchet-authorizations.json under "
+                f"'{RATCHET}' so it lands before the route does"
+            )
 
     for path in sorted(set(registry) - set(declared)):
         failures.append(
@@ -178,7 +237,31 @@ def main() -> int:
             print(f"FAIL: {required} does not exist", file=sys.stderr)
             return 1
 
-    failures = audit()
+    prov = _provenance()
+    try:
+        trusted, baseline = trusted_registry()
+        # The same revision the registry came from, named rather than resolved
+        # a second time: two resolutions of "the base" can disagree, and a
+        # grant read from one commit permitting a route measured against
+        # another is not the check it looks like.
+        authorized = prov.load_authorizations(RATCHET, base=baseline.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    failures = audit(trusted=trusted, authorized=authorized)
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=baseline,
+            tool="ast",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted or {})} public path(s) declared",
+            new_value=f"{len(declared_paths(MIDDLEWARE.read_text(encoding='utf-8')))} public",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(f"{k}: {v}" for k, v in sorted(authorized.items())),
+        ).render()
+    )
     if failures:
         print(f"FAIL: {len(failures)} problem(s) with the unauthenticated route surface:\n")
         print("\n".join(failures))

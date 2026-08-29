@@ -31,11 +31,6 @@
       "owner": "#542 group 2",
       "reason": "promotion-surface-baseline.json exempts modules from adversarial review on the RSI self-modification path. A candidate that adds a sensitive module and its own exemption in one commit removes the review that stands between the system and its own code, so this is group 2 by consequence even though #542 predates the gate."
     },
-    "check-public-routes.py": {
-      "decision": "CONVERT_PENDING",
-      "owner": "#542 group 2",
-      "reason": "public-routes.json is what makes a path public: the argument, not a record of one. A PR that exposes a route and appends it here in the same commit self-approves an unauthenticated surface, which is the group 2 case #542 says to handle explicitly rather than fold into the tolerance ledgers."
-    },
     "check-radon-baseline.py": {
       "decision": "CONVERT_PENDING",
       "owner": "#542 group 1",
@@ -59,7 +54,7 @@
     "check-shell-execution.py": {
       "decision": "CONVERT_PENDING",
       "owner": "#542 group 2",
-      "reason": "shell-execution.json declares every shell=True with a vouched-for caller. A candidate that introduces a shell invocation and declares it in the same commit vouches for itself, and the thing being self-approved is command execution — group 2 by consequence, on the same argument as the egress allowlist."
+      "reason": "shell-execution.json declares every shell=True with a vouched-for caller. A candidate that introduces a shell invocation and declares it in the same commit vouches for itself, and the thing being self-approved is command execution \u2014 group 2 by consequence, on the same argument as the egress allowlist."
     },
     "check-vulture-baseline.py": {
       "decision": "CONVERT_PENDING",
@@ -83,7 +78,7 @@
     "pip_audit_gate.py": {
       "decision": "CANDIDATE_AUTHORED",
       "safeguard": "the ledger is two-way: an entry for a dependency that was removed, or that production code now imports, fails as stale, so a row cannot outlive the fact it describes",
-      "reason": "direct-dependency-exceptions.json records why a declared dependency has no production import. The disposition and the dependency genuinely arrive together — adding a framework-loaded package and saying why it has no import is one act, not two — and the two-way check means a row that stops being true fails rather than accumulating. #542 group 3, decided rather than deferred."
+      "reason": "direct-dependency-exceptions.json records why a declared dependency has no production import. The disposition and the dependency genuinely arrive together \u2014 adding a framework-loaded package and saying why it has no import is one act, not two \u2014 and the two-way check means a row that stops being true fails rather than accumulating. #542 group 3, decided rather than deferred."
     }
   }
 }
