@@ -11,12 +11,73 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from maistro.security.auth_throttle import AuthThrottle, StricterLimits
+from maistro.security.transport import is_trusted_proxy, parse_trusted_proxies
 from routes.audit import log_audit
 
 router = APIRouter(tags=["auth"])
+
+# One throttle per endpoint class, because their budgets differ and sharing
+# state would let cheap registration attempts consume a login budget (#366).
+_STRICTER = StricterLimits()
+_LOGIN_THROTTLE = AuthThrottle()
+_REGISTER_THROTTLE = AuthThrottle(_STRICTER.register)
+_ELEVATE_THROTTLE = AuthThrottle(_STRICTER.elevate)
+
+
+def _client_key(request: Request) -> str:
+    """The address an attempt is charged to.
+
+    The socket peer, unless it is a proxy this deployment named — in which case
+    the leftmost `X-Forwarded-For` entry, which is the address that proxy saw.
+    Anyone can append to that header, so believing it from an untrusted peer
+    would let an attacker mint a fresh budget per request by varying it, which
+    is the same as having no per-client limit at all (#369 established the
+    trusted-proxy check; this is the second thing that needs it).
+    """
+    from config import get_settings
+
+    peer = request.client.host if request.client else ""
+    if not peer:
+        # No peer address (a Unix socket, say). One shared bucket rather than
+        # an empty key per request: unattributable attempts must still be
+        # bounded together.
+        return "unattributed"
+    trusted = parse_trusted_proxies(get_settings().trusted_proxy_ips)
+    if not is_trusted_proxy(peer, trusted):
+        return peer
+    forwarded = request.headers.get("x-forwarded-for", "")
+    return forwarded.split(",")[0].strip() or peer
+
+
+def _enforce(throttle: AuthThrottle, request: Request, account: str, action: str) -> None:
+    """Charge an attempt, or refuse it. Always pays the progressive delay.
+
+    The delay is applied whether or not the attempt is allowed, so how long an
+    answer takes never says which limit a caller is near — and never says
+    whether the account exists.
+
+    The refusal body says nothing about *which* scope ran out: "you hit the
+    per-account limit" confirms the account is real, which is the enumeration
+    this endpoint is being hardened against. The reason goes to the audit log,
+    where a defender can read it and an attacker cannot.
+    """
+    import time as _time
+
+    decision = throttle.check(client_key=_client_key(request), account=account)
+    if decision.delay_seconds:
+        _time.sleep(decision.delay_seconds)
+    if not decision.allowed:
+        log_audit(f"{action}_throttled", account, severity="warning")
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts. Wait a few minutes and try again.",
+            headers={"Retry-After": "60"},
+        )
+
 
 _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
@@ -158,6 +219,19 @@ def _cookie_secure() -> bool:
     return bool(get_settings().session_cookie_secure)
 
 
+def _cookie_samesite() -> str:
+    """Read SameSite at call time, for the same reason as Secure (#369).
+
+    Configurable rather than the hardcoded `"lax"` it was, because a deployment
+    that fronts the Conductor with nothing cross-site wants `strict` and had no
+    way to ask for it. The default stays `lax`, which is what makes an emailed
+    link to a Conductor page work.
+    """
+    from config import get_settings
+
+    return str(get_settings().session_cookie_samesite)
+
+
 def _username_taken(username: str) -> bool:
     import stores
 
@@ -181,7 +255,7 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
         value=session_id,
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        samesite=_cookie_samesite(),
         secure=_cookie_secure(),
         path="/",
     )
@@ -210,14 +284,25 @@ def revoke_task_elevation(session_id: str, task_id: str) -> None:
 
 
 @router.post("/register")
-def register(body: RegisterBody, response: Response) -> dict[str, Any]:
+def register(body: RegisterBody, request: Request, response: Response) -> dict[str, Any]:
     # SECURITY-REVIEW: public signup creates role=user only; passwords hashed with Argon2id.
+    #
+    # Throttled before the availability check and before hashing (#366).
+    # Registration hashes unconditionally on the success path, so it is the
+    # same 64 MiB primitive as login, reachable by the same anonymous caller —
+    # and it also creates rows, so an unbounded stream is a storage attack as
+    # well as a memory one.
+    _enforce(_REGISTER_THROTTLE, request, body.username, "register")
     if not _registration_allowed():
         raise HTTPException(
             status_code=403,
             detail="Registration is unavailable until initial hive setup is complete.",
         )
     if _username_taken(body.username):
+        # Charged as a failure: "is this name taken?" is itself an enumeration
+        # primitive, and an unbudgeted one would let someone walk the user list
+        # for free.
+        _REGISTER_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
         raise HTTPException(status_code=409, detail="Username is already taken.")
 
     import stores
@@ -245,22 +330,41 @@ def register(body: RegisterBody, response: Response) -> dict[str, Any]:
 
 
 @router.post("/login")
-def login(body: LoginBody, response: Response) -> dict[str, Any]:
+def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
     import stores
 
-    from maistro.security.passwords import hash_password, needs_rehash
+    from maistro.security.passwords import equal_cost_verify, hash_password, needs_rehash
 
-    for user in stores.users.values():
-        if user.username == body.username and user.verify_password(body.password):
-            if not user.is_active:
-                raise HTTPException(status_code=403, detail="Account disabled")
-            if needs_rehash(user.password_hash):
-                stores.users[user.id] = user.model_copy(
-                    update={"password_hash": hash_password(body.password)}
-                )
-                user = stores.users[user.id]
-            log_audit("login", user.username)
-            return _issue_session(user, response)
+    _enforce(_LOGIN_THROTTLE, request, body.username, "login")
+
+    # Find the account first, then ALWAYS verify exactly once — against a decoy
+    # when there is no account (#366). The previous form was:
+    #
+    #     if user.username == body.username and user.verify_password(...)
+    #
+    # and `and` short-circuits, so an unknown username never reached Argon2.
+    # Measured: 87.6 ms for a known username with the wrong password, ~0 ms for
+    # an unknown one. Four orders of magnitude, readable from one request.
+    match = next((u for u in stores.users.values() if u.username == body.username), None)
+    verified = equal_cost_verify(body.password, match.password_hash if match else None)
+
+    if match is not None and verified:
+        if not match.is_active:
+            # A disabled account is told apart from a wrong password on
+            # purpose: the person holding the right credential needs to know
+            # why they are out, and they have already proved they own it.
+            log_audit("login_disabled", match.username, severity="warning")
+            raise HTTPException(status_code=403, detail="Account disabled")
+        if needs_rehash(match.password_hash):
+            stores.users[match.id] = match.model_copy(
+                update={"password_hash": hash_password(body.password)}
+            )
+            match = stores.users[match.id]
+        _LOGIN_THROTTLE.record_success(client_key=_client_key(request), account=body.username)
+        log_audit("login", match.username)
+        return _issue_session(match, response)
+
+    _LOGIN_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
     log_audit("login_failed", body.username, severity="warning")
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -284,7 +388,7 @@ def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[
         key=_SESSION_COOKIE,
         path="/",
         httponly=True,
-        samesite="lax",
+        samesite=_cookie_samesite(),
         secure=_cookie_secure(),
     )
     return {"ok": True}
@@ -299,15 +403,36 @@ def whoami(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
 
 
 @router.post("/elevate")
-def elevate(body: ElevateBody, hive_session: str | None = Cookie(None)) -> dict[str, Any]:
+def elevate(
+    body: ElevateBody, request: Request, hive_session: str | None = Cookie(None)
+) -> dict[str, Any]:
     import stores
+
+    from maistro.security.passwords import equal_cost_verify
 
     if not hive_session or hive_session not in stores.sessions:
         raise HTTPException(status_code=401, detail="No session")
     sess = stores.sessions[hive_session]
     user = stores.users.get(sess["user_id"])
-    if user is None or not user.verify_password(body.password):
+
+    # Bounded separately and far more tightly than login (#366). This is only
+    # reachable with a valid session, so the budget is not about anonymous
+    # guessing — it is about stopping a *stolen* session from grinding against
+    # the privilege check that stands between it and elevated permissions. A
+    # legitimate user elevates rarely, so a small budget costs them nothing.
+    #
+    # Keyed on the session rather than the username: two people are not
+    # sharing a session, and keying on the account would let one compromised
+    # session lock out the real owner's other ones.
+    _enforce(_ELEVATE_THROTTLE, request, hive_session, "elevate")
+
+    if user is None or not equal_cost_verify(body.password, user.password_hash if user else None):
+        # Equal cost here too: a session whose user row has been deleted must
+        # not answer faster than one whose password is merely wrong.
+        _ELEVATE_THROTTLE.record_failure(client_key=_client_key(request), account=hive_session)
+        log_audit("elevate_failed", sess.get("username", "unknown"), severity="warning")
         raise HTTPException(status_code=401, detail="Invalid password")
+    _ELEVATE_THROTTLE.record_success(client_key=_client_key(request), account=hive_session)
 
     requested = body.permissions if body.permissions else list(user.permissions)
     granted = [p for p in requested if user.has_permission(p)]

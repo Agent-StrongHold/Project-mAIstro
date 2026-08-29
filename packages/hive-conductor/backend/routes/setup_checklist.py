@@ -147,9 +147,9 @@ def _interview_complete(user_id: str) -> bool:
 def _default_model_picked() -> bool:
     """True if the Setup wizard wrote a non-legacy default_model into settings."""
     try:
-        import stores
+        from services import settings_store
 
-        m = (stores.settings.default_model or "").strip()
+        m = (settings_store.current().default_model or "").strip()
         return bool(m) and m != "cerebras-qwen-3-235b-a22b-2507"
     except Exception:
         return False
@@ -320,10 +320,21 @@ def _llm_provider_activated() -> bool:
 
 
 def _has_chat_session(user_id: str) -> bool:
+    """Has this person started a chat of their own?
+
+    This test was dead until #312: nothing wrote `user_id`, so it compared
+    every session against a value none of them had and the checklist item could
+    never complete. Binding ownership makes it live, which is also what makes
+    the seed exclusion necessary — the starter session is handed to the user,
+    not written by them, and counting it would tick the item for someone who
+    has never opened chat.
+    """
     try:
         import stores
+        from services.owned_records import Owner, owned_chat_sessions
 
-        return any(getattr(s, "user_id", None) == user_id for s in stores.chat_sessions.values())
+        owned = owned_chat_sessions(Owner(id=user_id))
+        return any(not s.id.startswith(stores.SEED_SESSION_PREFIX) for s in owned.values())
     except Exception:
         return False
 

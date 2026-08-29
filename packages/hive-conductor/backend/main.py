@@ -10,8 +10,9 @@ from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
 from middleware.auth import AuthMiddleware
 from middleware.request_log import RequestLogMiddleware
@@ -33,6 +34,7 @@ from routes import (
     feedback,
     harness,
     health,
+    hitl,
     install,
     mcp,
     memory,
@@ -63,10 +65,18 @@ from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
 from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
+from services.settings_store import SettingsPersistenceError
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "frontend" / "dist"
 _log = logging.getLogger("hive.lifespan")
+
+
+def _seed_outbound_policy(settings: object) -> None:
+    """Allow exactly the configured Conductor gateway origin."""
+    from maistro.security.outbound import configure_outbound_policy, configured_endpoints
+
+    configure_outbound_policy(*configured_endpoints(settings))
 
 
 def _include_optional_router(
@@ -75,17 +85,30 @@ def _include_optional_router(
     *,
     prefix: str = "",
 ) -> None:
-    """Mount an optional feature router, making degraded startup observable."""
+    """Mount an optional feature router, making degraded startup observable.
+
+    The outcome is recorded on `app.state.optional_routers`, not only logged.
+    A log line is observable by whoever reads the container output on the right
+    day; this is answerable -- and one caller needs the answer, because a route
+    table missing a router cannot be used to decide that a path is unregistered
+    (#295). Without it, `routes.design` failing to import looks exactly like
+    the Design page calling endpoints nobody wrote.
+    """
+    state: dict[str, str | None] = getattr(app.state, "optional_routers", {})
     try:
         module = import_module(module_name)
         app.include_router(module.router, prefix=prefix)
     except Exception as exc:
+        state[module_name] = f"{type(exc).__name__}: {exc}"
         _log.warning(
             "optional_router_unavailable: module=%s error=%s",
             module_name,
             exc,
             exc_info=True,
         )
+    else:
+        state[module_name] = None
+    app.state.optional_routers = state
 
 
 class ConfirmResponseBody(BaseModel):
@@ -143,7 +166,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import stores
     from settings_defaults import apply_default_settings_if_needed
 
+    from maistro.security.transport import assert_session_transport_is_safe
+
     _lifespan_log = _logging.getLogger("hive.lifespan")
+
+    # Before anything else, and deliberately NOT inside a try/except (#369).
+    # Every other start-up step below degrades on failure, because a Conductor
+    # without a design service is still a Conductor. A Conductor that will send
+    # its session cookie over plaintext is not a degraded Conductor; it is one
+    # whose sessions any network in the path can lift. This raises and the
+    # process does not come up.
+    #
+    # A warning would not do. A warning about a cookie is read once, by whoever
+    # ran the container, in a log nobody keeps.
+    _settings = get_settings()
+    # Seed before any startup service can make an HTTP request. This path also
+    # runs when the embedded core bridge is disabled or degrades to its stub,
+    # so a configured private gateway never depends on Container construction
+    # to become reachable (#285).
+    _seed_outbound_policy(_settings)
+    assert_session_transport_is_safe(
+        cookie_secure=_settings.session_cookie_secure,
+        allow_insecure_transport=_settings.allow_insecure_transport,
+        profile="hive-conductor",
+    )
+
     try:
         await foundation_service.start_foundation(get_settings())
     except Exception as exc:
@@ -221,12 +268,27 @@ def create_app() -> FastAPI:
     # middlewares added above (e.g. 401s from AuthMiddleware).
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # The 503 contract belongs to the settings *record*, not to one router.
+    # `routes/settings.py` translated it locally, so `/v1/capabilities` — which
+    # persists the same record — returned an unclassified 500 for the identical
+    # failure. Translated once here so every caller of `settings_store.save`
+    # gets the documented status, rather than each router remembering to.
+    @app.exception_handler(SettingsPersistenceError)
+    async def _settings_not_persisted(
+        _request: Request, exc: SettingsPersistenceError
+    ) -> JSONResponse:
+        logging.getLogger("hive.settings_store").error("settings write not confirmed: %s", exc)
+        return JSONResponse(
+            status_code=503, content={"detail": f"settings were not persisted: {exc}"}
+        )
+
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/v1/auth")
     app.include_router(credentials.router, prefix="/v1/credentials")
     app.include_router(install.router, prefix="/v1/install")
     app.include_router(providers.router, prefix="/v1/providers")
     app.include_router(chat.router, prefix="/v1/chat")
+    app.include_router(hitl.router, prefix="/v1/hitl")
     app.include_router(missions.router, prefix="/v1/tasks")
     app.include_router(schedules.router, prefix="/v1/schedules")
     app.include_router(skills.router, prefix="/v1/skills")

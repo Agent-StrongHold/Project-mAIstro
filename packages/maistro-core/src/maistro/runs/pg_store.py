@@ -34,6 +34,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.archive.protocols import ArchiveStore
+from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
@@ -61,9 +63,11 @@ from maistro.runs.model import (
 )
 from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
+    DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
     ActiveAttemptExists,
+    ArchivedPayloadUnavailable,
     AttemptNotFound,
     DuplicateOccurrence,
     NodeRunNotFound,
@@ -111,9 +115,20 @@ _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_S
 class PgRunStore:
     """Durable store for canonical execution identity and lifecycle."""
 
-    def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        project_store: ProjectScopeStore,
+        archive_store: ArchiveStore | None = None,
+    ) -> None:
         self._pool = pool
         self._project_store = project_store
+        # None means the tier is off (f436 decision 9). A store with archived
+        # rows and no archive configured still reads correctly for everything
+        # resident and raises `ArchivedPayloadUnavailable` -- never an empty
+        # result -- for what moved.
+        self._archive_store = archive_store
 
     # ── Run ───────────────────────────────────────────────────────
 
@@ -247,6 +262,152 @@ class PgRunStore:
             await conn.execute("DELETE FROM canonical_runs WHERE run_id = ANY($1::text[])", run_ids)
         return len(run_ids)
 
+    async def archive_cold_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        archive_after: timedelta = DEFAULT_ARCHIVE_AFTER,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Move up to ``limit`` cold Run payloads to the archive. Returns how many.
+
+        The counterpart of :meth:`purge_expired_runs` and deliberately not part
+        of it. The predicate here is `retention_expires_at IS NULL` and the one
+        there is `IS NOT NULL`, so the two select disjoint populations by
+        construction (f436 decision 10): a Run somebody chose a deletion date
+        for is purged and never archived, and one kept indefinitely is archived
+        and never purged. Sharing a sweep between them is how archiving would
+        quietly become a way to avoid deciding which a record deserves.
+
+        **Order is the durability argument.** The bytes reach the archive
+        first, and only then does the row give up its payload. A crash between
+        the two leaves an object nothing references -- content-addressed, so
+        the next sweep writes the same key and adopts it -- while the reverse
+        order would leave a row whose payload is gone and whose archive never
+        received it. One is waste; the other is data loss.
+
+        `FOR UPDATE SKIP LOCKED`, like the retention sweep, so two processes
+        divide the backlog instead of queuing. Candidates are terminal by
+        definition, so no concurrent transition can be racing the payload this
+        reads -- the lock is what keeps two *sweepers* from both paying for the
+        same upload.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if self._archive_store is None:
+            return 0
+        cutoff = (now if now is not None else datetime.now(UTC)) - archive_after
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                """SELECT run_id, project_id, payload FROM canonical_runs
+                    WHERE archive_key IS NULL
+                      AND retention_expires_at IS NULL
+                      AND finished_at IS NOT NULL
+                      AND finished_at <= $1
+                      AND status = ANY($2::text[])
+                    ORDER BY finished_at
+                    LIMIT $3
+                    FOR UPDATE SKIP LOCKED""",
+                cutoff,
+                _TERMINAL_RUN_STATUS_VALUES,
+                limit,
+            )
+            for row in rows:
+                await self._archive_tree(conn, row["run_id"], scope=row["project_id"])
+                # Re-serialised through `json_of` rather than shipping the raw
+                # column text: that is the encoder the payload was written with,
+                # so the archived bytes are byte-identical to what a read would
+                # have produced and non-finite evidence survives the move.
+                run = model_of(Run, row["payload"])
+                await self._move_payload(
+                    conn,
+                    "canonical_runs",
+                    "run_id",
+                    row["run_id"],
+                    json_of(run).encode("utf-8"),
+                    scope=row["project_id"],
+                )
+        return len(rows)
+
+    async def _archive_tree(self, conn: Any, run_id: str, *, scope: str) -> None:
+        """Move the NodeRun and Attempt payloads under one Run.
+
+        The Attempt evidence is the reason the tier exists. A Run's own payload
+        is a graph snapshot and a result; the rows underneath are one per
+        physical try, each carrying whatever the executor returned, and on a
+        Run that retried they are most of the bytes. Archiving the Run alone
+        would move the index and leave the book.
+
+        Children before the parent. Both orders are safe -- every individual
+        move puts before it nulls -- but this one keeps the entry point
+        readable throughout: a crash mid-tree leaves a Run whose payload is
+        still resident and whose children read through, rather than the
+        reverse.
+
+        Scoped by the *Run's* Project, which the child rows do not carry. That
+        is deliberate rather than incidental: scope is how the archive is
+        listed and how a Project's cold bytes are found, and a NodeRun belongs
+        to exactly the Project its Run does.
+        """
+        node_runs = await conn.fetch(
+            """SELECT node_run_id, payload FROM canonical_node_runs
+                WHERE run_id = $1 AND archive_key IS NULL
+                FOR UPDATE""",
+            run_id,
+        )
+        attempts = await conn.fetch(
+            """SELECT a.attempt_id, a.payload FROM canonical_attempts a
+                 JOIN canonical_node_runs n ON a.node_run_id = n.node_run_id
+                WHERE n.run_id = $1 AND a.archive_key IS NULL
+                FOR UPDATE OF a""",
+            run_id,
+        )
+        for attempt in attempts:
+            await self._move_payload(
+                conn,
+                "canonical_attempts",
+                "attempt_id",
+                attempt["attempt_id"],
+                json_of(model_of(Attempt, attempt["payload"])).encode("utf-8"),
+                scope=scope,
+            )
+        for node_run in node_runs:
+            await self._move_payload(
+                conn,
+                "canonical_node_runs",
+                "node_run_id",
+                node_run["node_run_id"],
+                json_of(model_of(NodeRun, node_run["payload"])).encode("utf-8"),
+                scope=scope,
+            )
+
+    async def _move_payload(
+        self,
+        conn: Any,
+        table: str,
+        column: str,
+        identity: str,
+        payload: bytes,
+        *,
+        scope: str,
+    ) -> None:
+        """Put the bytes, then drop the column. Never the other way round.
+
+        A crash between the two leaves an object nothing references --
+        content-addressed, so the next sweep writes the same key and adopts it.
+        The reverse order would leave a row whose payload is gone and whose
+        archive never received it. One is waste; the other is data loss.
+        """
+        if _PAYLOAD_TABLES.get(table) != column:
+            raise ValueError("unsupported canonical execution table")
+        assert self._archive_store is not None  # nosec B101 - caller checked
+        key = await self._archive_store.put(payload, scope=scope)
+        await conn.execute(
+            f"UPDATE {table} SET payload = NULL, archive_key = $1 WHERE {column} = $2",  # nosec B608
+            str(key),
+            identity,
+        )
+
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
         """Forget one terminal Run and everything hanging off it.
 
@@ -296,9 +457,36 @@ class PgRunStore:
 
     async def get_run(self, run_id: str) -> Run | None:
         payload = await self._payload(
-            "SELECT payload FROM canonical_runs WHERE run_id = $1", run_id
+            "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
         )
         return Run.model_validate(payload) if payload is not None else None
+
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first (#251).
+
+        Mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface; oldest-first so a bounded consumer tick
+        drains a backlog fairly. Non-terminal payloads are never offloaded to
+        the archive, so the rows read back whole.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        sql = "SELECT payload FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += " AND project_id = $2"
+            params.append(project_id)
+        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
+        params.append(limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [Run.model_validate(decode_payload(row["payload"])) for row in rows]
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.
@@ -312,6 +500,24 @@ class PgRunStore:
                 "SELECT 1 FROM canonical_runs WHERE project_id = $1 LIMIT 1", project_id
             )
         return found is not None
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338). A status filter plus one
+        payload timestamp — ISO-8601 strings in one format order the same way
+        the datetimes do, so MIN needs no materialization.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS open_runs, MIN(payload->>'created_at') AS oldest "
+                "FROM canonical_runs WHERE status != ALL($1::text[])",
+                list(_TERMINAL_STATUS_VALUES),
+            )
+        assert row is not None  # nosec B101 - COUNT(*) always yields a row
+        oldest_raw = row["oldest"]
+        oldest = datetime.fromisoformat(oldest_raw) if oldest_raw else None
+        return int(row["open_runs"]), oldest
 
     async def transition_run(
         self,
@@ -400,7 +606,8 @@ class PgRunStore:
 
     async def get_node_run(self, node_run_id: str) -> NodeRun | None:
         payload = await self._payload(
-            "SELECT payload FROM canonical_node_runs WHERE node_run_id = $1", node_run_id
+            "SELECT node_run_id, payload, archive_key FROM canonical_node_runs WHERE node_run_id = $1",
+            node_run_id,
         )
         return NodeRun.model_validate(payload) if payload is not None else None
 
@@ -408,10 +615,14 @@ class PgRunStore:
         await self._require_run(run_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT payload FROM canonical_node_runs WHERE run_id = $1 ORDER BY ordinal",
+                """SELECT node_run_id, payload, archive_key FROM canonical_node_runs
+                    WHERE run_id = $1 ORDER BY ordinal""",
                 run_id,
             )
-        return [model_of(NodeRun, row["payload"]) for row in rows]
+        # Read-through, because this is how an audit reads down from a Run and
+        # the whole tree goes cold together. A list that silently dropped the
+        # archived rows would report a Run as having had fewer nodes than it did.
+        return [NodeRun.model_validate(await self._hydrate(row)) for row in rows]
 
     async def transition_node_run(
         self,
@@ -524,7 +735,8 @@ class PgRunStore:
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         payload = await self._payload(
-            "SELECT payload FROM canonical_attempts WHERE attempt_id = $1", attempt_id
+            "SELECT attempt_id, payload, archive_key FROM canonical_attempts WHERE attempt_id = $1",
+            attempt_id,
         )
         return Attempt.model_validate(payload) if payload is not None else None
 
@@ -532,11 +744,13 @@ class PgRunStore:
         await self._require_node_run(node_run_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT payload FROM canonical_attempts
+                """SELECT attempt_id, payload, archive_key FROM canonical_attempts
                    WHERE node_run_id = $1 ORDER BY ordinal""",
                 node_run_id,
             )
-        return [model_of(Attempt, row["payload"]) for row in rows]
+        # The Attempt evidence is the bulk of what the tier moves, so this is
+        # the read that most often comes back from the archive.
+        return [Attempt.model_validate(await self._hydrate(row)) for row in rows]
 
     async def transition_attempt(
         self,
@@ -616,6 +830,12 @@ class PgRunStore:
         same rule here a reconciliation that lands late rewrites the history of
         a closed Run, and can undo the very cascade that settled it.
         """
+        # A completed row without accepted evidence predates AcceptedNodeOutcome.
+        # Let it reach transition_node_run's migration validator even after the
+        # parent closed; that validator permits only a matching evidence install
+        # and preserves all lifecycle fields.
+        if node_run.status is RunStatus.COMPLETED and node_run.accepted_outcome is None:
+            return
         run = Run.model_validate(
             await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
         )
@@ -629,18 +849,48 @@ class PgRunStore:
         """Read a payload under a row lock, or raise the right not-found error."""
         if _PAYLOAD_TABLES.get(table) != column:
             raise ValueError("unsupported canonical execution table")
-        payload = await conn.fetchval(
-            f"SELECT payload FROM {table} WHERE {column} = $1 FOR UPDATE",  # nosec B608
+        row = await conn.fetchrow(
+            f"SELECT {column}, payload, archive_key FROM {table} "  # nosec B608
+            f"WHERE {column} = $1 FOR UPDATE",
             identity,
         )
-        if payload is None:
+        if row is None:
             raise _NOT_FOUND[table](identity)
-        return decode_evidence(decode_payload(payload))
+        return await self._hydrate(row)
 
     @staticmethod
     async def _write(conn: Any, table: str, column: str, identity: str, model: Any) -> None:
+        """Write one model back, keeping the promoted columns in step.
+
+        `canonical_runs.finished_at` is a duplicate of the payload field, and
+        migration 017 promoted it for the same reason 013 promoted
+        `retention_expires_at`: the archive sweep filters on it, and
+        `(payload->>'finished_at')::timestamptz` is STABLE, so PostgreSQL will
+        not index it. A promoted column that only the migration's backfill ever
+        wrote would be correct for historical rows and silently empty for every
+        Run terminalised afterwards -- so the sweep would archive the old and
+        never the new, which is worse than not having the column.
+
+        `archive_key` is deliberately *not* cleared here. Writing a payload to
+        an archived row would leave both present and trip migration 017's CHECK,
+        and that is the outcome worth having: an archived Run is terminal and
+        cannot legally transition, so a write reaching one is a bug that should
+        surface as a constraint violation rather than as a silently orphaned
+        object in the bucket.
+        """
         if _PAYLOAD_TABLES.get(table) != column:
             raise ValueError("unsupported canonical execution table")
+        if table == "canonical_runs":
+            await conn.execute(
+                """UPDATE canonical_runs
+                      SET status = $1, payload = $2::text::jsonb, finished_at = $4
+                    WHERE run_id = $3""",
+                model.status.value,
+                json_of(model),
+                identity,
+                model.finished_at,
+            )
+            return
         await conn.execute(
             f"UPDATE {table} SET status = $1, payload = $2::text::jsonb WHERE {column} = $3",  # nosec B608
             model.status.value,
@@ -746,18 +996,52 @@ class PgRunStore:
         if conn is None:
             attempt = await self.get_attempt(attempt_id)
         else:
-            payload = await conn.fetchval(
-                "SELECT payload FROM canonical_attempts WHERE attempt_id = $1", attempt_id
+            row = await conn.fetchrow(
+                "SELECT attempt_id, payload, archive_key FROM canonical_attempts "
+                "WHERE attempt_id = $1",
+                attempt_id,
             )
-            attempt = model_of(Attempt, payload) if payload is not None else None
+            attempt = Attempt.model_validate(await self._hydrate(row)) if row is not None else None
         if attempt is None:
             raise AttemptNotFound(attempt_id)
         return attempt
 
     async def _payload(self, sql: str, *params: Any) -> Any | None:
+        """One row's payload, from the column or from the archive behind it.
+
+        Every caller passes SQL selecting `payload, archive_key` so the read
+        path is the same whichever tier the bytes are in. That is decision 6
+        made structural: a caller cannot accidentally get `None` for an
+        archived record, because the only way to read a payload here already
+        looks at the tombstone beside it.
+        """
         async with self._pool.acquire() as conn:
-            payload = await conn.fetchval(sql, *params)
-        return decode_evidence(decode_payload(payload)) if payload is not None else None
+            row = await conn.fetchrow(sql, *params)
+        if row is None:
+            return None
+        return await self._hydrate(row)
+
+    async def _hydrate(self, row: Any) -> Any:
+        """A payload row as a Python object, reading through to the archive.
+
+        Migration 017's CHECK constrains exactly one of `payload` and
+        `archive_key` to be present, so the `else` below is unreachable while
+        the constraint holds -- and is written anyway, because "neither" is the
+        one state that would silently lose a record and a store should say so
+        rather than return something shaped like an answer.
+        """
+        raw = row["payload"]
+        if raw is not None:
+            return decode_evidence(decode_payload(raw))
+        key = row["archive_key"]
+        identity = next((row[name] for name in _PAYLOAD_TABLES.values() if name in row), "?")
+        if key is None:  # pragma: no cover - the CHECK constraint forbids it
+            raise RunIntegrityError(
+                f"canonical record {identity!r} has neither a payload nor an archive key"
+            )
+        if self._archive_store is None:
+            raise ArchivedPayloadUnavailable(str(identity), key)
+        return decode_evidence(decode_payload(await self._archive_store.get(ArchiveKey.parse(key))))
 
 
 _NOT_FOUND: dict[str, type[Exception]] = {

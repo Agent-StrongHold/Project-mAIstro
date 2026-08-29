@@ -4,8 +4,7 @@ The streaming/non-streaming completion *logic* (tool-call accumulation,
 SSE event shapes) is already covered end-to-end against the service layer
 in test_chat_streaming.py. This file covers the HTTP route surface itself:
 session list/create/get/delete, message append, and the two completion
-endpoints wired through `services.chat_completion` (mocked here so no real
-LLM call happens).
+endpoints through the M0 conversational-only route boundary.
 """
 
 from __future__ import annotations
@@ -155,15 +154,15 @@ def test_append_message_updates_session_updated_at(authed_client: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_complete_delegates_to_run_chat_completion(authed_client: Any, monkeypatch) -> None:
+def test_complete_calls_conversational_llm_without_tools(authed_client: Any, monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_run(req, user_id=""):
-        captured["user_id"] = user_id
-        captured["messages"] = req.messages
-        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+    class FakeLLM:
+        async def complete(self, req):
+            captured["request"] = req
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
-    monkeypatch.setattr("routes.chat.run_chat_completion", fake_run)
+    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
 
     r = authed_client.post(
         "/v1/chat/complete",
@@ -171,7 +170,10 @@ def test_complete_delegates_to_run_chat_completion(authed_client: Any, monkeypat
     )
     assert r.status_code == 200
     assert r.json()["choices"][0]["message"]["content"] == "ok"
-    assert captured["messages"][0]["content"] == "hi"
+    req = captured["request"]
+    assert req.messages[0]["content"] == "hi"
+    assert req.tools is None
+    assert req.model == "test-model"
 
 
 # --------------------------------------------------------------------------- #
@@ -179,13 +181,15 @@ def test_complete_delegates_to_run_chat_completion(authed_client: Any, monkeypat
 # --------------------------------------------------------------------------- #
 
 
-def test_stream_emits_sse_events(authed_client: Any, monkeypatch) -> None:
-    async def fake_stream(req, user_id=""):
-        yield {"type": "delta", "content": "Hel"}
-        yield {"type": "delta", "content": "lo"}
-        yield {"type": "done", "content": "Hello"}
+def test_stream_emits_single_done_event_from_conversational_llm(
+    authed_client: Any, monkeypatch
+) -> None:
+    class FakeLLM:
+        async def complete(self, req):
+            assert req.tools is None
+            return {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
 
-    monkeypatch.setattr("services.chat_completion.run_chat_completion_streaming", fake_stream)
+    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
 
     with authed_client.stream(
         "POST",
@@ -195,16 +199,17 @@ def test_stream_emits_sse_events(authed_client: Any, monkeypatch) -> None:
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/event-stream")
         body = "".join(r.iter_text())
-    assert '"type": "delta"' in body or '"type":"delta"' in body
+    assert '"type": "done"' in body or '"type":"done"' in body
     assert "Hello" in body
+    assert '"type": "delta"' not in body and '"type":"delta"' not in body
 
 
-def test_stream_swallows_generator_exception_as_done_event(authed_client: Any, monkeypatch) -> None:
-    async def fake_stream(req, user_id=""):
-        yield {"type": "delta", "content": "partial"}
-        raise RuntimeError("boom")
+def test_stream_swallows_llm_exception_as_done_event(authed_client: Any, monkeypatch) -> None:
+    class FailingLLM:
+        async def complete(self, req):
+            raise RuntimeError("boom")
 
-    monkeypatch.setattr("services.chat_completion.run_chat_completion_streaming", fake_stream)
+    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FailingLLM())
 
     with authed_client.stream(
         "POST",
@@ -213,4 +218,4 @@ def test_stream_swallows_generator_exception_as_done_event(authed_client: Any, m
     ) as r:
         assert r.status_code == 200
         body = "".join(r.iter_text())
-    assert "Error: boom" in body
+    assert "Error: RuntimeError" in body

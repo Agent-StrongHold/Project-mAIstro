@@ -124,11 +124,12 @@ async def test_store_rejects_fabricated_accepted_attempt_evidence() -> None:
     accepted = await store.get_node_run(node_run_id)
     assert accepted is not None and accepted.accepted_outcome is not None
 
-    # Use a fresh logical NodeRun so lifecycle terminality does not mask the
-    # storage-integrity assertion under test.
+    # Use a fresh Run so parent terminalization from the successful first
+    # execution does not mask the storage-integrity assertion under test.
     run = await store.get_run(accepted.run_id)
     assert run is not None
-    second = await store.create_node_run(run.run_id, node_id="node-1")
+    fresh_run = await store.create_run(run.graph.materialize())
+    second = await store.create_node_run(fresh_run.run_id, node_id="node-1")
     fabricated = AcceptedNodeOutcome(
         node_run_id=second.node_run_id,
         attempt_result=AttemptResult(

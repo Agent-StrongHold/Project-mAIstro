@@ -27,6 +27,15 @@ REPO = Path(__file__).resolve().parent.parent
 CORE_SRC = Path("packages/maistro-core/src/maistro")
 CORE_TESTS = Path("packages/maistro-core/tests")
 PACKAGES = Path("packages")
+#: The repository's own gate scripts. `scripts/<name>.py` -> `tests/test_<name>.py`,
+#: the convention every gate here already follows.
+#:
+#: They were unresolvable until #419, so the code that decides whether anything
+#: else may merge was the one body of Python mutation could not reach -- the
+#: same blind spot #257 closed for diff coverage, one instrument later.
+SCRIPTS = Path("scripts")
+ROOT_TESTS = Path("tests")
+
 EXTERNAL_TEST_ROOTS = {
     # The package's own tests/ directory is external browser E2E coverage.
     # Unit tests for its non-backend Python modules live at the repository root.
@@ -57,6 +66,24 @@ def resolve_tests(src: str) -> Path | None:
             return candidate
         parent = parent.parent
     return None
+
+
+def resolve_script_tests(src: str) -> Path | None:
+    """Resolve a repository gate script to its own test file.
+
+    Mirror path only, deliberately. There is no ancestor directory to widen to
+    -- `tests/` is the whole root suite, and mutating one script against all
+    1,400 root tests is exactly the unbounded scope that produced the original
+    30-minute timeout. A script without `tests/test_<name>.py` is skipped and
+    reported, not silently mutated against everything.
+    """
+    path = Path(src)
+    if path.suffix != ".py" or not (REPO / path).is_file():
+        return None
+    if path.parent != SCRIPTS:
+        return None
+    mirror = ROOT_TESTS / f"test_{path.stem.replace('-', '_')}.py"
+    return mirror if (REPO / mirror).is_file() else None
 
 
 def resolve_package_tests(src: str) -> Path | None:
@@ -216,7 +243,9 @@ def _resolve_targets(files: list[str]) -> tuple[list[tuple[str, Path]], list[str
     for src in files:
         if not src:
             continue
-        tests = resolve_package_tests(src)
+        # Gate scripts first: they live outside `packages/`, so
+        # `resolve_package_tests` returns None for every one of them (#419).
+        tests = resolve_script_tests(src) or resolve_package_tests(src)
         if tests is None:
             unresolved.append(src)
         else:

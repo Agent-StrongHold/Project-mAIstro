@@ -122,8 +122,10 @@ class OutboundBlockedError(SSRFBlockedError, httpx.TransportError):
     `httpx.RequestError.__init__`, which takes exactly that positional message.
     """
 
-    def __init__(self, detail: str = "", *, request: httpx.Request | None = None) -> None:
-        super().__init__(detail)
+    def __init__(
+        self, detail: str = "", *, request: httpx.Request | None = None, reason: str = ""
+    ) -> None:
+        super().__init__(detail, reason=reason)
         if request is not None:
             # httpx's own property setter rather than the private attribute
             # behind it, so `.request` stays exactly the accessor httpx
@@ -139,7 +141,21 @@ def outbound_origin(url: str) -> str:
     and fragment are dropped — an allowance is about *where* a request goes,
     and matching on anything longer would let a crafted path widen it.
     """
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # Unparseable — `http://[::1` and friends. This function is called to
+        # *describe* a refusal, so it must never be the thing that fails: it
+        # raised `ValueError: Invalid IPv6 URL` from inside the handler that had
+        # already correctly refused the same URL, and the exception escaped
+        # (#430).
+        #
+        # A sentinel rather than an empty string, for the same reason the port
+        # branch below returns one: this value is compared against configured
+        # allowances, and an origin nobody can parse must never compare equal to
+        # one an operator authorized. `://` cannot appear in a real origin, so
+        # nothing can be configured that matches it.
+        return "unparseable://:invalid"
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
     try:
@@ -221,6 +237,10 @@ def configured_endpoints(settings: object) -> list[str]:
     return [
         str(getattr(settings, "litellm_url", "") or ""),
         str(getattr(litellm, "base_url", "") or ""),
+        # Hive Conductor's canonical OpenAI-compatible gateway field. Its
+        # Settings model folds LITELLM_API_BASE and the supported legacy env
+        # aliases into this value before the policy is seeded.
+        str(getattr(settings, "litellm_api_base", "") or ""),
         str(getattr(settings, "ollama_base_url", "") or ""),
         str(getattr(ntfy_settings, "base_url", "") or ""),
         str(getattr(settings, "maistro_base_url", "") or ""),
@@ -263,7 +283,7 @@ class GuardedTransport(httpx.AsyncBaseTransport):
             # translation belongs here rather than in `enforce_outbound_policy`,
             # which is also called directly by code that is not inside a client
             # and has no reason to see an httpx type.
-            raise OutboundBlockedError(exc.detail, request=request) from exc
+            raise OutboundBlockedError(exc.detail, request=request, reason=exc.reason) from exc
         return await self._inner.handle_async_request(request)
 
     async def aclose(self) -> None:

@@ -18,9 +18,13 @@ logger = logging.getLogger("hive.auth_middleware")
 
 _PUBLIC_PREFIXES = (
     "/v1/setup/",
-    "/v1/voice/",
     "/health",
 )
+
+#: Authenticated like everything else, but by a device credential rather than a
+#: session — see `services/voice_identity.py`. This is not an exemption: with
+#: no credential configured the prefix answers 401 like any other `/v1/` path.
+_VOICE_PREFIX = "/v1/voice/"
 
 # FastAPI's default docs/openapi paths don't end in "/" (the real route is
 # /openapi.json), so they can't use the boundary-safe prefix check below —
@@ -54,6 +58,12 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/harness": "harness.execute",
         "/v1/rsi": "rsi.execute",
         "/v1/evolution": "rsi.execute",
+        # The pending-work queue names which Runs are blocked and carries the
+        # payload each node is asking a human — in-flight graph execution
+        # content, the same sensitivity as the harness stream above. Scoped to
+        # match the answer route: seeing a question you have no scope to answer
+        # serves nobody and leaks what the Run is doing (#244).
+        "/v1/hitl": "dags.write",
     },
     "DELETE": {
         "/v1/settings": "config.delete",
@@ -87,6 +97,13 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/dags": "dags.write",
         # Accepting an optimizer proposal rewrites a DAG — same surface.
         "/v1/optimizer": "dags.write",
+        # Answering a human pause resumes the Run that was waiting on it, and
+        # the nodes that run next are the same graph nodes `/v1/dags` gates —
+        # so an unscoped answer would be DAG execution reached by replying to
+        # a prompt instead of by starting a run (#244). The answer is also
+        # untrusted input written into graph state that later nodes read,
+        # which is why the route Warden-scans it as well.
+        "/v1/hitl": "dags.write",
         # A schedule is recurring autonomous execution.
         "/v1/schedules": "schedules.write",
         # Workspace sub-resource mutations (membership, persona authoring, etc.)
@@ -301,7 +318,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return True
 
     def _get_user(self, request: Request) -> dict | None:
-        return resolve_principal(request.cookies, request.headers.get("Authorization"))
+        authorization = request.headers.get("Authorization")
+        user = resolve_principal(request.cookies, authorization)
+        if user is not None:
+            return user
+        # Scoped to the voice prefix on purpose. Resolving the device
+        # credential for every path would make one key a second way into the
+        # whole API; here it opens the surface it was issued for and nothing
+        # else, and a caller holding it still gets that account's own
+        # authorization for everything downstream.
+        if _matches_public_prefix(request.url.path, _VOICE_PREFIX):
+            from services.voice_identity import principal_for
+
+            return principal_for(authorization)
+        return None
 
     def _is_chat(self, path: str) -> bool:
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)

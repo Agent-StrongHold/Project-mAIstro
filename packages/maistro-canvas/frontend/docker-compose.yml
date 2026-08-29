@@ -8,7 +8,19 @@ services:
     environment:
       POSTGRES_DB: mcp_orders
       POSTGRES_USER: mcp
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_local_dev}
+      # Required, with no default (#367). Port 5441 is published to the
+      # host, so a fallback published in this repository is a database
+      # anyone who has read it can open. The fallback was also dead: the
+      # server's own default URL in `server/models/db.py` authenticated as
+      # `mcp:mcp`, which never matched it, so nothing was relying on the
+      # value.
+      #
+      # Setting this is now the whole configuration. `server/config.py`
+      # composes the connection URL from it and the three non-secret values
+      # above, so there is nothing left to keep in sync by hand -- restating
+      # the password inside a DATABASE_URL, which this comment used to ask
+      # for, is how the two copies drifted apart in the first place (#432).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env -- see README.md}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcp"]
       interval: 5s

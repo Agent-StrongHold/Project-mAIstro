@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.config.settings import validate_cors_origins
@@ -33,7 +33,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    litellm_api_base: str | None = None
+    # One canonical gateway field, with every deployment spelling accepted at
+    # the settings boundary. Code below this layer must not inspect the alias
+    # environment variables independently or the outbound SSRF allowance and
+    # the request destination can disagree (#285).
+    litellm_api_base: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "litellm_api_base",
+            "LITELLM_API_BASE",
+            "LITELLM_PROXY_URL",
+            "LITELLM_BASE_URL",
+            "LITELLM_URL",
+            "maistro_llm_base_url",
+            "MAISTRO_LLM_BASE_URL",
+        ),
+    )
     litellm_api_key: SecretStr | None = None
     # Must exist in litellm_config.yaml; compose passes CHAT_DEFAULT_MODEL with
     # the same value. setup.py's first-run fallback reads this field — change it
@@ -56,7 +71,6 @@ class Settings(BaseSettings):
     # deployment states, not two that happen to agree.
     hive_default_workspace_id: str = "default"
     maistro_agents_dir: str = "agents"
-    maistro_llm_base_url: str | None = None
     maistro_llm_api_key: SecretStr | None = None
     maistro_model: str = "mistral-large"
 
@@ -66,6 +80,22 @@ class Settings(BaseSettings):
     conductor_state_db: str | None = None
     conductor_admin_public_key: str | None = None
     conductor_user_public_key: str | None = None
+
+    # A voice satellite is a device, not a person, so it holds a service
+    # credential rather than a session. Both fields are required before
+    # /v1/voice/ answers at all: the prefix used to skip authentication
+    # entirely, and an unset key must never be what makes a route public
+    # (#316). The key resolves through the vault first (SPEC-003), so
+    # rotating it takes effect on the next call rather than the next restart.
+    voice_service_key: SecretStr | None = None
+    voice_service_account: str | None = None
+
+    # Serve the Content-Security-Policy under the report-only header instead of
+    # enforcing it (#310). The rollout instrument, not a weaker setting: the
+    # browser evaluates the same policy and reports what it would have blocked.
+    # Off by default, because a report-only policy nobody promotes is a header
+    # that protects nothing while looking like it does.
+    csp_report_only: bool = False
 
     # Open Design renderer plugin (SPEC-070426-6ea8). Off by default; when enabled the
     # design service registers the provider and /design/skills gains web/video skills.
@@ -95,11 +125,39 @@ class Settings(BaseSettings):
     _check_cors_origins = field_validator("cors_origins")(validate_cors_origins)
 
     # Mark the session cookie Secure so browsers refuse to send it over plain
-    # HTTP. Off by default because the documented dev loop is
-    # http://localhost:8101 and a Secure cookie is silently dropped there,
-    # which would look like "login does nothing". Turn it on for any
-    # deployment reachable over TLS.
-    session_cookie_secure: bool = False
+    # HTTP. **On by default** (#369). It used to default off, with the reason
+    # given as the documented dev loop being http://localhost:8101 — where a
+    # Secure cookie is silently dropped and login looks like it does nothing.
+    #
+    # That reason is real and it is an argument for a local-development escape,
+    # not for the default. A default is the shape every deployment that did not
+    # think about it takes, and "every deployment that did not think about it
+    # sends its session cookie in the clear" is the wrong way round. The escape
+    # is `allow_insecure_transport` below, which a local run sets deliberately
+    # and a reviewer can grep for.
+    session_cookie_secure: bool = True
+
+    # `lax` lets the cookie ride a top-level navigation from another site,
+    # which is what makes an emailed link to a Conductor page work. `strict`
+    # would break that; `none` would send it on every cross-site subrequest and
+    # is only meaningful with Secure, so it is not offered as a default.
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+
+    # The single, explicit, greppable local-development escape. Startup refuses
+    # a Secure-disabled session cookie unless this is set — see
+    # `maistro.security.transport.assert_session_transport_is_safe`.
+    #
+    # Deliberately its own flag rather than another value of
+    # `session_cookie_secure`: turning off a security control and declaring a
+    # development run are different statements, and collapsing them into one
+    # setting is how the first becomes invisible inside the second.
+    allow_insecure_transport: bool = False
+
+    # Addresses or CIDR blocks allowed to set `X-Forwarded-Proto`. Empty means
+    # no forwarded header is believed from anyone, which is the safe default: a
+    # deployment that forgets to name its proxy loses HSTS rather than gaining
+    # a header any caller can forge (#369).
+    trusted_proxy_ips: str = ""
 
     hardware_preset: Literal["potato", "laptop", "desktop", "beast"] = "laptop"
     poc_mode: str = ""
@@ -126,6 +184,16 @@ class Settings(BaseSettings):
     # `memory_decay.state == "disabled"`. A silent off switch here would look
     # exactly like the bug this closes.
     memory_decay_interval_s: int = 3600
+
+    @property
+    def maistro_llm_base_url(self) -> str | None:
+        """Compatibility view of the canonical gateway endpoint.
+
+        Older callers used a second settings field for the same OpenAI-
+        compatible service. Keeping a read-only view avoids breaking those
+        callers while ensuring every environment alias seeds one value.
+        """
+        return self.litellm_api_base
 
 
 @lru_cache

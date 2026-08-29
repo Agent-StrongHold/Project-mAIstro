@@ -18,6 +18,8 @@ dependencies = [
     # langfuse ranges is what makes a naive <3 cap look safe here when it
     # would in fact make the workspace unsatisfiable (lock resolves 4.x).
     "langfuse>=3.9.3,<5",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]

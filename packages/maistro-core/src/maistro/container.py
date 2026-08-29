@@ -13,7 +13,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -23,8 +23,10 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.classifier.engine import ClassifierEngine
+from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
+from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
-from maistro.graph.templates import GraphTemplateStore
+from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
@@ -35,15 +37,21 @@ from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
-from maistro.runs.chat_admission import ChatRunAdmitter, chat_turn_outcome, failure_category
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    ChatRunAdmitter,
+    chat_turn_outcome,
+    failure_category,
+)
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
     wire_execution_spine,
+    wire_node_template_store,
 )
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
@@ -53,6 +61,8 @@ from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.store import WorkspaceStore
+from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
 if TYPE_CHECKING:
     import httpx
@@ -142,6 +152,11 @@ class Container:
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
     project_scope_store: ProjectScopeStore = None  # type: ignore[assignment]
+    #: Canonical Workspace identity and membership (#516). The Workspace the
+    #: scope tree above hangs off: `project_scope_store` has had a durable
+    #: backend since #132 while the thing its `workspace_id` names had none,
+    #: so the only Workspaces that survived a restart were the Conductor's own.
+    workspace_store: WorkspaceStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -157,6 +172,20 @@ class Container:
     #: of the spine is: a Container built directly, without `create_container`,
     #: still routes requests — it just cannot resolve a template.
     template_store: GraphTemplateStore | None = None
+    #: Durable home for reusable NodeTemplate definitions (#556). The
+    #: GraphTemplate half has had one since #145; without this one a Node's
+    #: `source_template` named a version nothing could resolve after a restart,
+    #: so SPEC-081226-bb3a AC-12 held for only one of the two template
+    #: families. Optional exactly as `template_store` is, and for the same
+    #: reason: a Container built directly still routes requests.
+    node_template_store: NodeTemplateStore | None = None
+    #: Durable graph execution over the canonical spine (#44). A
+    #: `DurableRunStore` in interface only: Run, NodeRuns and Attempts are the
+    #: `run_store`'s rows and the Graph continuation is persisted beside them,
+    #: so a graph Run resolves through `GET /v1/runs/{id}` and appears in
+    #: `list_by_status` like every other Run. Optional the same way the rest of
+    #: the spine is -- a Container built directly still routes requests.
+    graph_run_store: DurableRunStore | None = None
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -173,10 +202,6 @@ class Container:
     conduit: Any = None
     #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
-    #: Cold storage for archived records (ADR-082226-f436), or None when the
-    #: deployment configured no archive tier. None is the default and an
-    #: ordinary answer, not a degraded mode.
-    archive_store: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -312,13 +337,13 @@ class Container:
         try:
             result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
         except BaseException as exc:
-            # A category, not `str(exc)`. `/runs/{run_id}` returns `Run.error`
-            # verbatim to anyone holding the run_id, and a provider error's
-            # message carries the endpoint it called and can carry the key it
-            # sent — so recording it here would leak by a slower route what
-            # every response path already refuses to echo. The detail is in
-            # the log, which a run_id does not open.
-            await self._close_chat_run(run, error=failure_category(exc))
+            # Attempt reconciliation already owns cancellation, so a client
+            # disconnect observes CANCELLED rather than being reinterpreted as
+            # FAILED by this outer product boundary. Other failures retain the
+            # existing sanitized failure category.
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            error = {True: None, False: failure_category(exc)}[cancelled]
+            await self._close_chat_run(run, error=error, cancelled=cancelled)
             raise
         await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
@@ -374,6 +399,7 @@ class Container:
         """
         if self.chat_admitter is None:
             return None
+        run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -388,9 +414,52 @@ class Container:
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except asyncio.CancelledError:
+            # The client disconnected mid-admission. Without the shield the
+            # compensating write would be aborted by the same cancellation it
+            # exists to clean up after — the `_close_chat_run` shield's reason,
+            # one step earlier in the turn.
+            await asyncio.shield(self._cancel_incomplete_admission(run))
+            raise
         except Exception:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
+            await self._cancel_incomplete_admission(run)
             return None
+
+    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
+        """Compensate a chat Run whose admission never reached RUNNING (#338).
+
+        Admission persists CREATED, then QUEUED, then RUNNING. An exception
+        between any two of those writes used to strand the Run at the state it
+        had reached: the caller got `None`, so `_close_chat_run` had nothing to
+        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
+        work is waiting to run that nothing will ever run.
+
+        CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
+        is the honest word: the turn was never dispatched, so nothing failed
+        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
+        returned from admission, making it `_close_chat_run`'s to settle — not
+        this method's. Idempotent by the terminal guard; a concurrent settle
+        loses the race harmlessly because the compensating write is logged,
+        never re-raised — compensation must not replace the turn's answer.
+        """
+        if run is None:
+            return
+        try:
+            current = await self.run_store.get_run(run.run_id)
+            if current is None or current.status in TERMINAL_RUN_STATUSES:
+                return
+            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+                return
+            await self.run_store.transition_run(
+                run.run_id,
+                RunStatus.CANCELLED,
+                error=ADMISSION_INCOMPLETE,
+            )
+        except Exception:
+            logger.warning(
+                "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
+            )
 
     async def _close_chat_run(
         self,
@@ -398,6 +467,7 @@ class Container:
         *,
         error: str | None = None,
         result: dict[str, Any] | None = None,
+        cancelled: bool = False,
     ) -> None:
         """Terminalize a chat turn's Run, whichever way the turn ended.
 
@@ -411,7 +481,14 @@ class Container:
         """
         if run is None:
             return
-        target = RunStatus.FAILED if error is not None else RunStatus.COMPLETED
+        if cancelled and (error is not None or result is not None):
+            raise ValueError("cancelled chat closure cannot carry error or result")
+        if cancelled:
+            target = RunStatus.CANCELLED
+        elif error is not None:
+            target = RunStatus.FAILED
+        else:
+            target = RunStatus.COMPLETED
         try:
             await asyncio.shield(self._terminalize(run.run_id, target, result, error))
         except Exception:
@@ -439,6 +516,13 @@ class Container:
         spine must not grow two ideas of what a parked Run means.
         """
         current = await self.run_store.get_run(run_id)
+        if current is not None and current.status in TERMINAL_RUN_STATUSES:
+            if current.status is target:
+                return
+            raise RunIntegrityError(
+                f"chat Run {run_id!r} already terminalized as {current.status.value!r}; "
+                f"cannot rewrite it as {target.value!r}"
+            )
         if (
             current is not None
             and current.status is RunStatus.WAITING
@@ -479,11 +563,149 @@ class Container:
         Settles Attempts whose holder stopped renewing its lease. Attempts
         created without a TTL are never touched, so a deployment that has not
         opted into leases sees this do nothing.
+
+        Each reclaimed Attempt is carried through the canonical lifecycle seam
+        (#462): reconciliation with the ``RECOVERED`` cause parks the NodeRun
+        ``WAITING`` and parks its Run, which is the disposition b36a promised
+        and the sweep previously stopped short of — a reclaimed Attempt whose
+        NodeRun stayed ``RUNNING`` forever was durable state still claiming
+        work was in flight. Both halves are idempotent, so a crash between
+        them heals on any later reconcile of the same Attempt rather than
+        needing this tick to be atomic.
+
+        The tick also refreshes the recovery-visibility gauges (#338): how
+        many Runs are non-terminal, and how old the oldest one is.
         """
+        from maistro.observability.metrics import (
+            non_terminal_runs,
+            oldest_non_terminal_run_age_seconds,
+            recovered_attempts_total,
+        )
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
+            # The Container's bus, so the sweep's dispositions land on the
+            # canonical Event stream rather than only in Run state (#462). A
+            # Container built without one still sweeps; the events are how the
+            # decision becomes inspectable, not how it is made.
+            reconciler = AttemptLifecycleReconciler(
+                self.run_store,
+                events=self.event_bus,
+                source="maistro.container.recover_abandoned_attempts",
+            )
+            for attempt in reclaimed:
+                try:
+                    await reconciler.reconcile(attempt)
+                except RunIntegrityError:
+                    # The Attempt is already settled; a NodeRun another path
+                    # terminalized concurrently is not this sweep's to rewrite.
+                    logger.warning(
+                        "reclaimed Attempt %s could not be reconciled",
+                        attempt.attempt_id,
+                        exc_info=True,
+                    )
+            recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
+
+        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
+        non_terminal_runs.set(open_runs)
+        moment = now if now is not None else datetime.now(UTC)
+        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
+        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
+
+    async def execute_admitted_runs(self, *, limit: int = 100) -> int:
+        """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
+
+        The third tick beside `process_durable_events` and
+        `recover_abandoned_attempts`, and deliberately the same shape: bounded,
+        idempotent, operator-scheduled, never self-starting (ADR-019). A
+        schedule Run's admission is its submission — no caller holds a receipt
+        that will drive it later — so without this tick `ScheduleRunAdmitter`
+        admitted canonical work nobody would ever execute.
+
+        Eligibility is `executable_by_consumer`: QUEUED, an allowlisted
+        admission source, one registered node. The claim is the QUEUED→RUNNING
+        lifecycle transition itself — the transition table is the mutex, so a
+        concurrent tick's loser skips instead of double-executing. A Run whose
+        node then fails is parked by the reconciler (the recovery
+        disposition's WAITING row), never silently retried by the next tick.
+        """
+        from maistro.runs.consumption import (
+            ScheduleAttemptExecutor,
+            consumer_owns,
+            executable_by_consumer,
+            unresolvable_reason,
+        )
+
+        queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+        executor = ScheduleAttemptExecutor(self.run_store)
+        executed = 0
+        for run in queued:
+            if not consumer_owns(run):
+                continue
+            # Owned and impossible: no later tick makes an unregistered kind
+            # appear, so this Run is disposed of rather than left QUEUED
+            # forever. A multi-node Run reaches neither branch — it is owed to
+            # the durable Graph traversal (#44/#34) and waits for it.
+            unresolvable = unresolvable_reason(run)
+            if unresolvable is not None:
+                await self._fail_unresolvable_run(run.run_id, unresolvable)
+                continue
+            if not executable_by_consumer(run):
+                continue
+            try:
+                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            except Exception:
+                # Another tick won the claim, or the Run moved on. Not ours.
+                continue
+            try:
+                await executor.execute(claimed)
+            except Exception:
+                logger.warning(
+                    "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                )
+                await self._settle_unstarted_consumption(run.run_id)
+            executed += 1
+        return executed
+
+    async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:
+        """Terminalize an owned Run this process can never execute (#251).
+
+        Through the claim, not around it: `QUEUED` has no edge to `FAILED`,
+        and the `QUEUED -> RUNNING` transition is also the mutex that stops
+        two consumers disposing of the same Run twice. A concurrent tick that
+        loses the claim finds the Run already terminal and does nothing.
+        """
+        try:
+            await self.run_store.transition_run(run_id, RunStatus.RUNNING)
+            await self.run_store.transition_run(run_id, RunStatus.FAILED, error=reason)
+        except Exception:
+            logger.warning("unresolvable Run %s could not be settled", run_id, exc_info=True)
+            return
+        logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
+
+    async def _settle_unstarted_consumption(self, run_id: str) -> None:
+        """Terminalize a claimed Run whose execution never left a record behind.
+
+        `ScheduleAttemptExecutor` handles the ordinary failure — the Attempt
+        records it and the reconciler parks. Reaching here means execution
+        failed *before* any NodeRun existed (an infrastructure error), and a
+        claimed RUNNING Run with no physical record would otherwise sit
+        indistinguishable from a process that died. With a NodeRun present the
+        parked/derived state is already the answer and this must not rewrite it.
+        """
+        try:
+            if await self.run_store.list_node_runs(run_id):
+                return
+            await self.run_store.transition_run(
+                run_id,
+                RunStatus.FAILED,
+                error="consumption_error",
+            )
+        except Exception:
+            logger.warning("claimed Run %s could not be settled", run_id, exc_info=True)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
         """List the durable trigger definitions backing the reactor loop."""
@@ -730,12 +952,28 @@ async def create_container(
         task_admitter,
         graph_template_store,
         schedule_store,
+        graph_continuations,
     ) = await wire_execution_spine(
         db_pool,
         workspace_id=config.workspace_id,
         intents=intent_registry,
         pg_pool=pg_pool,
+        # The same archive tier the Container holds, handed to the one
+        # subsystem that writes to it (#273). Until this line the field was
+        # built, stored, and read by nothing -- the defect
+        # `quality/wiring-reads-baseline.json` recorded as "Retirement or a
+        # reader is its own issue". This is the reader.
+        archive_store=archive_store,
     )
+    # The same `project_scope_store` object the spine just selected, not a
+    # second resolution of the same question: a Workspace whose Root Project is
+    # filed in another database is a Workspace whose Runs cannot be filed.
+    workspace_store = await wire_workspace_store(
+        db_pool,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
+    node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -931,15 +1169,17 @@ async def create_container(
         episodic_store=episodic_store,
         project_store=project_store,
         project_scope_store=project_scope_store,
+        workspace_store=workspace_store,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
+        node_template_store=node_template_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
-        archive_store=archive_store,
         db_pool=db_pool,
         pg_pool=pg_pool,
         resilience_policies=resilience_policies,
@@ -1120,6 +1360,10 @@ _REQUIRED_PG_TABLES: Final = (
     "security_strikes",
     "security_violations",
     "security_rate_limits",
+    # The canonical Workspace (#516). Same reasoning as the spine's tables: a
+    # `postgresql://` deployment that skipped `alembic upgrade head` should hear
+    # about it once, at startup, naming every table it lacks.
+    *WORKSPACE_PG_TABLES,
 )
 
 

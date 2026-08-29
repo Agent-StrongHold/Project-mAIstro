@@ -232,12 +232,22 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    `packages/maistro-core/tests/security/warden/test_detector.py`.
 7. **No content-safety / toxicity filtering.** Warden's scope is threat detection (injection,
    exfiltration, dangerous commands), not hate-speech or general content moderation.
-8. **Sandbox microVM backend is not yet the default everywhere.** ADR-093 mandates a microVM
+8. **No Tier-1 or Tier-2 sandbox backend is shipped yet.** ADR-093 mandates a microVM
    (Firecracker/Kata/Hyperlight) or, at minimum, gVisor for unattended execution, with a Tier-3
-   (hardened container) floor only for interactive/supervised sessions. CI today exercises the
-   sandbox selector and a fake backend (`tests/sandbox/backends/test_fake.py`); a real hardware-VM
-   backend passing the SPEC-190 conformance/escape suite was not found under `formal/` or
-   `packages/maistro-core/tests/` at the time of writing.
+   floor only for interactive/supervised sessions. A real **Tier-3** backend now ships
+   (`maistro.sandbox.backends.bubblewrap`), and CI exercises it against the kernel — real
+   execution, host-filesystem invisibility, timeout kill, empty network namespace — rather than
+   against a fake (#76). Tiers 1 and 2 are *probed* but have no backend, so a host that can only
+   reach Tier 3 **refuses** `UNTRUSTED_CODE` and `BENCHMARK_EVAL` rather than running them on the
+   weakest available rung; a host with nothing refuses everything. That refusal is the current
+   state of the guarantee: it is fail-closed, not satisfied. See
+   [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md). The
+   SPEC-190 conformance and escape suite now ships and runs in CI (#80):
+   `packages/maistro-core/tests/sandbox/test_escape_conformance.py` exercises the filesystem,
+   process, namespace, device, host-socket, credential and privilege surfaces against the real
+   kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
+   establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
+   against hostile code, which is what Tiers 1 and 2 are still for.
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced

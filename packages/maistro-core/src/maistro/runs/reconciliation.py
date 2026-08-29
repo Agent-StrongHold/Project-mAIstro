@@ -10,9 +10,10 @@ a projected result authoritative for the logical NodeRun.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
 from typing import Protocol, runtime_checkable
 
+from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
+from maistro.runs.lifecycle import InvalidLifecycleTransition, latest_node_runs
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -20,11 +21,13 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     NodeRun,
     Run,
     RunStatus,
     evidence_values_equal,
 )
+from maistro.runs.recovery_events import RecoveryEventSink, recovery_event
 from maistro.runs.store import RunIntegrityError
 
 
@@ -45,31 +48,6 @@ class SupersededAttempt(RunIntegrityError):
             f"Attempt {attempt_id!r} is superseded by {current_attempt_id!r}; "
             "a stale worker cannot commit into a newer Attempt"
         )
-
-
-class CancellationCause(Enum):
-    """Why an Attempt is cancelled — the one thing its status cannot say (#230).
-
-    `AttemptStatus.CANCELLED` carries two meanings that need opposite logical
-    projections, and no amount of reading the persisted Attempt tells them
-    apart:
-
-    ``REQUESTED``
-        Someone asked this work to stop. The retry decision has been made and
-        it was *don't*, so the NodeRun is terminal.
-
-    ``RECOVERED``
-        A process died mid-Attempt and the physical record is being closed out
-        so a *fresh* Attempt can run — `_reconcile_orphaned_attempts`'s case.
-        The node is still owed, so it parks exactly as a failure does.
-
-    Two members, deliberately not three: this says why a cancellation happened,
-    not what state anything is in, and it must not become a second lifecycle
-    (`scripts/check-execution-lifecycles.py`).
-    """
-
-    REQUESTED = "requested"
-    RECOVERED = "recovered"
 
 
 @runtime_checkable
@@ -122,11 +100,39 @@ def _same_accepted_projection(
     )
 
 
+def _graph_has_cycle(run: Run) -> bool:
+    """Whether generic reconciliation lacks enough frontier truth to settle this Graph."""
+    graph = run.graph.materialize()
+    indegree = {node.node_id: 0 for node in graph.nodes}
+    outgoing: dict[str, list[str]] = {node_id: [] for node_id in indegree}
+    for edge in graph.edges:
+        outgoing[edge.from_node].append(edge.to_node)
+        indegree[edge.to_node] += 1
+    ready = [node_id for node_id, degree in indegree.items() if degree == 0]
+    visited = 0
+    while ready:
+        node_id = ready.pop()
+        visited += 1
+        for successor in outgoing[node_id]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                ready.append(successor)
+    return visited != len(indegree)
+
+
 class AttemptLifecycleReconciler:
     """Keep Run/NodeRun activity consistent with canonical physical Attempts."""
 
-    def __init__(self, store: AttemptLifecycleStore) -> None:
+    def __init__(
+        self,
+        store: AttemptLifecycleStore,
+        *,
+        events: RecoveryEventSink | None = None,
+        source: str = "maistro.runs.reconciliation",
+    ) -> None:
         self._store = store
+        self._events = events
+        self._source = source
 
     async def prepare_execution(self, node_run_id: str) -> NodeRun:
         """Put the containing Run and NodeRun in ``running`` before a physical try."""
@@ -165,6 +171,10 @@ class AttemptLifecycleReconciler:
             accepted = node_run.accepted_outcome
             if accepted is not None:
                 if accepted.attempt_result == physical:
+                    # Acceptance and parent settlement are separate durable writes.
+                    # A crash between them must be repairable by replaying the
+                    # already-persisted Attempt rather than stranding the Run.
+                    await self._settle_run_if_fully_observed(node_run.run_id)
                     return node_run
                 raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
             outcome = AcceptedNodeOutcome(
@@ -173,17 +183,50 @@ class AttemptLifecycleReconciler:
                 logical_status=RunStatus.COMPLETED,
                 result=physical.result,
             )
-            return await self._accept_node_outcome(node_run, outcome)
+            settled = await self._accept_node_outcome(node_run, outcome)
+            await self._settle_run_if_fully_observed(settled.run_id)
+            await self._announce(persisted, settled, cancellation)
+            return settled
 
         if (
             attempt.status is AttemptStatus.CANCELLED
             and cancellation is CancellationCause.REQUESTED
         ):
-            return await self._cancel_node_run(node_run, attempt)
+            terminal = await self._cancel_node_run(node_run, attempt)
+            await self._announce(persisted, terminal, cancellation)
+            return terminal
 
         parked = await self._park_node_run(node_run, attempt)
         await self._park_run_if_inactive(parked.run_id)
+        await self._announce(persisted, parked, cancellation)
         return parked
+
+    async def _announce(
+        self,
+        attempt: Attempt,
+        node_run: NodeRun,
+        cancellation: CancellationCause,
+    ) -> None:
+        """Put the applied disposition on the canonical Event stream (#462).
+
+        After the write, not before: an event for a disposition that then
+        failed to persist would be worse than no event, because the one thing
+        a reader wants from it is that it describes what actually happened.
+
+        A caller with no sink reconciles exactly as it did. An unobservable
+        recovery is a real gap -- it is why this exists -- but a recovery that
+        refused to run because nothing was listening would be a worse one.
+        """
+        if self._events is None:
+            return
+        await self._events.emit(
+            recovery_event(
+                attempt=attempt,
+                node_run=node_run,
+                cancellation=cancellation,
+                source=self._source,
+            )
+        )
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
         """Persist an explicit domain interpretation of completed physical evidence.
@@ -203,7 +246,64 @@ class AttemptLifecycleReconciler:
         if physical != outcome.attempt_result:
             raise RunIntegrityError("accepted outcome differs from persisted Attempt evidence")
         await self._require_current_attempt(outcome.node_run_id, persisted.attempt_id)
-        return await self._accept_node_outcome(node_run, outcome)
+        settled = await self._accept_node_outcome(node_run, outcome)
+        await self._settle_run_if_fully_observed(settled.run_id)
+        return settled
+
+    async def _settle_run_if_fully_observed(self, run_id: str) -> Run:
+        """Conservative automatic derivation for direct/fully-materialized work.
+
+        Without graph traversal state, an absent NodeRun may mean an unselected branch
+        or work not created yet. Automatic settlement therefore requires every Graph
+        node to have been observed and the topology to be acyclic. A cycle can revisit
+        an already-observed node, so only a traversal substrate with persisted frontier
+        truth may settle it. Such substrates consume the shared aggregation fold once
+        their frontier is actually empty.
+        """
+        run = await self._require_run(run_id)
+        if _graph_has_cycle(run):
+            return run
+        return await self._settle_run_from_node_runs(
+            run_id,
+            work_owed=False,
+            require_all_graph_nodes=True,
+        )
+
+    async def _settle_run_from_node_runs(
+        self,
+        run_id: str,
+        *,
+        work_owed: bool,
+        require_all_graph_nodes: bool,
+    ) -> Run:
+        run = await self._require_run(run_id)
+        if run.status in TERMINAL_RUN_STATUSES or run.status is not RunStatus.RUNNING:
+            return run
+        node_runs = await self._store.list_node_runs(run_id)
+        if require_all_graph_nodes:
+            required = {node.node_id for node in run.graph.materialize().nodes}
+            observed = set(latest_node_runs(node_runs))
+            if not required.issubset(observed):
+                return run
+        target = derive_run_terminal_status(node_runs, work_owed=work_owed)
+        if target is None:
+            return run
+        result, error = terminal_run_payload(node_runs, target)
+        try:
+            return await self._store.transition_run(
+                run_id,
+                target,
+                result=result,
+                error=error,
+            )
+        except InvalidLifecycleTransition:
+            # Two final NodeRuns can reconcile together. Both may derive the same
+            # answer from a complete frontier; the loser observes the winner rather
+            # than turning a deterministic race into a failure.
+            current = await self._require_run(run_id)
+            if current.status in TERMINAL_RUN_STATUSES:
+                return current
+            raise
 
     async def _require_current_attempt(self, node_run_id: str, attempt_id: str) -> None:
         """Refuse a commit from any Attempt but the newest under this NodeRun.

@@ -9,6 +9,9 @@ set -euo pipefail
 #   - it binds services to localhost by default;
 #   - it starts the checked-out source tree with docker/podman compose.
 
+# Where this script lives, so its helpers resolve whatever the caller's cwd is.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 COMPOSE_FILE="${MAISTRO_COMPOSE_FILE:-docker-compose.yml}"
 ENV_FILE="${MAISTRO_ENV_FILE:-.env}"
 BIND_HOST="${MAISTRO_BIND_HOST:-127.0.0.1}"
@@ -248,11 +251,31 @@ env_get() {
     fi
 }
 
+# Every write to $ENV_FILE goes through scripts/secret_env.py (#357).
+#
+# `printf >>` and `cat >` create the file under the caller's umask -- 0644 on a
+# typical system -- and the old code narrowed it with `chmod 600` only after
+# every secret had already been written. Any process that could read the
+# directory could read the credentials in that window, and a crash inside it
+# left them world-readable for good.
+#
+# The helper creates a new file with O_CREAT|O_EXCL at 0600 and replaces an
+# existing one through a same-directory temp file, so the mode is never wider
+# than 0600 and an interrupted run leaves the previous file intact.
+# Usage: secret_env_run <command> [args...]   -- $ENV_FILE is inserted as the
+# path argument the CLI expects immediately after the command.
+secret_env_run() {
+    local command="$1"
+    shift
+    ensure_python
+    "${PYTHON_CMD[@]}" "$SCRIPT_DIR/scripts/secret_env.py" "$command" "$ENV_FILE" "$@"
+}
+
 append_env_once() {
     local key="$1"
     local value="$2"
     if ! env_has "$key"; then
-        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+        secret_env_run append-once "$key" "$value"
     fi
 }
 
@@ -260,95 +283,18 @@ append_env_once() {
 # Use for secrets that compose requires non-empty; a prior install may have
 # written the key with an empty value as a placeholder.
 fill_env_value() {
-    local key="$1"
-    local value="$2"
-    ensure_python
-    "${PYTHON_CMD[@]}" - "$ENV_FILE" "$key" "$value" <<'PY'
-import sys
-from pathlib import Path
-
-path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
-p = Path(path)
-lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
-prefix = key + "="
-found = False
-for i, line in enumerate(lines):
-    if line.startswith(prefix):
-        found = True
-        if line[len(prefix):].strip() == "":
-            lines[i] = prefix + value
-        break
-if not found:
-    lines.append(prefix + value)
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
+    secret_env_run set-key "$1" "$2" --only-if-blank
 }
 
-# Ensure API_KEYS (a JSON array) contains token. Preserves other existing
-# keys. Uses append_env_once semantics only as a final fallback.
+# Ensure API_KEYS (a JSON array) contains token. Preserves other existing keys.
 ensure_api_keys_contains() {
-    local token="$1"
-    ensure_python
-    "${PYTHON_CMD[@]}" - "$ENV_FILE" "$token" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path, token = sys.argv[1], sys.argv[2]
-p = Path(path)
-lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
-prefix = "API_KEYS="
-found_idx = None
-keys: list[str] = []
-for i, line in enumerate(lines):
-    if line.startswith(prefix):
-        found_idx = i
-        raw = line[len(prefix):].strip()
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    keys = [str(x) for x in parsed]
-            except json.JSONDecodeError:
-                keys = []
-        break
-if token not in keys:
-    keys.append(token)
-new_line = prefix + json.dumps(keys)
-if found_idx is not None:
-    lines[found_idx] = new_line
-else:
-    lines.append(new_line)
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
+    secret_env_run ensure-api-keys "$1"
 }
 
 # Insert or replace a key in $ENV_FILE. Unlike append_env_once this keeps the
-# value current across runs (e.g. the docker socket path can change when the
-# user switches between Colima and Docker Desktop).
-upsert_env() {
-    local key="$1"
-    local value="$2"
-    ensure_python
-    "${PYTHON_CMD[@]}" - "$ENV_FILE" "$key" "$value" <<'PY'
-import pathlib
-import sys
-
-path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
-p = pathlib.Path(path)
-lines = p.read_text().splitlines() if p.exists() else []
-prefix = key + "="
-out, replaced = [], False
-for line in lines:
-    if line.startswith(prefix):
-        out.append(prefix + value)
-        replaced = True
-    else:
-        out.append(line)
-if not replaced:
-    out.append(prefix + value)
-p.write_text("\n".join(out) + "\n")
-PY
+# key's position and overwrites whatever value is there.
+set_env_value() {
+    secret_env_run set-key "$1" "$2"
 }
 
 append_provider_placeholders() {
@@ -374,25 +320,36 @@ append_provider_placeholders() {
     done
 }
 
-chmod_env_file() {
-    chmod 600 "$ENV_FILE" 2>/dev/null || warn "Could not chmod 600 $ENV_FILE on this filesystem."
+# The mode is established at creation now, not here (#357). This remains as a
+# check: if the file somehow is not 0600 and owned by this user, say so loudly
+# rather than assume. `check` never rewrites the file, so a refusal here is
+# information, not a repair that might mask the cause.
+verify_env_file() {
+    secret_env_run check \
+        || warn "$ENV_FILE did not pass the credential-file safety check above."
 }
 
 write_new_env() {
-    local token db_pass litellm_key langfuse_secret langfuse_salt
+    local token router_key db_pass litellm_key langfuse_secret langfuse_salt
     token="$(random_secret "" 32)"
+    router_key="$(random_secret "" 32)"
     db_pass="$(random_secret "" 24)"
     litellm_key="$(random_secret "sk-" 32)"
     langfuse_secret="$(random_secret "" 32)"
     langfuse_salt="$(random_secret "" 24)"
 
-    cat > "$ENV_FILE" <<EOF
+    # Piped into `create`, which makes the file with O_CREAT|O_EXCL at 0600.
+    # Exclusive on purpose: sync_env_file only calls this when the file is
+    # absent, so a file appearing in between is something else writing to
+    # the same path and must not be clobbered with credentials.
+    secret_env_run create <<EOF
 # Generated by install.sh. Do not commit this file.
 # Regenerate with: rm .env && ./install.sh
 
 # API access
 MAISTRO_ACCESS_TOKEN=${token}
 API_KEYS=["${token}"]
+ROUTER_API_KEY=${router_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
 MAISTRO_PORT=${PORT}
@@ -443,12 +400,12 @@ DEEPINFRA_API_KEY=
 BENCHMARK_FIDELITY=proxy
 EOF
 
-    chmod_env_file
+    verify_env_file
     ok "Generated $ENV_FILE with local credentials."
 }
 
 repair_existing_env() {
-    local token db_pass litellm_key
+    local token router_key db_pass litellm_key
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
@@ -456,6 +413,12 @@ repair_existing_env() {
     if [[ -z "$token" ]]; then
         token="$(random_secret "" 32)"
         fill_env_value MAISTRO_ACCESS_TOKEN "$token"
+    fi
+
+    router_key="$(env_get ROUTER_API_KEY)"
+    if [[ -z "$router_key" ]]; then
+        router_key="$(random_secret "" 32)"
+        fill_env_value ROUTER_API_KEY "$router_key"
     fi
 
     db_pass="$(env_get DB_PASSWORD)"
@@ -496,8 +459,42 @@ repair_existing_env() {
     append_env_once LANGFUSE_SECRET_KEY ""
     append_env_once BENCHMARK_FIDELITY "proxy"
     append_provider_placeholders
-    chmod_env_file
+    verify_env_file
     ok "Repaired missing/blank installer keys in $ENV_FILE."
+}
+
+validate_env_contract() {
+    ensure_python
+    "${PYTHON_CMD[@]}" - "$ENV_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values: dict[str, str] = {}
+for line in path.read_text(encoding="utf-8").splitlines():
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    values[key] = value
+
+try:
+    api_keys = json.loads(values.get("API_KEYS", ""))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid API_KEYS: expected a JSON array ({exc.msg}).") from exc
+if not isinstance(api_keys, list) or not api_keys or not all(
+    isinstance(item, str) and item for item in api_keys
+):
+    raise SystemExit("Invalid API_KEYS: expected a non-empty JSON array of strings.")
+
+access_token = values.get("MAISTRO_ACCESS_TOKEN", "")
+if not access_token or access_token not in api_keys:
+    raise SystemExit("MAISTRO_ACCESS_TOKEN must be present in API_KEYS.")
+router_key = values.get("ROUTER_API_KEY", "")
+if len(router_key) < 32:
+    raise SystemExit("ROUTER_API_KEY must contain at least 32 characters.")
+PY
+    ok "Validated the generated authentication configuration."
 }
 
 sync_env_file() {
@@ -927,15 +924,43 @@ start_engine() {
     ok "Conductor healthy."
 }
 
-# Best-effort secure delete for the staged credentials file: overwrite with
-# zeros, then unlink. Not a guarantee on journaling/COW filesystems, but it
-# beats leaving plaintext passwords recoverable after a plain rm.
-shred_file() {
-    local f="$1" size
-    [[ -f "$f" ]] || return 0
-    size="$(wc -c < "$f" | tr -d ' ')"
-    head -c "$size" /dev/zero > "$f" 2>/dev/null || true
-    rm -f "$f"
+# Overwrite a secret-bearing file in place, then unlink it.
+#
+# NOT secure erasure, and nothing here says it is (#360). On a journaling,
+# copy-on-write or compressing filesystem, and on any SSD with wear levelling,
+# the original blocks can survive untouched however many zeros are written over
+# the logical file. It is worth doing anyway on the plain-file case; it is not
+# worth claiming.
+#
+# It replaces a shell version that was strictly worse than `rm`:
+#
+#     size="$(wc -c < "$f")"; head -c "$size" /dev/zero > "$f"
+#
+# The `>` truncates to zero *before* `head` writes anything, so the original
+# blocks go back to the allocator first and the zeros land wherever the
+# filesystem picks. If that write then failed, the file was left truncated and
+# never overwritten — while still printing "shredded". scripts/secret_env.py
+# opens the descriptor without O_TRUNC so the zeros reach the blocks the secret
+# is actually in, and refuses a symlink or a file it does not own rather than
+# zeroing whatever is on the other end.
+purge_file() {
+    local f="$1"
+    [[ -e "$f" ]] || return 0
+    if ! secret_file_run purge "$f"; then
+        # Python unavailable or the helper refused. Removing the name is the
+        # part that always works, and leaving the file would be worse.
+        rm -f "$f"
+    fi
+}
+
+# scripts/secret_env.py against a path that is not $ENV_FILE. secret_env_run
+# hardcodes $ENV_FILE, which is right for every caller it has and wrong for the
+# two secret-bearing files this section handles.
+secret_file_run() {
+    local command="$1" path="$2"
+    shift 2
+    ensure_python
+    "${PYTHON_CMD[@]}" "$SCRIPT_DIR/scripts/secret_env.py" "$command" "$path" "$@"
 }
 
 # First-run provisioning from the terminal (SPEC-072726-3439 Phase 3): POST
@@ -959,13 +984,37 @@ bootstrap_first_run() {
     ensure_python
 
     if curl -sf "$base/v1/setup/status" 2>/dev/null | grep -q '"setup_complete"[[:space:]]*:[[:space:]]*true'; then
-        info "Setup already complete — shredding staged credentials (consumed)."
-        shred_file "$creds"
+        info "Setup already complete — removing staged credentials (consumed)."
+        purge_file "$creds"
         return
     fi
 
     info "Creating first-run accounts from staged credentials..."
     local resp_file="$PLAN_DIR/.setup-response.json" http_code
+
+    # The response carries the 24-word recovery phrase. `curl -o` supplies a
+    # mode only when it *creates* the file, and then under the caller's umask
+    # — 0644 on a typical system — so the phrase was landing world-readable and
+    # stayed that way until the purge (#360). Reserving the path at 0600 first
+    # means curl opens an existing file and reuses its mode: there is no
+    # instant at which the phrase exists at a wider one.
+    #
+    # `reserve` purges anything already at the path rather than failing on it.
+    # A leftover from an interrupted run is itself secret-bearing, so refusing
+    # to proceed would preserve exactly the file we want gone.
+    secret_file_run reserve "$resp_file"
+
+    # Until this function returns, an interrupt must not leave the phrase on
+    # disk. There was no trap at all before, and the most likely interruption
+    # point is the "type yes" prompt below — which blocks indefinitely, by
+    # design, with the file at its most interesting.
+    #
+    # $creds is deliberately NOT purged here: on a pre-commit failure it is
+    # kept for retry, which is the existing contract and is stated to the
+    # operator on that path.
+    trap 'purge_file "$resp_file"; trap - INT TERM EXIT; exit 130' INT TERM
+    trap 'purge_file "$resp_file"' EXIT
+
     http_code="$(curl -sS -o "$resp_file" -w '%{http_code}' \
         -H 'Content-Type: application/json' \
         --data-binary "@$creds" \
@@ -1008,14 +1057,15 @@ PY
                     fi
                 done
             fi
-            shred_file "$resp_file"
-            shred_file "$creds"
-            ok "Staged credentials shredded. Log in to the UI with your admin or daily-driver account."
+            purge_file "$resp_file"
+            purge_file "$creds"
+            ok "Staged credentials removed. Log in to the UI with your admin or daily-driver account."
+            note_residual_risk
             ;;
         409)
-            info "Setup already complete (409) — shredding staged credentials (consumed)."
-            shred_file "$resp_file"
-            shred_file "$creds"
+            info "Setup already complete (409) — removing staged credentials (consumed)."
+            purge_file "$resp_file"
+            purge_file "$creds"
             ;;
         *)
             warn "Bootstrap failed (HTTP $http_code). Credentials kept at $creds for retry."
@@ -1025,6 +1075,26 @@ PY
             warn "Retry with: curl -sS -H 'Content-Type: application/json' --data-binary @$creds $base/v1/setup/complete"
             ;;
     esac
+
+    # Every branch above falls through to here, so one reset covers all three.
+    # Leaving the INT trap installed would hijack Ctrl-C for the rest of the
+    # install, and leaving the EXIT trap would run a purge of a path this
+    # function no longer owns.
+    purge_file "$resp_file"
+    trap - INT TERM EXIT
+}
+
+# Say what the removal above does and does not promise (#360). The installer
+# used to print "shredded", which reads as "the bytes are gone"; on a
+# journaling or copy-on-write filesystem, or any SSD with wear levelling, they
+# may not be. An operator who needs that guarantee has to know to act, and the
+# only place they will read this is here.
+note_residual_risk() {
+    info "The file was overwritten in place before being unlinked. That is not"
+    info "secure erasure: on journaling/copy-on-write filesystems and on SSDs,"
+    info "the original blocks may persist. If your threat model includes"
+    info "recovery from this disk, rely on full-disk encryption and key"
+    info "destruction rather than on this step."
 }
 
 # Write operator recovery commands next to the plan artifacts and echo the
@@ -1140,14 +1210,11 @@ persist_repo_root() {
 }
 
 print_success() {
-    local token
-    token="$(env_get MAISTRO_ACCESS_TOKEN)"
-
     echo ""
     echo "maistro-engine is ready"
     echo "  Engine API:  http://${BIND_HOST}:${PORT}"
     echo "  Conductor:   http://${BIND_HOST}:${HIVE_PORT:-8101}  (chat, DAGs, deck builder)"
-    echo "  Token:       ${token}"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""
@@ -1201,6 +1268,7 @@ main() {
     [[ -f "$COMPOSE_FILE" ]] || fail "Missing $COMPOSE_FILE. Run this from the maistro-engine repo root."
     run_feature_wizard
     sync_env_file
+    validate_env_contract
     start_engine
     bootstrap_first_run
     write_recovery_md

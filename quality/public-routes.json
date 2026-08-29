@@ -1,0 +1,105 @@
+{
+  "$comment": [
+    "Every path AuthMiddleware answers without a principal, and why (#316).",
+    "scripts/check-public-routes.py holds this and middleware/auth.py to each",
+    "other: a path added to one and not the other fails CI. The point is that",
+    "making a route public becomes a reviewed decision with a name on it,",
+    "rather than a string appended to a tuple.",
+    "",
+    "disposition 'permanent' is for a route that cannot be authenticated by",
+    "construction -- you cannot require a session to reach the login form.",
+    "disposition 'temporary' is an exemption someone intends to remove, and",
+    "must name the issue that removes it and the date by which the exemption",
+    "has to be re-justified; the gate fails once that date passes."
+  ],
+  "routes": {
+    "/": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "The SPA's index document. A browser has to load the app before it can log in to it."
+    },
+    "/favicon.ico": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "A static icon requested by the browser chrome, outside any document's credentialed context."
+    },
+    "/health": {
+      "kind": "prefix",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "Container and load-balancer liveness probes hold no credential and must not be given one. Returns liveness only, no deployment detail."
+    },
+    "/docs": {
+      "kind": "loose-prefix",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "medium",
+      "disposition": "permanent",
+      "reason": "FastAPI's generated API documentation. Discloses the route surface and schemas, not data; it is the same information an authenticated caller reads from /openapi.json."
+    },
+    "/openapi": {
+      "kind": "loose-prefix",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "medium",
+      "disposition": "permanent",
+      "reason": "The schema /docs renders. Public for the same reason and with the same exposure."
+    },
+    "/redoc": {
+      "kind": "loose-prefix",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "medium",
+      "disposition": "permanent",
+      "reason": "The second renderer of the same schema."
+    },
+    "/v1/auth/login": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "Authentication cannot require authentication. Bounded and equal-cost since #366, so it is neither a memory-DoS primitive nor an account oracle."
+    },
+    "/v1/auth/whoami": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "The SPA asks this on load to decide whether to show the login form. It reports the caller's own session or nothing, so it discloses only what the caller already holds."
+    },
+    "/v1/auth/register": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "high",
+      "disposition": "temporary",
+      "issue": 313,
+      "expires": "2026-11-24",
+      "reason": "First-run account creation, still reachable after setup completes. #313 closes it to invited or admin-created accounts; until then this is an unauthenticated write path, throttled since #366 but not shut."
+    },
+    "/v1/setup/": {
+      "kind": "prefix",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "high",
+      "disposition": "temporary",
+      "issue": 313,
+      "expires": "2026-11-24",
+      "reason": "First-run provisioning, before any account exists to authenticate with. The whole prefix stays public after setup completes; the individual routes guard themselves with one-shot 409s, which is a check inside each handler rather than a boundary. Narrowing it to the pre-setup window is part of #313."
+    },
+    "/v1/setup/status": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "Whether first-run setup has completed. The SPA needs it before it can decide between the wizard and the login form. Redundant with the prefix above and listed separately so it survives that prefix being narrowed."
+    },
+    "/v1/setup/presets": {
+      "kind": "exact",
+      "owner": "@BlakeMatthews-dev",
+      "risk": "low",
+      "disposition": "permanent",
+      "reason": "The static hardware presets the wizard offers. Same pre-account window, same reason to survive the prefix narrowing."
+    }
+  }
+}

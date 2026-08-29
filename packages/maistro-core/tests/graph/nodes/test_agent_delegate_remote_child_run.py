@@ -22,8 +22,10 @@ foreign one is refused rather than filed.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 from maistro.a2a.delegate import A2ADelegator
+from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
 from maistro.graph import Graph, Node
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
@@ -271,3 +273,99 @@ class TestTheResolverWiresTheNode:
         assert isinstance(node, AgentDelegateRemoteNode)
         assert node._a2a_delegator is None
         assert node._run_store is None
+
+
+class TestCrossInstanceDelegationFilesAChildRun:
+    """#47's fifth criterion asks for **one local and one remote** delegation
+    path covered end to end. The in-process path above had it; the
+    cross-instance path filed a child Run in `_dispatch_cross_instance` that no
+    test read back, so "delegation creates a child Run" was proven for one of
+    the two ways delegation happens.
+    """
+
+    @staticmethod
+    def _peers(status: str = "submitted", error: str | None = None) -> GuestPeerManager:
+        guest_peers = GuestPeerManager()
+        guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
+            return_value=DelegationResult(
+                task_id="remote-1", peer_name="hub", status=status, error=error
+            )
+        )
+        return guest_peers
+
+    async def test_a_cross_instance_delegation_creates_a_child_of_the_delegating_node_run(
+        self,
+    ) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused"
+        child_run_id = result.metadata["run_id"]
+        assert child_run_id
+
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+        assert child.parent_node_run_id == parent_node_run.node_run_id
+        assert child.workspace_id == parent.workspace_id
+        assert child.project_id == parent.project_id
+
+    async def test_the_cross_instance_child_names_the_peer_the_task_and_the_mode(self) -> None:
+        """The receipt stays a receipt: the A2A task_id is provenance on the
+        Run rather than the only record of the delegation."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        provenance = child.provenance
+        assert provenance["admission_source"] == "a2a_delegation"
+        assert provenance["a2a_task_id"] == "remote-1"
+        assert provenance["delegation_mode"] == "guest_peer"
+        assert provenance["delegating_agent"] == "planner"
+        assert provenance["target_agent"] == "hub"
+        assert provenance["peer_name"] == "hub"
+
+    async def test_a_peer_that_declines_files_no_child_run(self) -> None:
+        """Nothing was admitted, so there is no execution to give an identity
+        to — the same rule the in-process rejection follows."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(
+            guest_peers=self._peers(status="rejected", error="peer not found"), run_store=store
+        )
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "completed"
+        assert result.output.status == "rejected"
+        children = [
+            run
+            for run in store._runs.values()  # type: ignore[attr-defined]
+            if run.parent_run_id == parent.run_id
+        ]
+        assert children == []

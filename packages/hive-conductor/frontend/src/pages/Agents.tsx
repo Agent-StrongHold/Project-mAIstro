@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import {
@@ -159,11 +159,19 @@ export default function Agents() {
   const [bModel, setBModel] = useState("gpt-4o");
   const [bConfig, setBConfig] = useState("");
   const [bBusy, setBBusy] = useState(false);
-  const [bScan, setBScan] = useState<string[] | null>(null);
+  // Three states, not two. `null` is "not run yet"; the discriminated union
+  // separates "ran, here is what it found" from "did not run". Holding this
+  // as `string[] | null` meant a failed scan left the previous run's result
+  // on screen -- so a clean scan followed by a failed one rendered green
+  // while the toast said "Scan failed" (#418).
+  const [bScan, setBScan] = useState<
+    { ok: true; findings: string[] } | { ok: false; error: string } | null
+  >(null);
 
   const [intents, setIntents] = useState<IntentRow[]>(DEFAULT_INTENTS);
   const [editIntent, setEditIntent] = useState<string | null>(null);
 
+  const formId = useId();
   const [cName, setCName] = useState("");
   const [cDesc, setCDesc] = useState("");
   const [cModel, setCModel] = useState("gpt-4o");
@@ -295,11 +303,20 @@ export default function Agents() {
 
   const handleBuilderScan = useCallback(async () => {
     setBBusy(true);
+    // Clear first: whatever the previous run said is no longer true of this
+    // one, and leaving it up through the request is the same stale-green.
+    setBScan(null);
     try {
       const config = JSON.parse(bConfig);
-      const res = await apiPost<{ findings: string[] }>("/v1/agents/scan", config);
-      setBScan(res.findings);
-    } catch {
+      const res = await apiPost<{ findings?: string[] }>("/v1/agents/scan", config);
+      if (!Array.isArray(res.findings)) {
+        // A 200 whose body is not a findings list is a scan that did not
+        // report, not a scan that found nothing.
+        throw new Error("scanner returned no findings list");
+      }
+      setBScan({ ok: true, findings: res.findings });
+    } catch (e) {
+      setBScan({ ok: false, error: e instanceof Error ? e.message : "scan did not run" });
       toast("Scan failed", "error");
     } finally {
       setBBusy(false);
@@ -480,12 +497,16 @@ export default function Agents() {
               {bScan !== null && (
                 <div style={{
                   marginTop: 12, borderRadius: 4, padding: 10,
-                  background: bScan.length > 0 ? "rgba(196,69,42,0.08)" : "rgba(90,154,74,0.08)",
-                  border: `1px solid ${bScan.length > 0 ? "rgba(196,69,42,0.3)" : "rgba(90,154,74,0.3)"}`,
+                  background: !bScan.ok ? "rgba(140,140,140,0.10)" : bScan.findings.length > 0 ? "rgba(196,69,42,0.08)" : "rgba(90,154,74,0.08)",
+                  border: `1px solid ${!bScan.ok ? "rgba(140,140,140,0.35)" : bScan.findings.length > 0 ? "rgba(196,69,42,0.3)" : "rgba(90,154,74,0.3)"}`,
                 }}>
-                  {bScan.length === 0
-                    ? <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#5a9a4a" }}>\u2713 No issues found</div>
-                    : bScan.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)
+                  {/* Never green on failure: a scan that did not run is its own
+                      state, and it reads as neither clean nor flagged. */}
+                  {!bScan.ok
+                    ? <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)" }}>\u2014 Scan did not run: {bScan.error}</div>
+                    : bScan.findings.length === 0
+                      ? <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#5a9a4a" }}>\u2713 No issues found</div>
+                      : bScan.findings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)
                   }
                 </div>
               )}
@@ -499,9 +520,14 @@ export default function Agents() {
           {bStep === 6 && (
             <div style={{ maxWidth: 500, margin: "0 auto", textAlign: "center" }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, marginBottom: 16 }}>Save forged agent</div>
-              {bScan && bScan.length > 0 && (
+              {bScan?.ok === false && (
+                <div style={{ background: "rgba(140,140,140,0.10)", border: "1px solid rgba(140,140,140,0.35)", borderRadius: 4, padding: 10, marginBottom: 12, textAlign: "left" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink)" }}>\u2014 Saving without a completed scan: {bScan.error}</div>
+                </div>
+              )}
+              {bScan?.ok && bScan.findings.length > 0 && (
                 <div style={{ background: "rgba(196,69,42,0.08)", border: "1px solid rgba(196,69,42,0.3)", borderRadius: 4, padding: 10, marginBottom: 12, textAlign: "left" }}>
-                  {bScan.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)}
+                  {bScan.findings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)}
                 </div>
               )}
               <button disabled={bBusy} onClick={handleBuilderSave} style={{ ...btn, background: "#5a9a4a", color: "var(--paper)", borderColor: "#5a9a4a", padding: "8px 24px", fontSize: 11 }}>
@@ -614,17 +640,22 @@ export default function Agents() {
 
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create Agent" wide>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* `htmlFor`/`id`, not a bare <label> beside the control: an
+              unassociated label gives the field no accessible name, and a
+              placeholder is not one — it disappears the moment there is a
+              value. axe reported the <select> as nameless outright (#371's
+              scan of this dialog). */}
           <div>
-            <label style={lbl}>Name</label>
-            <input value={cName} onChange={(e) => setCName(e.target.value)} style={inp} placeholder="Agent name" />
+            <label style={lbl} htmlFor={`${formId}-name`}>Name</label>
+            <input id={`${formId}-name`} value={cName} onChange={(e) => setCName(e.target.value)} style={inp} placeholder="Agent name" />
           </div>
           <div>
-            <label style={lbl}>Description</label>
-            <textarea value={cDesc} onChange={(e) => setCDesc(e.target.value)} rows={3} style={{ ...inp, resize: "vertical" as const }} placeholder="What does this agent do?" />
+            <label style={lbl} htmlFor={`${formId}-description`}>Description</label>
+            <textarea id={`${formId}-description`} value={cDesc} onChange={(e) => setCDesc(e.target.value)} rows={3} style={{ ...inp, resize: "vertical" as const }} placeholder="What does this agent do?" />
           </div>
           <div>
-            <label style={lbl}>Model</label>
-            <select value={cModel} onChange={(e) => setCModel(e.target.value)} style={{ ...inp, height: 32 }}>
+            <label style={lbl} htmlFor={`${formId}-model`}>Model</label>
+            <select id={`${formId}-model`} value={cModel} onChange={(e) => setCModel(e.target.value)} style={{ ...inp, height: 32 }}>
               {MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>

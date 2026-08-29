@@ -134,6 +134,16 @@ class Package:
     widest_extra: str | None = None
     """Extra installed in `all` mode, e.g. "all". None means install plain."""
 
+    data_files: list[str] = field(default_factory=list)
+    """Non-Python files that must ship inside the wheel, relative to `root`.
+
+    Every check above this one is about code, and a packaging change that drops
+    the data leaves the code importing perfectly. maistro-design's bundled
+    design systems are six directories of JSON, CSS and Markdown; without them
+    `load_bundled` raises FileNotFoundError at container startup and nothing in
+    CI has an opinion (#293).
+    """
+
     def bare_surface(self) -> list[str]:
         return self.surface or [self.root]
 
@@ -144,12 +154,44 @@ class Package:
 #   maistro.cli       typer/rich  -> `tui` extra
 #   maistro.identity  bip-utils   -> `identity` extra (coincurve has no wheel for
 #                                    the Python the API image ships)
+#: The four files `maistro_design.systems.importer` reads for one system.
+#: Mirrors `importer.ESSENTIAL_FILES`; kept here rather than imported because
+#: this script must run before anything is installed.
+ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
+
 PACKAGES = [
     Package("maistro-core", "maistro", CORE_PUBLIC_SURFACE, widest_extra="all"),
     Package("maistro-canvas", "maistro_canvas", widest_extra="export"),
     Package("maistro-server", "maistro_server"),
     Package("maistro-turing", "maistro_turing"),
-    Package("maistro-design", "maistro_design"),
+    Package(
+        "maistro-design",
+        "maistro_design",
+        # One file per bundled system rather than the directory, because a
+        # partial copy is the failure a directory check would pass. `default`
+        # is the slug `DiscoveryResult` falls back to, so its absence is the
+        # one that reaches every caller.
+        #
+        # `design-tokens.json` is in this list precisely because
+        # `_read_system_files()` treats it as OPTIONAL (#413). Drop it in
+        # packaging and nothing complains: the wheel imports, `load_bundled`
+        # succeeds, startup reports ready -- and every system loads with zero
+        # colour and spacing tokens, which is the empty shell #293 removed,
+        # reached from the other direction. The one file whose absence is
+        # silent is the one that most needs declaring.
+        data_files=[
+            f"systems/bundled/{slug}/{name}"
+            for slug in ("default", "shadcn", "apple", "material", "editorial", "enterprise")
+            for name in ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
+        ]
+        # The catalogue index AND a payload from it. The index alone would let
+        # a wheel advertise 144 importable systems whose files are absent --
+        # `import_from_catalog` reads `systems/catalog/<slug>/`, not the index.
+        + [
+            "systems/catalog/catalog.json",
+            *(f"systems/catalog/airbnb/{name}" for name in ESSENTIAL_FILES),
+        ],
+    ),
     # [ifeval] carries the vendored Google IFEval verifier's own runtime deps
     # (nltk, langdetect, absl-py, immutabledict). That vendored tree imports
     # them at module scope, and this check walks *every* module, so the bare
@@ -189,9 +231,10 @@ SKIPPED_DISTS = {
 # Probe executed inside the clean venv. Prints one JSON object so the parent can
 # report every failure at once instead of stopping at the first.
 PROBE = r"""
-import importlib, json, pkgutil, sys, traceback
+import importlib, json, pathlib, pkgutil, sys, traceback
 
 mode, root, surface = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+data_files = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
 failures, checked = [], []
 
 
@@ -217,6 +260,20 @@ else:
         names = sorted(i.name for i in pkgutil.walk_packages(pkg.__path__, prefix=root + "."))
         for name in names:
             attempt(name)
+
+# Data files, resolved against the INSTALLED package rather than the source
+# tree -- the whole point is that the wheel carries them.
+if data_files:
+    installed = sys.modules.get(root) or attempt(root)
+    base = pathlib.Path(installed.__file__).parent if installed is not None else None
+    for rel in data_files:
+        checked.append(rel)
+        if base is None or not (base / rel).is_file():
+            failures.append({
+                "module": f"{root}/{rel}",
+                "error": "packaged data file missing from the wheel",
+                "traceback": "",
+            })
 
 print(json.dumps({"checked": len(checked), "failures": failures}))
 """
@@ -312,22 +369,43 @@ def check(pkg: Package, mode: str, dist_dir: Path, uv: str, py: str) -> tuple[bo
         probe_cwd = tmpdir / "probe-cwd"
         probe_cwd.mkdir(exist_ok=True)
         probe = _run(
-            [str(python), "-c", PROBE, mode, pkg.root, json.dumps(pkg.bare_surface())],
+            [
+                str(python),
+                "-c",
+                PROBE,
+                mode,
+                pkg.root,
+                json.dumps(pkg.bare_surface()),
+                json.dumps(pkg.data_files),
+            ],
             cwd=probe_cwd,
             env=env,
         )
         if probe.returncode != 0 or not probe.stdout.strip():
             return False, f"probe crashed:\n{probe.stdout.strip()}\n{probe.stderr.strip()[-2000:]}"
 
-        result = json.loads(probe.stdout.strip().splitlines()[-1])
-        failures = result["failures"]
-        if failures:
-            lines = [f"{len(failures)} of {result['checked']} module(s) failed to import:"]
-            for f in failures:
-                lines.append(f"  {f['module']}: {f['error']}")
-                lines.append("    " + f["traceback"].strip().replace("\n", "\n    "))
-            return False, "\n".join(lines)
-        return True, f"{result['checked']} module(s) imported"
+        return render(json.loads(probe.stdout.strip().splitlines()[-1]))
+
+
+def render(result: dict) -> tuple[bool, str]:
+    """Turn one probe payload into the (ok, detail) pair `check()` returns.
+
+    Split out from `check()` because everything above it needs a built wheel and
+    a clean venv, and this does not -- so the wording a reader acts on is
+    testable without a five-minute build.
+
+    "check(s)", not "module(s) failed to import": the list now also carries
+    packaged data files, which do not import (#293).
+    """
+    failures = result["failures"]
+    if not failures:
+        return True, f"{result['checked']} check(s) passed"
+    lines = [f"{len(failures)} of {result['checked']} check(s) failed:"]
+    for f in failures:
+        lines.append(f"  {f['module']}: {f['error']}")
+        if f.get("traceback", "").strip():
+            lines.append("    " + f["traceback"].strip().replace("\n", "\n    "))
+    return False, "\n".join(lines)
 
 
 def _parse_args() -> argparse.Namespace:

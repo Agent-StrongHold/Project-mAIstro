@@ -6,8 +6,11 @@ from datetime import UTC, datetime, timedelta
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.archive.protocols import ArchiveStore
+from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
@@ -58,6 +61,25 @@ class AttemptNotFound(KeyError):
 
 class RunIntegrityError(ValueError):
     pass
+
+
+class ArchivedPayloadUnavailable(RunIntegrityError):
+    """The row says its payload is in the archive and the archive cannot answer.
+
+    A distinct failure because it is a distinct operator mistake: the record
+    exists, the tombstone is intact, and what is missing is the tier that was
+    configured when it was archived. Every other answer here is worse.
+    Returning `None` would be decision 6's forbidden case -- indistinguishable
+    from deletion by every caller -- and raising `RunNotFound` would say the
+    opposite of what is true. Reconfigure the archive URL and the read works
+    again; nothing has been lost.
+    """
+
+    def __init__(self, run_id: str, archive_key: str) -> None:
+        super().__init__(
+            f"canonical record {run_id!r} was archived to {archive_key!r} but no archive "
+            f"store is configured; the record still exists in the tier it was moved to"
+        )
 
 
 class ActiveAttemptExists(RunIntegrityError):
@@ -164,6 +186,42 @@ def is_purgeable(run: Run, cutoff: datetime) -> bool:
     )
 
 
+#: How long a Run must have been terminal before the archive sweep considers it
+#: cold. A default, not a policy: ADR-082226-f436 open question 1 declined to
+#: freeze a number nobody had data for, and decision 10 leaves the horizon to
+#: deployment configuration. Ninety days is long enough that nothing routine is
+#: archived and short enough that the tier is exercised.
+DEFAULT_ARCHIVE_AFTER = timedelta(days=90)
+
+
+def is_archivable(run: Run, cutoff: datetime, *, archive_after: timedelta) -> bool:
+    """Whether the archive sweep may move this Run's payload (f436 decision 10).
+
+    The mirror of :func:`is_purgeable`, and deliberately its complement on the
+    first condition rather than a second date of its own:
+
+    - **`retention_expires_at is None`** — nobody chose a deletion date, so the
+      Run is kept indefinitely. A Run *with* a deadline is purge-eligible and is
+      never archived; decision 2 is explicit that archiving is not a way to
+      avoid deciding deletion. Because the field is either null or not, the two
+      populations cannot overlap, which is the property a separate
+      `archive_after` column on the Run would have destroyed.
+    - **terminal** — same reason as purging. Live work keeps its payload where
+      it can be read without a network round trip.
+    - **terminal for longer than `archive_after`** — measured from
+      `finished_at`, which a terminal Run always has (`_validate_finished_at`).
+      A Run that somehow lacks one is not archived rather than being treated as
+      infinitely old, because "no timestamp" is not evidence of coldness.
+    """
+    if run.retention_expires_at is not None:
+        return False
+    if run.status not in TERMINAL_RUN_STATUSES:
+        return False
+    if run.finished_at is None:
+        return False
+    return run.finished_at <= cutoff - archive_after
+
+
 #: States a Run may be created directly in — the entry states a caller can
 #: honestly know at admission. Anything terminal is excluded: work that has not
 #: started cannot have ended.
@@ -213,6 +271,16 @@ class RunStore(Protocol):
     ) -> int: ...
 
     async def has_runs_in_project(self, project_id: str) -> bool: ...
+
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]: ...
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
@@ -318,10 +386,23 @@ class InMemoryRunStore:
         project_store: ProjectScopeStore,
         max_runs: int = MAX_IN_MEMORY_RUNS,
         prune_target: int = RUN_PRUNE_TARGET,
+        archive_store: ArchiveStore | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        # None is the default and means the tier is off (f436 decision 9): no
+        # archive store configured is today's behaviour unchanged, with no
+        # warning, because warning on a deliberate choice is how operators
+        # learn to ignore warnings.
+        self._archive_store = archive_store
+        # The tombstone the durable stores keep in a column. `PgRunStore`
+        # selects candidates with `archive_key IS NULL`, so a Run it has
+        # already archived is not a candidate again; without the same record
+        # here this store would re-put identical bytes on every sweep and
+        # report them as newly archived work. The put itself is idempotent
+        # (keys are content-addressed) -- the count is what would lie.
+        self._archived: dict[str, ArchiveKey] = {}
         self._max_runs = max_runs
         self._prune_target = prune_target
         self._runs: OrderedDict[str, Run] = OrderedDict()
@@ -507,6 +588,87 @@ class InMemoryRunStore:
             await self.delete_run(run_id, force=True)
         return min(len(doomed), limit)
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338): durable state claiming work
+        is in flight is exactly what recovery exists to own, so its count and
+        age must be observable without walking every Run by hand. Cheap on
+        every backend — a status filter, no payload materialization beyond the
+        oldest timestamp.
+        """
+        open_runs = [run for run in self._runs.values() if run.status not in TERMINAL_RUN_STATUSES]
+        if not open_runs:
+            return 0, None
+        return len(open_runs), min(run.created_at for run in open_runs)
+
+    async def archive_cold_runs(
+        self,
+        *,
+        now: datetime | None = None,
+        archive_after: timedelta = DEFAULT_ARCHIVE_AFTER,
+        limit: int = DEFAULT_PURGE_BATCH,
+    ) -> int:
+        """Archive up to ``limit`` cold Runs. Returns how many went.
+
+        The counterpart of :meth:`purge_expired_runs`, and deliberately not part
+        of it: :func:`is_archivable` and :func:`is_purgeable` select disjoint
+        populations, because f436 decision 2 refuses to let archiving stand in
+        for a deletion decision.
+
+        This store keeps the Run resident after archiving, which is not a
+        shortcut. `InMemoryRunStore` is the reference implementation of the
+        *protocol*, not a tier that saves bytes — it is already bounded by
+        eviction. What it must prove is the contract the durable stores are held
+        to: that the payload reaches the archive, and that a read afterwards
+        still returns the record rather than an empty result.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if self._archive_store is None:
+            return 0
+        cutoff = now if now is not None else datetime.now(UTC)
+        cold = [
+            run
+            for run in self._runs.values()
+            if run.run_id not in self._archived
+            and is_archivable(run, cutoff, archive_after=archive_after)
+        ]
+        for run in cold[:limit]:
+            await self._archive_tree(run)
+            # `json_of`, not `model_dump_json`: pydantic serialises NaN and
+            # Infinity to `null`, and `evidence_json` exists precisely so the
+            # three backends cannot disagree about what was recorded. Archiving
+            # through the default serialiser would make the archive the one
+            # place a non-finite result silently became `None`.
+            self._archived[run.run_id] = await self._archive_store.put(
+                json_of(run).encode("utf-8"), scope=run.project_id
+            )
+        return min(len(cold), limit)
+
+    async def _archive_tree(self, run: Run) -> None:
+        """Put the NodeRun and Attempt payloads under one Run.
+
+        The whole tree goes cold together, because the Attempt evidence is what
+        the tier exists to move: a Run's own payload is a graph snapshot and a
+        result, while the rows underneath are one per physical try. Archiving
+        the Run alone would move the index and leave the book.
+
+        This store does not drop what it puts -- see the note above -- so what
+        this proves is that the bytes reach the archive under the Run's scope,
+        which is what the durable stores are held to.
+        """
+        assert self._archive_store is not None  # nosec B101 - caller checked
+        node_runs = [n for n in self._node_runs.values() if n.run_id == run.run_id]
+        for node_run in node_runs:
+            for attempt in self._attempts.values():
+                if attempt.node_run_id != node_run.node_run_id:
+                    continue
+                await self._archive_store.put(
+                    json_of(attempt).encode("utf-8"), scope=run.project_id
+                )
+            await self._archive_store.put(json_of(node_run).encode("utf-8"), scope=run.project_id)
+
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.
 
@@ -515,6 +677,32 @@ class InMemoryRunStore:
         rule with a foreign key; this is the reference store's equivalent.
         """
         return any(run.project_id == project_id for run in self._runs.values())
+
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first.
+
+        The query a canonical consumer needs to find admitted work (#251),
+        mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface. Oldest-first, so a bounded tick drains a
+        backlog fairly instead of starving what arrived first.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.status is status and (project_id is None or run.project_id == project_id)
+            ),
+            key=lambda run: (run.created_at, run.run_id),
+        )
+        return [run.model_copy(deep=True) for run in matching[:limit]]
 
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
@@ -660,6 +848,12 @@ class InMemoryRunStore:
         same rule here a reconciliation that lands late rewrites the history of
         a closed Run, and can undo the very cascade that settled it.
         """
+        # A completed row without accepted evidence predates AcceptedNodeOutcome.
+        # Let it reach transition_node_run's migration validator even after the
+        # parent closed; that validator permits only a matching evidence install
+        # and preserves all lifecycle fields.
+        if node_run.status is RunStatus.COMPLETED and node_run.accepted_outcome is None:
+            return
         run = self._runs.get(node_run.run_id)
         if run is not None and run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError(

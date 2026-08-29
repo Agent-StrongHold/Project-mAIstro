@@ -8,9 +8,22 @@ These pin the contract that:
   round-trips through the database without losing tools / skills / config /
   model / rules / soul / etc.
 
-A real PostgreSQL instance is not available in CI, so the tests run against an
-in-memory SQLite async engine that mirrors the ``agents`` table the production
-code reads and writes.
+These run against an in-memory SQLite async engine holding a **hand-written**
+mirror of the ``agents`` table, so what they pin is the registry's own
+serialization: that a field written is the field read back.
+
+They cannot pin the schema. The mirror below is not the table migration 005
+creates, and every column in it is TEXT, so a type the shipped table would
+reject round-trips here without complaint. That is not hypothetical — three
+columns disagreed (``priority_tier`` Integer, ``rules`` and ``provenance``
+JSONB) and `PgAgentRegistry.upsert` had never once succeeded against a real
+deployment while this file passed (#297).
+
+`test_pg_agents_real_schema.py` is the other half: the same registry against
+the migrated database, which is the only place a mismatch of this kind can
+show up. The claim this docstring used to make -- "a real PostgreSQL instance
+is not available in CI" -- has been false since the `postgres` job gained a
+service container.
 """
 
 from __future__ import annotations

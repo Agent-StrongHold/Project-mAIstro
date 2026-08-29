@@ -152,6 +152,44 @@ async def test_a_node_run_under_a_terminal_run_is_refused(spine: Any) -> None:
         await store.create_node_run(run.run_id, node_id="node-1")
 
 
+async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_run(
+    spine: Any,
+) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+    completed = await store.transition_node_run(
+        node_run.node_run_id, RunStatus.COMPLETED, result=terminal.result
+    )
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=completed.result)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run.node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=completed.result,
+    )
+
+    migrated = await store.transition_node_run(
+        node_run.node_run_id,
+        RunStatus.COMPLETED,
+        result=completed.result,
+        error=completed.error,
+        accepted_outcome=outcome,
+    )
+
+    assert migrated.status is RunStatus.COMPLETED
+    assert migrated.accepted_outcome == outcome
+    assert migrated.finished_at == completed.finished_at
+
+
 async def test_a_child_run_cannot_cross_workspaces(spine: Any) -> None:
     store, _workspace, project_id = spine
     parent = await _run(spine)
@@ -196,6 +234,35 @@ async def test_a_terminal_run_records_its_outcome(spine: Any) -> None:
     assert reloaded is not None
     assert reloaded.error == "it broke"
     assert reloaded.finished_at is not None
+
+
+async def test_non_terminal_run_stats_counts_open_runs_and_finds_the_oldest(spine: Any) -> None:
+    """The recovery tick's visibility pair (#462/#338), one answer per backend.
+
+    Relative to a baseline rather than absolute, because the PostgreSQL leg
+    shares its tables across the suite: "my open Run is counted and my settled
+    one is not" is this test's to assert; "how many exist in total" is not.
+    """
+    store, _workspace, _project_id = spine
+    baseline_count, _ = await store.non_terminal_run_stats()
+
+    first = await _run(spine)
+    second = await _run(spine)
+    await store.transition_run(second.run_id, RunStatus.QUEUED)
+    await store.transition_run(second.run_id, RunStatus.RUNNING)
+    await store.transition_run(second.run_id, RunStatus.COMPLETED)
+
+    count, oldest = await store.non_terminal_run_stats()
+    assert count == baseline_count + 1  # `second` settled; only `first` stays open
+    assert oldest is not None
+    assert oldest <= first.created_at
+
+
+async def test_non_terminal_run_stats_on_an_empty_store_is_zero_and_ageless(
+    memory_spine: Any,
+) -> None:
+    store, _workspace, _project_id = memory_spine
+    assert await store.non_terminal_run_stats() == (0, None)
 
 
 async def test_transitioning_an_unknown_run_raises(spine: Any) -> None:

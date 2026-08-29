@@ -15,6 +15,8 @@ jobs:
     permissions:
       contents: read
       issues: write
+    env:
+      MAISTRO_FORMAL_NIGHTLY_EXAMPLES: "10000"
 
     steps:
       - name: Checkout
@@ -31,15 +33,71 @@ jobs:
       - name: Extract constants from source
         run: python -m formal.extractors.extract_security_constants
 
-      - name: Run formal models (deep exploration)
-        run: pytest formal/models/ -v --timeout=1800 --nightly --hypothesis-seed=0
-        env:
-          MAISTRO_FORMAL_NIGHTLY_EXAMPLES: "10000"
+      - name: Restore Hypothesis example database
+        uses: actions/cache/restore@v4
+        with:
+          path: .hypothesis/examples
+          key: formal-hypothesis-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            formal-hypothesis-${{ runner.os }}-${{ github.ref_name }}-
 
-      - name: Upload test results
+      - name: Choose and record exploration seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          seed="$(python -c 'import secrets; print(secrets.randbits(64))')"
+          echo "HYPOTHESIS_SEED=$seed" >> "$GITHUB_ENV"
+          mkdir -p formal
+          if find .hypothesis/examples -type f -print -quit 2>/dev/null | grep -q .; then
+            database_reused=true
+          else
+            database_reused=false
+          fi
+          {
+            echo "seed=$seed"
+            echo "max_examples=$MAISTRO_FORMAL_NIGHTLY_EXAMPLES"
+            echo "database_reused=$database_reused"
+            echo "replay=pytest formal/models/ -v --timeout=1800 --nightly --hypothesis-seed=$seed"
+          } > formal/nightly-run-metadata.txt
+
+      - name: Run formal models (deep exploration)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest formal/models/ -v --timeout=1800 --nightly \
+            --hypothesis-seed="$HYPOTHESIS_SEED" \
+            --hypothesis-show-statistics \
+            --junitxml=formal/nightly-results.xml \
+            2>&1 | tee formal/nightly-hypothesis.log
+
+      - name: Record example database result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d .hypothesis/examples ]; then
+            database_files_after="$(find .hypothesis/examples -type f | wc -l | tr -d ' ')"
+          else
+            database_files_after=0
+          fi
+          echo "database_files_after=$database_files_after" >> formal/nightly-run-metadata.txt
+
+      - name: Save Hypothesis example database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .hypothesis/examples
+          key: formal-hypothesis-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload nightly exploration evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: formal-nightly-results
           retention-days: 30
-          path: formal/models/
+          include-hidden-files: true
+          path: |
+            formal/nightly-run-metadata.txt
+            formal/nightly-hypothesis.log
+            formal/nightly-results.xml
+            .hypothesis/examples

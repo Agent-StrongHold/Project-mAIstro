@@ -109,7 +109,7 @@ class _EvolutionService:
             from services.secrets import litellm_api_key, maistro_llm_api_key
 
             settings = get_settings()
-            base = settings.maistro_llm_base_url or settings.litellm_api_base
+            base = settings.litellm_api_base
             if not base:
                 return None
             raw_key = maistro_llm_api_key(settings) or litellm_api_key(settings) or ""

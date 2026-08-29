@@ -2,12 +2,14 @@ name: Formal Conformance
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main, integration, develop]
 
 concurrency:
-  group: formal-conformance-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: formal-conformance-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   formal-conformance:
@@ -49,6 +51,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # #460's checker was previously exercised only through a test wrapper.
+      # Reachability correctly reported the script itself as never rooted by a
+      # production/CI entry point. Run it directly in this already-required
+      # architecture/conformance job so the freeze is operative and its own
+      # reachability claim is true rather than baselined away.
+      #
+      # This is a PR-policy check because its exception is a PR label. The queue
+      # runs only after the PR has already passed this check; the merge-group run
+      # validates the combined tree through the formal models below rather than
+      # trying to reconstruct PR label state from a merge_group payload.
+      - name: Enforce M1 convergence freeze
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HAS_M1_CONVERGENCE_EXCEPTION: ${{ contains(github.event.pull_request.labels.*.name, 'm1-convergence-exception') }}
+        run: |
+          set -euo pipefail
+          args=(--base "$BASE_SHA")
+          if [[ "$HAS_M1_CONVERGENCE_EXCEPTION" == "true" ]]; then
+            args+=(--exception)
+          fi
+          python scripts/check-m1-convergence-freeze.py "${args[@]}"
 
       - name: Setup Python
         uses: actions/setup-python@v5

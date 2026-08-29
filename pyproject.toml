@@ -30,8 +30,8 @@ dependencies = [
     "argon2-cffi>=23.1",
     "maistro-registry",
     # [identity] so the dev/test environment can exercise maistro.identity. The
-    # API image deliberately installs maistro-core[llm,sandbox,observability]
-    # WITHOUT it — see the identity extra's comment in maistro-core/pyproject.toml.
+    # API image installs the same identity extra. Keeping it here ensures the
+    # dev/test environment exercises the startup import path shipped in Docker.
     "maistro-core[tui,identity]",
     # Depend on the package rather than re-listing its transitive libs here: this
     # is what supplies Pillow to the root env for `uv run mypy`/`uv run pytest`
@@ -55,6 +55,16 @@ dev = [
     # and free to drop it — and the failure would be an ImportError in a gate,
     # i.e. the same shape as the two notes above.
     "gherkin-official>=29.0",
+    # Same argument as the note above, now load-bearing rather than prudent.
+    # `testpaths` includes `packages/hive-conductor/backend/tests`, whose
+    # `step_defs/` modules import pytest_bdd at collection time. That package
+    # is declared in hive-conductor's own `dev` extra, and `uv sync
+    # --all-extras` covers the *root* project's extras only -- measured: a
+    # clean sync uninstalls pytest-bdd. Without it here the quality gate's
+    # `check-ac-state.py --run-tests` aborts on a collection error, which is
+    # the loud failure the script is written to produce and still a gate that
+    # cannot run. A tree this config collects is a dependency this config owns.
+    "pytest-bdd>=8.0.0,<9",
     "radon>=6.0",
     "vulture>=2.14",
     "types-PyYAML>=6.0",
@@ -115,6 +125,16 @@ dev = [
     # and free to drop it — and the failure would be an ImportError in a gate,
     # i.e. the same shape as the two notes above.
     "gherkin-official>=29.0",
+    # Same argument as the note above, now load-bearing rather than prudent.
+    # `testpaths` includes `packages/hive-conductor/backend/tests`, whose
+    # `step_defs/` modules import pytest_bdd at collection time. That package
+    # is declared in hive-conductor's own `dev` extra, and `uv sync
+    # --all-extras` covers the *root* project's extras only -- measured: a
+    # clean sync uninstalls pytest-bdd. Without it here the quality gate's
+    # `check-ac-state.py --run-tests` aborts on a collection error, which is
+    # the loud failure the script is written to produce and still a gate that
+    # cannot run. A tree this config collects is a dependency this config owns.
+    "pytest-bdd>=8.0.0,<9",
     "types-PyYAML>=6.0",
     "types-regex>=2024.5.15",
     "questionary>=2.0",
@@ -201,6 +221,19 @@ testpaths = [
     "packages/maistro-evolve/tests",
     "packages/maistro-rsi/tests",
     "packages/maistro-design/tests",
+    # The Conductor app's own suite (#267). Absent until now, which meant
+    # `scripts/check-ac-state.py::configured_test_roots()` -- which reads this
+    # list -- never scanned it, so a `@pytest.mark.ac` marker in the product
+    # this monorepo actually ships could not move past the `declared` rung. Six
+    # such markers already existed and were invisible.
+    #
+    # `packages/hive-conductor/tests/e2e` stays out deliberately: those tests
+    # drive a live stack brought up by `docker compose -f
+    # docker-compose.test.yml`, so a bare session collects tests that cannot
+    # pass without it. `ac_outcome_plugin.py` counts a failure the same way it
+    # counts a skip -- as no evidence -- so scanning them would manufacture
+    # criteria that can never be proven in the job that measures them.
+    "packages/hive-conductor/backend/tests",
     "tests",
 ]
 asyncio_mode = "auto"

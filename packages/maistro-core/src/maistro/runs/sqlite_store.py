@@ -303,6 +303,32 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first (#251).
+
+        Mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface; oldest-first so a bounded consumer tick
+        drains a backlog fairly.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        sql = "SELECT payload FROM canonical_runs WHERE status = ?"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += " AND project_id = ?"
+            params.append(project_id)
+        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(sql, tuple(params))  # nosec B608
+        rows = await cursor.fetchall()
+        return [model_of_json(Run, row[0]) for row in rows]
+
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
         """Forget one terminal Run and everything hanging off it.
 
@@ -355,6 +381,24 @@ class SqliteRunStore:
             (project_id,),
         )
         return row is not None
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338). A status filter plus one
+        payload timestamp — ISO-8601 strings in one format order the same way
+        the datetimes do, so MIN needs no materialization.
+        """
+        placeholders = _placeholders(len(_TERMINAL_STATUS_VALUES))
+        row = await self._fetchone(
+            "SELECT COUNT(*), MIN(json_extract(payload, '$.created_at')) "
+            f"FROM canonical_runs WHERE status NOT IN ({placeholders})",
+            tuple(_TERMINAL_STATUS_VALUES),
+        )
+        assert row is not None  # nosec B101 - COUNT(*) always yields a row
+        count = int(row[0])
+        oldest = datetime.fromisoformat(row[1]) if row[1] else None
+        return count, oldest
 
     async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
         """Terminal Runs carrying a deadline and descended from by nobody.
@@ -797,6 +841,12 @@ class SqliteRunStore:
         same rule here a reconciliation that lands late rewrites the history of
         a closed Run, and can undo the very cascade that settled it.
         """
+        # A completed row without accepted evidence predates AcceptedNodeOutcome.
+        # Let it reach transition_node_run's migration validator even after the
+        # parent closed; that validator permits only a matching evidence install
+        # and preserves all lifecycle fields.
+        if node_run.status is RunStatus.COMPLETED and node_run.accepted_outcome is None:
+            return
         row = await self._fetchone(
             "SELECT status FROM canonical_runs WHERE run_id = ?",
             (node_run.run_id,),

@@ -53,6 +53,28 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _default_ac_state_ratchet_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test opts into merge-group semantics explicitly, or gets none.
+
+    A merge-group CI job exports GITHUB_EVENT_NAME=merge_group to pytest itself,
+    and `check_ac_state_impl.in_merge_group()` reads exactly that. So any test
+    that drives the ratchet without pinning the event inherits the job's, runs
+    against the #620 carve-out it did not ask for, and fails only inside the
+    queue -- green on the pull request, red where it decides the merge.
+
+    This default was first written scoped to `test_check_ac_state_ratchet.py`
+    by name, which is what let it miss `test_ac_state_notes.py`: that module
+    drives the same `ratchet` from its own fixture, was never on the list, and
+    reddened the queue exactly as this docstring already predicted. A filename
+    allowlist cannot know about the next module, so there is no list any more.
+
+    Pinning is a floor, not a ceiling: a test wanting merge-group semantics sets
+    the event in its own body, which runs after this fixture and wins.
+    """
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+
+
+@pytest.fixture(autouse=True)
 def _reset_singletons() -> Iterator[None]:
     """Reset all global singletons between tests to prevent state leakage."""
     # Clear cached settings so test env vars are picked up
@@ -82,6 +104,33 @@ def _reset_singletons() -> Iterator[None]:
     main_module = sys.modules.get("maistro_server.main")
     if main_module is not None:
         main_module._runner = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_http() -> Iterator[None]:
+    """Drop any test transport override and pooled clients between tests.
+
+    The same fixture `packages/maistro-core/tests/conftest.py` has carried all
+    along, and whose docstring predicted this exactly: "a leaked override would
+    silently route a later test's requests into an unrelated MockTransport --
+    the kind of cross-test coupling that shows up as an unrelated failure days
+    later."
+
+    It showed up (#414). `tests/hive_conductor/test_airtable_cache.py` called
+    `set_test_transport()` and never restored it, so `maistro.http` kept a
+    MockTransport answering 200 to every request. Two Conductor tests that
+    assert an unreachable URL reports "disconnected" then saw it as reachable
+    -- only when the root suite happened to share a process with them, which no
+    CI job does, so nothing was red.
+
+    The calling test is fixed to use `override_transport` too. This is here so
+    the *next* one cannot do it: one tree having the guard and its neighbour
+    not is how a leak this specific survives.
+    """
+    from maistro.http import set_test_transport
+
+    yield
+    set_test_transport(None)
 
 
 @pytest.fixture(autouse=True)

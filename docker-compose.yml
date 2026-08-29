@@ -3,6 +3,7 @@ version: "3.9"
 services:
   maistro-engine:
     build: .
+    image: ${MAISTRO_ENGINE_IMAGE:-maistro-engine:local}
     container_name: maistro-engine
     ports:
       - "${MAISTRO_BIND_HOST:-127.0.0.1}:${MAISTRO_PORT:-8000}:8000"
@@ -12,6 +13,7 @@ services:
       - DB_NAME=maistro
       - DB_USER=maistro
       - DB_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/maistro
       - LITELLM_URL=http://litellm:4000
       - LITELLM_BASE_URL=http://litellm:4000
       - LITELLM_PROXY_URL=http://litellm:4000
@@ -26,11 +28,13 @@ services:
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       - MAISTRO_BUILDERS_MODEL=${MAISTRO_BUILDERS_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       - API_KEYS=${API_KEYS:?Run ./install.sh to generate API_KEYS}
+      - ROUTER_API_KEY=${ROUTER_API_KEY:?Run ./install.sh to generate ROUTER_API_KEY}
       - MAISTRO_ACCESS_TOKEN=${MAISTRO_ACCESS_TOKEN:-}
       - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - CI_WEBHOOK_SECRET=${CI_WEBHOOK_SECRET:-}
       - SANDBOX_NETWORK_DISABLED=true
+      - SANDBOX_READINESS_REQUIRED=false
     volumes:
       # The host Docker socket is NOT mounted by default: it grants the
       # container control of the host Docker daemon (container escape = host
@@ -53,22 +57,46 @@ services:
       timeout: 5s
       retries: 3
 
+  postgres-layout-check:
+    # Mount the named volume at its parent so legacy layouts are visible before
+    # PostgreSQL can initialize anything. Old installs mounted pgdata directly
+    # at /var/lib/postgresql/data, leaving PG_VERSION at the volume root. The
+    # PG18 layout instead stores the cluster below /18/docker. Refuse a legacy
+    # volume here so an image/layout change can never look like silent data loss.
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -f /var/lib/postgresql/PG_VERSION ] && [ ! -f /var/lib/postgresql/18/docker/PG_VERSION ]; then
+          echo >&2 "ERROR: legacy PostgreSQL volume layout detected. Refusing to initialize a new cluster over an existing volume. Follow docs/install/postgres-volume-upgrades.md before starting this stack."
+          exit 78
+        fi
+    volumes:
+      - pgdata:/var/lib/postgresql:ro
+    restart: "no"
+
   postgres:
     # Supported majors are 17-19; 18 is the default here and what CI matrixes
-    # against (alongside 17). Override to pin a different one — note that a
-    # major upgrade over an existing `pgdata` volume needs pg_upgrade, so
-    # changing this on a live deployment is not just an image swap.
+    # against (alongside 17). A legacy root-layout volume is rejected by
+    # postgres-layout-check before startup; major upgrades remain explicit
+    # maintenance operations documented in docs/install/postgres-volume-upgrades.md.
     image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18}
     container_name: maistro-postgres
     environment:
       POSTGRES_USER: maistro
       POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       POSTGRES_DB: maistro
+      # PostgreSQL 18+ uses a version-specific cluster below this parent.
+      # Keeping PGDATA explicit prevents image-tag and volume-layout drift.
+      PGDATA: /var/lib/postgresql/18/docker
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    depends_on:
+      postgres-layout-check:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maistro"]
       interval: 5s

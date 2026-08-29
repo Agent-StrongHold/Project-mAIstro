@@ -1,9 +1,9 @@
 """RunStore-compatible lifecycle view over durable Graph persistence.
 
-The durable Graph record already owns the canonical Run and NodeRuns. This
-adapter keeps physical Attempts in that same optimistic-concurrency envelope so
-AttemptExecutionService can operate without introducing a second lifecycle
-store or dual-writing execution identity.
+The durable Graph record carries projections of canonical Run/NodeRun/Attempt
+rows. When a canonical RunStore is wired, identity and physical lifecycle live
+there; this adapter keeps the graph checkpoint synchronized without minting a
+second execution universe.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
     lease_is_expired,
     reclaim_attempt,
     renew_attempt_lease,
@@ -22,6 +23,7 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -36,6 +38,7 @@ from maistro.runs.store import (
     ActiveAttemptExists,
     AttemptNotFound,
     RunIntegrityError,
+    RunStore,
     StaleExecutionFence,
 )
 
@@ -43,12 +46,50 @@ from .protocol import DurableRunStore
 from .types import DurableRunRecord
 
 
+def _require_same_creation_contract(
+    candidate: Attempt,
+    *,
+    runtime_id: str,
+    executor_id: str,
+    deadline_at: datetime | None,
+    resume_checkpoint_id: str | None,
+    lease_holder: str | None,
+) -> None:
+    """Refuse to adopt an Attempt that was created for a different request.
+
+    Adoption is only safe while the unmirrored row is the one this call would
+    have made. An Attempt created with a different runtime, executor, deadline,
+    resume checkpoint or holder is somebody else's physical work, and taking it
+    would make this caller's retry report an execution it never asked for.
+    """
+    lease = candidate.execution_lease
+    holder = lease.holder if lease is not None else None
+    if (
+        candidate.runtime_id != runtime_id
+        or candidate.executor_id != executor_id
+        or candidate.deadline_at != deadline_at
+        or candidate.resume_checkpoint_id != resume_checkpoint_id
+        or holder != lease_holder
+    ):
+        raise RunIntegrityError(
+            f"unmirrored canonical Attempt {candidate.attempt_id!r} does not match "
+            "the retried creation contract"
+        )
+
+
 class DurableRunExecutionStore:
     """Expose canonical execution lifecycle operations for one durable Run."""
 
-    def __init__(self, store: DurableRunStore, *, run_id: str) -> None:
+    def __init__(
+        self,
+        store: DurableRunStore,
+        *,
+        run_id: str,
+        run_store: RunStore | None = None,
+    ) -> None:
         self._store = store
         self._run_id = run_id
+        self._run_store = run_store
         self._lock = asyncio.Lock()
 
     async def get_run(self, run_id: str) -> Run | None:
@@ -136,29 +177,57 @@ class DurableRunExecutionStore:
         lease_holder: str | None = None,
         lease_ttl: timedelta | None = None,
     ) -> Attempt:
-        created: Attempt | None = None
+        """Create or adopt exactly one Attempt under the requested NodeRun.
+
+        A canonical create can commit before the graph checkpoint that mirrors
+        it. Retrying that boundary must adopt the store-owned identity rather
+        than ask the store to mint ordinal N+1 while ordinal N is still active.
+        """
+        if self._run_store is not None:
+            record = await self._get_record()
+            existing = self._require_creatable(record, node_run_id)
+            expected_ordinal = max((attempt.ordinal for attempt in existing), default=0) + 1
+            adopted = await self._adoptable_canonical_attempt(
+                record,
+                node_run_id,
+                expected_ordinal=expected_ordinal,
+                runtime_id=runtime_id,
+                executor_id=executor_id,
+                deadline_at=deadline_at,
+                resume_checkpoint_id=resume_checkpoint_id,
+                lease_holder=lease_holder,
+            )
+            if adopted is not None:
+                await self._mutate(
+                    lambda current: current.model_copy(
+                        update={"attempts": (*current.attempts, adopted)}
+                    )
+                )
+                return adopted.model_copy(deep=True)
+
+            created = await self._run_store.create_attempt(
+                node_run_id,
+                runtime_id=runtime_id,
+                executor_id=executor_id,
+                deadline_at=deadline_at,
+                resume_checkpoint_id=resume_checkpoint_id,
+                lease_holder=lease_holder,
+                lease_ttl=lease_ttl,
+            )
+            await self._mutate(
+                lambda current: current.model_copy(
+                    update={"attempts": (*current.attempts, created)}
+                )
+            )
+            return created.model_copy(deep=True)
+
+        minted: Attempt | None = None
 
         def update(record: DurableRunRecord) -> DurableRunRecord:
-            nonlocal created
-            node_run = next(
-                (item for item in record.node_runs if item.node_run_id == node_run_id),
-                None,
-            )
-            if node_run is None:
-                raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
-            if node_run.status in TERMINAL_RUN_STATUSES:
-                raise RunIntegrityError("cannot create Attempt under a terminal NodeRun")
-
-            existing = [
-                attempt for attempt in record.attempts if attempt.node_run_id == node_run_id
-            ]
-            if any(
-                attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
-                for attempt in existing
-            ):
-                raise ActiveAttemptExists(f"NodeRun {node_run_id!r} already has an active Attempt")
+            nonlocal minted
+            existing = self._require_creatable(record, node_run_id)
             ordinal = max((attempt.ordinal for attempt in existing), default=0) + 1
-            created = Attempt(
+            minted = Attempt(
                 node_run_id=node_run_id,
                 ordinal=ordinal,
                 runtime_id=runtime_id,
@@ -169,20 +238,78 @@ class DurableRunExecutionStore:
             if lease_holder is not None:
                 lease = ExecutionLease(
                     node_run_id=node_run_id,
-                    attempt_id=created.attempt_id,
+                    attempt_id=minted.attempt_id,
                     lease_epoch=ordinal,
                     holder=lease_holder,
                 )
                 if lease_ttl is not None:
                     lease = renewed_lease(lease, at=lease.issued_at, ttl=lease_ttl)
-                created = Attempt.model_validate(
-                    {**created.model_dump(mode="python"), "execution_lease": lease}
+                minted = Attempt.model_validate(
+                    {**minted.model_dump(mode="python"), "execution_lease": lease}
                 )
-            return record.model_copy(update={"attempts": (*record.attempts, created)})
+            return record.model_copy(update={"attempts": (*record.attempts, minted)})
 
         await self._mutate(update)
-        assert created is not None
-        return created.model_copy(deep=True)
+        assert minted is not None
+        return minted.model_copy(deep=True)
+
+    async def _adoptable_canonical_attempt(
+        self,
+        record: DurableRunRecord,
+        node_run_id: str,
+        *,
+        expected_ordinal: int,
+        runtime_id: str,
+        executor_id: str,
+        deadline_at: datetime | None,
+        resume_checkpoint_id: str | None,
+        lease_holder: str | None,
+    ) -> Attempt | None:
+        """Return the one canonical Attempt a failed checkpoint omitted."""
+        assert self._run_store is not None
+        projected_ids = {attempt.attempt_id for attempt in record.attempts}
+        canonical = await self._run_store.list_attempts(node_run_id)
+        missing = [attempt for attempt in canonical if attempt.attempt_id not in projected_ids]
+        if not missing:
+            return None
+        missing.sort(key=lambda attempt: attempt.ordinal)
+        candidate = missing[0]
+        if candidate.ordinal != expected_ordinal or len(missing) != 1:
+            raise RunIntegrityError(
+                f"canonical Attempt history for NodeRun {node_run_id!r} is not a one-row "
+                f"continuation of durable ordinal {expected_ordinal - 1}"
+            )
+        if candidate.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+            raise RunIntegrityError(
+                f"unmirrored canonical Attempt {candidate.attempt_id!r} is already "
+                f"{candidate.status.value!r}"
+            )
+        _require_same_creation_contract(
+            candidate,
+            runtime_id=runtime_id,
+            executor_id=executor_id,
+            deadline_at=deadline_at,
+            resume_checkpoint_id=resume_checkpoint_id,
+            lease_holder=lease_holder,
+        )
+        return candidate
+
+    @staticmethod
+    def _require_creatable(record: DurableRunRecord, node_run_id: str) -> list[Attempt]:
+        node_run = next(
+            (item for item in record.node_runs if item.node_run_id == node_run_id),
+            None,
+        )
+        if node_run is None:
+            raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            raise RunIntegrityError("cannot create Attempt under a terminal NodeRun")
+        existing = [attempt for attempt in record.attempts if attempt.node_run_id == node_run_id]
+        if any(
+            attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING} for attempt in existing
+        ):
+            raise ActiveAttemptExists(f"NodeRun {node_run_id!r} already has an active Attempt")
+        return existing
 
     async def renew_lease(
         self,
@@ -192,13 +319,13 @@ class DurableRunExecutionStore:
         ttl: timedelta,
         at: datetime | None = None,
     ) -> Attempt:
-        """Prove the holder is still alive, and push its expiry out by ``ttl``.
+        if self._run_store is not None:
+            canonical = await self._run_store.renew_lease(
+                attempt_id, fencing_token=fencing_token, ttl=ttl, at=at
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
 
-        The fourth store implementing this, and it needs it for the same reason
-        the other three do: `AttemptExecutionService` renews through whatever
-        store it was given, and a durable Graph node is executed by a process
-        that can die exactly like a task worker.
-        """
         renewed: Attempt | None = None
 
         def update(record: DurableRunRecord) -> DurableRunRecord:
@@ -222,26 +349,26 @@ class DurableRunExecutionStore:
         now: datetime | None = None,
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]:
-        """Settle this Run's Attempts whose holder stopped renewing.
-
-        Scoped to one Run, because this store is: it is a lifecycle view over a
-        single `DurableRunRecord`. A sweep across every durable Run is the
-        `DurableRunStore`'s question, not this view's, and answering it here
-        would quietly widen what a caller holding one Run can touch.
-        """
+        """Settle only this Run's expired Attempts, canonically when wired."""
         moment = now if now is not None else datetime.now(UTC)
+        if self._run_store is not None:
+            return await self._reclaim_canonical_attempts(moment=moment, limit=limit)
+
         reclaimed: list[Attempt] = []
 
         def update(record: DurableRunRecord) -> DurableRunRecord:
             reclaimed.clear()
             attempts = list(record.attempts)
             doomed = sorted(
-                (a for a in attempts if lease_is_expired(a, moment)),
-                key=lambda a: (a.execution_lease.expires_at, a.attempt_id),  # type: ignore[union-attr]
+                (attempt for attempt in attempts if lease_is_expired(attempt, moment)),
+                key=lambda attempt: (
+                    attempt.execution_lease.expires_at,  # type: ignore[union-attr]
+                    attempt.attempt_id,
+                ),
             )[:limit]
             if not doomed:
                 return record
-            by_id = {a.attempt_id for a in doomed}
+            by_id = {attempt.attempt_id for attempt in doomed}
             for index, attempt in enumerate(attempts):
                 if attempt.attempt_id not in by_id:
                     continue
@@ -252,6 +379,91 @@ class DurableRunExecutionStore:
 
         await self._mutate(update)
         return [item.model_copy(deep=True) for item in reclaimed]
+
+    async def _reclaim_canonical_attempts(
+        self,
+        *,
+        moment: datetime,
+        limit: int,
+    ) -> list[Attempt]:
+        """Reclaim exact canonical identities without sweeping unrelated Runs.
+
+        Safety relies on the shared renewal rule refusing to resurrect an
+        already-expired lease. Once this view observes expiry at ``moment``, the
+        fencing token can therefore settle that exact Attempt without a global
+        RunStore sweep racing a late renewal.
+        """
+        assert self._run_store is not None
+        record = await self._get_record()
+        doomed = sorted(
+            (attempt for attempt in record.attempts if lease_is_expired(attempt, moment)),
+            key=lambda attempt: (
+                attempt.execution_lease.expires_at,  # type: ignore[union-attr]
+                attempt.attempt_id,
+            ),
+        )[:limit]
+        if not doomed:
+            return []
+
+        replacements: dict[str, Attempt] = {}
+        reclaimed: list[Attempt] = []
+        for projected in doomed:
+            canonical, settled = await self._settle_one_canonically(projected, moment=moment)
+            replacements[projected.attempt_id] = canonical
+            if settled:
+                reclaimed.append(canonical)
+
+        def update(current: DurableRunRecord) -> DurableRunRecord:
+            attempts = [replacements.get(item.attempt_id, item) for item in current.attempts]
+            return current.model_copy(update={"attempts": tuple(attempts)})
+
+        await self._mutate(update)
+        return [item.model_copy(deep=True) for item in reclaimed]
+
+    async def _settle_one_canonically(
+        self,
+        projected: Attempt,
+        *,
+        moment: datetime,
+    ) -> tuple[Attempt, bool]:
+        """Settle one lapsed canonical Attempt, or report what it actually is.
+
+        Three answers, and only one of them is a reclaim. Already terminal: the
+        canonical row won a race, so the projection is repaired and it counts
+        as reclaimed only if it settled the way reclaim would have. Still live:
+        the holder renewed before recovery observed the expiry, so the stale
+        projection is repaired rather than the live work cancelled. Otherwise
+        it is genuinely lapsed and is settled here.
+        """
+        assert self._run_store is not None
+        canonical = await self._run_store.get_attempt(projected.attempt_id)
+        if canonical is None:
+            raise RunIntegrityError(
+                f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
+            )
+        if canonical.status in TERMINAL_ATTEMPT_STATUSES:
+            return canonical, canonical.status is reclaim_attempt(projected, at=moment).status
+        if not lease_is_expired(canonical, moment):
+            return canonical, False
+        lease = canonical.execution_lease
+        # `lease_is_expired` above is false for a leaseless Attempt, so reaching
+        # here means there is one. Asserted rather than re-checked: a branch
+        # nothing can take is a branch nothing can test.
+        assert lease is not None
+        settled = reclaim_attempt(canonical, at=moment)
+        try:
+            return await self._run_store.transition_attempt(
+                canonical.attempt_id,
+                settled.status,
+                at=moment,
+                error=settled.error,
+                fencing_token=lease.fencing_token,
+            ), True
+        except (InvalidLifecycleTransition, StaleExecutionFence):
+            refreshed = await self._run_store.get_attempt(canonical.attempt_id)
+            if refreshed is None or refreshed.status not in TERMINAL_ATTEMPT_STATUSES:
+                raise
+            return refreshed, True
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         record = await self._get_record()
@@ -282,6 +494,19 @@ class DurableRunExecutionStore:
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
     ) -> Attempt:
+        if self._run_store is not None:
+            canonical = await self._run_store.transition_attempt(
+                attempt_id,
+                target,
+                at=at,
+                result=result,
+                error=error,
+                metrics=metrics,
+                fencing_token=fencing_token,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
         def update(record: DurableRunRecord) -> DurableRunRecord:
             attempts = list(record.attempts)
             for index, attempt in enumerate(attempts):
@@ -302,6 +527,15 @@ class DurableRunExecutionStore:
         updated = await self._mutate(update)
         attempt = next(item for item in updated.attempts if item.attempt_id == attempt_id)
         return attempt.model_copy(deep=True)
+
+    @staticmethod
+    def _replace_attempt(record: DurableRunRecord, updated: Attempt) -> DurableRunRecord:
+        attempts = list(record.attempts)
+        for index, attempt in enumerate(attempts):
+            if attempt.attempt_id == updated.attempt_id:
+                attempts[index] = updated
+                return record.model_copy(update={"attempts": tuple(attempts)})
+        raise RunIntegrityError(f"Attempt {updated.attempt_id!r} does not exist")
 
     @staticmethod
     def _validate_fence(attempt: Attempt, fencing_token: str | None) -> None:

@@ -1,28 +1,16 @@
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any
+from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Request
 from models.schemas import ChatCompletionRequest
 from pydantic import BaseModel, ConfigDict
-from services.chat_completion import run_chat_completion
+from services.chat_completion import build_llm_port, conversation_only
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["voice"])
-
-VOICE_API_KEY = os.environ.get("VOICE_API_KEY", "")
-
-
-def _verify_key(authorization: str | None) -> None:
-    if not VOICE_API_KEY:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="API key required")
-    if authorization[7:] != VOICE_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 class VoiceIntentBody(BaseModel):
@@ -35,17 +23,49 @@ class VoiceIntentBody(BaseModel):
 
 
 class VoiceIntentResponse(BaseModel):
+    """What a contained voice turn can actually report (#440).
+
+    `actions_taken` used to sit here as a `list[dict]` of the tools the
+    utterance invoked. Nothing could ever put anything in it: the route sends
+    `tools=None`, so no tool call is ever offered, let alone executed. It was
+    removed rather than left empty, because a field that is structurally
+    unpopulatable is a completion claim nothing derives from evidence (#31),
+    and a caller cannot tell "no tools ran" from "we forgot to record them".
+
+    `intent` is narrowed to the two values the service can distinguish. It was
+    documented as naming the first tool invoked, which it has never done. The
+    two remaining values report whether the model said anything, which is the
+    only classification available while tools are contained.
+
+    Restoring a real action record is #315's, together with the Warden
+    input/tool-result/output boundary that has to gate the tools before any of
+    them may run again. That is a security boundary, not a response field, so
+    it is not smuggled in here.
+    """
+
     understood: bool
-    intent: str
-    actions_taken: list[dict[str, Any]]
+    intent: Literal["conversation", "unknown"]
     reply: str
 
 
 @router.post("/intent", response_model=VoiceIntentResponse)
-async def voice_intent(
-    body: VoiceIntentBody, authorization: str | None = Header(None)
-) -> VoiceIntentResponse:
-    _verify_key(authorization)
+async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentResponse:
+    """Answer a spoken utterance conversationally, on the chat path's own seam.
+
+    M0 containment (#484): AuthMiddleware still resolves the device/account
+    principal, but the utterance is answered without the model-driven tool loop.
+
+    The request is built through `conversation_only`, the same trust boundary
+    `/v1/chat/complete` and `/v1/chat/stream` pass their requests through, and
+    the port comes from `build_llm_port`, the same builder they use. Voice
+    previously constructed an `HttpOpenAIProtocolLLM` itself and diverged from
+    that builder in three ways -- a hard-coded HTTP variant rather than the
+    configured one, `LITELLM_API_KEY` rather than `LITELLM_PROXY_KEY`, and its
+    own model-default chain. A second execution path is how the containment
+    rule ends up meaning something different on the route nobody looks at.
+    """
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id", ""))
 
     context_parts = [body.text]
     if body.room:
@@ -55,56 +75,23 @@ async def voice_intent(
     if body.person:
         context_parts.append(f"(speaker: {body.person})")
 
-    req = ChatCompletionRequest(
-        messages=[
-            {"role": "user", "content": " ".join(context_parts)},
-        ],
+    req = conversation_only(
+        ChatCompletionRequest(messages=[{"role": "user", "content": " ".join(context_parts)}])
     )
 
-    from adapters.llm_http import HttpOpenAIProtocolLLM
-    from config import get_settings
-    from services.secrets import litellm_api_key as resolve_litellm_api_key
+    result = await build_llm_port().complete(req)
 
-    settings = get_settings()
-    key = resolve_litellm_api_key(settings) or os.environ.get("LITELLM_API_KEY", "")
-    base = settings.litellm_api_base or os.environ.get("LITELLM_API_BASE", "")
-    if base and key:
-        llm = HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant="chat_completions")
-        model = settings.chat_default_model or "cerebras-qwen-3-235b-a22b-2507"
-    else:
-        from services.chat_completion import build_llm_port
-
-        llm = build_llm_port()
-        model = req.model or settings.chat_default_model or "cerebras-qwen-3-235b-a22b-2507"
-
-    result = await run_chat_completion(
-        req, return_actions=True, skip_summary=True, _llm=llm, _model=model
-    )
-
-    actions: list[dict[str, Any]] = result.get("actions", [])
     reply = ""
-    intent = "unknown"
-
     for choice in result.get("choices", []):
-        msg = choice.get("message", {})
-        reply = msg.get("content", "") or ""
+        reply = (choice.get("message", {}) or {}).get("content", "") or ""
 
-    if actions:
-        intent = actions[0].get("tool", "unknown")
-    elif reply:
-        intent = "conversation"
+    intent: Literal["conversation", "unknown"] = "conversation" if reply else "unknown"
 
     logger.info(
-        "voice intent: text=%r room=%r intent=%s actions=%d",
-        body.text,
+        "voice intent: user=%s room=%r intent=%s",
+        user_id or "unknown",
         body.room,
         intent,
-        len(actions),
     )
 
-    return VoiceIntentResponse(
-        understood=bool(reply or actions),
-        intent=intent,
-        actions_taken=actions,
-        reply=reply,
-    )
+    return VoiceIntentResponse(understood=bool(reply), intent=intent, reply=reply)
