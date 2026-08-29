@@ -156,29 +156,6 @@ def configure_persistence(persisted_store: Any) -> None:
         store._persisted = persisted_store
 
 
-def degrade_all(reason: str) -> None:
-    """Refuse writes on every mutable store (#333, ADR-082926-87bb).
-
-    Called when a `durable` deployment's state did not initialise. Seeded and
-    already-loaded data still reads; nothing new is accepted, which is also
-    what makes recovery safe — a degraded process accumulates nothing that a
-    later restart could write over the durable rows.
-    """
-    for store in _all_model_stores:
-        store.degrade(reason)
-    for json_store in _all_json_stores:
-        json_store.degrade(reason)
-    logger.error("stores degraded, writes refused: %s", reason)
-
-
-def restore_all() -> None:
-    """Accept writes again. For tests and for re-initialisation."""
-    for store in _all_model_stores:
-        store.restore()
-    for json_store in _all_json_stores:
-        json_store.restore()
-
-
 def purge_all_sessions() -> int:
     """Invalidate every authenticated session. Returns the number revoked.
 
