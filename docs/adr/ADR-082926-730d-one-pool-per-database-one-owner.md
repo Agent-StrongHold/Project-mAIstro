@@ -1,6 +1,6 @@
 ---
 id: ADR-082926-730d
-title: "One asyncpg pool per database, with exactly one owner"
+title: "One asyncpg pool per database, owned by the registry"
 repo: maistro-engine
 kind: adr
 status: Accepted
@@ -28,7 +28,7 @@ owners:
   - '@BlakeMatthews-dev'
 ---
 
-# ADR-082926-730d: One asyncpg pool per database, with exactly one owner
+# ADR-082926-730d: One asyncpg pool per database, owned by the registry
 
 ## Context
 
@@ -62,11 +62,24 @@ caller meant.
 builds and never calls `get_pool`. Precedence is no longer a post-hoc preference
 applied after both pools exist; the second pool is not created.
 
-**Ownership is recorded, and the owner closes.** `Container.owns_pg_pool` is true
-only when the container opened the pool itself. `Container.aclose()` closes the
-pool when it owns one and leaves a supplied pool alone — closing a caller's pool
-out from under it is the mirror-image bug of leaking one. `aclose()` is
-idempotent, and a close that raises does not stop the rest of the shutdown.
+**The registry owns the pool; a container is a holder.** `Container.holds_pg_pool`
+is true only when the container took the pool from the registry.
+`Container.aclose()` *releases* what it holds and leaves a supplied pool alone —
+closing a caller's pool out from under it is the mirror-image bug of leaking one.
+`aclose()` is idempotent, and a release that raises does not stop the rest of the
+shutdown.
+
+The first version of this decision said "one owner", meaning the container that
+opened the pool. Review showed that is unsound for the same reason the registry
+exists: `get_pool` returns the *same* object to every caller of a DSN, so two
+containers built from one URL would both be owners, and whichever closed first
+would take the pool out from under the other — the failure surfacing later, as a
+query error, far from the close (Codex, #335). So `get_pool` records a user,
+`release_pool` drops one, and the pool closes when the count reaches zero.
+`close_pool` remains unconditional: teardown and a failed preflight need the pool
+gone regardless of who still holds a reference, and it now attempts every close
+before raising, because it empties the registry first and an early return would
+leave the remainder open *and* unreachable.
 
 ## Consequences
 
@@ -87,6 +100,16 @@ idempotent, and a close that raises does not stop the rest of the shutdown.
   there can now be more than one. Every current caller wants exactly that — test
   teardown and preflight failure — and the per-DSN form exists for anyone who
   does not.
+- Reference counting is state that can be wrong. A caller that takes a pool and
+  never releases it leaks the pool exactly as before; what changed is that the
+  opposite mistake — releasing a pool someone else is using — is no longer
+  possible. That is the right way round: a leak is bounded by process lifetime
+  and visible in connection counts, while a close under a live user is an error
+  in unrelated code, later.
+- `close_pool()` now raises an `ExceptionGroup` rather than the first failure.
+  A caller that caught a specific exception type from it will not match the
+  group; there are no such callers today, and hiding the second failure to keep
+  the old shape would defeat the reason the loop continues.
 
 ### Neutral
 - The pool registry is process-global, like the singleton it replaces. Making it

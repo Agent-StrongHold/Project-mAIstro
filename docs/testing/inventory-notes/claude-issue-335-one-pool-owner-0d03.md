@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +20
+  packages/maistro-core/tests: +27
 ---
 # claude-issue-335-one-pool-owner-0d03
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
 
-`tests/test_container_pool_ownership.py` — 20 tests for SPEC-082926-730d (#335).
+`tests/test_container_pool_ownership.py` — 27 tests for SPEC-082926-730d (#335).
 
 They count pools. That is the whole design: the leak was invisible because
 nothing counted, and `get_pool` was a process singleton that ignored its
@@ -31,6 +31,31 @@ The other eleven are about a dict and a method and run anywhere: the per-DSN
 registry, and `aclose` over a fake pool that counts its own closes. Those use a
 real `Container` built on `memory://` rather than a hand-rolled stand-in, so they
 cannot drift from a constructor that takes a dozen collaborators.
+
+Seven arrived after review (Codex, #335), and they changed the shape of the
+file as well as its size.
+
+Two are new claims. `close_pool()` returned on the first failing close, and the
+registry is cleared *before* the closes begin — so a single bad pool left every
+later one open **and** unreachable, breaking the close-all contract precisely on
+the error path that most needs it to hold. And two containers built from one DSN
+get the *same* pool from the registry, so "whoever opened it closes it" meant the
+first `aclose` took the pool out from under the second, surfacing later as a
+query error far from the close. The registry counts users now, and
+`test_the_pool_survives_until_the_last_holder_lets_go` is the finding as an
+executable case.
+
+The other five are the same criteria, proved where they can actually run.
+`ac_outcome_plugin` sinks a criterion when any test claiming it *skips* — rightly,
+since an environment-gated test that never ran is not evidence — and every test
+carrying AC-1 through AC-4 was `requires_postgres`. So four criteria sat at
+`covered` in every job without a database while reading as proven, and the
+Quality gate said so. The `@pytest.mark.ac` markers now live only on tests that
+run anywhere; the PostgreSQL tests keep their claims in prose as corroboration
+against the real thing. `test_a_supplied_pool_means_the_registry_is_never_asked`
+is the headline claim moved down to the seam `_wire_postgres_backend`, where it
+needs no server: asserting the registry was never asked settles it before the
+first connection is used.
 
 Two of them fail on the pre-#335 code and pass on it — verified by reverting the
 one line in `_wire_postgres_backend` and re-running, not by assertion:

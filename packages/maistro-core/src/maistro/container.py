@@ -206,11 +206,16 @@ class Container:
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
     pg_pool: Any = None
-    #: Whether this container opened `pg_pool` itself. False for a pool the
-    #: caller supplied: `aclose()` closes what it owns and leaves the rest, and
-    #: closing a caller's pool out from under it is the mirror-image bug of
-    #: leaking one (#335, ADR-082926-730d).
-    owns_pg_pool: bool = False
+    #: Whether this container took `pg_pool` from the shared registry. False for
+    #: a pool the caller supplied: `aclose()` releases what it took and leaves
+    #: the rest, and closing a caller's pool out from under it is the
+    #: mirror-image bug of leaking one (#335, ADR-082926-730d).
+    #:
+    #: Named `holds`, not `owns`, because the registry owns the pool. Two
+    #: containers built from one DSN get the same object, so "the one that
+    #: opened it closes it" would take the pool out from under the other; the
+    #: pool closes when the last holder releases it (Codex, #335).
+    holds_pg_pool: bool = False
     #: Set by `aclose()`, so a second call does not close a pool twice.
     closed: bool = False
     # Agent-harness DAG node adapters (dispatch/poll/cancel), keyed by
@@ -273,31 +278,39 @@ class Container:
             self.capabilities = default_capability_registry()
 
     async def aclose(self) -> None:
-        """Release what this container opened. Idempotent.
+        """Release what this container took. Idempotent.
 
-        Only what it opened: a pool the caller supplied stays open, because the
+        Only what it took: a pool the caller supplied stays open, because the
         caller still holds it and closing it here would turn a shutdown into a
-        broken caller (#335, ADR-082926-730d). Until this existed nothing closed
-        a pool at all, which is why a leaked one had no symptom short of the
+        broken caller (#335, ADR-082926-730d). Until this existed nothing
+        released a pool at all, which is why a leak had no symptom short of the
         server running out of connection slots.
+
+        Releasing rather than closing: the pool belongs to the registry and may
+        be shared with another container built from the same DSN, so it closes
+        when the last holder lets go (Codex, #335).
         """
         if self.closed:
             return
-        # Marked closed before the await, so a close that raises does not leave
-        # the container looking open and invite a second attempt at a pool that
-        # is already going down.
+        # Marked closed before the await, so a release that raises does not
+        # leave the container looking open and invite a second attempt at a pool
+        # that is already going down.
         self.closed = True
-        if self.owns_pg_pool and self.pg_pool is not None:
+        if self.holds_pg_pool and self.pg_pool is not None:
+            from maistro.persistence import forget_pool, release_pool
+
             try:
-                await self.pg_pool.close()
+                await release_pool(self.pg_pool)
             except Exception:
                 logger.exception("container: the PostgreSQL pool did not close cleanly")
-            finally:
-                from maistro.persistence import forget_pool
-
+                # The registry must not keep handing out a pool whose close
+                # failed half way: a later `get_pool` for that DSN would return
+                # something unusable, and the failure would surface as a query
+                # error far from here.
                 forget_pool(self.pg_pool)
+            finally:
                 self.pg_pool = None
-                self.owns_pg_pool = False
+                self.holds_pg_pool = False
 
     async def route_request(
         self,
@@ -944,7 +957,7 @@ async def create_container(
     # exists to have fixed, reintroduced by the change that generalised it.
     supplied_pg_pool = pg_pool
     pg_pool = None
-    owns_pg_pool = False
+    holds_pg_pool = False
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -963,7 +976,7 @@ async def create_container(
         ) = await _wire_postgres_backend(
             config.database_url, embeddings, supplied_pool=supplied_pg_pool
         )
-        owns_pg_pool = supplied_pg_pool is None
+        holds_pg_pool = supplied_pg_pool is None
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
@@ -1220,7 +1233,7 @@ async def create_container(
         audit_log=audit_log,
         db_pool=db_pool,
         pg_pool=pg_pool,
-        owns_pg_pool=owns_pg_pool,
+        holds_pg_pool=holds_pg_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,

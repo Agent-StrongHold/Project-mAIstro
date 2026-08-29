@@ -57,12 +57,16 @@ than a pool.
 
 ## Precedence
 
-| given | pool used | opened by the container | closed by `aclose()` |
+| given | pool used | taken from the registry | released by `aclose()` |
 |---|---|---|---|
 | `pg_pool` only | the supplied pool | no | no |
 | `postgresql://` URL only | the pool for that DSN | yes | yes |
 | both | the supplied pool | **no** | no |
 | neither | none | no | no |
+
+*Released*, not closed: the registry owns the pool and may have handed the same
+object to another container built from the same DSN. It closes when the last
+holder lets go.
 
 A supplied pool wins because a caller naming a concrete pool is more specific
 than a string naming a server. It wins *before* the URL branch runs, so the
@@ -70,8 +74,17 @@ second pool is never opened rather than opened and discarded.
 
 ## The registry
 
-`get_pool(dsn)` returns the pool for that DSN, creating it once. Two DSNs get two
-pools. `close_pool(dsn)` closes one and forgets it; `close_pool()` closes all.
+`get_pool(dsn)` returns the pool for that DSN, creating it once, and records a
+**user**. Two DSNs get two pools.
+
+`release_pool(pool)` drops one user and closes the pool when the count reaches
+zero — the ordinary path, and the one a container takes.
+
+`close_pool(dsn)` closes one unconditionally; `close_pool()` closes all. These
+are the teardown form: test teardown and a failed preflight both need the pool
+gone regardless of who still holds a reference. `close_pool()` attempts every
+close before raising, because it empties the registry first and an early return
+would leave the remainder open *and* unreachable.
 
 ## Acceptance Criteria
 
@@ -91,29 +104,56 @@ Feature: Container pool ownership
     When the container is built
     Then exactly one pool is created
 
-  @AC-2
-  Scenario: The container owns only the pool it opened
-    Given a container built from a URL
-    When its ownership is read
-    Then it reports owning the pool
+  @AC-1
+  Scenario: One DSN yields one pool however many callers ask
+    Given an empty registry
+    When two callers ask for the same DSN
+    Then they receive the same pool
+    And exactly one pool was created
 
   @AC-2
-  Scenario: A supplied pool is not owned
+  Scenario: The container holds only the pool it took from the registry
+    Given a container built from a URL
+    When what it holds is read
+    Then it reports holding the pool
+
+  @AC-2
+  Scenario: A supplied pool is not held
     Given a container built with a supplied pool
-    When its ownership is read
-    Then it reports owning no pool
+    When what it holds is read
+    Then it reports holding no pool
 
   @AC-3
-  Scenario: Closing the container closes the pool it opened
-    Given a container that opened its own pool
+  Scenario: Closing the container releases the pool it took
+    Given a container that took its pool from the registry
     When it is closed
     Then that pool is closed
+
+  @AC-3
+  Scenario: The pool survives until the last holder lets go
+    Given two containers built from the same DSN, holding the same pool
+    When the first is closed
+    Then the pool is still open
+    And when the second is closed the pool is closed and forgotten
+
+  @AC-3
+  Scenario: Releasing a pool the registry never handed out is a no-op
+    Given a pool that is not registered
+    When it is released
+    Then nothing is closed and nothing is raised
 
   @AC-3
   Scenario: Closing the container leaves a supplied pool open
     Given a container built with a supplied pool
     When it is closed
     Then the supplied pool is still open
+
+  @AC-4
+  Scenario: Every pool is closed even when one close fails
+    Given two registered pools, the first of which refuses to close
+    When every pool is closed
+    Then both were closed
+    And the failure is raised afterwards, carrying every failure
 
   @AC-3
   Scenario: Closing twice closes once
