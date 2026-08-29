@@ -31,6 +31,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
+from maistro.sandbox.network import EgressMode, resolve_grant
 from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
 
 logger = logging.getLogger("maistro.sandbox.bubblewrap")
@@ -51,6 +52,11 @@ class BubblewrapSandboxBackend:
 
     tier = "bubblewrap"
 
+    #: Bubblewrap has exactly two network states: an empty namespace, or the
+    #: host's shared whole. It cannot permit one destination and refuse
+    #: another, so a scoped grant is refused rather than approximated (#77).
+    supports_scoped_egress = False
+
     def __init__(self, *, root: Path | None = None, bwrap: str | None = None) -> None:
         resolved = bwrap or shutil.which(BUBBLEWRAP_BINARY)
         if resolved is None:
@@ -66,9 +72,22 @@ class BubblewrapSandboxBackend:
 
     async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
         sid = f"bwrap-{uuid4().hex[:8]}"
+        # Checked before any work exists: a grant this backend cannot enforce
+        # must fail before there is a sandbox to run anything in.
+        resolve_grant(
+            config.egress,
+            backend_name=type(self).__name__,
+            supports_scoped_egress=self.supports_scoped_egress,
+            sandbox_id=sid,
+        )
         workdir = await asyncio.to_thread(self._make_workdir, sid)
         self._instances[sid] = (config, workdir)
-        logger.info("sandbox_spawned id=%s tier=%s network=%s", sid, self.tier, config.network)
+        logger.info(
+            "sandbox_spawned id=%s tier=%s egress=%s",
+            sid,
+            self.tier,
+            config.egress.mode.value,
+        )
         return SandboxInstance(
             id=sid,
             backend="bubblewrap",
@@ -131,10 +150,12 @@ class BubblewrapSandboxBackend:
         argv += ["--bind", str(workdir), "/work", "--chdir", "/work"]
         for extra in config.writable_paths:
             argv += ["--bind", extra, extra]
-        if config.network:
+        if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
-            # back is the only way to grant egress, and it is only reachable
-            # through a policy whose `network_allowed` is true.
+            # back is the only way this backend can grant egress, and it grants
+            # the host's namespace whole. Reachable only through an explicit
+            # `HOST` grant carrying a reason -- never through a bare boolean,
+            # and never as an approximation of a scoped grant.
             argv += ["--share-net"]
         argv += ["--clearenv"]
         for key, value in sorted(config.env.items()):

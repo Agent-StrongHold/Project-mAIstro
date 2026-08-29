@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.sandbox.network import DENY_ALL, EgressGrant
+
 # Type alias for clarity
 IsolationTier = str  # "vm" | "gvisor" | "container" | "bubblewrap" | "fake"
 
@@ -47,6 +49,10 @@ class SandboxConfig:
     writable_paths: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     min_isolation: IsolationTier = "container"
+    #: The egress grant this sandbox runs under. Default-deny (#77), and
+    #: frozen with the rest of the config so nothing can widen it after the
+    #: sandbox is running.
+    egress: EgressGrant = DENY_ALL
 
 
 @dataclass

@@ -44,6 +44,59 @@ accidents and prompt-injection mistakes, **not** a security boundary against
 hostile code", so a Tier-3 host is not permitted to run the workloads whose
 stated reason for existing is containment of hostile code.
 
+## Execution-mode floors (ADR-093 decision 6)
+
+Selection always prefers the strongest backend available; the *floor* decides
+whether execution is permitted at all.
+
+| Mode | Meaning | Minimum tier |
+|---|---|---|
+| `interactive` | A human at the keyboard, confirmation gates live | Tier 3 |
+| `autonomous` | Unattended — builders pipelines, scheduled DAG nodes, benchmark harnesses | Tier 2 |
+| unstated | Read as `autonomous` | Tier 2 |
+
+An unstated mode gets the stricter floor because the errors are asymmetric:
+treating an unattended run as supervised is the failure that matters, while
+treating a supervised run as unattended only costs a refusal on a weak host.
+
+The floor applies to **untrusted** workloads. ADR-093 decision 3 is as explicit
+as decision 1 in the other direction — "trusted first-party services keep
+container isolation" — so `TRUSTED_TOOL` and `BROWSER_AUTOMATION` carry
+`untrusted=False` and are not floored by mode. Applying it to them would refuse
+a first-party API call on every host without gVisor, which is the ADR being
+read past its own scope.
+
+## Egress
+
+Default-deny. A sandbox gets no interface unless its policy carries an
+`EgressGrant`, which must name a reason — so a grant cannot be made by accident
+and an audit line always has a subject.
+
+| Mode | Meaning | Bubblewrap |
+|---|---|---|
+| `deny` | No interface. The default. | `--unshare-all`, nothing shared back |
+| `scoped` | An allowlist of destinations | **Refused** — cannot filter |
+| `host` | The host's namespace, whole | `--share-net` |
+
+`scoped` is refused rather than approximated. Bubblewrap has exactly two
+network states, so reading "scoped" as "on" would grant unrestricted egress
+while the audit record said scoped. A backend declares
+`supports_scoped_egress`, and the refusal happens before a sandbox exists.
+
+Both outcomes are logged — `sandbox_egress_granted` with the reason and
+allowlist, `sandbox_egress_denied` otherwise — because a reader needs to tell
+"denied" from "never asked".
+
+The grant is decided before the sandbox exists and is frozen onto
+`SandboxConfig`, so there is nothing for candidate code to widen. `build_config`
+takes it from the policy and never from its overrides, which would otherwise be
+a widening path straight through the clamp that exists to prevent widening.
+
+This is the sandbox boundary, and it is a different thing from
+`maistro.security.ssrf`, which guards the engine's *own* outbound calls. That
+guard is worth nothing against candidate code, which can open a socket without
+going through Python at all.
+
 ## Failure behaviour
 
 - **No backend at all** — `build_selector` returns an empty selector, logs
