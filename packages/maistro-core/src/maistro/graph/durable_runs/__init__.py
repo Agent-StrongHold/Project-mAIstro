@@ -27,11 +27,17 @@ from .continuation import (
     SqliteGraphContinuationStore,
 )
 from .execution_store import DurableRunExecutionStore
+from .legacy_archive import (
+    ArchivedGraphRun,
+    LegacyGraphRunArchive,
+    LegacyRunNotResumable,
+)
 from .protocol import DurableRunStore
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .types import DurableRunRecord
 
 __all__ = [
+    "ArchivedGraphRun",
     "CanonicalDurableRunStore",
     "DurableRunExecutionStore",
     "DurableRunRecord",
@@ -40,6 +46,8 @@ __all__ = [
     "GraphContinuationStore",
     "InMemoryDurableRunStore",
     "InMemoryGraphContinuationStore",
+    "LegacyGraphRunArchive",
+    "LegacyRunNotResumable",
     "NodeResolver",
     "RunStatus",
     "SqliteDurableRunStore",
