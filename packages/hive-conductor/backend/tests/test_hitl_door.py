@@ -62,8 +62,16 @@ def _paused_record(run_id: str, *, kind: str = "hitl") -> Any:
 
 
 @pytest.fixture
-def seeded(authed_client):
-    """Seed the app's own durable store, and clear what this test added."""
+def seeded(admin_client):
+    """Seed the app's own durable store, and clear what this test added.
+
+    `admin_client` rather than `authed_client`: answering a pause resumes the
+    Run, so the route carries `dags.write` and an unscoped principal is refused
+    before any of the behaviour below is reachable. That refusal is a property
+    worth its own test rather than something to route around, so it has one --
+    `test_an_unscoped_principal_cannot_answer` -- and these use a principal
+    that holds the scope.
+    """
     from services.dag_agents import get_run_store
 
     store = get_run_store()
@@ -73,7 +81,7 @@ def seeded(authed_client):
         await store.create(_paused_record(run_id, **kwargs))
         created.append(run_id)
 
-    yield authed_client, store, _seed
+    yield admin_client, store, _seed
     for run_id in created:
         store._rows.pop(run_id, None)
 
@@ -194,3 +202,32 @@ async def test_the_reserved_pause_key_cannot_be_supplied(seeded) -> None:
 
     assert response.status_code == 422
     assert "reserved" in response.json()["detail"]
+
+
+async def test_an_unscoped_principal_cannot_answer(authed_client, seeded) -> None:
+    """The scope the route carries, proven from the outside.
+
+    Answering resumes the Run, and the nodes that run next are the same graph
+    nodes `/v1/dags` gates — so without `dags.write` this route would be DAG
+    execution reachable by replying to a prompt instead of by starting a run.
+    `check_enumerations.py` caught that the route had no entry; this is what
+    makes the entry mean something.
+
+    The seeded run is real and paused, so a 403 here is the authorization
+    refusing rather than the run being absent — which a 404 would have been.
+    """
+    _admin, _store, seed = seeded
+    await seed("hitl-unscoped")
+
+    response = authed_client.post("/v1/hitl/hitl-unscoped/ask/answer", json={"answer": "yes"})
+
+    assert response.status_code == 403
+
+
+def test_an_unscoped_principal_cannot_list_pending_work(authed_client) -> None:
+    """The queue names which Runs are blocked and what each is being asked.
+
+    That is the same execution surface the answer route mutates, so it takes
+    the same scope rather than being readable by anyone authenticated.
+    """
+    assert authed_client.get("/v1/hitl/pending").status_code == 403

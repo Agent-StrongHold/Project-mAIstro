@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +9
+  packages/hive-conductor/backend/tests: +11
 ---
 # claude-m1-244-hitl-door-15b0
 
@@ -24,3 +24,21 @@ method the test told it to. Purely additive.
 - a hostile answer is Warden-scanned and nothing reaches the store;
 - the reserved `_pause` key cannot be supplied, so a responder cannot name the
   execution state of the node that was waiting on it.
+
+**Two more, added on rebase.** `scripts/check_enumerations.py` landed on
+`develop` after this branch was written, and it correctly rejected the answer
+route: a mutating `/v1/` route with no `_PROTECTED_OPS` entry. The route now
+carries `dags.write` on both verbs, and these two prove the entry means
+something rather than merely satisfying the gate:
+
+- an unscoped principal is refused the answer route. The run it names is real
+  and paused, so the 403 is authorization refusing rather than the run being
+  absent — which a 404 would have been, and which would have passed while
+  proving nothing;
+- an unscoped principal is refused the pending queue too. That listing carries
+  the payload each node is asking, so leaving the read open while gating the
+  write would have exposed what every blocked Run is doing to anyone
+  authenticated.
+
+The nine behavioural tests above now run as a principal that holds the scope,
+which is why the file's fixture moved from `authed_client` to `admin_client`.
