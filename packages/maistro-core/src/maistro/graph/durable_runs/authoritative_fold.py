@@ -210,6 +210,48 @@ async def _checkpoint_advancement(
     )
 
 
+async def _fold_failures(
+    record: DurableRunRecord,
+    failures: tuple[traversal._FrontierItem, ...],
+    *,
+    prior_state: GraphExecutionState,
+    store: DurableRunStore,
+) -> DurableRunRecord:
+    """Fail the Run, or send back the nodes whose own policy says try again.
+
+    A failure with a visit left is not the Run's failure yet (#548). The retry
+    is the node's next visit -- a new NodeRun with its own Attempt -- because
+    the Attempt firewall rightly refuses to redispatch a completed Attempt:
+    completion means the physical work ran, side effects and all.
+
+    `prior_state` rather than `record.graph_state` because the accept above
+    already counted this visit; asking the pre-fold state keeps the budget
+    meaning "tries" rather than "tries minus the one being decided".
+
+    All or nothing, deliberately. One node in a frontier with no budget left
+    fails the Run now rather than after its neighbours have spent theirs --
+    the Run is going to fail either way, and the extra work would be spent on
+    a result nobody will read.
+    """
+    retryable = tuple(item for item in failures if traversal._may_revisit_after(prior_state, item))
+    if len(retryable) != len(failures):
+        first = next(item for item in failures if item not in retryable)
+        return await traversal._mark_failed(
+            record,
+            error_code=first.result.error_code or "NodeFailure",
+            error_message=first.result.error_message or f"node {first.node_id} failed",
+            store=store,
+        )
+    return await _checkpoint_advancement(
+        record,
+        prior_state,
+        (),
+        tuple(item.node_id for item in retryable),
+        (),
+        store=store,
+    )
+
+
 async def fold_authoritative_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -225,11 +267,10 @@ async def fold_authoritative_frontier(
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:
-        first = failures[0]
-        return await traversal._mark_failed(
+        return await _fold_failures(
             record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
+            failures,
+            prior_state=prior_state,
             store=store,
         )
 
