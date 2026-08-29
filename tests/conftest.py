@@ -53,6 +53,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _default_ac_state_ratchet_event(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ratchet unit tests opt into merge-group semantics explicitly.
+
+    A merge-group CI job exports GITHUB_EVENT_NAME=merge_group to pytest itself.
+    The ordinary ratchet cases are review-time cases, so inheriting that ambient
+    value made them exercise the carve-out by accident and deterministically
+    reddened the queue. Scope the neutral default to this one test module; the
+    merge-group cases set the event to merge_group in their own bodies.
+    """
+    if request.node.nodeid.startswith("tests/test_check_ac_state_ratchet.py"):
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+
+
+@pytest.fixture(autouse=True)
 def _reset_singletons() -> Iterator[None]:
     """Reset all global singletons between tests to prevent state leakage."""
     # Clear cached settings so test env vars are picked up
