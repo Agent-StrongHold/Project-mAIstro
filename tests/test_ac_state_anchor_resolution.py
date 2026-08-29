@@ -123,7 +123,17 @@ class TestTheTwoFailuresStayApart:
         """The finding the rung was built for survives the new gate untouched."""
         universe = check.load_module_universe()
         unreachable = check.load_unreachable()
-        unwired = next(iter(unreachable))
+        # `min` of the intersection, not `next(iter(...))` of the baseline.
+        # Two reasons, and the first is a bug I shipped into this test: set
+        # iteration order follows the per-process hash seed, so an arbitrary
+        # pick is a different module on every run. The second is why that
+        # mattered -- 40 of the 187 baselined names are not module identities
+        # at all (`routes.projects` unscoped, `scripts/ac_state_notes.py` as a
+        # path), so roughly a fifth of the picks failed the next line. That
+        # mismatch is real and is #651, not this test's to assert.
+        candidates = sorted(unreachable & universe)
+        assert candidates, "no baselined module is a known identity; see #651"
+        unwired = candidates[0]
 
         assert unwired in universe
         assert check.unresolvable_anchors([_spec(unwired)], universe) == []
