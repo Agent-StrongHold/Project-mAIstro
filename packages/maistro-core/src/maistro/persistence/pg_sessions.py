@@ -9,6 +9,9 @@ if TYPE_CHECKING:
     import asyncpg
 
 
+_SESSION_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+
+
 class PgSessionStore:
     """PostgreSQL-backed session store."""
 
@@ -51,8 +54,17 @@ class PgSessionStore:
         session_id: str,
         messages: list[dict[str, str]],
     ) -> None:
-        """Append messages to session history."""
-        async with self._pool.acquire() as conn:
+        """Append one complete message batch atomically.
+
+        Sequence numbers are scoped to a session, so a transaction-scoped
+        advisory lock on that identity is the narrowest database authority that
+        can serialize ``MAX(seq) + 1`` across independent connections. The lock,
+        sequence read, every insert, and inline retention purge are one
+        transaction: a failed message cannot commit a prefix, and another writer
+        cannot observe the next sequence until the whole batch is durable.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(_SESSION_LOCK_SQL, session_id)
             row = await conn.fetchrow(
                 "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM sessions WHERE session_id = $1",
                 session_id,
@@ -73,14 +85,10 @@ class PgSessionStore:
                     )
                     next_seq += 1
 
-            # Purge inline. TTL was a read-time filter only
-            # (`timestamp > to_timestamp($2)` in get_history), so expired
-            # conversation content was hidden but never deleted — unbounded
-            # growth and indefinite retention of user messages. There is no
-            # scheduled sweeper to defer this to, which is precisely why
-            # nothing was ever removed. Same shape as
-            # security/pg_strikes.py:187-190, which clears its expired windows
-            # as part of the normal path.
+            # Purge inline while the append transaction is still open. A normal
+            # positive TTL cannot delete the just-inserted rows because their
+            # server timestamp is newer than this cutoff; an explicit zero or
+            # negative TTL intentionally means "purge through now".
             await conn.execute(
                 "DELETE FROM sessions WHERE timestamp <= to_timestamp($1)",
                 time.time() - self._ttl_seconds,
@@ -106,8 +114,9 @@ class PgSessionStore:
             return 0
 
     async def delete_session(self, session_id: str) -> None:
-        """Delete a session."""
-        async with self._pool.acquire() as conn:
+        """Delete a session without interleaving with an append to that session."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(_SESSION_LOCK_SQL, session_id)
             await conn.execute(
                 "DELETE FROM sessions WHERE session_id = $1",
                 session_id,
