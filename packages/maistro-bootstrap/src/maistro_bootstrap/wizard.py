@@ -103,7 +103,13 @@ def collect_answers_interactive() -> InstallAnswersV1:
     env = environment_report()
     console.print(f"[dim]Container runtime:[/dim] {det} — {hint}")
     console.print(f"[dim]Admin:[/dim] {env['admin_hint']}")
-    console.print(f"[dim]Virtualization:[/dim] {', '.join(env['virtualization'])}\n")
+    console.print(f"[dim]Virtualization:[/dim] {', '.join(env['virtualization'])}")
+    # Printed next to the hypervisor inventory on purpose: the two used to be
+    # conflated, and "kvm" on the Virtualization line reads as "this host can
+    # isolate untrusted code" when the engine ships no VM backend at all (#81).
+    sandbox = env["sandbox"]
+    style = "dim" if sandbox["sandbox_binary_present"] else "yellow"
+    console.print(f"[{style}]Sandbox:[/{style}] {sandbox['summary']}\n")
 
     stack_bringup = _stack_bringup()
     features = _feature_set()

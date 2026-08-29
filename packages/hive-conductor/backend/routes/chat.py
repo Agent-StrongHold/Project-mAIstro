@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
 from services.chat_completion import build_llm_port
+from services.chat_completion import conversation_only as _conversation_only
 from services.owned_records import chat_sessions_for
 
 router = APIRouter(tags=["chat"])
@@ -99,28 +100,6 @@ def _dashboard_edit_requested(req: ChatCompletionRequest) -> bool:
 
 def _disabled_dashboard_response() -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
-
-
-def _conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
-    """Return a request that cannot advertise or carry tool capabilities.
-
-    `ChatCompletionRequest` allows extra fields because several UIs attach
-    presentation metadata such as `tools_scope`. Those extras are intentionally
-    discarded at this trust boundary so a caller cannot smuggle a tool-enabled
-    mode into the raw LLM request. The user's messages/sampling controls remain
-    intact, and an omitted model resolves through the configured deployment
-    default just as it did before containment.
-    """
-    from config import get_settings
-
-    return ChatCompletionRequest(
-        messages=req.messages,
-        model=req.model or get_settings().chat_default_model,
-        stream=False,
-        temperature=req.temperature,
-        max_tokens=req.max_tokens,
-        tools=None,
-    )
 
 
 @router.post("/complete")
