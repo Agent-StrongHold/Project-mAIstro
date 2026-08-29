@@ -32,6 +32,12 @@ from maistro.runs.consumption import _awaits_human_answer
 from maistro.runs.model import NodeRun, RunStatus
 from maistro.runs.reconciliation import _parked_run_status
 
+#: SPEC-082926-d90e declares `contracts: [behavioral]`, and ADR-032 says a
+#: document claiming a contract kind names a test carrying that marker. It named
+#: these two files and neither carried one, so the claim had no evidence (#345).
+pytestmark = [pytest.mark.contract("behavioral")]
+
+
 #: Located through the imported module, not a path relative to this test, so
 #: the guard cannot start silently scanning an empty directory if either tree
 #: is rearranged.
