@@ -25,8 +25,7 @@ import maistro.graph.nodes.base as base
 from maistro.graph.durable_runs.executor import _is_human_pause
 from maistro.graph.nodes.base import (
     HUMAN_PAUSE_REASONS,
-    PAUSE_REASONS,
-    SYSTEM_PAUSE_REASONS,
+    PAUSE_REASON_OWNERS,
     NodeResult,
 )
 from maistro.runs.consumption import _awaits_human_answer
@@ -49,8 +48,8 @@ EXPECTED_HUMAN = {
 }
 
 #: Pauses that wait on a system -- a remote agent, a harness, a polled API.
-#: WAITING is the right record for these, and that is a decision, not a
-#: default: the structural guard below is what makes it one.
+#: WAITING is the right record for these, and that is a decision the table
+#: states, not a default: the structural guard below is what makes it one.
 EXPECTED_SYSTEM = {
     "awaiting_remote_delegation",
     "awaiting_harness",
@@ -87,13 +86,14 @@ class TestTheSetIsDeclaredOnce:
     def test_the_human_set_holds_every_human_reason(self) -> None:
         assert set(HUMAN_PAUSE_REASONS) == EXPECTED_HUMAN
 
-    def test_the_system_set_holds_every_system_reason(self) -> None:
-        assert set(SYSTEM_PAUSE_REASONS) == EXPECTED_SYSTEM
+    def test_the_table_classifies_every_system_reason(self) -> None:
+        system = {r for r, owner in PAUSE_REASON_OWNERS.items() if owner == "system"}
+        assert system == EXPECTED_SYSTEM
 
-    def test_the_two_kinds_do_not_overlap(self) -> None:
-        """A reason is owed by a person or by the system, never by both."""
-        assert not (HUMAN_PAUSE_REASONS & SYSTEM_PAUSE_REASONS)
-        assert PAUSE_REASONS == HUMAN_PAUSE_REASONS | SYSTEM_PAUSE_REASONS
+    def test_every_reason_states_an_owner_the_readers_understand(self) -> None:
+        """A third owner value would park silently, which is the whole defect."""
+        assert set(PAUSE_REASON_OWNERS.values()) <= {"human", "system"}
+        assert set(PAUSE_REASON_OWNERS) == EXPECTED_HUMAN | EXPECTED_SYSTEM
 
     @pytest.mark.ac("SPEC-082926-d90e/AC-5")
     def test_no_node_pauses_for_an_undeclared_reason(self) -> None:
@@ -101,7 +101,7 @@ class TestTheSetIsDeclaredOnce:
 
         Every `pause_until` call in the package passes a *constant* imported
         from `.base`, and every one of those constants names a reason
-        `PAUSE_REASONS` declares -- as human, or explicitly as system. A bare
+        `PAUSE_REASON_OWNERS` classifies -- as human, or explicitly as system. A bare
         string literal fails here too: a literal is exactly how four reasons
         diverged from the two the readers knew, with nothing failing meanwhile.
 
@@ -117,10 +117,10 @@ class TestTheSetIsDeclaredOnce:
         for module, names in raised.items():
             for name in names:
                 value = getattr(base, name, None) if not name.startswith(("'", '"')) else None
-                if value is None or value not in PAUSE_REASONS:
+                if value is None or value not in PAUSE_REASON_OWNERS:
                     undeclared.setdefault(module, set()).add(name)
         assert not undeclared, (
-            "these nodes pause for a reason PAUSE_REASONS does not declare, so both "
+            "these nodes pause for a reason PAUSE_REASON_OWNERS does not name, so both "
             f"readers silently fall back to WAITING for them: {undeclared}"
         )
 

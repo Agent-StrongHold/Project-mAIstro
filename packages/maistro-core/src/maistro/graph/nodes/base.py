@@ -212,62 +212,55 @@ class _NodePaused(Exception):
         super().__init__(reason)
 
 
-#: Every ``paused_reason`` a node in this package passes to :func:`pause_until`.
+#: Every ``paused_reason`` a node in this package passes to :func:`pause_until`,
+#: mapped to who is owed the next action.
 #:
 #: A pause reason is a cross-module contract, not a node-local string: the node
 #: writes it and two *other* modules read it back to decide whether a person or
-#: the system is the one owed an action. Declaring them here, beside the
-#: function that carries them, is what lets the readers agree by construction
-#: instead of by both being edited on the same day.
+#: the system is waited on. One table here, beside the function that carries
+#: the reason, is what lets those readers agree by construction instead of by
+#: both being edited on the same day.
+#:
+#: They previously held two hand-written allowlists which agreed on two reasons
+#: and omitted the rest, so `human.review_and_edit` and `human.delegate_to_role`
+#: parked as "the system will retry" on both paths: a prompt nobody can see,
+#: indistinguishable from a provider being down. A second literal set is a
+#: second thing to forget, and the reason it got forgotten is that nothing
+#: failed when it was.
+#:
+#: A reason absent from this table is not a new feature but an unclassified
+#: one -- the readers fall back to WAITING and nothing says whether that was
+#: the intent. A structural test over the node package's calls is what turns
+#: that silent default into a failing one.
 PAUSE_AWAITING_HUMAN_ANSWER = "awaiting_human_answer"
 PAUSE_AWAITING_HUMAN_APPROVAL = "awaiting_human_approval"
 PAUSE_AWAITING_HUMAN_REVIEW = "awaiting_human_review"
 PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
-
-#: Pauses that wait on a *system*: a remote agent, a harness, a polled API.
-#: They are declared beside the human ones precisely because they are not
-#: human. The set below is what makes "which kind is this?" a question a new
-#: node has to answer rather than one it answers by default.
 PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
 PAUSE_AWAITING_HARNESS = "awaiting_harness"
 PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
 
-#: The pause reasons that mean a *person* is owed an action, not the system.
-#:
-#: Both readers -- the durable graph executor's `_is_human_pause` and the
-#: schedule consumer's yield disposition -- import this rather than spelling
-#: the set themselves. They previously held two hand-written copies which
-#: agreed on two reasons and omitted the other two, so `human.review_and_edit`
-#: and `human.delegate_to_role` parked as "the system will retry" on both
-#: paths: a prompt nobody can see, indistinguishable from a provider being
-#: down. A second literal set is a second thing to forget, and the reason it
-#: got forgotten is that nothing failed when it was.
+#: Who each pause waits on. "human" means a person owes the next action and the
+#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
+#: WAITING. Every reason states its own answer, so adding a pausing node is a
+#: question a reviewer sees rather than a default nobody chose.
+PAUSE_REASON_OWNERS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: "human",
+    PAUSE_AWAITING_HUMAN_APPROVAL: "human",
+    PAUSE_AWAITING_HUMAN_REVIEW: "human",
+    PAUSE_AWAITING_ROLE_DELEGATE: "human",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_HARNESS: "system",
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+}
+
+#: The reasons a *person* is owed an action, derived from the table above so
+#: the two can never disagree. Both readers -- the durable graph executor's
+#: `_is_human_pause` and the schedule consumer's yield disposition -- import
+#: this rather than spelling the set themselves.
 HUMAN_PAUSE_REASONS = frozenset(
-    {
-        PAUSE_AWAITING_HUMAN_ANSWER,
-        PAUSE_AWAITING_HUMAN_APPROVAL,
-        PAUSE_AWAITING_HUMAN_REVIEW,
-        PAUSE_AWAITING_ROLE_DELEGATE,
-    }
+    reason for reason, owner in PAUSE_REASON_OWNERS.items() if owner == "human"
 )
-
-#: The pause reasons that wait on the system, where WAITING is the right
-#: record and no person is owed anything.
-SYSTEM_PAUSE_REASONS = frozenset(
-    {
-        PAUSE_AWAITING_REMOTE_DELEGATION,
-        PAUSE_AWAITING_HARNESS,
-        PAUSE_WAITING_ON_JIRA_SUBTASKS,
-    }
-)
-
-#: Every reason any node in this package may pause for.
-#:
-#: A node that pauses for a reason outside this set is not a new feature, it
-#: is an unclassified one: the readers fall back to WAITING and nothing says
-#: whether that was the intent. The guard over this set is what turns that
-#: silent default into a failing test.
-PAUSE_REASONS = HUMAN_PAUSE_REASONS | SYSTEM_PAUSE_REASONS
 
 
 def pause_until(
