@@ -116,8 +116,21 @@ def production_modules() -> list[str]:
 
 
 def unreachable_modules() -> set[str]:
+    """The baselined-unreachable modules, named the way the matrix names modules.
+
+    The baseline stores scoped identities (#651); this table's Modules column
+    stores the prefixes a person writes — `scripts`, `services`, `routes` — so
+    the two are translated here rather than by making either side speak the
+    other's dialect. `production_modules` already reports display labels, and
+    the census subtracts one set from the other: leaving the baseline in
+    identity form would have silently emptied the unreachable share.
+    """
+    reach = _load_reachability()
     baseline = json.loads((ROOT / "quality" / "reachability-baseline.json").read_text())
-    return set(baseline["unreachable"])
+    return {
+        reach.display_name(key)  # type: ignore[attr-defined]
+        for key in baseline["unreachable"]
+    }
 
 
 def parse_table(text: str, marker: str) -> list[list[str]]:

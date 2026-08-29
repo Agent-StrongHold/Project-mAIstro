@@ -36,6 +36,18 @@ llm = [
 # The sandbox tool drives the `docker` CLI via subprocess, not the Python SDK,
 # so it needs no pip dependency. Kept as an explicit (empty) extra for clarity.
 sandbox = []
+# Verification of pre-Argon2id password columns. `security/passwords.py` imports
+# bcrypt lazily, inside the `$2`-prefix branch, so a deployment with no legacy
+# hashes never loads it — which is why this is an extra rather than a hard
+# dependency every consumer pays for. Declared here because this is the package
+# whose code imports it: it was only ever installed because `hive-conductor`
+# happened to pin it, so any *other* consumer of `maistro-core` with a legacy
+# column was verifying against a module nothing had promised to install (#514).
+#
+# Absence is a denial, not a crash — see `verify_password`.
+bcrypt = [
+    "bcrypt>=4.0,<6",
+]
 # RE2 accelerates Warden's 47-pattern scan ~14x and, more importantly, bounds
 # its worst case: `re` backtracks, so attacker-shaped input can make a scan
 # superlinear. Optional because it is a native extension — without it Warden
@@ -118,7 +130,7 @@ asgi = [
 # is a supported configuration (Warden falls back to `re`), so importing without
 # it is a case worth keeping in the sweep.
 all = [
-    "maistro-core[llm,sandbox,observability,tui,builders,sqlite,asgi,identity,s3]",
+    "maistro-core[llm,sandbox,observability,tui,builders,sqlite,asgi,identity,s3,bcrypt]",
 ]
 dev = [
     "pytest>=8.3,<10",

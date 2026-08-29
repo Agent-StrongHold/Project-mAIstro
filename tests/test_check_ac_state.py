@@ -742,28 +742,38 @@ class TestToolingReachesTheTopRung:
     directions, because a ladder that says `reachable` for *any* tooling module
     would be worse than one that says it for none: it would grant the top rung
     to the nine mutation scripts that are dead behind a disabled workflow.
+
+    Tooling is spelled `@tool/<stem>` here, the identity the reachability walk
+    produces. The hand-made sets below would agree with themselves in either
+    spelling; `test_the_real_ledger_agrees_with_both` is the one that has to
+    match the committed file, and it read `scripts/mutation_ratchet.py` as
+    *reachable* the moment the baseline started storing identities (#651) —
+    the defect stated as the grade it produced.
     """
+
+    DEAD_TOOL = "@tool/mutation_ratchet"
+    LIVE_TOOL = "@tool/check-wiring-reads"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")
     def test_a_workflow_rooted_tooling_module_reaches_the_top_rung(self, check) -> None:
         criterion = check.Criterion(
             ac_id="ADR-X/AC-1",
-            module="scripts/check-wiring-reads.py",
+            module=self.LIVE_TOOL,
             covered_by=["tests/test_check_wiring_reads.py::test_x"],
             passing=True,
         )
-        assert criterion.rung({"scripts/mutation_ratchet.py"}) == "reachable"
+        assert criterion.rung({self.DEAD_TOOL}) == "reachable"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")
     def test_an_unreachable_tooling_module_stays_at_passing(self, check) -> None:
         """The counterweight: a dead script's tests prove they run, not that it does."""
         criterion = check.Criterion(
             ac_id="ADR-X/AC-1",
-            module="scripts/mutation_ratchet.py",
+            module=self.DEAD_TOOL,
             covered_by=["tests/test_mutation.py::test_x"],
             passing=True,
         )
-        assert criterion.rung({"scripts/mutation_ratchet.py"}) == "passing"
+        assert criterion.rung({self.DEAD_TOOL}) == "passing"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")
     def test_the_real_ledger_agrees_with_both(self, check) -> None:
@@ -775,15 +785,16 @@ class TestToolingReachesTheTopRung:
         unreachable = set(
             json.loads((root / "quality" / "reachability-baseline.json").read_text())["unreachable"]
         )
+        assert self.DEAD_TOOL in unreachable, "the dead-script stand-in must still be baselined"
         live = check.Criterion(
             ac_id="ADR-X/AC-1",
-            module="scripts/check-wiring-reads.py",
+            module=self.LIVE_TOOL,
             covered_by=["t::x"],
             passing=True,
         )
         dead = check.Criterion(
             ac_id="ADR-X/AC-2",
-            module="scripts/mutation_ratchet.py",
+            module=self.DEAD_TOOL,
             covered_by=["t::x"],
             passing=True,
         )
