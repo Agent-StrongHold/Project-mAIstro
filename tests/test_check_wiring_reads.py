@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +24,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-wiring-reads.py"
 BASELINE = ROOT / "quality" / "wiring-reads-baseline.json"
 _SOURCE = "packages/demo/src/demo/container.py"
+
+
+def _git_rc(*args: str) -> int:
+    """This checkout's answer to a git question, as a return code.
+
+    The three-state test below has to ask the same questions the resolver asks
+    without reimplementing its answers, so it asks git directly.
+    """
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True).returncode
 
 
 @pytest.fixture(scope="module")
@@ -219,15 +229,51 @@ def test_main_fails_on_each_ledger_divergence(check, monkeypatch, capsys):
     ):
         monkeypatch.setattr(check, "unread_fields", lambda *a, c=current: c)
         monkeypatch.setattr(check, "_load_baseline", lambda *a, r=recorded: r)
+        _base_state(check, monkeypatch, recorded)
         assert check.main([]) == 1
     capsys.readouterr()
 
 
 def test_main_passes_when_the_ledger_matches(check, monkeypatch, capsys):
+    ledger = {"demo.Root": {"known": "why"}}
     monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
-    monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
+    monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
+    _base_state(check, monkeypatch, ledger)
     assert check.main([]) == 0
     assert "matches the current unread set" in capsys.readouterr().out
+
+
+def _trusted(check, entries, *, version="1"):
+    """Stand in for the base-revision ledger without building a git history.
+
+    `main` judges new debt against the base (#534), so a test that only
+    substitutes the worktree ledger would be judged against the real
+    repository's and fail for reasons it never set up.
+
+    `version` is the metric definition the *base* ledger was measured under.
+    It defaults to today's, so a test that says nothing about the metric is
+    comparing like with like; a test about the metric names the mismatch.
+    """
+    baseline = check._provenance().Baseline(
+        text="{}", origin="base", base_sha="0" * 40, path=Path("ledger.json")
+    )
+    return lambda *a, e=entries, v=version: (e, baseline, v)
+
+
+def _base_state(check, monkeypatch, entries, *, authorized=None, version="1"):
+    """Both of `main`'s reads of the base, substituted together.
+
+    They have to move as a pair. `main` now reads the grants from the SAME
+    revision the ledger came from, so a test that fakes the ledger and leaves
+    the grants to resolve for real asks git to look up a base SHA that does
+    not exist. In the shallow `test` job that surfaced as three failures whose
+    message was about a merge base and whose cause was a half-built fixture.
+    """
+    prov = check._provenance()
+    monkeypatch.setattr(check, "_trusted_baseline", _trusted(check, entries, version=version))
+    monkeypatch.setattr(prov, "load_authorizations", lambda *a, **k: authorized or {})
+    monkeypatch.setattr(check, "_provenance", lambda: prov)
+    return prov
 
 
 @pytest.mark.ac("ADR-082526-1899/AC-6")
@@ -276,3 +322,302 @@ def test_every_declared_di_root_exists(check):
     """A declaration that no longer resolves must fail loudly, not silently pass."""
     for di_root in check.DI_ROOTS:
         assert check._public_fields(ROOT / di_root.source, di_root.cls)
+
+
+class TestTheLedgerIsNotItsOwnOracle:
+    """#534: banking a regression on the branch must not answer for it.
+
+    Before this, adding an unread field, running `--update`, and writing the
+    disposition were three edits one commit could make, and the gate went green
+    with the unread count silently raised. The trusted ledger now comes from the
+    base revision, so those edits change the bookkeeping and not the verdict.
+    """
+
+    def _weakened(self, check, monkeypatch, *, trusted, authorized=None):
+        """A candidate that measures one more unread field than the base has."""
+        banked = {"demo.Root": {"known": "why", "fresh": "self-written justification"}}
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known", "fresh"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: banked)
+        _base_state(check, monkeypatch, trusted, authorized=authorized)
+
+    def test_banking_and_justifying_in_one_tree_still_fails(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        self._weakened(check, monkeypatch, trusted={"demo.Root": {"known": "why"}})
+
+        assert check.main([]) == 1
+        assert "NEWLY UNREAD against the trusted baseline" in capsys.readouterr().err
+
+    def test_the_verdict_names_the_commit_it_judged_against(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """A failure a reader cannot trace to a base is not auditable."""
+        self._weakened(check, monkeypatch, trusted={"demo.Root": {"known": "why"}})
+
+        check.main([])
+
+        assert "baseline: base " + "0" * 12 in capsys.readouterr().out
+
+    def test_an_explicit_authorization_lets_a_deliberate_floor_raise_through(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """The escape hatch is a separate file `--update` never writes."""
+        self._weakened(
+            check,
+            monkeypatch,
+            trusted={"demo.Root": {"known": "why"}},
+            authorized={"demo.Root.fresh": "#534 -- @owner: consumed downstream"},
+        )
+
+        assert check.main([]) == 0
+        assert "authorized: demo.Root.fresh" in capsys.readouterr().out
+
+    def test_removing_a_tolerated_entry_needs_no_authorization(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """Improvements bank automatically; only new debt is gated."""
+        ledger = {"demo.Root": {"known": "why"}}
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
+        _base_state(check, monkeypatch, {"demo.Root": {"known": "why", "gone": "was"}})
+
+        assert check.main([]) == 0
+        capsys.readouterr()
+
+    def test_an_unreadable_base_fails_rather_than_trusting_the_candidate(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """The fallback that would reopen the hole."""
+        prov = check._provenance()
+
+        def _refuse(*_a, **_k):
+            raise prov.RatchetProvenanceError(
+                "base revision 'origin/develop' could not be resolved"
+            )
+
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_trusted_baseline", _refuse)
+
+        assert check.main([]) == 1
+        assert "could not be resolved" in capsys.readouterr().err
+
+
+class TestBothReadsOfTheBaseComeFromOneCommit:
+    """The ledger and the grants that authorize raising it (#534).
+
+    Resolved independently, they can disagree: two lookups of "the base" run
+    at different moments, against a ref that moves. A grant read from one
+    commit permitting a floor measured against another is not the check it
+    looks like, so `main` resolves once and names the answer.
+    """
+
+    def test_the_grants_are_read_from_the_ledgers_own_revision(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        seen: dict[str, object] = {}
+        prov = _base_state(check, monkeypatch, {"demo.Root": {"known": "why"}})
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
+        monkeypatch.setattr(
+            prov,
+            "load_authorizations",
+            lambda ratchet, **kwargs: seen.update(kwargs) or {},
+        )
+
+        assert check.main([]) == 0
+        capsys.readouterr()
+
+        # The sentinel `_trusted` hands back as the baseline's commit.
+        assert seen["base"] == "0" * 40
+
+
+class TestAnAuthorizationPermitsTheIncreaseItDoesNotRecordIt:
+    """A grant says the floor may rise; the ledger says it did (#534).
+
+    Split from the class above because it is the opposite failure: there the
+    candidate wrote the justification and the gate believed it, here the
+    candidate wrote *nothing* and the gate believed that too. Both end with the
+    trusted floor never learning the field, so every later run keeps leaning on
+    a grant that was meant to cover one change.
+    """
+
+    def _authorized_but_unbanked(self, check, monkeypatch):
+        """Measures a new unread field, is allowed to, and never records it."""
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known", "fresh"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
+        _base_state(
+            check,
+            monkeypatch,
+            {"demo.Root": {"known": "why"}},
+            authorized={"demo.Root.fresh": "#534 -- @owner: consumed downstream"},
+        )
+
+    def test_an_authorized_field_absent_from_the_candidate_ledger_fails(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        self._authorized_but_unbanked(check, monkeypatch)
+
+        assert check.main([]) == 1
+        assert "NOT in this change's ledger" in capsys.readouterr().err
+
+    def test_it_does_not_claim_the_ledger_matches(self, check, monkeypatch, capsys) -> None:
+        """The wrong answer was not just the exit code: it *said* it was clean."""
+        self._authorized_but_unbanked(check, monkeypatch)
+
+        check.main([])
+
+        captured = capsys.readouterr()
+        assert "matches the current unread set" not in captured.out
+        assert "demo.Root.fresh" in captured.err
+
+    def test_recording_it_as_well_as_authorizing_it_passes(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """The whole point: both edits, and the change lands."""
+        self._authorized_but_unbanked(check, monkeypatch)
+        monkeypatch.setattr(
+            check,
+            "_load_baseline",
+            lambda *a: {"demo.Root": {"known": "why", "fresh": "consumed downstream"}},
+        )
+
+        assert check.main([]) == 0
+        assert "1 authorized floor-raise(s)" in capsys.readouterr().out
+
+
+class TestTheMetricDefinitionHasToMatch:
+    """A v2 measurement against a v1 floor compares two different questions.
+
+    The constant existed and was printed; nothing read it back, so bumping it
+    changed the provenance line and not the verdict (#534).
+    """
+
+    def _at_version(self, check, monkeypatch, version):
+        ledger = {"demo.Root": {"known": "why"}}
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: ledger)
+        _base_state(check, monkeypatch, ledger, version=version)
+
+    def test_a_floor_measured_under_another_definition_is_refused(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        self._at_version(check, monkeypatch, "0")
+
+        assert check.main([]) == 1
+        assert "different question" in capsys.readouterr().err
+
+    def test_a_ledger_predating_versioning_is_grandfathered(
+        self, check, monkeypatch, capsys
+    ) -> None:
+        """Recorded nowhere is not recorded wrong — the first run after this
+        change reads a ledger that has no version and must still pass."""
+        self._at_version(check, monkeypatch, None)
+
+        assert check.main([]) == 0
+        capsys.readouterr()
+
+    def test_the_declared_version_is_written_into_the_ledger(
+        self, check, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """Persisted, or the check above can never fire on a real ledger."""
+        written = tmp_path / "ledger.json"
+        monkeypatch.setattr(check, "BASELINE", written)
+        monkeypatch.setattr(
+            check, "DI_ROOTS", (check.DIRoot(name="demo.Root", source=_SOURCE, cls="Root"),)
+        )
+        monkeypatch.setattr(check, "unread_fields", lambda *a: {"demo.Root": ["known"]})
+        monkeypatch.setattr(check, "_load_baseline", lambda *a: {"demo.Root": {"known": "why"}})
+
+        assert check.main(["--update"]) == 0
+        capsys.readouterr()
+
+        payload = json.loads(written.read_text())
+        assert payload["metric_definition_version"] == check.METRIC_DEFINITION_VERSION
+
+    def test_the_committed_ledger_records_the_definition_it_was_measured_under(self, check) -> None:
+        """The real file, not a fixture: an unversioned ledger is grandfathered
+        forever, so the repo's own has to carry one for the gate to bite."""
+        payload = json.loads(BASELINE.read_text())
+
+        assert payload["metric_definition_version"] == check.METRIC_DEFINITION_VERSION
+
+
+class TestTheSeamsTheOtherTestsSubstitute:
+    """Every test above replaces `_trusted_baseline` and the ledger shim, which
+    is what makes them cheap — and leaves the real ones unexercised. These run
+    them for real, because a seam nothing ever executes is a seam that can rot.
+    """
+
+    def test_entries_from_tolerates_a_ledger_that_is_not_the_shape_it_expects(self, check) -> None:
+        """The base ledger comes from an arbitrary revision, so it may predate
+        this schema, be `null`, or have been hand-edited. None of those should
+        crash the gate — they mean "nothing trusted is recorded"."""
+        assert check._entries_from(None) == {}
+        assert check._entries_from([1, 2, 3]) == {}
+        assert check._entries_from({}) == {}
+        assert check._entries_from({"roots": "not-a-mapping"}) == {}
+
+    def test_entries_from_reads_the_real_shape(self, check) -> None:
+        loaded = {"roots": {"demo.Root": {"source": _SOURCE, "unread": {"f": "why"}}}}
+
+        assert check._entries_from(loaded) == {"demo.Root": {"f": "why"}}
+
+    def test_trusted_baseline_follows_the_checkout_into_one_of_its_three_states(
+        self, check
+    ) -> None:
+        """The unsubstituted path, run against whatever checkout we are in.
+
+        Which state happens is a property of the checkout, not of the code, and
+        the three are genuinely different answers rather than degrees of one:
+
+        * `origin/develop` does not resolve -- a shallow clone, which is what
+          `ci.yml`'s `test` job gives this suite. There is no trusted reference
+          to name, so the resolver reads the worktree and *says so*; a run that
+          labels itself `worktree` is not claiming to have checked monotonicity.
+        * It resolves and shares history -- `quality.yml` sets `fetch-depth: 0`,
+          so this is the state the gate is actually judged in.
+        * It resolves and shares no history. Then a baseline was available in
+          principle and could not be reached, and the resolver must refuse and
+          say why rather than fall back to the candidate's own ledger. That
+          refusal is the invariant this whole change exists to protect.
+
+        An earlier version asserted only the middle case and failed in the
+        shallow job; the version after it asserted the first case *as* the
+        third, which is the confusion worth naming: an absent ref and an
+        unreachable base are not the same non-passing state, and only one of
+        them is non-passing at all.
+        """
+        prov = check._provenance()
+        resolves = _git_rc("rev-parse", "--verify", "origin/develop^{commit}") == 0
+
+        if not resolves:
+            trusted, baseline, _version = check._trusted_baseline()
+            assert isinstance(trusted, dict)
+            assert baseline.origin == "worktree"
+            assert baseline.base_sha is None
+        elif _git_rc("merge-base", "origin/develop", "HEAD") == 0:
+            trusted, baseline, _version = check._trusted_baseline()
+            assert isinstance(trusted, dict)
+            assert baseline.origin == "base"
+            assert baseline.base_sha
+        else:
+            with pytest.raises(prov.RatchetProvenanceError, match="no merge base"):
+                check._trusted_baseline()
+
+    def test_a_helper_that_fails_to_load_leaves_no_broken_module_behind(
+        self, check, monkeypatch, tmp_path
+    ) -> None:
+        """A half-executed module left in `sys.modules` would be handed to the
+        next caller as if it had loaded, so the loader removes it and re-raises.
+        Worth pinning: the cache that makes this fast is what makes the failure
+        sticky if it is not cleaned up.
+        """
+        broken = tmp_path / "ratchet_provenance.py"
+        broken.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+        monkeypatch.setattr(check, "_PROVENANCE_SOURCE", broken)
+        monkeypatch.delitem(sys.modules, "_ratchet_provenance", raising=False)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            check._provenance()
+
+        assert "_ratchet_provenance" not in sys.modules
