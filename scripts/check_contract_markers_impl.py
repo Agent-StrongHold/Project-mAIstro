@@ -122,9 +122,7 @@ def _module_marker_kinds(tree: ast.Module) -> list[str]:
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
-        if not any(
-            isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets
-        ):
+        if not any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets):
             continue
         value = node.value
         items = value.elts if isinstance(value, ast.List | ast.Tuple) else [value]
