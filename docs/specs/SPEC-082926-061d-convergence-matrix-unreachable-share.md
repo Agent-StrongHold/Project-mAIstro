@@ -30,12 +30,12 @@ tests:
 source:
   - scripts/check-convergence-matrix.py
 ac-modules:
-  AC-1: check-convergence-matrix
-  AC-2: check-reachability-dispositions
-  AC-3: check-convergence-matrix
-  AC-4: check-convergence-matrix
-  AC-5: check-convergence-matrix
-  AC-6: check-convergence-matrix
+  AC-1: @tool/check-convergence-matrix
+  AC-2: @tool/check-reachability-dispositions
+  AC-3: @tool/check-convergence-matrix
+  AC-4: @tool/check-convergence-matrix
+  AC-5: @tool/check-convergence-matrix
+  AC-6: @tool/check-convergence-matrix
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'

@@ -222,9 +222,113 @@ class Criterion:
 
 
 def _is_reachable(module: str, unreachable: set[str]) -> bool:
-    """A module is reachable unless it, or an ancestor package, is baselined."""
+    """A module is reachable unless it, or an ancestor package, is baselined.
+
+    Membership in the *unreachable* set is the whole test, which is why an
+    anchor naming nothing at all used to clear this rung: a typo, a bare name,
+    a script filename and an invented string are all absent from that set, and
+    absence reads as reachable. `unresolvable_anchors` closes that separately,
+    because "this anchor is wrong" and "this module is unwired" are different
+    findings and only the second belongs here (#631).
+    """
     parts = module.split(".")
     return not any(".".join(parts[: i + 1]) in unreachable for i in range(len(parts)))
+
+
+def load_module_universe() -> set[str]:
+    """Every module identity the reachability graph knows, or empty if it cannot.
+
+    Loaded from `check-reachability.py` rather than re-derived, so the names an
+    anchor is checked against are the same names the rung is judged on. A
+    second walk of the tree would be a second definition of "module", and the
+    two would drift exactly where it mattered.
+    """
+    script = ROOT / "scripts" / "check-reachability.py"
+    if not script.is_file():  # pragma: no cover - the tree always has it
+        return set()
+    spec = importlib.util.spec_from_file_location("_reachability_for_anchors", script)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        return set()
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return set(module._collect_modules())
+
+
+def _completion_claims(
+    specs: list[dict[str, Any]], adrs: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Documents their own artefacts refute, and those that cannot yet say.
+
+    Two different things, and merging them would be the same error this script
+    exists to catch. A document at tier `none`/`unmeasured` has no criteria to
+    measure yet -- its `Implemented` is unverified, not refuted. One that *has*
+    measurable criteria and still falls short of `reachable` is contradicted.
+    """
+
+    def row(d: dict[str, Any], kind: str) -> dict[str, Any]:
+        return {
+            "id": d["id"],
+            "kind": kind,
+            "declared_status": d["declared_status"],
+            "measured_tier": d["tier"],
+            "file": d.get("file"),
+        }
+
+    claiming = [d for d in specs if d["declared_status"] in COMPLETION_CLAIMS]
+    claiming += [d for d in adrs if d["declared_status"] in COMPLETION_CLAIMS]
+    kinds = {id(d): "spec" for d in specs}
+    kinds.update({id(d): "adr" for d in adrs})
+    return (
+        [row(d, kinds[id(d)]) for d in claiming if d["tier"] in RUNGS[:-1]],
+        [row(d, kinds[id(d)]) for d in claiming if d["tier"] in ("none", "unmeasured")],
+    )
+
+
+def _report_unresolvable_anchors(specs: list[dict[str, Any]]) -> bool:
+    """Print every anchor that resolves to nothing. True when the gate must fail."""
+    unresolvable = unresolvable_anchors(specs, load_module_universe())
+    if not unresolvable:
+        return False
+    print("FAIL: ac-modules anchors that name no module the reachability graph knows\n")
+    for file, ac_id, module in unresolvable:
+        print(f"  {file}\n      {ac_id}: {module!r}")
+    print(
+        "\nAn anchor is a claim that something runs this criterion's code. A name the "
+        "graph\nhas never heard of cannot support that claim, and used to clear the top "
+        "rung anyway.\nUse the identity `scripts/check-reachability.py` reports -- dotted "
+        "for packages\n(`maistro_rsi.local_loop`), scoped for apps and tooling "
+        "(`@flat/hive-conductor/routes.settings`,\n`@tool/ac_state_notes`)."
+    )
+    return True
+
+
+def unresolvable_anchors(
+    specs: list[dict[str, Any]], universe: set[str]
+) -> list[tuple[str, str, str]]:
+    """Every `ac-modules` anchor that names no module the graph knows.
+
+    An empty universe means the graph could not be loaded; reporting every
+    anchor as unresolvable then would be a gate failing for its own reason
+    rather than the corpus's, so it reports nothing instead.
+    """
+    if not universe:
+        return []
+    found: list[tuple[str, str, str]] = []
+    for spec in specs:
+        for criterion in spec["criteria"]:
+            module = criterion.get("module")
+            # `None` is *unannotated*, which the rung already handles by
+            # stopping at `passing`. An empty string is not that: it is an
+            # anchor someone wrote and left blank, and the rung scores it
+            # `reachable` like any other name absent from the unreachable set.
+            # Testing truthiness instead of `is None` would let exactly that
+            # one through -- the narrowest version of this whole defect.
+            if module is None:
+                continue
+            if module not in universe:
+                found.append((spec["file"], criterion["id"], module))
+    return found
 
 
 def parse_gherkin(block: str) -> tuple[list[dict[str, Any]], str | None]:
@@ -1554,6 +1658,13 @@ def main(argv: list[str]) -> int:
     specs = collect_specs(markers, unreachable, passing)
     adrs = collect_adrs(specs, markers, unreachable, passing)
 
+    # Before any counting: an anchor that names nothing cannot be judged, and
+    # the old rung read it as `reachable` because it checked membership in the
+    # *unreachable* set. Failing here rather than scoring it keeps the number
+    # the ratchet floors on made of criteria something actually resolves (#631).
+    if _report_unresolvable_anchors(specs):
+        return 1
+
     # Criteria live in specs AND in the ADRs that carry their own scenarios;
     # counting only spec ids here would report every ADR-bound marker as
     # naming no criterion — an orphan list poisoned by exactly the bindings
@@ -1573,22 +1684,7 @@ def main(argv: list[str]) -> int:
     # criteria to measure yet — its `Implemented` is unverified, not refuted.
     # A document that *has* measurable criteria and still falls short of
     # `reachable` is contradicted by its own artefacts.
-    claiming = [d for d in specs if d["declared_status"] in COMPLETION_CLAIMS]
-    claiming += [d for d in adrs if d["declared_status"] in COMPLETION_CLAIMS]
-
-    def _row(d: dict[str, Any], kind: str) -> dict[str, Any]:
-        return {
-            "id": d["id"],
-            "kind": kind,
-            "declared_status": d["declared_status"],
-            "measured_tier": d["tier"],
-            "file": d.get("file"),
-        }
-
-    kinds = {id(d): "spec" for d in specs}
-    kinds.update({id(d): "adr" for d in adrs})
-    contradicted = [_row(d, kinds[id(d)]) for d in claiming if d["tier"] in RUNGS[:-1]]
-    unverifiable = [_row(d, kinds[id(d)]) for d in claiming if d["tier"] in ("none", "unmeasured")]
+    contradicted, unverifiable = _completion_claims(specs, adrs)
 
     # ---- the chain checked in the *absent* direction (#164) --------------
     #

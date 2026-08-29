@@ -30,11 +30,11 @@ tests:
 source:
   - packages/hive-conductor/backend/services/dashboard_layouts.py
 ac-modules:
-  AC-1: dashboard_layouts
-  AC-2: dashboard_layouts
-  AC-3: dashboard_layouts
-  AC-4: dashboard_layouts
-  AC-5: dashboard_layouts
+  AC-1: @flat/hive-conductor/services.dashboard_layouts
+  AC-2: @flat/hive-conductor/services.dashboard_layouts
+  AC-3: @flat/hive-conductor/services.dashboard_layouts
+  AC-4: @flat/hive-conductor/services.dashboard_layouts
+  AC-5: @flat/hive-conductor/services.dashboard_layouts
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'

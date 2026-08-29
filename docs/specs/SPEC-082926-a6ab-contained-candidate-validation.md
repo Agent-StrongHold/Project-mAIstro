@@ -28,14 +28,14 @@ source:
   - packages/maistro-rsi/src/maistro_rsi/contained_validation.py
   - packages/maistro-rsi/src/maistro_rsi/local_loop.py
 ac-modules:
-  AC-1: contained_validation
-  AC-2: contained_validation
-  AC-3: local_loop
-  AC-4: contained_validation
-  AC-5: contained_validation
-  AC-6: local_loop
-  AC-7: local_loop
-  AC-8: local_loop
+  AC-1: maistro_rsi.contained_validation
+  AC-2: maistro_rsi.contained_validation
+  AC-3: maistro_rsi.local_loop
+  AC-4: maistro_rsi.contained_validation
+  AC-5: maistro_rsi.contained_validation
+  AC-6: maistro_rsi.local_loop
+  AC-7: maistro_rsi.local_loop
+  AC-8: maistro_rsi.local_loop
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
