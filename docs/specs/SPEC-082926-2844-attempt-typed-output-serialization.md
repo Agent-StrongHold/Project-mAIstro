@@ -33,6 +33,8 @@ source:
 ac-modules:
   AC-1: maistro.graph.nodes.base
   AC-2: maistro.graph.durable_runs.stores
+  AC-3: maistro.graph.nodes.base
+  AC-4: maistro.graph.nodes.base
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -129,6 +131,23 @@ recoverable in principle, by a reader that knows where to look. For a superseded
 retry, a failure, or an in-flight try there is no second copy anywhere, and
 nothing distinguishes an emptied output from one that was genuinely `{}`.
 
+The criteria split along the union's three branches rather than by which
+scenario was written first. AC-1 is the guarantee the defect broke: a typed
+model serializes its own fields and round-trips. AC-3 is shape preservation on
+the way back -- a mapping stays a mapping, a root-shaped model stays a list or
+a scalar, an absent output stays absent -- which is a different promise from
+AC-1 and provable independently of it. AC-4 is the write side accepting a
+mapping Pydantic must serialize, the regression a `JsonValue`-only union
+introduced and the narrowest of the four.
+
+An earlier draft dropped AC-3 and AC-4 outright, because they had described the
+repair path this change withdrew. Deleting them left the shipped contract with
+two criteria for four distinct promises, and left the decision behind it less
+covered than before the change -- which the design-coverage floor correctly
+refused. Rewriting them to describe what *is* shipped is the fix; the scenarios
+were already here, filed under AC-1 where they read as variations rather than
+as the separate guarantees they are.
+
 ## Acceptance Criteria
 
 ```gherkin
@@ -146,25 +165,25 @@ Feature: Attempt typed output serialization
     When the result is serialized and revalidated
     Then the output holds the same fields it was given
 
-  @AC-1
+  @AC-3
   Scenario: A mapping output is unchanged
     Given a node result whose output is a plain mapping
     When the result is serialized and revalidated
     Then the output is the same mapping
 
-  @AC-1
+  @AC-3
   Scenario: A root-shaped output survives as its own shape
     Given a node result whose output is a model rooted in a list or a scalar
     When the result is serialized and revalidated
     Then the output is that list or scalar, not a mapping
 
-  @AC-1
+  @AC-4
   Scenario: A mapping Pydantic serializes is still accepted
     Given a node result whose output maps a key to a value that is not JSON
     When the result is constructed and serialized
     Then it is accepted and the value serializes to its JSON form
 
-  @AC-1
+  @AC-3
   Scenario: An absent output is unchanged
     Given a node result with no output
     When the result is serialized and revalidated

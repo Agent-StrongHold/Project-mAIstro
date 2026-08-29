@@ -87,14 +87,14 @@ def test_a_typed_output_survives_a_nodresult_round_trip() -> None:
     assert revived.output == {"text": "done", "score": 7}
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
 def test_a_plain_mapping_output_is_unchanged() -> None:
     result = NodeResult(success=True, output={"text": "done"})
 
     assert NodeResult.model_validate_json(result.model_dump_json()).output == {"text": "done"}
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
 def test_a_root_model_output_survives_its_own_shape() -> None:
     """The write side accepts every `BaseModel`, so the read side must too.
 
@@ -108,14 +108,14 @@ def test_a_root_model_output_survives_its_own_shape() -> None:
     assert NodeResult.model_validate_json(result.model_dump_json()).output == ["alpha", "beta"]
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
 def test_a_scalar_root_model_output_survives() -> None:
     result = NodeResult(success=True, output=ScoreOutput(1.5))
 
     assert NodeResult.model_validate_json(result.model_dump_json()).output == 1.5
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-4")
 def test_a_mapping_pydantic_serializes_is_still_accepted() -> None:
     """`JsonValue` alone would have narrowed the write side.
 
@@ -131,7 +131,7 @@ def test_a_mapping_pydantic_serializes_is_still_accepted() -> None:
     }
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
 def test_an_absent_output_is_unchanged() -> None:
     result = NodeResult(success=True)
 
