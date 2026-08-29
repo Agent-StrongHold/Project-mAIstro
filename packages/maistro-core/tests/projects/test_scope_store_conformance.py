@@ -23,6 +23,7 @@ jobs that own a server.
 from __future__ import annotations
 
 import os
+import sys
 from uuid import uuid4
 
 import pytest
@@ -415,6 +416,60 @@ async def test_an_empty_workspace_id_is_refused(backend) -> None:
 
     with pytest.raises(ValueError, match="non-empty"):
         await store.create_root("")
+
+
+async def test_a_tree_deeper_than_the_purge_bound_fails_rather_than_spinning(
+    backend, monkeypatch
+) -> None:
+    """The bound on `purge_workspace` is behaviour, not decoration.
+
+    The delete runs leaf-first and repeats until a pass removes nothing, so its
+    termination rests on there being no cycle -- an invariant `move_project`
+    enforces somewhere else entirely. If that ever breaks, a delete request has
+    to FAIL; an unbounded loop would hang it instead, and a hung request is the
+    harder failure to diagnose.
+
+    The bound is patched down rather than met: building a sixty-five-deep tree
+    would prove something about the number sixty-five, not about the branch.
+    """
+    store = await backend.store()
+    monkeypatch.setattr(sys.modules[type(store).__module__], "_MAX_PURGE_PASSES", 2)
+
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+    parent_id = root.project_id
+    for depth in range(3):
+        child = await store.create(
+            workspace_id=workspace_id,
+            parent_project_id=parent_id,
+            name=f"Depth {depth}",
+        )
+        parent_id = child.project_id
+
+    with pytest.raises(ProjectIntegrityError, match="did not drain"):
+        await store.purge_workspace(workspace_id)
+
+
+async def test_a_tree_within_the_bound_is_purged_whole(backend) -> None:
+    """The other side of it: the loop's normal exit, and what it leaves behind."""
+    store = await backend.store()
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+    parent_id = root.project_id
+    for depth in range(3):
+        child = await store.create(
+            workspace_id=workspace_id,
+            parent_project_id=parent_id,
+            name=f"Depth {depth}",
+        )
+        parent_id = child.project_id
+
+    await store.purge_workspace(workspace_id)
+
+    # `get` answers absence with None rather than an exception, so this is the
+    # question asked directly: the deepest descendant and the Root both gone.
+    assert await store.get(parent_id) is None
+    assert await store.get(root.project_id) is None
 
 
 async def test_a_workspace_with_no_root_reports_not_found(backend) -> None:

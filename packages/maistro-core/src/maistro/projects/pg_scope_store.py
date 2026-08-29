@@ -32,6 +32,11 @@ from maistro.projects.scope import (
 )
 from maistro.runs.evidence_json import json_of, model_of
 
+#: Passes the leaf-first Project purge may take before it gives up. A Workspace
+#: tree deeper than this is pathological, and a loop that cannot terminate is
+#: worse than one that refuses.
+_MAX_PURGE_PASSES = 64
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
@@ -41,6 +46,49 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    async def purge_workspace(self, workspace_id: str) -> None:
+        """Tear down every Project row this Workspace owns.
+
+        Children before parents, because both schemas declare
+        `ON DELETE RESTRICT` on the self-referencing parent link and on the
+        membership and resource links -- so a single bulk delete fails on the
+        first row whose child is still present. Rather than compute depth,
+        this deletes the current leaves and repeats: the set shrinks by at
+        least one level each pass, so it terminates in tree-depth passes.
+
+        The bound is not decoration. A cycle cannot exist -- `move_project`
+        refuses one -- but a spin here would hang a delete request rather than
+        fail it, and a loop whose termination depends on an invariant enforced
+        somewhere else should say so out loud when the invariant breaks.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM canonical_project_resources WHERE workspace_id = $1",
+                workspace_id,
+            )
+            await conn.execute(
+                "DELETE FROM canonical_project_memberships WHERE workspace_id = $1",
+                workspace_id,
+            )
+            for _ in range(_MAX_PURGE_PASSES):
+                status = await conn.execute(
+                    """DELETE FROM canonical_projects
+                        WHERE workspace_id = $1
+                          AND project_id NOT IN (
+                              SELECT parent_project_id
+                                FROM canonical_projects
+                               WHERE workspace_id = $1
+                                 AND parent_project_id IS NOT NULL)""",
+                    workspace_id,
+                )
+                if status.endswith(" 0"):
+                    return
+            msg = (
+                f"Project tree for workspace {workspace_id} did not drain in "
+                f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
+            )
+            raise ProjectIntegrityError(msg)
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's durable Root Project.
