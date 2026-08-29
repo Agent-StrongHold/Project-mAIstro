@@ -115,6 +115,27 @@ def writes_refused() -> bool:
     return _status is not None and _status.writes_refused
 
 
+def restore_stores(stores_module: Any) -> None:
+    """Clear write refusal on every mutable Conductor store.
+
+    This consumes the canonical registry's aggregate lists instead of adding
+    lifecycle helpers to that shared registry, so durability policy cannot
+    accidentally replace or omit independently added stores.
+    """
+    for store in stores_module._all_model_stores:
+        store.restore()
+    for store in stores_module._all_json_stores:
+        store.restore()
+
+
+def degrade_stores(stores_module: Any, reason: str) -> None:
+    """Refuse writes on every mutable Conductor store."""
+    for store in stores_module._all_model_stores:
+        store.degrade(reason)
+    for store in stores_module._all_json_stores:
+        store.degrade(reason)
+
+
 def health_view() -> dict[str, Any]:
     """The `state` block for `/health`."""
     if _status is None:
