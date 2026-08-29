@@ -569,18 +569,20 @@ def test_compact_refuses_a_malformed_note_rather_than_skipping_it(
     assert "not valid JSON" in capsys.readouterr().out
 
 
-# --- AC-7: the candidate's own note is found by the diff, not the branch name ---
+# --- AC-7: what the tree's notes jointly claim ------------------------------
 #
-# CI checks out a detached head. `git rev-parse --abbrev-ref HEAD` answers
-# `HEAD` there, so a note filename derived from the branch name matched nothing
-# and the "did you bank what you measured?" oracle read every banked
-# improvement as unbanked. #604 went red on exactly that.
+# The "did you bank what you measured?" oracle. It used to identify one note --
+# the one the change added or altered since the base -- which had no answer for
+# a stacked branch: its parent's note is new relative to the base too, so two
+# notes changed, and the rule resolved that to "none", which made every stacked
+# PR read as an unbanked improvement (#609). It is a fold now, over every note
+# in the tree.
 
 NOTES = "quality/ac-state-notes"
 
 
-def _own(repo: Path) -> Any:
-    return notes_mod.own_note(base="develop", notes_dir=repo / NOTES, root=repo)
+def _banked(repo: Path) -> Any:
+    return notes_mod.banked_bound(notes_dir=repo / NOTES)
 
 
 def _unrelated_commit(repo: Path, name: str) -> None:
@@ -588,8 +590,7 @@ def _unrelated_commit(repo: Path, name: str) -> None:
 
     `resolve_baseline_dir` refuses a base that resolves to HEAD with a clean
     worktree (#534): the baseline would come from the commit under judgement.
-    A branch with no commits of its own is exactly that case, so these tests
-    give it one that has nothing to do with the notes.
+    A branch with no commits of its own is exactly that case.
     """
     (repo / name).write_text("x\n")
     _git("add", "-A", cwd=repo)
@@ -597,68 +598,14 @@ def _unrelated_commit(repo: Path, name: str) -> None:
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_the_candidates_note_is_found_on_a_detached_head(repo: Path) -> None:
+def test_a_stacked_branch_carrying_two_new_notes_still_claims_its_measurement(
+    repo: Path,
+) -> None:
+    """The defect. `feature-b` is cut from `feature-a`, so relative to `develop`
+    both notes are new -- and the old rule answered "no own note" and read the
+    stack's improvement as unbanked."""
     _bank_on_branch(repo, "feature-a", design_coverage=21.0)
-    _git("checkout", "-q", "--detach", cwd=repo)
-
-    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "HEAD"
-    own = _own(repo)
-    assert own is not None
-    assert own.counters["design_coverage"] == 21.0
-
-
-@pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_note_whose_filename_does_not_match_the_branch_is_still_found(repo: Path) -> None:
-    """The same defect one step milder: a rename, a worktree, a squashed cherry-pick."""
-    _bank_on_branch(repo, "feature-a", design_coverage=21.0)
-    _git("branch", "-m", "feature-a", "renamed-since", cwd=repo)
-
-    own = _own(repo)
-    assert own is not None
-    assert own.name == "feature-a.json"
-
-
-@pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_branch_that_banked_nothing_has_no_own_note(repo: Path) -> None:
-    _git("checkout", "-q", "-b", "quiet", "develop", cwd=repo)
-    _unrelated_commit(repo, "unrelated.txt")
-
-    assert _own(repo) is None
-
-
-@pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_re_settling_the_baseline_is_not_claiming_it(repo: Path) -> None:
-    """`_baseline.json` is the migration bridge, not a branch's measurement.
-
-    A candidate that takes its base's side of the baseline after a merge must
-    not thereby be treated as having banked the fold's numbers as its own.
-    """
-    _git("checkout", "-q", "-b", "resettler", "develop", cwd=repo)
-    (repo / NOTES / "_baseline.json").write_text(
-        json.dumps(
-            {
-                "branch": None,
-                "measured_with_tests": True,
-                "counters": {"design_coverage": 20.5, "specs_awaiting_retrofit": 139},
-            },
-            indent=2,
-        )
-        + "\n"
-    )
-    _git("add", "-A", cwd=repo)
-    _git("commit", "-qm", "re-settle the baseline", cwd=repo)
-
-    assert _own(repo) is None
-
-
-@pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_candidate_touching_two_notes_has_no_own_note(repo: Path) -> None:
-    """Ambiguity resolves to the strict comparison, not to a guess.
-
-    With no own note the ratchet judges against the base fold alone, which is
-    the same answer it gives a branch that banked nothing — the safe one.
-    """
-    _bank_on_branch(repo, "feature-a", design_coverage=21.0)
+    _git("checkout", "-q", "-b", "feature-b", "feature-a", cwd=repo)
     notes_mod.write_note(
         {"design_coverage": 22.0},
         branch="feature-b",
@@ -667,19 +614,96 @@ def test_a_candidate_touching_two_notes_has_no_own_note(repo: Path) -> None:
         root=repo,
     )
     _git("add", "-A", cwd=repo)
-    _git("commit", "-qm", "bank a second note", cwd=repo)
+    _git("commit", "-qm", "bank feature-b", cwd=repo)
 
-    assert _own(repo) is None
+    banked = _banked(repo)
+
+    assert banked.counters["design_coverage"] == 22.0
+    assert set(banked.notes) == {"_baseline.json", "feature-a.json", "feature-b.json"}
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")
-def test_a_note_already_at_the_base_is_not_the_candidates(repo: Path) -> None:
-    """It is in the fold already; counting it twice would give the candidate
-    slack it did not earn."""
+def test_the_claim_is_found_on_a_detached_head(repo: Path) -> None:
+    """CI checks out a detached head, so nothing may depend on a branch name."""
     _bank_on_branch(repo, "feature-a", design_coverage=21.0)
-    _git("checkout", "-q", "develop", cwd=repo)
-    _git("merge", "-q", "--no-edit", "feature-a", cwd=repo)
-    _git("checkout", "-q", "-b", "later", "develop", cwd=repo)
+    _git("checkout", "-q", "--detach", cwd=repo)
+
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "HEAD"
+    assert _banked(repo).counters["design_coverage"] == 21.0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_note_whose_filename_does_not_match_the_branch_still_counts(repo: Path) -> None:
+    """A rename, a worktree, a squashed cherry-pick."""
+    _bank_on_branch(repo, "feature-a", design_coverage=21.0)
+    _git("branch", "-m", "feature-a", "renamed-since", cwd=repo)
+
+    assert _banked(repo).counters["design_coverage"] == 21.0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_tree_with_no_notes_claims_nothing(repo: Path) -> None:
+    """Then the base fold plays both roles, which is the pre-note behaviour."""
+    for path in (repo / NOTES).glob("*.json"):
+        path.unlink()
+
+    assert _banked(repo).counters == {}
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_the_baseline_counts_toward_the_claim(repo: Path) -> None:
+    """Unlike the old rule, which excluded it: as a bound it is a measurement
+    like any other, and excluding it would let a branch claim less than the
+    migration bridge already recorded."""
+    _git("checkout", "-q", "-b", "quiet", "develop", cwd=repo)
     _unrelated_commit(repo, "unrelated.txt")
 
-    assert _own(repo) is None
+    assert _banked(repo).counters["design_coverage"] == 20.0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_weaker_note_does_not_lower_the_claim(repo: Path) -> None:
+    """Folding only tightens, which is what makes folding the worktree safe:
+    a candidate cannot buy slack by banking a low number."""
+    _bank_on_branch(repo, "feature-a", design_coverage=21.0)
+    notes_mod.write_note(
+        {"design_coverage": 1.0},
+        branch="cheat",
+        measured_with_tests=True,
+        notes_dir=repo / NOTES,
+        root=repo,
+    )
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "bank a weak note", cwd=repo)
+
+    assert _banked(repo).counters["design_coverage"] == 21.0
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_deleting_every_note_cannot_reach_the_bound_that_judges_regressions(
+    repo: Path,
+) -> None:
+    """The half the worktree fold does not protect, and does not have to: the
+    regression comparison is folded at the base, where deletion cannot reach."""
+    _git("checkout", "-q", "-b", "deleter", "develop", cwd=repo)
+    for path in (repo / NOTES).glob("*.json"):
+        path.unlink()
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "delete every note", cwd=repo)
+
+    assert _banked(repo).counters == {}
+    assert (
+        notes_mod.bounds(base="develop", notes_dir=repo / NOTES, root=repo).counters[
+            "design_coverage"
+        ]
+        == 20.0
+    )
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_missing_notes_directory_claims_nothing(tmp_path: Path) -> None:
+    """A branch cut before the scheme existed. Nothing banked is not an error."""
+    banked = notes_mod.banked_bound(notes_dir=tmp_path / "never-created")
+
+    assert banked.counters == {}
+    assert banked.empty
