@@ -1313,10 +1313,9 @@ def _merge_frontier_blackboards(
 
 
 def _actually_spawned(kind: str, result: NodeResult) -> bool:
-    """Return whether a node result represents a successful synthetic spawn."""
+    """Return whether a node result represents a synthetic spawn that was dispatched."""
     if kind == "agent.synth_dag":
-        output = result.output
-        return bool(getattr(output, "success", True)) or bool(getattr(output, "dispatched", False))
+        return bool(getattr(result.output, "dispatched", False))
     return True
 
 
