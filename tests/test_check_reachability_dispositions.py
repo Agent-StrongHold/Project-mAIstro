@@ -101,3 +101,33 @@ def test_an_invented_disposition_fails(gate) -> None:
 
 def test_the_shipped_ledger_accounts_for_the_shipped_baseline(gate) -> None:
     assert gate.main() == 0
+
+
+# --- what the matrix column stopped enforcing, this one still does (#605) -----
+#
+# ADR-082926-061d moved the matrix's Unreachable cell from a transcribed
+# `19/62` to a derived share, which means the matrix no longer notices a single
+# added unreachable module unless it crosses a boundary. That was never the
+# matrix's guarantee to make: the requirement is that an unreachable module is
+# *dispositioned*, and this gate is where it lives. Pinned here by the mutation
+# rather than asserted in prose, because the whole point of the move is that
+# nothing was allowed to become weaker.
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-2")
+def test_a_subsystem_that_gains_an_undispositioned_unreachable_module_fails(gate) -> None:
+    baseline = {"a.b"}
+    assert gate.audit(ledger(group()), baseline, SUBSYSTEMS) == []
+
+    grown = baseline | {"a.newly_unreachable"}
+    failures = gate.audit(ledger(group()), grown, SUBSYSTEMS)
+
+    assert any("a.newly_unreachable" in f and "no disposition" in f for f in failures)
+
+
+@pytest.mark.ac("SPEC-082926-061d/AC-2")
+def test_the_same_module_is_admitted_once_a_group_names_it(gate) -> None:
+    grown = {"a.b", "a.newly_unreachable"}
+    named = ledger(group(modules=["a.b", "a.newly_unreachable"]))
+
+    assert gate.audit(named, grown, SUBSYSTEMS) == []
