@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +13
+  tests/: +16
 ---
 # claude-issue-662-review-findings-0a88
 
-Thirteen added, none removed, none rewritten, all in
+Sixteen added, none removed, none rewritten, all in
 `tests/test_ac_state_authorized_floor.py` — plus three call-site edits in
 `tests/test_ac_state_merge_guard.py`, which change no count.
 
@@ -12,12 +12,12 @@ Every one of them exists because a Codex review on #663 found four defects,
 three P1, in the mechanism that PR merged. They are grouped by the finding they
 answer rather than by the function they touch.
 
-`TestTheMergeGroupHonoursTheSameGrant` (3) is the largest. The grant reached
-only the note comparisons, so an authorized fall passed everything on the
-branch and was then rejected by the merge queue — the mechanism worked
-everywhere except the one place it had to. The three cases are: with the grant,
-without it, and with a fall deeper than the grant names. The middle one is the
-control; without it the first would pass whether or not the grant did any work.
+`TestTheMergeGroupHonoursTheSameGrant` (6) covers both layers of the merge-group
+bug. Three pure-comparison cases prove the grant matters: with the grant, without
+it, and with a fall deeper than the grant names. Three caller-level cases drive
+`_guard_actual_base()` itself so the merge path is covered too: a base grant is
+resolved and permits the named fall, a deeper fall reports the applied floor,
+and invalid base-grant provenance fails closed instead of being ignored.
 
 `TestAGrantMustSurviveTheChangeThatSpendsIt` (4) covers the matched pair about
 which revision answers which question. Two prove a binding grant cannot be
