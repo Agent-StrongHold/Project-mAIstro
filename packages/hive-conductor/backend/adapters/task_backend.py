@@ -17,7 +17,11 @@ from typing import Any, Protocol
 import httpx
 
 from maistro.http import shared_client
-from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
+from maistro.tasks.http_contract import (
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_workspace_scope,
+)
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
 
 _TERMINAL = frozenset({"completed", "failed"})
@@ -98,7 +102,7 @@ class TaskRecord:
 
 #: Legacy route-facing detail retained while older backend implementations may
 #: still raise WorkspaceNotRoutable. The production MaistroServerTaskBackend no
-#: longer does: it carries the authorized binding over the shared HTTP contract.
+#: longer does when its cross-process Workspace assertion key is configured.
 WORKSPACE_NOT_ROUTABLE_DETAIL = (
     "this deployment routes tasks to a single-Workspace task server, which "
     "cannot admit work into a named workspace"
@@ -106,12 +110,7 @@ WORKSPACE_NOT_ROUTABLE_DETAIL = (
 
 
 class WorkspaceNotRoutable(RuntimeError):
-    """A backend cannot file work in the Workspace the submission named.
-
-    Retained as a backend capability error for route compatibility. The
-    production MaistroServerTaskBackend supports named Workspace admission as
-    of #234 by carrying the already-authorized binding to maistro-server.
-    """
+    """A backend cannot safely file work in the Workspace the submission named."""
 
 
 class TaskBackend(Protocol):
@@ -201,9 +200,16 @@ class MaistroServerTaskBackend:
 
     _POLL_INTERVAL_S = 2.0
 
-    def __init__(self, *, base_url: str, api_key: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str | None,
+        workspace_scope_key: str | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._key = api_key or ""
+        self._workspace_scope_key = workspace_scope_key or ""
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -218,11 +224,15 @@ class MaistroServerTaskBackend:
         if workspace_id is not None:
             if not workspace_id.strip():
                 raise ValueError("workspace_id must be a non-empty string")
-            # Scope is a trusted server-to-server admission binding, not a
-            # TaskCreate field. Hive has already authorized membership before
-            # EngineService reaches this adapter; maistro-server must either
-            # honor this exact binding or reject it (#234).
+            if not self._workspace_scope_key:
+                # A bare Workspace header would turn every ordinary API token
+                # into a tenant selector. Keep the old fail-closed behavior
+                # unless this deployment can prove the scope came from Hive.
+                raise WorkspaceNotRoutable(WORKSPACE_NOT_ROUTABLE_DETAIL)
             headers[WORKSPACE_ID_HEADER] = workspace_id
+            headers[WORKSPACE_SCOPE_SIGNATURE_HEADER] = sign_workspace_scope(
+                workspace_id, self._workspace_scope_key
+            )
         async with shared_client(timeout=30.0) as client:
             r = await client.post(
                 f"{self._base}/tasks",
@@ -258,25 +268,28 @@ class MaistroServerTaskBackend:
             if r.status_code == 400:
                 return False
             r.raise_for_status()
-            return bool(r.json().get("cancelled", False))
+            return True
 
     async def iter_events(self, task_id: str) -> AsyncIterator[dict[str, Any]]:
-        async with shared_client(timeout=30.0) as client:
-            while True:
-                r = await client.get(f"{self._base}/tasks/{task_id}", headers=self._headers())
-                if r.status_code == 404:
-                    return
-                r.raise_for_status()
-                rec = TaskRecord(TaskResponse.model_validate(r.json()))
+        """Poll task status — server-side SSE can replace this later without
+        changing EngineService."""
+        last: tuple[str, float, str] | None = None
+        while True:
+            rec = self.get(task_id)
+            if rec is None:
+                return
+            state = (rec.mission_status, rec.progress, rec.current_step)
+            if state != last:
                 yield {
                     "id": rec.id,
                     "status": rec.mission_status,
                     "progress": rec.progress,
                     "current_step": rec.current_step,
                 }
-                if rec.mission_status in _TERMINAL:
-                    return
-                await asyncio.sleep(self._POLL_INTERVAL_S)
+                last = state
+            if rec.mission_status in _TERMINAL:
+                return
+            await asyncio.sleep(self._POLL_INTERVAL_S)
 
     async def stop(self) -> None:
-        return None
+        return
