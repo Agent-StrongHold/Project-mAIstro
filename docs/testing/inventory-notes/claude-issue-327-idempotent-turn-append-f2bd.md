@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +41
+  packages/maistro-core/tests: +44
 ---
 # claude-issue-327-idempotent-turn-append-f2bd
 
@@ -31,6 +31,15 @@ after the first, which would otherwise satisfy the retry test; and
 `test_an_identified_append_does_not_disturb_the_sequence` pins that a marker
 written beside the messages does not perturb the ordering #327's other half
 exists to protect.
+
+**+3** answering two Codex P1 findings, one per fix plus a guard.
+`test_purge_expired_deletes_both_tables_in_one_transaction` pins that the sweep
+is one transaction, because the state between its two DELETEs -- messages gone,
+marker committed -- silently suppresses the next retry of that turn.
+`test_the_session_store_does_not_share_its_connection` pins that the SQLite
+store owns the connection its transaction spans, and
+`test_the_session_store_still_writes_and_reads_on_its_own_connection` guards it:
+a connection nobody can use would satisfy "not shared" and be useless.
 
 No test was removed. Four assertions in `tests/persistence/test_pg_sessions.py`
 changed from `len(purge_calls) == 1` to naming both tables the sweep deletes
