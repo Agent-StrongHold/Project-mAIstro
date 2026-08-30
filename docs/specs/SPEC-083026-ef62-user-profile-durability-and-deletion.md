@@ -110,6 +110,20 @@ would have pointed several such callers at one shared record.
 
 ## Acceptance Criteria
 
+AC-6 is the panel's behaviour, and it is proven: four tests in
+`test_profile_durability.py` read `KnowledgeBase.tsx` and fail if the empty
+`.catch(() => {})` returns, if a non-OK response stops counting as a failure,
+or if nothing renders from one. What it cannot have is an `ac-modules` anchor.
+The `reachable` rung requires a module the reachability graph can get to, and
+that graph is over Python modules; it has no name for a `.tsx` file, so any
+anchor here would either dangle (#631) or point at an unrelated module to
+satisfy the rung. Declared rather than faked, with the evidence named:
+
+<!-- ac-state: unproven AC-6 - proven by four tests in
+     packages/hive-conductor/backend/tests/test_profile_durability.py; the
+     `reachable` rung needs a module the Python reachability graph knows and
+     this criterion is about a .tsx file, which that graph cannot name -->
+
 ```gherkin
 Feature: A user profile is durable, deletable, and has exactly one owner
 
