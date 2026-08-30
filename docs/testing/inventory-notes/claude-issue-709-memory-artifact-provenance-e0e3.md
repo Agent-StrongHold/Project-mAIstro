@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +31
+  packages/maistro-core/tests: +36
   packages/maistro-design/tests: +7
 ---
 # claude-issue-709-memory-artifact-provenance-e0e3
 
-All 38 are new; nothing was removed or merged, so the delta is the addition.
+All 43 are new; nothing was removed or merged, so the delta is the addition.
 Two existing tests changed in place rather than being added to: both pin the
 exact argument tuple an INSERT binds, and both gained three `None`s for the new
 producer columns — `test_pg_learnings.py` and `test_pg_outcomes.py`. Those are
@@ -37,3 +37,15 @@ parameters it binds, including the per-output case: outputs of one project can
 come from different Attempts, so a refinement pass must not inherit the first
 Attempt's id. Three cover `_coerce_design_output`, including a row from a
 database migrated before 025, which has no such keys at all.
+
+**Round two (+5), answering the Codex review — both findings verified against
+the code first, both fixes mutation-checked:**
+
+- `TestTheVolatileBackendFillsItToo` (+3). `InMemoryOutcomeStore.record`
+  assigned an id and appended, and resolved no ambient provenance — while both
+  SQL twins did. `memory://` is the default backend in dev and test, so the gap
+  was in the one implementation every behavioural test runs against.
+- `TestDedupMovesTheProducerWithTheContent` (+2). The learning store's dedup
+  branch replaced `learning` and `trigger_keys` on the surviving row and left
+  the earlier Run's ids on it, so `produced_by` attributed the new text to the
+  Run that no longer wrote it and returned nothing for the Run that did.

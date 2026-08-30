@@ -66,6 +66,14 @@ class InMemoryLearningStore:
                 )
                 existing.learning = learning.learning
                 existing.trigger_keys = learning.trigger_keys
+                # The producer moves with the content it produced. Dedup
+                # replaces what the row says, so leaving the old ids in place
+                # would attribute the surviving text to the Run that no longer
+                # wrote it, and `produced_by` would return nothing for the Run
+                # that did (Codex, #709).
+                existing.run_id = learning.run_id
+                existing.node_run_id = learning.node_run_id
+                existing.attempt_id = learning.attempt_id
                 return existing.id or 0
 
         if len(self._learnings) >= self._max:

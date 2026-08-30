@@ -441,3 +441,85 @@ class TestTheWrappingStoresDelegateProvenance:
 
         found = await wrapper.produced_by("r-durable", org_id="org-1")
         assert [x.learning for x in found] == ["check the branch first"]
+
+
+class TestTheVolatileBackendFillsItToo:
+    """`memory://` selects these, so a gap here is a gap nothing else catches.
+
+    Both SQL twins resolve the ambient provenance. A volatile store that did
+    not would let every behavioural test pass while only the durable ones did
+    the work — and `memory://` is the default in dev and test (Codex, #709).
+    """
+
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-1")
+    async def test_an_in_memory_outcome_names_the_execution_that_recorded_it(self) -> None:
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        store = InMemoryOutcomeStore()
+        outcome = Outcome(request_id="r", org_id="org-a")
+        with bind_execution_context(run_id="run-1", node_run_id="nr-1", attempt_id="a-1"):
+            await store.record(outcome)
+
+        assert (outcome.run_id, outcome.node_run_id, outcome.attempt_id) == (
+            "run-1",
+            "nr-1",
+            "a-1",
+        )
+
+    async def test_an_in_memory_outcome_recorded_outside_an_execution_names_none(self) -> None:
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        outcome = Outcome(request_id="r", org_id="org-a")
+        await InMemoryOutcomeStore().record(outcome)
+
+        assert (outcome.run_id, outcome.node_run_id, outcome.attempt_id) == ("", "", "")
+
+    async def test_a_producer_the_caller_named_is_kept(self) -> None:
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        outcome = Outcome(request_id="r", org_id="org-a", run_id="named")
+        with bind_execution_context(run_id="ambient"):
+            await InMemoryOutcomeStore().record(outcome)
+
+        assert outcome.run_id == "named"
+
+
+class TestDedupMovesTheProducerWithTheContent:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-1")
+    async def test_the_run_that_supplied_the_surviving_text_is_the_one_recorded(self) -> None:
+        """Dedup replaces the learning text and its trigger keys. Leaving the
+        earlier Run's ids on the row would attribute the surviving content to a
+        Run that no longer wrote it (Codex, #709)."""
+        from maistro.memory.learnings.store import InMemoryLearningStore
+
+        store = InMemoryLearningStore()
+        with bind_execution_context(run_id="run-first", attempt_id="attempt-first"):
+            first_id = await store.store(
+                Learning(tool_name="deploy", trigger_keys=["a", "b"], learning="first")
+            )
+        with bind_execution_context(run_id="run-second", attempt_id="attempt-second"):
+            second_id = await store.store(
+                Learning(tool_name="deploy", trigger_keys=["a", "b"], learning="second")
+            )
+
+        assert second_id == first_id, "the second store must have deduped onto the first"
+        [kept] = await store.find_relevant("a")
+        assert kept.learning == "second"
+        assert kept.run_id == "run-second"
+        assert kept.attempt_id == "attempt-second"
+
+    async def test_the_deduped_learning_is_found_under_the_run_that_wrote_it(self) -> None:
+        from maistro.memory.learnings.store import InMemoryLearningStore
+
+        store = InMemoryLearningStore()
+        with bind_execution_context(run_id="run-first"):
+            await store.store(
+                Learning(tool_name="deploy", trigger_keys=["a", "b"], learning="first")
+            )
+        with bind_execution_context(run_id="run-second"):
+            await store.store(
+                Learning(tool_name="deploy", trigger_keys=["a", "b"], learning="second")
+            )
+
+        assert [item.learning for item in await store.produced_by("run-second")] == ["second"]
+        assert await store.produced_by("run-first") == []
