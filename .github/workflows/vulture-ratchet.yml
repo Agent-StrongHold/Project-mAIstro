@@ -36,6 +36,8 @@ jobs:
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
+      - name: Require explicit ratchet provenance policy
+        run: python scripts/check-ratchet-provenance.py --inventory-only
       - name: Install pinned analyzer
         run: uv pip install --system vulture==2.16
       - name: Require exact reviewed Vulture identities
