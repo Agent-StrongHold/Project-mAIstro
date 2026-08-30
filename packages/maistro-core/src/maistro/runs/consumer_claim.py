@@ -2,9 +2,10 @@
 
 A consumer claim is not a bare ``RunStatus.RUNNING`` write. The write that makes
 that statement true also persists the logical NodeRun and a leased physical
-Attempt. If the claimant dies after the transaction commits, the ordinary
-Attempt lease sweep has evidence to reclaim; if it dies before commit, the Run
-is still QUEUED. There is no third state and no second recovery mechanism.
+``AttemptStatus.RUNNING`` Attempt in the same transaction. If the claimant dies
+after the transaction commits, the ordinary Attempt lease sweep has evidence to
+reclaim; if it dies before commit, the Run is still QUEUED. There is no third
+state and no second recovery mechanism.
 """
 
 from __future__ import annotations
@@ -260,7 +261,7 @@ class ClaimingPgRunStore(PgRunStore):
             await conn.execute(
                 """INSERT INTO canonical_attempts
                    (attempt_id, node_run_id, ordinal, status, payload)
-                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
                 claim.attempt.attempt_id,
                 claim.attempt.node_run_id,
                 claim.attempt.ordinal,
