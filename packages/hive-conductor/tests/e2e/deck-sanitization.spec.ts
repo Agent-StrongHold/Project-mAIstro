@@ -164,7 +164,10 @@ test.afterAll(async () => {
 
 test("model-authored HTML/SVG is sanitized before preview and presentation render", async () => {
   await loadFresh();
-  const hostile = `<slide>
+  // Unindexed generated slides intentionally append under the existing Deck contract.
+  // Target the active first slide explicitly so this test proves the sanitizer without
+  // changing that product behavior or inspecting the untouched blank slide.
+  const hostile = `<slide index="1">
     <h1>Safe deck content</h1>
     <script>window.__deckPwned = 1</script>
     <img src="http://${ATTACKER}/pixel" onerror="window.__deckPwned = 2">
