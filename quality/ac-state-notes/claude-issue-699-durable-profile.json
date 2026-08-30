@@ -1,0 +1,17 @@
+{
+  "branch": "claude/issue-699-durable-profile",
+  "counters": {
+    "adrs_without_implementing_spec": 33,
+    "completion_claims_contradicted": 0,
+    "completion_claims_unverifiable": 0,
+    "criteria_claimed_but_unproven": 0,
+    "design_coverage": 29.3373,
+    "gherkin_parse_errors": 1,
+    "markers_without_criterion": 8,
+    "scenarios_without_ac_tag": 0,
+    "specs_awaiting_retrofit": 138,
+    "specs_declaring_no_criteria": 7,
+    "specs_implementing_nothing": 76
+  },
+  "measured_with_tests": true
+}

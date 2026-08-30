@@ -146,8 +146,7 @@ Feature: A user profile is durable, deletable, and has exactly one owner
     Given a stored profile for an authenticated principal
     When that principal deletes it
     Then the record is removed rather than emptied
-    And a request carrying no usable principal is refused rather than
-      answered from a shared fallback profile
+    And a request carrying no usable principal is refused, not given a shared one
 
   @AC-6
   Scenario: The panel reports a save it could not make
