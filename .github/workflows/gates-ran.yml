@@ -1,36 +1,30 @@
 name: Gates Ran
 
-# Did the gate set actually reach this commit? (#262 AC-2)
+# Did the gate set actually reach this candidate? (#262 AC-2)
 #
-# Every other workflow here asks whether the code is good. None asked whether
-# the gates ran at all on the artefact about to merge, and those are different
-# questions: a check that never reports is not red, it is *absent*, and absence
-# renders as an empty space where a green tick would go.
+# Every other workflow here asks whether the code is good. This workflow asks a
+# different question: did every required enforcement surface actually execute
+# on the exact PR or merge-group SHA being considered for merge?
 #
-# On PR #242 that gap was load-bearing. A workflow pushed with the default
-# GITHUB_TOKEN, which GitHub deliberately will not start further workflows for,
-# so 32 runs each of CI and quality sat at `action_required` while the PR showed
-# its own workflow's green job. The newest head either had actually run on was
-# two commits behind the tip.
+# `workflow_run` is deliberate. A job inside ci.yml cannot know whether
+# quality.yml, Gate C, or another sibling workflow ran. Each producer completion
+# re-evaluates the same candidate. While sibling evidence is still absent or
+# unfinished, this publisher emits a pending `gates-ran` status. Only complete
+# evidence can become green, and a hard non-execution finding becomes red.
 #
-# `workflow_run`, not `pull_request`, and that is the whole design. A job inside
-# ci.yml cannot see whether quality.yml ran; only something triggered *by* their
-# completion can. Each completion re-evaluates the same head, so an early firing
-# that finds a sibling still running goes red and the last one settles it.
+# A workflow_run workflow runs from the protected default branch and its native
+# job check is attached to that default-branch execution, not the candidate SHA.
+# The required `gates-ran` context is therefore published explicitly as a commit
+# status on the candidate. The publisher and evaluator still come from protected
+# default-branch code, so a candidate cannot rewrite the judge that evaluates
+# itself.
 #
-# It will not run on the pull request that adds it, and that is not a defect.
-# GitHub starts a `workflow_run` workflow from the **default branch** copy of
-# the file, so `gates-ran` begins reporting only once this is on `develop` —
-# its first real firing is on the *next* PR. Reviewers of the adding PR should
-# expect the check to be absent here; that absence is the very state the check
-# exists to make loud everywhere else, which is an irony worth writing down
-# rather than discovering.
-#
-# A consequence worth stating: because this has no `pull_request:` trigger,
-# `scripts/check-required-checks.py` cannot see it, so `gates-ran` does not
-# appear in the generated table in docs/ci/REQUIRED-CHECKS.md. It still has to
-# be marked required in branch protection by hand (#162) — the doc says so in
-# prose beside the table.
+# PR producer runs expose the PR head directly. Merge-group producer runs expose
+# GitHub's synthetic queue SHA. The initial queue contract is develop-only, so a
+# merge_group whose workflow-run head branch is not under
+# `gh-readonly-queue/develop/` is refused rather than guessed. A future main
+# queue must extend this trusted resolver in the same reviewed change that adds
+# main merge-group coverage.
 
 on:
   workflow_run:
@@ -40,15 +34,15 @@ on:
       - "security"
       - "CodeQL Advanced"
       - "Formal Conformance"
+      - "Gate C"
       - "Registry CI"
       - "Vulture Ratchet"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
+      - "Autonomous Merge Safety"
     types: [completed]
 
-# Keyed by the head being judged rather than by the PR: the question is about a
-# commit. `cancel-in-progress` stays false because each sibling's completion is
-# new evidence about the same head, and cancelling the earlier evaluation would
-# throw away the answer without replacing it.
+# Keyed by the candidate being judged. Each sibling completion is new evidence,
+# so do not cancel an earlier evaluation without a replacement verdict.
 concurrency:
   group: gates-ran-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
@@ -56,18 +50,76 @@ concurrency:
 permissions:
   checks: read
   contents: read
+  statuses: write
 
 jobs:
-  gates-ran:
-    name: gates-ran
+  publish-gates-ran:
+    name: gates-ran-publisher
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Only for pull requests. A push to a long-lived branch has no head under
-    # review, and failing this on every `develop` push would train people to
-    # ignore it.
-    if: github.event.workflow_run.event == 'pull_request'
+    # pull_request_target producers may wake this workflow, but their workflow
+    # run head is the protected base SHA rather than the candidate. Other
+    # candidate workflows will wake the publisher with the correct PR or queue
+    # SHA, so never publish a verdict for the trusted base by accident.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' ||
+      github.event.workflow_run.event == 'merge_group'
     steps:
+      - name: Resolve the candidate head and base
+        id: target
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const source = context.payload.workflow_run;
+            const headSha = source.head_sha;
+            let baseBranch;
+
+            if (source.event === 'merge_group') {
+              const headBranch = source.head_branch || '';
+              const queuePrefix = 'gh-readonly-queue/develop/';
+              if (!headBranch.startsWith(queuePrefix)) {
+                core.setFailed(`unreviewed merge-group base for ${headSha}: ${headBranch || '<empty>'}`);
+                return;
+              }
+              baseBranch = 'develop';
+            } else {
+              let prs = source.pull_requests || [];
+
+              // GitHub normally supplies the PR association on workflow_run. If
+              // it does not, resolve it from the exact triggering commit rather
+              // than guessing the base branch.
+              if (prs.length === 0) {
+                const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: headSha,
+                });
+                prs = response.data;
+              }
+
+              const pr = prs.find(candidate => candidate.head?.sha === headSha) || prs[0];
+              if (!pr || !pr.base?.ref) {
+                core.setFailed(`cannot resolve a pull request/base for ${headSha}`);
+                return;
+              }
+              baseBranch = pr.base.ref;
+            }
+
+            if (!/^[0-9a-f]{40}$/.test(headSha || '')) {
+              core.setFailed(`candidate SHA is missing or invalid: ${headSha || '<empty>'}`);
+              return;
+            }
+
+            core.setOutput('head_sha', headSha);
+            core.setOutput('base_branch', baseBranch);
+            core.info(`evaluating ${headSha} for base ${baseBranch} from ${source.event}`);
+
+      # Explicitly use protected default-branch code. That is the security
+      # advantage of workflow_run: the candidate cannot weaken its own judge.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -76,24 +128,73 @@ jobs:
       - name: Install PyYAML
         run: pip install pyyaml
 
-      # Paginated deliberately: this repository already emits ~25 checks per
-      # head and GitHub's default page is 30. A truncated page would report
-      # real checks as "never ran", which is the exact false positive that
-      # would get this gate switched off.
-      - name: Collect check runs for the head under review
+      - name: Collect check runs for the candidate under review
+        if: steps.target.outputs.head_sha != ''
         uses: actions/github-script@v7
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         with:
           script: |
             const fs = require('fs');
             const runs = await github.paginate(
               github.rest.checks.listForRef,
-              { owner: context.repo.owner, repo: context.repo.repo,
-                ref: process.env.HEAD_SHA, per_page: 100 },
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: process.env.HEAD_SHA,
+                per_page: 100,
+              },
             );
             fs.writeFileSync('check-runs.json', JSON.stringify({ check_runs: runs }));
             core.info(`${runs.length} check run(s) on ${process.env.HEAD_SHA}`);
 
-      - name: Every required check ran on this head
-        run: python3 scripts/check-gates-ran.py --check-runs check-runs.json --require-complete
+      - name: Evaluate required execution evidence
+        id: evaluate
+        if: steps.target.outputs.head_sha != ''
+        env:
+          BASE_BRANCH: ${{ steps.target.outputs.base_branch }}
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/check-gates-ran.py \
+            --check-runs check-runs.json \
+            --require-complete \
+            --base-branch "$BASE_BRANCH"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      # Required checks are allowed by GitHub to be `skipped` and still satisfy
+      # branch protection. This explicit status is stricter: green means every
+      # required enforcement actually completed. Missing/unfinished evidence is
+      # pending so GitHub's merge queue waits instead of ejecting a healthy
+      # candidate simply because a fast sibling finished first.
+      - name: Publish gates-ran on the exact candidate head
+        if: always() && steps.target.outputs.head_sha != ''
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          EVALUATION_EXIT_CODE: ${{ steps.evaluate.outputs.exit_code }}
+        with:
+          script: |
+            const code = Number(process.env.EVALUATION_EXIT_CODE || '1');
+            const state = code === 0 ? 'success' : code === 2 ? 'pending' : 'failure';
+            const description = code === 0
+              ? 'All required checks executed on this exact head'
+              : code === 2
+                ? 'Required execution evidence is still arriving'
+                : 'Required execution evidence is missing or non-executed';
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.HEAD_SHA,
+              state,
+              context: 'gates-ran',
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+            if (state === 'failure') {
+              core.setFailed(description);
+            }

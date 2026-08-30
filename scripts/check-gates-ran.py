@@ -20,31 +20,44 @@ rung: a green result that nothing actually reached. There the fix was to ask
 whether an entry point can get to the code; here it is to ask whether the gate
 got to the commit.
 
-What counts as red
-------------------
+What counts as red or pending
+-----------------------------
 - **Absent** — a required check with no run on this head at all. This is the
-  "gates did not run" state AC-2 names, and the one that renders as empty.
-- **`action_required`** — a run that exists and will never execute without a
-  human pressing a button. It is the exact symptom a `GITHUB_TOKEN` push
-  produces, and it is worth naming separately because it looks like a run.
-- **Unfinished** — present but not `completed`. Red only under
-  `--require-complete`, which is how the `workflow_run`-triggered job asks the
-  question once the other workflows have finished. Without that flag an
-  in-progress check is fine: it ran, which is what this gate is about.
+  "gates did not run" state AC-2 names. While sibling workflows may still be
+  starting, absence is *pending evidence* rather than a terminal failure: exit
+  code 2 keeps a merge-group waiting instead of ejecting it on the first
+  producer completion. If the check never appears, the required `gates-ran`
+  context remains pending and the merge fails closed at GitHub's queue timeout.
+- **Non-executed** — a run record exists but its conclusion is
+  `action_required`, `stale`, `skipped`, or `cancelled`. Presence alone is not
+  evidence that the required enforcement executed. This is a hard finding and
+  exits 1.
+- **Unfinished** — present but not `completed`. Under `--require-complete` this
+  is pending evidence (exit 2), not red. Without that flag an in-progress check
+  is fine: it ran, which is what this gate is about.
+
+Base-coupled checks
+-------------------
+CodeQL and the container scan are intentionally coupled to `main`. They are not
+required execution evidence on a `develop` PR, but they *are* evidence on a
+`main` promotion. Pass `--base-branch main` to include them. Any other base
+keeps them excluded, matching the generated required-check contract.
 
 A failure it must never produce
 -------------------------------
-Reporting green because it could not tell. An unreadable payload, an empty
-check-run list, or a required set that came back empty are all *unmeasured*, and
-this script exits non-zero for every one of them rather than passing by default.
-The distinction is the same one `passing_ac_ids` draws between `set()` and
-`None`: "nothing passed" and "we do not know" are different answers, and only
-one of them is safe to treat as success.
+Reporting green because it could not tell. An unreadable payload or a required
+set that came back empty are *unmeasured* and exit 1. An empty or incomplete
+check-run set is also never green; it exits 2 so a live merge queue waits for
+more evidence instead of treating the transient state as a terminal rejection.
 
 Usage
 -----
     python3 scripts/check-gates-ran.py --check-runs runs.json
     python3 scripts/check-gates-ran.py --check-runs runs.json --require-complete
+    python3 scripts/check-gates-ran.py --check-runs runs.json --require-complete --base-branch main
+
+Exit codes are part of the publisher contract: 0 = complete execution evidence,
+1 = hard/unmeasured failure, 2 = evidence is still pending.
 
 `runs.json` is the body of `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`.
 The workflow fetches it; this script does no network I/O, so its logic is
@@ -64,16 +77,17 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_CHECKS_SCRIPT = REPO_ROOT / "scripts" / "check-required-checks.py"
 
-#: Conclusions that mean the run exists but will not execute on its own.
-STALLED = frozenset({"action_required", "stale"})
+#: Conclusions that do not prove the required enforcement executed to a verdict.
+NON_EXECUTED = frozenset({"action_required", "stale", "skipped", "cancelled"})
+PENDING_EXIT = 2
 
 
-def required_check_names() -> list[str]:
-    """The contract `check-required-checks.py` already keeps honest.
+def required_check_names(*, base_branch: str | None = None) -> list[str]:
+    """Return the required execution-evidence set for one PR base.
 
-    Read from that script rather than restated here, for the reason its own
-    docstring gives: a name that lives in two places drifts in one of them, and
-    the drift is invisible because both sides keep reporting.
+    The source of truth is `check-required-checks.py`, not a second handwritten
+    list. Base-coupled checks are included only for `main`, which is the branch
+    whose contract actually requires CodeQL and the container scan.
     """
     spec = importlib.util.spec_from_file_location("check_required_checks", REQUIRED_CHECKS_SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
@@ -82,20 +96,11 @@ def required_check_names() -> list[str]:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     rows = module.collect()
-    # Base-coupled checks are excluded, and the exclusion is the difference
-    # between a gate people keep and one they switch off. CodeQL runs only on
-    # PRs based on `main`, so on a `develop` PR its three checks legitimately
-    # produce no run at all -- requiring them would paint every PR in the
-    # repository red for a reason that is correct behaviour. #161 named this
-    # class of check and `base_coupled` already identifies it, so this reads
-    # the same answer rather than inventing a second one.
-    #
-    # The cost is stated rather than hidden: on a `main`-based PR nothing here
-    # verifies CodeQL ran. That needs the base branch, which this script
-    # deliberately does not take (see the module docstring on network I/O), and
-    # it is the narrower gap.
-    excluded = {name for _workflow, name in module.base_coupled(rows)}
-    return sorted({name for _workflow, name, _scope in rows} - excluded)
+
+    names = {name for _workflow, name, _scope in rows}
+    if base_branch != "main":
+        names -= {name for _workflow, name in module.base_coupled(rows)}
+    return sorted(names)
 
 
 @dataclass
@@ -103,13 +108,18 @@ class Verdict:
     """What the head's check runs say about whether the gates reached it."""
 
     absent: list[str] = field(default_factory=list)
-    stalled: list[str] = field(default_factory=list)
+    not_executed: list[str] = field(default_factory=list)
     unfinished: list[str] = field(default_factory=list)
     ran: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.absent and not self.stalled and not self.unfinished
+        return not self.absent and not self.not_executed and not self.unfinished
+
+    @property
+    def pending(self) -> bool:
+        """More executions can still turn this verdict green without a rerun."""
+        return not self.not_executed and bool(self.absent or self.unfinished)
 
 
 def evaluate(
@@ -136,8 +146,8 @@ def evaluate(
         if run is None:
             verdict.absent.append(name)
             continue
-        if run.get("conclusion") in STALLED:
-            verdict.stalled.append(name)
+        if run.get("conclusion") in NON_EXECUTED:
+            verdict.not_executed.append(name)
             continue
         if run.get("status") != "completed":
             (verdict.unfinished if require_complete else verdict.ran).append(name)
@@ -171,7 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--require-complete",
         action="store_true",
-        help="also fail when a required check is present but has not finished",
+        help="also require every present check to have finished",
+    )
+    parser.add_argument(
+        "--base-branch",
+        help="PR base branch; `main` includes base-coupled release checks",
     )
     args = parser.parse_args(argv)
 
@@ -183,7 +197,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    required = required_check_names()
+    required = (
+        required_check_names(base_branch=args.base_branch)
+        if args.base_branch is not None
+        else required_check_names()
+    )
     if not required:
         print("FAIL: the required-check contract is empty; nothing to verify ran.")
         return 1
@@ -193,25 +211,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ok: all {len(required)} required check(s) ran on this head")
         return 0
 
-    print("FAIL: the gate set did not reach this commit\n")
+    heading = (
+        "PENDING: execution evidence is still arriving"
+        if verdict.pending
+        else "FAIL: the gate set did not reach this commit"
+    )
+    print(f"{heading}\n")
     if verdict.absent:
-        print(f"  never ran ({len(verdict.absent)}):")
+        print(f"  not present yet ({len(verdict.absent)}):")
         for name in verdict.absent:
             print(f"    {name}")
         print(
-            "\n  A required check with no run is absent, not red -- it renders as an\n"
-            "  empty space where a tick would go. If a workflow pushed this head with\n"
-            "  the default GITHUB_TOKEN, GitHub will not start workflows for it (#262)."
+            "\n  A required check with no run is not success. While sibling workflows may\n"
+            "  still be starting, keep the aggregate pending. If it never appears,\n"
+            "  GitHub's required context/queue timeout keeps the candidate blocked."
         )
-    if verdict.stalled:
-        print(f"\n  awaiting approval, will never run on their own ({len(verdict.stalled)}):")
-        for name in verdict.stalled:
+    if verdict.not_executed:
+        print(f"\n  present but did not execute to a verdict ({len(verdict.not_executed)}):")
+        for name in verdict.not_executed:
             print(f"    {name}")
+        print(
+            "\n  A required check that is skipped, cancelled, stale, or awaiting approval\n"
+            "  is not evidence that its enforcement ran on this commit."
+        )
     if verdict.unfinished:
         print(f"\n  started but not finished ({len(verdict.unfinished)}):")
         for name in verdict.unfinished:
             print(f"    {name}")
-    return 1
+    return PENDING_EXIT if verdict.pending else 1
 
 
 if __name__ == "__main__":

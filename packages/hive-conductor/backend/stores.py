@@ -29,7 +29,6 @@ from models.schemas import (
     Mission,
     MissionStep,
     Schedule,
-    SettingsModel,
     Skill,
 )
 from models.workspace import Workspace
@@ -88,13 +87,13 @@ workspaces: ModelStore = ModelStore("workspaces", Workspace)
 persona_feedback: ModelStore = ModelStore("persona_feedback", PersonaFeedback)
 
 
-def _initial_settings() -> SettingsModel:
-    from settings_defaults import default_settings
-
-    return default_settings()
-
-
-settings: SettingsModel = _initial_settings()
+# `settings` is deliberately absent from this module. It used to be a
+# module-level `SettingsModel` that every write rebound and nothing persisted
+# (#334). `services.settings_store` owns the record now, and removing the name
+# rather than wrapping it is what makes a missed call site an AttributeError at
+# import time instead of a write that quietly does not land — including
+# `routes/setup.py`'s in-place `stores.settings.default_model = ...`, which no
+# write-through wrapper could have observed. See ADR-082926-0b72.
 chat_sessions: ModelStore = ModelStore("chat_sessions", ChatSession)
 cli_sessions: JsonStore = JsonStore("cli_sessions")
 users: ModelStore = ModelStore("users", HiveUser)
@@ -111,6 +110,15 @@ optimizer_proposals: JsonStore = JsonStore("optimizer_proposals")
 # Task #27 — per-user, per-provider non-secret config (e.g. Airtable base_id).
 # Key shape: f"{user_id}:{provider_id}" → dict[str, str].
 user_provider_config: JsonStore = JsonStore("user_provider_config")
+#: One entry per principal, holding that principal's dashboard layout record.
+#: Here rather than beside the route because this is the boundary the
+#: deployment configures for durability (#340, ADR-082926-3b80); the route
+#: used to keep its own file inside the image.
+dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
+#: DAG run history — the records behind the "Live DAG Runs" page. In-memory
+#: until #697; the page presented a 100-entry deque as history, empty after
+#: every restart.
+dag_runs: JsonStore = JsonStore("dag_runs")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -138,6 +146,8 @@ _all_json_stores: list[JsonStore] = [
     eval_verdicts,
     optimizer_proposals,
     user_provider_config,
+    dashboard_layouts,
+    dag_runs,
 ]
 
 

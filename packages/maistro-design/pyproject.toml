@@ -10,7 +10,8 @@ dependencies = [
     "maistro-canvas>=0.9.0",
     "httpx>=0.28,<1",
     "pydantic>=2.0,<3",
-    "pyyaml>=6.0,<7",
+    # pyyaml was declared here and imported nowhere in `src/maistro_design`;
+    # maistro-core owns YAML parsing and declares it (#514).
 ]
 
 [project.optional-dependencies]

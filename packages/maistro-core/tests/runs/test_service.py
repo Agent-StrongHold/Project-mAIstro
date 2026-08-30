@@ -64,7 +64,8 @@ async def test_graph_to_run_to_node_run_to_attempt_to_runtime() -> None:
 
     stored_run = await store.get_run(run.run_id)
     assert stored_run is not None
-    assert stored_run.status is RunStatus.RUNNING
+    assert stored_run.status is RunStatus.COMPLETED
+    assert stored_run.result == attempt.result
     assert stored_run.graph.content_hash == graph.content_hash
 
 

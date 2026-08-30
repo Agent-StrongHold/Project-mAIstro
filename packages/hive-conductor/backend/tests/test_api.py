@@ -252,9 +252,14 @@ def test_chat_complete_with_mock_llm_port() -> None:
     assert body["choices"][0]["message"]["content"] == "mock response"
     mock_llm.complete.assert_called_once()
     sent = mock_llm.complete.call_args.args[0]
-    # The user message is forwarded intact (a PM system prompt is prepended).
-    assert expected_messages[0] in sent.messages
+    # M0 containment adds safe system context at the public chat boundary while
+    # preserving caller messages and avoiding the agent/tool prompt path.
     assert sent.messages[0]["role"] == "system"
+    assert "conversational-only" in sent.messages[0]["content"]
+    assert sent.messages[1:] == expected_messages
+    # And containment's other half, asserted here because this is the test that
+    # holds the request object: no tool surface travels with a chat completion.
+    assert sent.tools is None
 
 
 def test_mission_create_dispatches_task() -> None:
@@ -310,7 +315,6 @@ def test_mission_status_maps_correctly() -> None:
 
 
 def test_websocket_streams_task_events() -> None:
-
     c = _login()
 
     async def _fake_iter(task_id: str, *, user_id: str | None = None):

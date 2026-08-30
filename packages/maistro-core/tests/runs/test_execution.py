@@ -14,6 +14,7 @@ from maistro.runs import (
     InMemoryRunStore,
     RunStatus,
 )
+from maistro.runs.execution import ExecutionYielded
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 
 
@@ -96,7 +97,8 @@ async def test_attempt_id_is_runtime_execution_id_and_reconciles_after_terminal_
 
     stored_run = await store.get_run(run_id)
     assert stored_run is not None
-    assert stored_run.status is RunStatus.RUNNING
+    assert stored_run.status is RunStatus.COMPLETED
+    assert stored_run.result == terminal.result
 
 
 @pytest.mark.asyncio
@@ -231,4 +233,31 @@ async def test_failed_attempt_can_retry_same_logical_node_run() -> None:
     completed_node_run = await store.get_node_run(node_run_id)
     resumed_run = await store.get_run(run_id)
     assert completed_node_run is not None and completed_node_run.status is RunStatus.COMPLETED
-    assert resumed_run is not None and resumed_run.status is RunStatus.RUNNING
+    assert resumed_run is not None and resumed_run.status is RunStatus.COMPLETED
+    assert resumed_run.result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_yielded_attempt_is_a_pause_in_the_runtime_metrics_too() -> None:
+    """The two records of one event agree (#642).
+
+    `AttemptExecutionService` terminalizes the Attempt as YIELDED, and before
+    this the same escape was counted as a failed execution in `RuntimeMetrics`,
+    so the physical outcome and the migration-trigger measurement said different
+    things about the same pause. This is the end-to-end version of the runtime
+    unit tests: it goes through the class the consumer actually raises.
+    """
+    store, _run_id, node_run_id = await _node_run()
+    runtime = PythonExecutionRuntime()
+    service = AttemptExecutionService(store=store, runtime=runtime)
+
+    async def pause(_work: Any, _context: Any) -> None:
+        raise ExecutionYielded(awaits_human=True)
+
+    terminal = await service.execute(node_run_id, None, None, executor=pause)
+
+    assert terminal.status is AttemptStatus.YIELDED
+    metrics = runtime.metrics()
+    assert metrics.executions_yielded == 1
+    assert metrics.executions_failed == 0
+    assert metrics.executions_completed == 0

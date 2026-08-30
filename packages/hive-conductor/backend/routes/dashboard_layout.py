@@ -1,7 +1,14 @@
 """Dashboard layout persistence — per-user widget configuration.
 
-Uses the same SQLite persistence layer as the rest of Hive's stores.
-Falls back to in-memory if persistence isn't configured.
+Layouts live in `stores.dashboard_layouts`, the same persistence boundary as
+every other durable Conductor collection, through
+`services/dashboard_layouts.py` (#340, ADR-082926-3b80). They used to live in a
+module dict mirrored to a JSON file inside the image, with a second
+fire-and-forget copy in PostgREST that the read path consulted first.
+
+The read-only routes below this one — demos, widget examples, deck templates —
+serve files shipped in the image. They are catalogue, not user state, and are
+deliberately still read straight off disk.
 """
 
 from __future__ import annotations
@@ -11,42 +18,29 @@ import logging
 from pathlib import Path
 from typing import ClassVar
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from services import dashboard_layouts
+from services.dashboard_safety import sanitize_dashboard_layout
 
 router = APIRouter(prefix="/v1/dashboard", tags=["dashboard"])
 logger = logging.getLogger("hive.dashboard")
 
-# SQLite-backed file (same dir as other Hive state)
-_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "dashboard_layouts.json"
-_LAYOUTS: dict[str, dict] = {}
-
-
-def _load_from_disk() -> None:
-    """Load persisted layouts on startup."""
-    if _DB_PATH.is_file():
-        try:
-            _LAYOUTS.update(json.loads(_DB_PATH.read_text()))
-        except Exception as e:
-            logger.warning("Failed to load dashboard layouts: %s", e)
-
-
-def _save_to_disk() -> None:
-    """Persist layouts to disk."""
-    try:
-        _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _DB_PATH.write_text(json.dumps(_LAYOUTS, indent=2))
-    except Exception as e:
-        logger.warning("Failed to save dashboard layouts: %s", e)
-
-
-# Load on import
-_load_from_disk()
-
 
 def _user_id(request: Request) -> str:
+    """The authenticated principal, or 401.
+
+    There used to be a `"dev"` fallback here. Every unauthenticated caller
+    would then share one layout key -- a pooled bucket rather than a default,
+    and a cross-principal leak the moment the middleware stopped covering this
+    path. The middleware does cover it today; the refusal is what keeps that
+    true if it ever stops.
+    """
     user = getattr(request.state, "user", None) or {}
-    return str(user.get("id") or user.get("username") or "dev")
+    principal = user.get("id") or user.get("username")
+    if not principal:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return str(principal)
 
 
 class WidgetConfig(BaseModel):
@@ -63,84 +57,54 @@ class DashboardLayout(BaseModel):
     tabs: list[dict] = []
     activeTab: int = 0
     updatedAt: str = ""
+    #: The revision the client believes it edited. Optional: a save without one
+    #: is last-write-wins, which is what the SPA does today. Never persisted --
+    #: it is a claim about the record, not part of it.
+    expectedRevision: int | None = None
 
 
 @router.get("/layout")
-async def get_layout(request: Request) -> dict:  # noqa: C901  layered preset/PG/disk fallbacks
-    """Get the current user's dashboard layout. Seeds preset for known users."""
-    uid = _user_id(request)
-    # Try PostgREST first (survives restarts)
-    if uid not in _LAYOUTS:
-        try:
-            from services.pg_store import POSTGREST_URL
+async def get_layout(request: Request) -> dict:
+    """This principal's stored layout, or its preset, or an empty one.
 
-            if POSTGREST_URL:
-                import httpx
-
-                r = httpx.get(
-                    f"{POSTGREST_URL}/user_service_state",
-                    params={
-                        "user_id": f"eq.{uid}",
-                        "service": "eq.fantasia",
-                        "key": "eq.dashboard_layout",
-                    },
-                    timeout=3,
-                )
-                if r.status_code == 200:
-                    rows = r.json()
-                    if rows:
-                        val = rows[0].get("value")
-                        layout = json.loads(val) if isinstance(val, str) else val
-                        if layout:
-                            _LAYOUTS[uid] = layout
-        except Exception:
-            pass
-    if uid not in _LAYOUTS:
-        preset = _PRESETS.get(uid)
-        if preset:
-            demo_path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{preset}.json"
-            if demo_path.is_file():
-                try:
-                    _LAYOUTS[uid] = json.loads(demo_path.read_text())
-                    _save_to_disk()
-                except Exception:
-                    pass
-    return _LAYOUTS.get(uid, {"widgets": []})
-
-
-# Users with pre-configured dashboard templates (loaded on first access)
-_PRESETS: dict[str, str] = {
-    "demo": "portfolio-overview",
-}
+    `effective` rather than `load`, and the same call the chat widget tool
+    makes: two readers of "what is this user looking at" that answer differently
+    is how a widget added through chat replaced a preset instead of joining it.
+    """
+    principal = _user_id(request)
+    record = dashboard_layouts.effective(principal)
+    return {**record.layout, "revision": record.revision}
 
 
 @router.put("/layout")
 async def save_layout(request: Request, body: DashboardLayout) -> dict:
-    """Save the current user's dashboard layout."""
-    uid = _user_id(request)
-    _LAYOUTS[uid] = body.model_dump()
-    _save_to_disk()
-    # Persist to PostgREST
+    """Store this principal's layout, or say it was not stored.
+
+    The `save` call is deliberately outside any `try`. The defect this route
+    had was not a missing write; it was a handler that turned a failed one into
+    `{"ok": true}`. Only the two failures with an answer of their own are
+    caught, and each names what it is.
+    """
+    principal = _user_id(request)
+    payload = body.model_dump(exclude={"expectedRevision"})
     try:
-        from services.pg_store import is_pg_available, pg_upsert
-
-        if is_pg_available():
-            import asyncio
-
-            _task = asyncio.ensure_future(  # noqa: RUF006  fire-and-forget mirror write
-                pg_upsert(
-                    "user_service_state",
-                    {
-                        "user_id": uid,
-                        "service": "fantasia",
-                        "key": "dashboard_layout",
-                        "value": json.dumps(body.model_dump()),
-                    },
-                )
-            )
-    except Exception:
-        pass
-    return {"ok": True}
+        record = dashboard_layouts.save(principal, payload, expected_revision=body.expectedRevision)
+    except dashboard_layouts.LayoutConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "the layout changed since you loaded it",
+                "revision": exc.stored.revision,
+                "layout": exc.stored.layout,
+            },
+        ) from exc
+    except dashboard_layouts.LayoutPersistenceError as exc:
+        logger.error("dashboard layout was not persisted for %s: %s", principal, exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"the layout was not saved: {exc}",
+        ) from exc
+    return {"ok": True, "revision": record.revision, "updatedAt": record.updated_at.isoformat()}
 
 
 @router.get("/metrics")
@@ -212,7 +176,7 @@ async def get_demo_dashboard(demo_id: str) -> dict:
     path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{demo_id}.json"
     if not path.exists():
         return {"error": "not found"}
-    return json.loads(path.read_text())
+    return sanitize_dashboard_layout(json.loads(path.read_text()))
 
 
 @router.get("/deck-templates")

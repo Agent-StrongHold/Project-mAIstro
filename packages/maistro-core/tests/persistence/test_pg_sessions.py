@@ -1,4 +1,4 @@
-"""Coverage for maistro.persistence.pg_sessions.PgSessionStore (was 0%)."""
+"""Coverage for maistro.persistence.pg_sessions.PgSessionStore."""
 
 from __future__ import annotations
 
@@ -20,17 +20,33 @@ class Call:
         self.args = args
 
 
+class _TransactionCtx:
+    def __init__(self, conn: FakeConnection) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> None:
+        self._conn.transaction_entries += 1
+
+    async def __aexit__(self, *exc: Any) -> None:
+        self._conn.transaction_exits += 1
+
+
 class FakeConnection:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self._fetch_results: list[list[FakeRecord]] = []
         self._fetchrow_results: list[FakeRecord | None] = []
+        self.transaction_entries = 0
+        self.transaction_exits = 0
 
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
 
     def queue_fetchrow(self, row: dict[str, Any] | None) -> None:
         self._fetchrow_results.append(FakeRecord(row) if row is not None else None)
+
+    def transaction(self) -> _TransactionCtx:
+        return _TransactionCtx(self)
 
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
@@ -78,7 +94,6 @@ def store(conn: FakeConnection) -> PgSessionStore:
 async def test_get_history_uses_defaults_and_reverses_desc_rows(
     store: PgSessionStore, conn: FakeConnection
 ) -> None:
-    # DB returns newest-first (DESC LIMIT); store must reverse to oldest-first.
     conn.queue_fetch(
         [
             {"role": "assistant", "content": "second"},
@@ -93,7 +108,7 @@ async def test_get_history_uses_defaults_and_reverses_desc_rows(
     call = conn.calls[0]
     assert call.method == "fetch"
     assert call.args[0] == "s1"
-    assert call.args[2] == 20  # default max_messages
+    assert call.args[2] == 20
 
 
 @pytest.mark.asyncio
@@ -114,8 +129,13 @@ async def test_get_history_empty_returns_empty_list(
     assert await store.get_history("s1") == []
 
 
+def _purged_table(query: str) -> str:
+    """The table a `DELETE FROM <table> WHERE ...` names."""
+    return query.split("DELETE FROM ", 1)[1].split()[0]
+
+
 @pytest.mark.asyncio
-async def test_append_messages_inserts_user_and_assistant_with_incrementing_seq(
+async def test_append_messages_locks_and_inserts_one_atomic_batch(
     store: PgSessionStore, conn: FakeConnection
 ) -> None:
     conn.queue_fetchrow({"next_seq": 3})
@@ -126,16 +146,24 @@ async def test_append_messages_inserts_user_and_assistant_with_incrementing_seq(
             {"role": "assistant", "content": "hello"},
         ],
     )
-    # M3: append_messages now also issues a TTL DELETE, so "every execute is
-    # an insert" no longer holds. Filter on the statement rather than the
-    # method, and assert the purge fired — otherwise removing it would go
-    # unnoticed.
+
+    assert conn.transaction_entries == 1
+    assert conn.transaction_exits == 1
+    lock_calls = [c for c in conn.calls if "pg_advisory_xact_lock" in c.query]
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1, "append_messages must purge expired rows inline"
+    assert len(lock_calls) == 1
+    assert lock_calls[0].args == ("s1",)
+    # Two DELETEs, not one: the retention sweep expires a turn's marker with
+    # the messages it admitted, or a purged turn could never be appended again
+    # (SPEC-083026-5fab AC-5).
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert len(insert_calls) == 2
     assert insert_calls[0].args == ("s1", 3, "user", "hi")
     assert insert_calls[1].args == ("s1", 4, "assistant", "hello")
+    assert conn.calls.index(lock_calls[0]) < next(
+        index for index, call in enumerate(conn.calls) if call.method == "fetchrow"
+    )
 
 
 @pytest.mark.asyncio
@@ -150,15 +178,10 @@ async def test_append_messages_drops_non_user_assistant_roles_without_consuming_
             {"role": "user", "content": "kept"},
         ],
     )
-    # M3: append_messages now also issues a TTL DELETE, so "every execute is
-    # an insert" no longer holds. Filter on the statement rather than the
-    # method, and assert the purge fired — otherwise removing it would go
-    # unnoticed.
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1, "append_messages must purge expired rows inline"
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert len(insert_calls) == 1
-    # "kept" gets seq 0 — the dropped "system" message did not consume a seq.
     assert insert_calls[0].args == ("s1", 0, "user", "kept")
 
 
@@ -168,14 +191,10 @@ async def test_append_messages_defaults_missing_role_and_content_to_empty(
 ) -> None:
     conn.queue_fetchrow({"next_seq": 0})
     await store.append_messages("s1", [{}])
-    # M3: append_messages now also issues a TTL DELETE, so "every execute is
-    # an insert" no longer holds. Filter on the statement rather than the
-    # method, and assert the purge fired — otherwise removing it would go
-    # unnoticed.
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1, "append_messages must purge expired rows inline"
-    assert insert_calls == []  # role "" is not in ("user", "assistant")
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
+    assert insert_calls == []
 
 
 @pytest.mark.asyncio
@@ -184,20 +203,37 @@ async def test_append_messages_no_existing_rows_starts_seq_at_default(
 ) -> None:
     conn.queue_fetchrow(None)
     await store.append_messages("s1", [{"role": "user", "content": "hi"}])
-    # M3: append_messages now also issues a TTL DELETE, so "every execute is
-    # an insert" no longer holds. Filter on the statement rather than the
-    # method, and assert the purge fired — otherwise removing it would go
-    # unnoticed.
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1, "append_messages must purge expired rows inline"
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert insert_calls[0].args == ("s1", 0, "user", "hi")
 
 
 @pytest.mark.asyncio
-async def test_delete_session_executes_delete(store: PgSessionStore, conn: FakeConnection) -> None:
+async def test_delete_session_uses_the_same_session_lock(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
     await store.delete_session("s1")
-    call = conn.calls[0]
-    assert call.method == "execute"
-    assert "DELETE FROM sessions WHERE session_id = $1" in call.query
-    assert call.args == ("s1",)
+    assert conn.transaction_entries == 1
+    assert conn.transaction_exits == 1
+    assert "pg_advisory_xact_lock" in conn.calls[0].query
+    delete_call = next(
+        c for c in conn.calls if "DELETE FROM sessions WHERE session_id = $1" in c.query
+    )
+    assert delete_call.args == ("s1",)
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_deletes_both_tables_in_one_transaction(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
+    """Codex, #327. The sweep issues two DELETEs, and the state between them is
+    the one a marker must never be left in: messages gone, marker committed,
+    the next retry of that turn silently suppressed. Outside a transaction they
+    are two implicit ones, so a failure between them commits exactly that."""
+    await store.purge_expired(0)
+
+    purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
+    assert conn.transaction_entries == 1
+    assert conn.transaction_exits == 1

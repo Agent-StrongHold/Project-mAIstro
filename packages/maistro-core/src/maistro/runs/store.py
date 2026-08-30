@@ -23,6 +23,7 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -121,6 +122,35 @@ def validate_accepted_outcome_against_attempt(
         or not evidence_values_equal(actual.result, expected.result)
     ):
         raise RunIntegrityError("accepted outcome does not match its canonical persisted Attempt")
+
+
+def require_repairable_attempt(attempt: Attempt) -> None:
+    """A repair corrects a finished record; it never touches live work."""
+    if attempt.status not in TERMINAL_ATTEMPT_STATUSES:
+        raise RunIntegrityError(
+            f"Attempt {attempt.attempt_id!r} has not finished; only a terminal "
+            "Attempt's recorded result can be repaired"
+        )
+
+
+def outcome_embeds_attempt(node_run: NodeRun, attempt_id: str) -> bool:
+    """Whether this NodeRun's accepted outcome embeds this Attempt's evidence."""
+    outcome = node_run.accepted_outcome
+    return outcome is not None and outcome.attempt_result.attempt_id == attempt_id
+
+
+def repaired_accepted_outcome(
+    outcome: AcceptedNodeOutcome,
+    attempt: Attempt,
+) -> AcceptedNodeOutcome:
+    """The accepted outcome that still matches an Attempt whose result moved.
+
+    Only the embedded physical copy is rebuilt. The logical projection --
+    `result`, `error`, `logical_status` -- is what the NodeRun carries and what
+    a caller reads; it was never emptied, and rewriting it here would make the
+    repair a second acceptance rather than a correction of the physical record.
+    """
+    return outcome.model_copy(update={"attempt_result": AttemptResult.from_attempt(attempt)})
 
 
 class StaleExecutionFence(RunIntegrityError):
@@ -272,6 +302,17 @@ class RunStore(Protocol):
 
     async def has_runs_in_project(self, project_id: str) -> bool: ...
 
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        project_id: str | None = None,
+    ) -> list[Run]: ...
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
     async def get_run(self, run_id: str) -> Run | None: ...
 
     async def transition_run(
@@ -344,6 +385,8 @@ class RunStore(Protocol):
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
     ) -> Attempt: ...
+
+    async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
 
     async def delete_run(self, run_id: str) -> bool: ...
 
@@ -578,6 +621,20 @@ class InMemoryRunStore:
             await self.delete_run(run_id, force=True)
         return min(len(doomed), limit)
 
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338): durable state claiming work
+        is in flight is exactly what recovery exists to own, so its count and
+        age must be observable without walking every Run by hand. Cheap on
+        every backend — a status filter, no payload materialization beyond the
+        oldest timestamp.
+        """
+        open_runs = [run for run in self._runs.values() if run.status not in TERMINAL_RUN_STATUSES]
+        if not open_runs:
+            return 0, None
+        return len(open_runs), min(run.created_at for run in open_runs)
+
     async def archive_cold_runs(
         self,
         *,
@@ -653,6 +710,40 @@ class InMemoryRunStore:
         rule with a foreign key; this is the reference store's equivalent.
         """
         return any(run.project_id == project_id for run in self._runs.values())
+
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first.
+
+        The query a canonical consumer needs to find admitted work (#251),
+        mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface. Oldest-first, so a bounded tick drains a
+        backlog fairly instead of starving what arrived first.
+
+        A caller that needs to see *every* row eventually, rather than only the
+        oldest page, passes ``offset`` and walks it: the resume tick does, because
+        its filter is applied after the query and a standing prefix of ineligible
+        rows would otherwise hide everything behind it forever (#666 review).
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.status is status and (project_id is None or run.project_id == project_id)
+            ),
+            key=lambda run: (run.created_at, run.run_id),
+        )
+        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
@@ -798,6 +889,12 @@ class InMemoryRunStore:
         same rule here a reconciliation that lands late rewrites the history of
         a closed Run, and can undo the very cascade that settled it.
         """
+        # A completed row without accepted evidence predates AcceptedNodeOutcome.
+        # Let it reach transition_node_run's migration validator even after the
+        # parent closed; that validator permits only a matching evidence install
+        # and preserves all lifecycle fields.
+        if node_run.status is RunStatus.COMPLETED and node_run.accepted_outcome is None:
+            return
         run = self._runs.get(node_run.run_id)
         if run is not None and run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError(
@@ -919,6 +1016,44 @@ class InMemoryRunStore:
             metrics=metrics,
         )
         self._attempts[attempt_id] = updated
+        return updated.model_copy(deep=True)
+
+    async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:
+        """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
+
+        An operator repair, not a runtime path (ADR-083026-14c3). Attempts
+        written before #566 hold ``output: {}`` where their node produced a
+        typed model, and no other write path can correct that: `transition_*`
+        records evidence *as* work finishes, and mirroring lifecycle never
+        touches `Attempt.result`.
+
+        When the Attempt's NodeRun accepted it, the accepted outcome embeds a
+        second copy of the same evidence, and
+        `validate_accepted_outcome_against_attempt` refuses a record where the
+        two disagree. So both move here, in one operation, with the outcome
+        derived from the repaired Attempt rather than supplied -- the invariant
+        is held by the only path that can break it, not by every caller who
+        uses it.
+
+        Refuses an Attempt that is not terminal: a repair that could touch a
+        running execution would be a second, unreviewed lifecycle path. Nothing
+        but the result changes.
+        """
+        attempt = self._require_attempt(attempt_id)
+        require_repairable_attempt(attempt)
+        updated = attempt.model_copy(update={"result": result})
+        self._attempts[attempt_id] = updated
+
+        node_run = self._node_runs.get(attempt.node_run_id)
+        if node_run is not None and outcome_embeds_attempt(node_run, attempt_id):
+            assert node_run.accepted_outcome is not None  # narrowed by outcome_embeds_attempt
+            self._node_runs[node_run.node_run_id] = node_run.model_copy(
+                update={
+                    "accepted_outcome": repaired_accepted_outcome(
+                        node_run.accepted_outcome, updated
+                    )
+                }
+            )
         return updated.model_copy(deep=True)
 
     @staticmethod

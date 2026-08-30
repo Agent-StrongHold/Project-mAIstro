@@ -1,0 +1,94 @@
+{
+  "name": "PM Command Center",
+  "description": "Delivery KPIs, cost split and status breakdown for the demo account.",
+  "tabs": [
+    {
+      "name": "Overview",
+      "widgets": [
+        {
+          "id": "pm-kpi-velocity",
+          "type": "kpi",
+          "title": "Sprint Velocity",
+          "size": "1",
+          "config": {
+            "field": "runs_today",
+            "sub": "completions this sprint"
+          }
+        },
+        {
+          "id": "pm-kpi-latency",
+          "type": "kpi",
+          "title": "Avg Response",
+          "size": "1",
+          "config": {
+            "field": "avg_latency",
+            "sub": "p50 latency"
+          }
+        },
+        {
+          "id": "pm-kpi-cost",
+          "type": "kpi",
+          "title": "Daily Spend",
+          "size": "1",
+          "config": {
+            "field": "total_cost",
+            "sub": "LLM costs today"
+          }
+        },
+        {
+          "id": "pm-kpi-approval",
+          "type": "kpi",
+          "title": "Approval Rate",
+          "size": "1",
+          "config": {
+            "field": "approval_rate",
+            "sub": "thumbs up %"
+          }
+        },
+        {
+          "id": "pm-kpi-agents",
+          "type": "kpi",
+          "title": "Active Agents",
+          "size": "1",
+          "config": {
+            "field": "active_agents",
+            "sub": "currently running"
+          }
+        },
+        {
+          "id": "pm-kpi-ttft",
+          "type": "kpi",
+          "title": "TTFT",
+          "size": "1",
+          "config": {
+            "field": "ttft",
+            "sub": "time to first token"
+          }
+        },
+        {
+          "id": "pm-status-breakdown",
+          "type": "jira",
+          "title": "Project Status Breakdown",
+          "size": "3",
+          "config": {
+            "project": "DEMO",
+            "days": "14",
+            "jira_display": "status-breakdown",
+            "refresh_minutes": 15
+          }
+        },
+        {
+          "id": "pm-cost-donut",
+          "type": "cost-donut",
+          "title": "Cost Distribution",
+          "size": "2",
+          "config": {
+            "refresh_minutes": 30
+          }
+        }
+      ]
+    }
+  ],
+  "activeTab": 0,
+  "updatedAt": ""
+}

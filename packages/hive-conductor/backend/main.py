@@ -10,8 +10,9 @@ from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
 from middleware.auth import AuthMiddleware
 from middleware.request_log import RequestLogMiddleware
@@ -33,6 +34,7 @@ from routes import (
     feedback,
     harness,
     health,
+    hitl,
     install,
     mcp,
     memory,
@@ -64,6 +66,7 @@ from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
 from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
+from services.settings_store import SettingsPersistenceError
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "frontend" / "dist"
@@ -270,12 +273,27 @@ def create_app() -> FastAPI:
     # middlewares added above (e.g. 401s from AuthMiddleware).
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # The 503 contract belongs to the settings *record*, not to one router.
+    # `routes/settings.py` translated it locally, so `/v1/capabilities` — which
+    # persists the same record — returned an unclassified 500 for the identical
+    # failure. Translated once here so every caller of `settings_store.save`
+    # gets the documented status, rather than each router remembering to.
+    @app.exception_handler(SettingsPersistenceError)
+    async def _settings_not_persisted(
+        _request: Request, exc: SettingsPersistenceError
+    ) -> JSONResponse:
+        logging.getLogger("hive.settings_store").error("settings write not confirmed: %s", exc)
+        return JSONResponse(
+            status_code=503, content={"detail": f"settings were not persisted: {exc}"}
+        )
+
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/v1/auth")
     app.include_router(credentials.router, prefix="/v1/credentials")
     app.include_router(install.router, prefix="/v1/install")
     app.include_router(providers.router, prefix="/v1/providers")
     app.include_router(chat.router, prefix="/v1/chat")
+    app.include_router(hitl.router, prefix="/v1/hitl")
     app.include_router(missions.router, prefix="/v1/tasks")
     app.include_router(schedules.router, prefix="/v1/schedules")
     app.include_router(skills.router, prefix="/v1/skills")

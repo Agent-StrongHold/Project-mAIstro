@@ -13,12 +13,15 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from maistro.graph.definitions import Edge, GraphTemplate, Node
 from maistro.graph.templates import (
     GraphTemplateConflict,
     GraphTemplateNotFound,
     InMemoryGraphTemplateStore,
+    PromotionApproval,
+    promote_audited,
     require_template,
 )
 
@@ -241,3 +244,239 @@ async def test_require_template_returns_what_it_found(store: Any, request: Any) 
     await store.put(_template(template_id=template_id))
 
     assert (await require_template(store, template_id)).template_id == template_id
+
+
+class TestContentIsValidatedWhereItBecomesARecord:
+    """A template validated at construction can be edited into an invalid one.
+
+    Found by review of #555 and carried to #556. Every content field is a
+    mutable `dict` or `list`, and pydantic validators run when the model is
+    built — so the object a store is handed is not necessarily the object that
+    was checked:
+
+        template = GraphTemplate(nodes=[a, b], edges=[a_to_b])   # validated
+        template.nodes.pop()                                     # nothing runs
+        await store.put(template)                                # persisted
+
+    `validate_assignment` does not close it: it fires on rebinding a field, not
+    on mutating what the field points at. The boundary that can is the one
+    where content stops being a local object and becomes a record, so `put`
+    revalidates on every backend.
+
+    The rule exercised here is the one the model carries today — an edge whose
+    endpoints are not in the graph. `revalidated` re-runs the *model's*
+    validators rather than any named rule, so R12's refusal of live execution
+    state in template content (#555) is enforced here too the moment it lands,
+    without this seam learning about it.
+    """
+
+    async def test_a_template_mutated_into_an_invalid_one_is_refused(
+        self, store: Any, request: Any
+    ) -> None:
+        template = _template(template_id=_ids(request))
+        template.nodes.pop()  # the edge now names a node the graph lacks
+
+        with pytest.raises(ValidationError, match="outside graph template"):
+            await store.put(template)
+
+    async def test_the_refused_template_did_not_reach_the_store(
+        self, store: Any, request: Any
+    ) -> None:
+        """Refusing after writing would be worse than not refusing."""
+        template_id = _ids(request)
+        template = _template(template_id=template_id)
+        template.nodes.pop()
+
+        with pytest.raises(ValidationError):
+            await store.put(template)
+
+        assert await store.get(template_id) is None
+
+    async def test_an_unmutated_template_still_stores(self, store: Any, request: Any) -> None:
+        """The guard must not cost the ordinary path anything."""
+        template_id = _ids(request)
+        await store.put(_template(template_id=template_id))
+
+        assert await store.get(template_id) is not None
+
+
+# ── candidate lifecycle (ADR-082926-65bf) ─────────────────────────
+#
+# The GraphTemplate half of the lifecycle. It was implemented alongside the
+# NodeTemplate half and proved only on that one, which is how four of these
+# code paths reached a PR with no test at all — including the `put` guard that
+# Codex found could silently activate a candidate.
+
+
+class _RecordingAudit:
+    def __init__(self, fail_on: str = "") -> None:
+        self.entries: list[tuple[str, str, int]] = []
+        self._fail_on = fail_on
+
+    async def record(self, event: str, template_id: str, version: int) -> None:
+        if event == self._fail_on:
+            raise RuntimeError("audit sink unavailable")
+        self.entries.append((event, template_id, version))
+
+
+def _approval() -> PromotionApproval:
+    return PromotionApproval(approver="release-owner", reason="topology reviewed")
+
+
+async def _candidate(store: Any, template_id: str, *, version: int) -> GraphTemplate:
+    published = await store.get(template_id, version=1)
+    assert published is not None
+    candidate = published.model_copy(
+        update={"version": version, "lifecycle": "candidate", "description": "reshaped"}
+    )
+    await store.put(candidate)
+    return candidate
+
+
+async def test_a_candidate_graph_template_is_not_what_callers_get(store: Any, request: Any) -> None:
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _candidate(store, template_id, version=2)
+
+    assert await store.lifecycle_of(template_id, 2) == "candidate"
+    current = await store.get(template_id)
+    assert current is not None
+    assert current.version == 1
+    # ...but it is addressable for inspection.
+    assert await store.get(template_id, version=2) is not None
+
+
+async def test_promoting_a_graph_template_makes_it_current(store: Any, request: Any) -> None:
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _candidate(store, template_id, version=2)
+
+    audit = _RecordingAudit()
+    await promote_audited(store, template_id, 2, audit=audit, approval=_approval())
+
+    current = await store.get(template_id)
+    assert current is not None
+    assert current.version == 2
+    assert await store.lifecycle_of(template_id, 2) == "active"
+    assert [event for event, _, _ in audit.entries] == [
+        "template_promotion_attempt",
+        "template_promotion_committed",
+    ]
+
+
+async def test_re_registering_a_candidate_graph_template_does_not_activate_it(
+    store: Any, request: Any
+) -> None:
+    """The `put` guard, on the family it was never tested on.
+
+    `lifecycle` is excluded from the content hash, so a caller resubmitting the
+    same topology with the field's default hashes equal to the stored candidate
+    and would otherwise be written straight through.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    candidate = await _candidate(store, template_id, version=2)
+
+    reconstructed = candidate.model_copy(update={"lifecycle": "active"})
+    assert reconstructed.content_hash == candidate.content_hash
+    await store.put(reconstructed)
+
+    assert await store.lifecycle_of(template_id, 2) == "candidate"
+
+
+async def test_a_failed_commit_returns_the_graph_template_to_candidate(
+    store: Any, request: Any
+) -> None:
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _candidate(store, template_id, version=2)
+
+    audit = _RecordingAudit(fail_on="template_promotion_committed")
+    with pytest.raises(RuntimeError, match="audit sink unavailable"):
+        await promote_audited(store, template_id, 2, audit=audit, approval=_approval())
+
+    assert await store.lifecycle_of(template_id, 2) == "candidate"
+
+
+async def test_execution_refuses_a_candidate_graph_template_by_exact_version(
+    store: Any, request: Any
+) -> None:
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _candidate(store, template_id, version=2)
+
+    with pytest.raises(GraphTemplateNotFound, match="is candidate, not active"):
+        await require_template(store, template_id, version=2)
+
+
+async def test_a_candidate_only_graph_template_is_not_reported_as_unregistered(
+    store: Any, request: Any
+) -> None:
+    template_id = _ids(request)
+    await store.put(
+        _template(template_id=template_id, version=1).model_copy(update={"lifecycle": "candidate"})
+    )
+
+    with pytest.raises(GraphTemplateNotFound, match="has no active version"):
+        await require_template(store, template_id)
+
+
+async def test_the_lifecycle_of_a_version_that_is_not_there_says_so(
+    store: Any, request: Any
+) -> None:
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+
+    with pytest.raises(GraphTemplateNotFound):
+        await store.lifecycle_of(template_id, 9)
+    with pytest.raises(GraphTemplateNotFound):
+        await promote_audited(store, template_id, 9, audit=_RecordingAudit(), approval=_approval())
+
+
+async def test_setting_the_lifecycle_of_a_version_that_is_not_there_says_so(
+    store: Any, request: Any
+) -> None:
+    """The raw transition's own guard.
+
+    `promote_audited` never reaches it — it resolves the current lifecycle
+    first and fails there — so the only way to exercise this is to call the
+    operation directly, which is exactly what a caller bypassing the audited
+    path would do.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+
+    with pytest.raises(GraphTemplateNotFound, match="to promote"):
+        await store.set_lifecycle(template_id, 9, "active")
+
+
+async def test_a_graph_promotion_is_not_visible_until_its_commit_is_recorded(
+    store: Any, request: Any
+) -> None:
+    """The transitional state, on the GraphTemplate family.
+
+    Asserted from a reader's side during the sink call, the same way the
+    NodeTemplate suite does it: the durable stores commit `set_lifecycle`
+    before the audit sink is asked, so without a non-resolvable middle state a
+    concurrent scheduler could instantiate a version the audit failure rolls
+    back.
+    """
+    template_id = _ids(request)
+    await store.put(_template(template_id=template_id, version=1))
+    await _candidate(store, template_id, version=2)
+
+    seen: list[Any] = []
+
+    class _WatchingAudit:
+        async def record(self, event: str, tid: str, ver: int) -> None:
+            if event == "template_promotion_committed":
+                seen.append(await store.lifecycle_of(template_id, 2))
+                seen.append(await store.get(template_id))
+
+    await promote_audited(store, template_id, 2, audit=_WatchingAudit(), approval=_approval())
+
+    lifecycle, resolved = seen
+    assert lifecycle == "promoting"
+    assert resolved is not None
+    assert resolved.version == 1
+    assert await store.lifecycle_of(template_id, 2) == "active"

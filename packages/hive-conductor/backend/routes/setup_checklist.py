@@ -147,9 +147,9 @@ def _interview_complete(user_id: str) -> bool:
 def _default_model_picked() -> bool:
     """True if the Setup wizard wrote a non-legacy default_model into settings."""
     try:
-        import stores
+        from services import settings_store
 
-        m = (stores.settings.default_model or "").strip()
+        m = (settings_store.current().default_model or "").strip()
         return bool(m) and m != "cerebras-qwen-3-235b-a22b-2507"
     except Exception:
         return False

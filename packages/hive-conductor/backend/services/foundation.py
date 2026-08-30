@@ -16,6 +16,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger("hive.foundation")
 
 
+def _warn_if_postgrest_profiles_are_being_left_behind() -> None:
+    """Say once, loudly, that a configured PostgREST is no longer read.
+
+    Profiles used to be mirrored to a `user_profiles` table over PostgREST.
+    Nothing in this repository creates that table -- no migration, no model, no
+    DDL -- so no deployment it provisions can hold a row there, and the mirror
+    was a silent no-op in every one of them (#699). An operator who created the
+    table by hand against their own PostgREST is the one case where rows could
+    exist, and this is for them.
+
+    Nothing is imported automatically. The table has no schema this repository
+    defines, so its column shapes and types are whatever that operator chose;
+    reading it back would be guessing, and guessing wrong would write the guess
+    into the durable record. Saying so is the honest half (Codex, #699).
+    """
+    import os
+
+    if os.environ.get("DEPLOY_TARGET_POSTGREST_URL") or os.environ.get("POSTGREST_URL"):
+        logger.warning(
+            "PROFILE_STORE_CUTOVER: PostgREST is configured, and user profiles no longer "
+            "read or write its `user_profiles` table -- they are held in the Conductor's "
+            "own state database (#699). Any rows you created there by hand are not "
+            "imported; copy them in through PUT /v1/profile if you need them."
+        )
+
+
 class Foundation:
     """Holds references to all initialised subsystems."""
 
@@ -86,15 +112,49 @@ class Foundation:
 
             import stores
 
+            from services.settings_store import PersistedSettingsRecordStore
+            from services.settings_store import configure as configure_settings
+
             stores.configure_persistence(persisted)
             stores.initialize_stores()
+            configure_settings(PersistedSettingsRecordStore(persisted, self.state.flush))
+
+            # After `initialize_stores()`, which is what fills `stores.dag_runs`
+            # from SQLite. Building the run store before that would rehydrate
+            # from an empty registry and then never look again, so a restart
+            # would still show no history -- durable rows, invisible (#697).
+            from services.dag_run_store import configure_dag_run_store
+
+            configure_dag_run_store(stores.dag_runs)
+
+            from services.profile_store import PersistedProfileRecordStore
+            from services.profile_store import configure as configure_profiles
+
+            configure_profiles(PersistedProfileRecordStore(persisted, self.state.flush))
+            _warn_if_postgrest_profiles_are_being_left_behind()
+
             self.state.flush()
             logger.info("Stores wired to SQLite persistence")
         except Exception as exc:
             logger.warning("State unavailable (%s) — using in-memory stores", exc)
             import stores
 
+            from services.settings_store import EphemeralSettingsRecordStore
+            from services.settings_store import configure as configure_settings
+
             stores.initialize_stores()
+            # Explicitly, so the settings surface reports `durable: false`
+            # rather than letting an in-memory write wear the shape of a
+            # durable one (#334). Whether reaching this branch at all should be
+            # allowed is #333.
+            configure_settings(EphemeralSettingsRecordStore())
+            # Same rule for profiles, and a fresh store rather than an early
+            # return: a second Foundation built in one process would otherwise
+            # inherit the previous one's records (#699, and the same shape as
+            # the fallback outcome store #700 had to fix).
+            from services.profile_store import reset as reset_profiles
+
+            reset_profiles()
 
     def _init_privilege(self, settings: Settings, data_dir: Path) -> None:
         if not settings.conductor_admin_public_key:

@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from maistro.personas.rubric import load_evals, load_template, load_templates
+import maistro.personas.rubric as rubric_module
+from maistro.personas.rubric import (
+    LEGACY_DEPARTMENT_YAML,
+    PERSONA_TEMPLATE_YAML,
+    load_evals,
+    load_template,
+    load_templates,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LEGACY_DEPT_YAML = (
@@ -51,6 +59,82 @@ def test_load_templates_directory_kind_discrimination() -> None:
     templates = load_templates(FIXTURES)
     assert templates["gardening"].kind == "department"
     assert templates["plant_wellness_local_seller"].kind == "creator"
+
+
+def test_native_template_records_loader_attested_source() -> None:
+    path = FIXTURES / "plant_wellness_local_seller.yaml"
+
+    template = load_template(path)
+
+    assert template.source_provenance is not None
+    assert template.source_provenance.source_format == PERSONA_TEMPLATE_YAML
+    assert template.source_provenance.source_locator == str(path)
+
+
+def test_loader_refuses_incomplete_source_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "template.yaml"
+    path.write_text("kind: creator\nid: incomplete\n", encoding="utf-8")
+    monkeypatch.setattr(
+        rubric_module,
+        "PersonaTemplateSource",
+        lambda **_: SimpleNamespace(source_format="", source_locator=""),
+    )
+
+    with pytest.raises(RuntimeError, match="source attestation is incomplete"):
+        rubric_module.load_template(path)
+
+
+def test_loader_refuses_when_model_drops_attested_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "template.yaml"
+    path.write_text("kind: creator\nid: dropped\n", encoding="utf-8")
+
+    class DroppingPersonaTemplate:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_copy(self, *, update: dict[str, object]) -> SimpleNamespace:
+            assert "source_provenance" in update
+            return SimpleNamespace(source_provenance=None)
+
+    monkeypatch.setattr(rubric_module, "PersonaTemplate", DroppingPersonaTemplate)
+
+    with pytest.raises(RuntimeError, match="source attestation was not retained"):
+        rubric_module.load_template(path)
+
+
+@pytest.mark.skipif(not LEGACY_DEPT_YAML.exists(), reason="hive-conductor not checked out")
+def test_legacy_shape_survives_normalization_as_source_provenance() -> None:
+    template = load_template(LEGACY_DEPT_YAML)
+
+    assert template.kind == "department"
+    assert template.id == "marketing"
+    assert template.source_provenance is not None
+    assert template.source_provenance.source_format == LEGACY_DEPARTMENT_YAML
+    assert template.source_provenance.source_locator == str(LEGACY_DEPT_YAML)
+
+
+def test_source_cannot_self_assert_provenance(tmp_path: Path) -> None:
+    path = tmp_path / "claimed.yaml"
+    path.write_text(
+        "kind: creator\nid: claimed\nsource_provenance: totally-not-a-valid-object\n",
+        encoding="utf-8",
+    )
+
+    template = load_template(path)
+
+    assert template.source_provenance is not None
+    assert template.source_provenance.source_format == PERSONA_TEMPLATE_YAML
+    assert template.source_provenance.source_locator == str(path)
+
+
+def test_source_provenance_is_not_copied_into_exported_template_content() -> None:
+    template = load_template(FIXTURES / "plant_wellness_local_seller.yaml")
+
+    assert "source_provenance" not in template.model_dump(mode="json")
 
 
 def test_load_templates_missing_dir_is_empty() -> None:

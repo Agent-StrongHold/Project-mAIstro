@@ -27,13 +27,42 @@ entry: an entry with an empty disposition fails, because "banked" and
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "quality" / "wiring-reads-baseline.json"
+
+#: Resolved from this file rather than from `ROOT`, which the tests redirect at
+#: a synthetic tree. Loaded by path rather than imported by name because
+#: `tests/test_check_wiring_reads.py` loads *this* script with
+#: `spec_from_file_location`, which puts nothing on `sys.path` for a sibling to
+#: be found on.
+_PROVENANCE_SOURCE = Path(__file__).resolve().parent / "ratchet_provenance.py"
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution, not after: `@dataclass` resolves a field's
+    # type through `sys.modules[cls.__module__]`, so a module executed while
+    # absent from that table raises on its first dataclass.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
 
 
 @dataclass(frozen=True)
@@ -138,6 +167,11 @@ def _write_baseline(
     """Rewrite from an actual scan, carrying existing dispositions forward."""
     sources = {di_root.name: di_root.source for di_root in di_roots}
     payload = {
+        # Persisted so a later scan can tell whether the floor it is comparing
+        # against measures the same question. Declared and never recorded, the
+        # constant could be bumped and the gate would still compare a v2
+        # measurement with a v1 ledger and pass (Codex, #534).
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "roots": {
             name: {
                 "source": sources[name],
@@ -146,7 +180,7 @@ def _write_baseline(
                 },
             }
             for name, fields in sorted(current.items())
-        }
+        },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -178,31 +212,45 @@ def _report(
     return added, stale, undocumented
 
 
-def main(argv: list[str]) -> int:
-    # Read the module globals at call time, not at def time: a default bound
-    # in a signature cannot be substituted, and a gate whose ledger path is
-    # unsubstitutable can only ever be tested against the real repo.
-    current = unread_fields(ROOT, DI_ROOTS)
-    recorded = _load_baseline(BASELINE)
-    total = sum(len(fields) for fields in current.values())
+#: Names this ratchet in `quality/ratchet-authorizations.json`.
+RATCHET = "wiring-reads"
 
-    if "--update" in argv:
-        _write_baseline(current, recorded, DI_ROOTS, BASELINE)
-        print(f"wrote {_display_path(BASELINE)} — write a disposition for each new entry")
-        return 0
+#: Bumped when the question changes -- when "unread" starts meaning something
+#: other than what `unread_fields` measures today. A floor recorded under an
+#: older definition is not comparable and is refused rather than reinterpreted.
+METRIC_DEFINITION_VERSION = "1"
 
-    added, stale, undocumented = _report(current, recorded)
-    print(f"{len(DI_ROOTS)} declared DI root(s), {total} field(s) no production module reads")
 
-    if added:
-        print(f"\n{len(added)} field(s) are wired and NEWLY UNREAD:\n", file=sys.stderr)
-        for entry in added:
+def _entries_from(loaded: object) -> dict[str, dict[str, str]]:
+    """The `{root: {field: disposition}}` shape, from a parsed ledger."""
+    if not isinstance(loaded, dict):
+        return {}
+    roots = loaded.get("roots")
+    if not isinstance(roots, dict):
+        return {}
+    return {name: dict(entry["unread"]) for name, entry in roots.items()}
+
+
+def _print_failures(unauthorized: list[str], stale: list[str], undocumented: list[str]) -> None:
+    """Everything the run has to say about why it is failing.
+
+    Split out of `main` so the verdict stays legible next to the measurement;
+    the three categories answer three different questions and share nothing.
+    """
+    if unauthorized:
+        print(
+            f"\n{len(unauthorized)} field(s) are NEWLY UNREAD against the trusted baseline:\n",
+            file=sys.stderr,
+        )
+        for entry in unauthorized:
             print(f"  {entry}", file=sys.stderr)
         print(
-            "\nSomething builds these and nothing reads them back. If that is intended —\n"
-            "a surface a downstream product consumes — bank it with --update and write\n"
-            "why. If it is not, it is wiring that does nothing: give it a reader, or\n"
-            "retire it and the code that populates it.",
+            "\nThese are not in the ledger as of the base revision, so banking them\n"
+            "here cannot answer for them — that is the point: a change may not be\n"
+            "its own oracle. Give the field a reader, or retire it. If the wiring is\n"
+            "genuinely consumed by a downstream product, raise the floor deliberately\n"
+            f"in quality/ratchet-authorizations.json under {RATCHET!r}, with an owner,\n"
+            "an issue, and a reason — a separate edit from the one that regressed it.",
             file=sys.stderr,
         )
 
@@ -225,7 +273,107 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    if added or stale or undocumented:
+
+def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object, object]:
+    """The ledger as of the base revision, where that was, and its metric version.
+
+    Its own function so a test can substitute the trusted state without
+    standing up a git history -- the same reason the ledger path is a module
+    global rather than a default argument.
+    """
+    prov = _provenance()
+    baseline = prov.resolve_baseline(BASELINE, root=ROOT)
+    loaded = baseline.loads(default={})
+    version = loaded.get("metric_definition_version") if isinstance(loaded, dict) else None
+    return _entries_from(loaded), baseline, version
+
+
+def main(argv: list[str]) -> int:
+    # Read the module globals at call time, not at def time: a default bound
+    # in a signature cannot be substituted, and a gate whose ledger path is
+    # unsubstitutable can only ever be tested against the real repo.
+    current = unread_fields(ROOT, DI_ROOTS)
+    recorded = _load_baseline(BASELINE)
+    total = sum(len(fields) for fields in current.values())
+
+    if "--update" in argv:
+        _write_baseline(current, recorded, DI_ROOTS, BASELINE)
+        print(f"wrote {_display_path(BASELINE)} — write a disposition for each new entry")
+        return 0
+
+    prov = _provenance()
+    try:
+        trusted, baseline, recorded_version = _trusted_baseline()
+        prov.require_measurement(current, ratchet=RATCHET, what="DI roots")
+        prov.require_metric_version(
+            METRIC_DEFINITION_VERSION,
+            recorded=recorded_version,
+            ratchet=RATCHET,
+            baseline=baseline,
+        )
+        # The SAME revision the ledger came from, named explicitly rather than
+        # resolved a second time. Two independent resolutions of "the base" can
+        # disagree -- and a grant read from one commit authorizing a floor
+        # measured against another is not the check anyone thinks it is.
+        authorized = prov.load_authorizations(RATCHET, base=baseline.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    # Two different questions, deliberately asked of two different ledgers.
+    # New debt is judged against the *base*, so banking on the branch cannot
+    # answer it (#534). Tidiness -- stale rows, blank dispositions -- is the
+    # candidate's own bookkeeping and is judged against its own ledger, which
+    # is also what lets a genuine cleanup pass without an authorization.
+    added, _, _ = _report(current, trusted)
+    _, stale, undocumented = _report(current, recorded)
+    unauthorized = [entry for entry in added if entry not in authorized]
+    # An authorization permits the increase; it does not stand in for recording
+    # it. Banked nowhere, the field is absent from the candidate's ledger too,
+    # so after the merge the trusted floor still lacks it and every later run
+    # keeps leaning on the grant (Codex, #534).
+    unbanked = [
+        entry
+        for entry in added
+        if entry in authorized and entry not in {f"{r}.{f}" for r, e in recorded.items() for f in e}
+    ]
+
+    print(f"{len(DI_ROOTS)} declared DI root(s), {total} field(s) no production module reads")
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=baseline,
+            tool="ast",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{sum(len(e) for e in trusted.values())} unread",
+            new_value=f"{total} unread",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(
+                f"{entry}: {authorized[entry]}" for entry in added if entry in authorized
+            ),
+        ).render()
+    )
+
+    if added and not unauthorized and not unbanked:
+        print(f"\n{len(added)} authorized floor-raise(s) — see the record above.")
+
+    if unbanked:
+        print(
+            f"\n{len(unbanked)} authorized field(s) are NOT in this change's ledger:\n",
+            file=sys.stderr,
+        )
+        for entry in unbanked:
+            print(f"  {entry}", file=sys.stderr)
+        print(
+            "\nAn authorization permits the increase; it does not record it. Run\n"
+            "--update and write the disposition, or the trusted floor never learns\n"
+            "about the field and every later run depends on the grant.",
+            file=sys.stderr,
+        )
+
+    _print_failures(unauthorized, stale, undocumented)
+
+    if unauthorized or unbanked or stale or undocumented:
         return 1
 
     print("\nWiring ledger matches the current unread set.")

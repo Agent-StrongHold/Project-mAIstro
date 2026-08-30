@@ -26,6 +26,11 @@ The inventory carries no per-module verdict. Deciding which of the twenty-six ar
 legitimate providers, which are adapters, and which are escapes is #56's
 adjudication, and recording a guess here would give it a false starting point.
 
+#55 adds the complementary call-site ratchet in ``check_direct_effects.py``.
+This older module census remains useful as a broad regression backstop, while
+the call-site gate records the reviewed migration/removal owner for actual AST
+calls and refuses to treat imports as usage.
+
 Run: `python scripts/check-model-egress.py`
 """
 
@@ -36,6 +41,8 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+
+import check_direct_effects
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "model-egress.json"
@@ -48,14 +55,18 @@ _ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
 _HTTP_CALLS = frozenset({"post", "stream", "send", "request"})
 
 
-def _load_reachability() -> object:
-    spec = importlib.util.spec_from_file_location("_reachability", REACHABILITY)
+def _load_script(name: str, path: Path) -> object:
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
-        raise RuntimeError(f"cannot load {REACHABILITY}")
+        raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["_reachability"] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_reachability() -> object:
+    return _load_script("_reachability", REACHABILITY)
 
 
 def performs_egress(source: str) -> bool:
@@ -115,7 +126,7 @@ def main() -> int:
         )
         return 1
     print(f"OK: {len(found)} modules call a model endpoint directly, exactly as inventoried")
-    return 0
+    return check_direct_effects.main([])
 
 
 if __name__ == "__main__":

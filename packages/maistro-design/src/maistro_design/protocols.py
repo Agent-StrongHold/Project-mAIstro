@@ -36,12 +36,26 @@ class DesignSystemRegistry(Protocol):
 
 @runtime_checkable
 class DesignProjectStore(Protocol):
+    """Every single-project operation takes the caller's scope.
+
+    `org_id` is keyword-only and has no default on all three. The two list
+    methods always took it; `get`, `update` and `delete` matched on id alone, so
+    one authenticated caller could read, edit or delete another scope's project.
+    A default here is a default the next caller omits, which is the shape of the
+    defect this closes (#326).
+
+    It is a *separate* argument on `update` and not read off the `DesignProject`
+    the caller supplies. Taking it from the payload makes the predicate
+    `id = <what they sent> AND org_id = <what they sent>`, which any caller who
+    knows both values satisfies — a check that enforces nothing (Codex, #326).
+    """
+
     async def create(self, project: DesignProject) -> DesignProject: ...
-    async def get(self, project_id: str) -> DesignProject | None: ...
+    async def get(self, project_id: str, *, org_id: str) -> DesignProject | None: ...
     async def list_by_skill(self, skill_slug: str, org_id: str) -> list[DesignProject]: ...
     async def list_by_org(self, org_id: str) -> list[DesignProject]: ...
-    async def update(self, project: DesignProject) -> DesignProject: ...
-    async def delete(self, project_id: str) -> None: ...
+    async def update(self, project: DesignProject, *, org_id: str) -> DesignProject: ...
+    async def delete(self, project_id: str, *, org_id: str) -> None: ...
 
 
 @runtime_checkable

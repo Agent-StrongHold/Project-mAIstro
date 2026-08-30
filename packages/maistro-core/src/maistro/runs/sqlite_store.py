@@ -45,6 +45,9 @@ from maistro.runs.store import (
     StaleExecutionFence,
     admit_in_state,
     is_purgeable,
+    outcome_embeds_attempt,
+    repaired_accepted_outcome,
+    require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
@@ -303,6 +306,41 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        project_id: str | None = None,
+    ) -> list[Run]:
+        """Runs currently in ``status``, oldest first (#251).
+
+        Mirrored from `DurableRunStore.list_by_status` so the two stores stop
+        diverging on query surface; oldest-first so a bounded consumer tick
+        drains a backlog fairly.
+
+        A caller that needs to see *every* row eventually, rather than only the
+        oldest page, passes ``offset`` and walks it: the resume tick does, because
+        its filter is applied after the query and a standing prefix of ineligible
+        rows would otherwise hide everything behind it forever (#666 review).
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        sql = "SELECT payload FROM canonical_runs WHERE status = ?"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += " AND project_id = ?"
+            params.append(project_id)
+        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ? OFFSET ?"
+        params.append(limit)
+        params.append(offset)
+        cursor = await self._conn.execute(sql, tuple(params))  # nosec B608
+        rows = await cursor.fetchall()
+        return [model_of_json(Run, row[0]) for row in rows]
+
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool:
         """Forget one terminal Run and everything hanging off it.
 
@@ -355,6 +393,24 @@ class SqliteRunStore:
             (project_id,),
         )
         return row is not None
+
+    async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
+        """How many Runs are non-terminal, and when the oldest one was created.
+
+        The recovery tick's visibility (#462/#338). A status filter plus one
+        payload timestamp — ISO-8601 strings in one format order the same way
+        the datetimes do, so MIN needs no materialization.
+        """
+        placeholders = _placeholders(len(_TERMINAL_STATUS_VALUES))
+        row = await self._fetchone(
+            "SELECT COUNT(*), MIN(json_extract(payload, '$.created_at')) "
+            f"FROM canonical_runs WHERE status NOT IN ({placeholders})",
+            tuple(_TERMINAL_STATUS_VALUES),
+        )
+        assert row is not None  # nosec B101 - COUNT(*) always yields a row
+        count = int(row[0])
+        oldest = datetime.fromisoformat(row[1]) if row[1] else None
+        return count, oldest
 
     async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
         """Terminal Runs carrying a deadline and descended from by nobody.
@@ -751,6 +807,53 @@ class SqliteRunStore:
             )
             return updated
 
+    async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:
+        """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
+
+        The twin of `InMemoryRunStore.repair_attempt_result`; see the protocol
+        for why both copies move in one operation (ADR-083026-14c3).
+
+        Both payloads are *staged* and committed by a single `_flush`, rather
+        than written with `_update_payload`, which commits each one as it goes
+        (Codex, #690). Two commits are two chances to stop between them, and
+        stopping there is precisely the state this method exists to prevent: an
+        Attempt carrying the recovered output beside an accepted outcome still
+        embedding the empty one, which `validate_accepted_outcome_against_attempt`
+        then refuses. The write lock does not close that -- it serializes
+        writers, and readers do not take it, so a concurrent reader could
+        observe the half-repaired spine even without a crash.
+        """
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            require_repairable_attempt(attempt)
+            updated = attempt.model_copy(update={"result": result})
+            self._stage_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                updated.status.value,
+                json_of(updated),
+            )
+            node_run = await self.get_node_run(attempt.node_run_id)
+            if node_run is not None and outcome_embeds_attempt(node_run, attempt_id):
+                assert node_run.accepted_outcome is not None  # narrowed above
+                repaired = node_run.model_copy(
+                    update={
+                        "accepted_outcome": repaired_accepted_outcome(
+                            node_run.accepted_outcome, updated
+                        )
+                    }
+                )
+                self._stage_payload(
+                    "canonical_node_runs",
+                    "node_run_id",
+                    node_run.node_run_id,
+                    repaired.status.value,
+                    json_of(repaired),
+                )
+            await self._flush()
+            return updated
+
     @staticmethod
     def _validate_fence(attempt: Attempt, fencing_token: str | None) -> None:
         lease = attempt.execution_lease
@@ -797,6 +900,12 @@ class SqliteRunStore:
         same rule here a reconciliation that lands late rewrites the history of
         a closed Run, and can undo the very cascade that settled it.
         """
+        # A completed row without accepted evidence predates AcceptedNodeOutcome.
+        # Let it reach transition_node_run's migration validator even after the
+        # parent closed; that validator permits only a matching evidence install
+        # and preserves all lifecycle fields.
+        if node_run.status is RunStatus.COMPLETED and node_run.accepted_outcome is None:
+            return
         row = await self._fetchone(
             "SELECT status FROM canonical_runs WHERE run_id = ?",
             (node_run.run_id,),

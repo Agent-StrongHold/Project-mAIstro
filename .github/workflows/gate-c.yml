@@ -1,0 +1,114 @@
+name: Gate C
+
+on:
+  push:
+    branches: [main, integration, develop]
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+concurrency:
+  group: gate-c-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate-c:
+    name: Gate C — canonical clean install
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: ./.github/actions/setup-uv
+
+      - name: Prove clean starting state
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .env
+          rm -rf .maistro-install
+          docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+          test ! -e .env
+          test ! -e .maistro-install
+
+      - name: Install and start through the documented path
+        shell: bash
+        env:
+          MAISTRO_SKIP_WIZARD: "1"
+          MAISTRO_INSTALL_CLI: "0"
+          MAISTRO_OPEN_BROWSER: "0"
+          MAISTRO_AUTO_INSTALL_DEPS: "0"
+          MAISTRO_START_STACK: "1"
+          MAISTRO_BIND_HOST: 127.0.0.1
+          MAISTRO_PORT: "8000"
+        run: ./install.sh --skip-wizard --no-cli --no-open
+
+      - name: Assert application readiness and owned migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error http://127.0.0.1:8000/health/live >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:8000/health/ready >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:8101/health/ready >/dev/null
+          docker compose exec -T postgres psql -U maistro -d maistro -Atc \
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+
+      - name: Record candidate and shipped image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p gate-c-artifacts
+          engine_id="$(docker compose images -q maistro-engine | head -1)"
+          test -n "$engine_id"
+          engine_digest="$(docker image inspect --format '{{.Id}}' "$engine_id")"
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "engine_image_id=${engine_digest}"
+            echo "compose_project=$(basename "$GITHUB_WORKSPACE")"
+          } | tee gate-c-artifacts/candidate.txt
+
+      - name: Sanitized failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p gate-c-artifacts
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "--- compose ps ---"
+            docker compose ps -a
+            echo "--- service image/state/health ---"
+            for service in postgres litellm maistro-engine hive-conductor; do
+              cid="$(docker compose ps -q "$service" 2>/dev/null | head -1)"
+              if [[ -n "$cid" ]]; then
+                docker inspect --format \
+                  '{{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}} exit={{.State.ExitCode}}' \
+                  "$cid"
+              fi
+            done
+          } > gate-c-artifacts/failure.txt 2>&1
+          cat gate-c-artifacts/failure.txt
+
+      - name: Upload Gate C evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-c-${{ github.sha }}
+          path: gate-c-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        shell: bash
+        run: docker compose down -v --remove-orphans >/dev/null 2>&1 || true

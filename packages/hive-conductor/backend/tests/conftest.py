@@ -78,18 +78,84 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 @pytest.fixture(autouse=True)
-def _isolate_dashboard_layouts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Redirect layout persistence to tmp_path so tests never mutate the
-    checked-in data/dashboard_layouts.json."""
+def _isolate_dashboard_layouts():
+    """Give each test its own layout store.
+
+    There is no file to redirect any more (#340): layouts are a `JsonStore` in
+    `stores`, unbacked in tests, so isolation is restoring the dict rather than
+    pointing a path at tmp_path.
+    """
     import copy
 
-    from routes import dashboard_layout
+    import stores
 
-    monkeypatch.setattr(dashboard_layout, "_DB_PATH", tmp_path / "dashboard_layouts.json")
-    snapshot = copy.deepcopy(dashboard_layout._LAYOUTS)
+    snapshot = copy.deepcopy(dict(stores.dashboard_layouts.items()))
     yield
-    dashboard_layout._LAYOUTS.clear()
-    dashboard_layout._LAYOUTS.update(snapshot)
+    for key in list(stores.dashboard_layouts.keys()):
+        stores.dashboard_layouts.pop(key)
+    for key, value in snapshot.items():
+        stores.dashboard_layouts[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, monkeypatch):
+    """Let legacy implementation tests exercise /register without reopening it.
+
+    M0 containment deliberately blocks the shipped route in
+    SecurityHeadersMiddleware. A few older password/credential tests are about
+    the *registration implementation* rather than anonymous route exposure.
+    For only those named modules, rebuild Starlette's middleware stack around a
+    test-scoped dispatch override, then discard that stack before the next test.
+    This avoids caching either the bypass or the production 403 across tests.
+    Production code has no bypass flag or backdoor.
+    """
+    legacy_modules = {
+        "test_api.py",
+        "test_auth_password_storage.py",
+        "test_credential_security_audit.py",
+        "test_credentials_api.py",
+    }
+    if Path(str(request.fspath)).name not in legacy_modules:
+        yield
+        return
+
+    from main import app
+    from middleware.security_headers import SecurityHeadersMiddleware
+
+    original_dispatch = SecurityHeadersMiddleware.dispatch
+
+    async def dispatch(self, http_request, call_next):
+        if http_request.url.path == "/v1/auth/register":
+            return await call_next(http_request)
+        return await original_dispatch(self, http_request, call_next)
+
+    monkeypatch.setattr(SecurityHeadersMiddleware, "dispatch", dispatch)
+    # Starlette binds dispatch when middleware_stack is built. Force this test
+    # to build a stack from the patched method instead of reusing an earlier
+    # test's cached production stack.
+    app.middleware_stack = None
+    try:
+        yield
+    finally:
+        # Do not let a stack whose dispatch bound the test override survive the
+        # fixture. monkeypatch restores the class method after fixture teardown;
+        # the next request will then build the real production stack again.
+        app.middleware_stack = None
+
+
+@pytest.fixture(autouse=True)
+def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
+    """Keep older API tests' service-level LLM patches effective after #488.
+
+    The containment route imports build_llm_port into routes.chat so production
+    requests cannot fall back into the tool loop. Some pre-existing tests patch
+    services.chat_completion.build_llm_port. Route the test alias through that
+    service symbol dynamically so those mocks still test the current route.
+    """
+    import routes.chat as chat_routes
+    import services.chat_completion as chat_service
+
+    monkeypatch.setattr(chat_routes, "build_llm_port", lambda: chat_service.build_llm_port())
 
 
 def _seed_test_user() -> None:

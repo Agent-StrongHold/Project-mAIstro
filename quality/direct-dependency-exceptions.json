@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "exceptions": {
+    "packages/hive-conductor/pyproject.toml": {
+      "python-multipart": {
+        "category": "FRAMEWORK_RUNTIME",
+        "owner": "#352",
+        "rationale": "FastAPI Form(...) in backend/routes/design.py causes Starlette to load the multipart parser dynamically; the application itself does not import python-multipart."
+      },
+      "uvicorn": {
+        "category": "ENTRYPOINT_RUNTIME",
+        "owner": "#352",
+        "rationale": "packages/hive-conductor/backend/Dockerfile invokes the uvicorn console entry point to serve main:app, so runtime use is external to Python imports."
+      }
+    },
+    "packages/maistro-canvas/pyproject.toml": {
+      "asyncpg": {
+        "category": "PLATFORM_RUNTIME",
+        "owner": "#352",
+        "rationale": "frontend/server/models/db.py selects the postgresql+asyncpg SQLAlchemy dialect, which loads asyncpg by driver name rather than a source import."
+      }
+    },
+    "packages/maistro-server/pyproject.toml": {
+      "uvicorn": {
+        "category": "ENTRYPOINT_RUNTIME",
+        "owner": "#352",
+        "rationale": "The server image and launcher invoke the uvicorn console entry point to serve maistro_server.main:app; application modules do not import the entrypoint package."
+      }
+    }
+  }
+}

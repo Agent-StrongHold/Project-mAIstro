@@ -34,7 +34,6 @@ import Skills from "./pages/Skills";
 import Topology from "./pages/Topology";
 import WorkItems from "./pages/WorkItems";
 import KnowledgeBase from "./pages/KnowledgeBase";
-import DeckBuilder from "./pages/DeckBuilder";
 
 type UserInfo = {
   id: string;
@@ -145,7 +144,10 @@ function AppRoutes() {
                 <Route path="agents" element={<Agents />} />
                 <Route path="work-items" element={<WorkItems />} />
                 <Route path="knowledge" element={<KnowledgeBase />} />
-                <Route path="decks" element={<DeckBuilder />} />
+                {/* M0 containment for #311: model-authored Deck markup reaches
+                    raw browser HTML/SVG sinks. Keep the executable surface
+                    unreachable until the M2 sanitizer/structured renderer lands. */}
+                <Route path="decks" element={<Navigate to="/dashboard" replace />} />
                 <Route path="skills" element={<Skills />} />
                 <Route path="mcp" element={<MCP />} />
                 <Route path="topology" element={<Topology />} />

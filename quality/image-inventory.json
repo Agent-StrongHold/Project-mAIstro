@@ -1,0 +1,111 @@
+{
+  "_comment": "One disposition and one owner for every Dockerfile in the repository (#346). PUBLISHED = pushed to a registry by release.yml. DISTRIBUTED = built from this repo by an operator or a shipped script, and possibly pushed to the operator's own registry, but never published by us. INTERNAL = built only by this repository's own CI or test tooling and never run outside it; must justify itself in prose. RETIRED = superseded; names what replaced_by it and the issue that owns its removal. PUBLISHED and DISTRIBUTED must name `built_by` and `scanned_by` jobs that exist, OR carry a `coverage_exception` naming an owner, an issue and a reason -- version-scoped and owned, per #346's AC-4, because an exception nobody owns is just an exemption. Checked by scripts/check-image-inventory.py: every Dockerfile on disk appears exactly once, no entry names a Dockerfile that is gone, and adding an image without its jobs (or an owned exception) fails CI -- that is the point. What the gate does NOT verify: that release.yml publishes the digest security.yml scanned. security.yml builds local candidate tags and release.yml rebuilds independently, so mutable bases and dependency resolution can make the released artifact differ from the scanned one. That is #346's AC-5 and it is not closed here (Codex, #593).",
+  "images": [
+    {
+      "id": "maistro-engine",
+      "dockerfile": "Dockerfile",
+      "disposition": "PUBLISHED",
+      "rationale": "The maistro-engine API image. Chainguard/Wolfi runtime, browser surface deliberately split out into Dockerfile.research so this one can go near-zero-CVE.",
+      "built_by": [
+        ".github/workflows/ci.yml:docker-build",
+        ".github/workflows/security.yml:containers",
+        ".github/workflows/release.yml:images"
+      ],
+      "scanned_by": [
+        ".github/workflows/security.yml:containers"
+      ],
+      "published_by": ".github/workflows/release.yml:images",
+      "published_digest_verified": false
+    },
+    {
+      "id": "hive-conductor",
+      "dockerfile": "packages/hive-conductor/Dockerfile",
+      "disposition": "PUBLISHED",
+      "rationale": "The Agent Conductor image: frontend build plus a Chainguard/Wolfi runtime over a self-contained venv.",
+      "built_by": [
+        ".github/workflows/security.yml:containers",
+        ".github/workflows/ci.yml:docker-build",
+        ".github/workflows/release.yml:images"
+      ],
+      "scanned_by": [
+        ".github/workflows/security.yml:containers"
+      ],
+      "published_by": ".github/workflows/release.yml:images",
+      "published_digest_verified": false
+    },
+    {
+      "id": "maistro-engine-research",
+      "dockerfile": "Dockerfile.research",
+      "disposition": "DISTRIBUTED",
+      "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign.",
+      "built_by": [
+        ".github/workflows/ci.yml:docker-build",
+        ".github/workflows/security.yml:containers"
+      ],
+      "scanned_by": [
+        ".github/workflows/security.yml:containers"
+      ],
+      "published_by": null
+    },
+    {
+      "id": "maistro-rsi-runner",
+      "dockerfile": "Dockerfile.rsi-runner",
+      "disposition": "DISTRIBUTED",
+      "rationale": "Full-isolation RSI runner: the entire self-improvement loop executes inside it and agent-authored code only ever runs there, so its contents are a containment boundary rather than a convenience. Built by tools/run_rsi_isolated.sh and tools/run_rsi_evolve_isolated.sh on an operator's machine; never pushed.",
+      "built_by": [
+        ".github/workflows/ci.yml:docker-build",
+        ".github/workflows/security.yml:containers"
+      ],
+      "scanned_by": [
+        ".github/workflows/security.yml:containers"
+      ],
+      "published_by": null
+    },
+    {
+      "id": "sbx-template",
+      "dockerfile": "deploy/sbx/template/Dockerfile",
+      "disposition": "DISTRIBUTED",
+      "rationale": "Docker Sandboxes template, and a shipped operator artifact rather than an internal one: deploy/sbx/build.sh is a documented command, its PUSH_TAG path runs `docker push`, and docs/install/sandbox-sbx.md tells operators to build or push it for real RSI workloads. It also executes agent-authored code, which makes it the image whose contents matter most. Calling it INTERNAL exempted it from the coverage this gate exists to enforce (Codex, #593).",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null,
+      "coverage_exception": {
+        "owner": "@BlakeMatthews-dev",
+        "issue": "#346",
+        "reason": "CI cannot build it from a checkout alone: it is FROM docker/sandbox-templates:shell-docker and copies preseed tars that deploy/sbx/build.sh produces in the same run. Wiring the preseed step into the containers job is real work and is tracked on #346; recording the exception is what keeps it visible instead of letting a wrong disposition hide it."
+      }
+    },
+    {
+      "id": "sbx-tests",
+      "dockerfile": "deploy/sbx/template/Dockerfile.tests",
+      "disposition": "DISTRIBUTED",
+      "rationale": "The image RSI's nested test containers run under --network=none, built and shipped by the same deploy/sbx/build.sh pass as sbx-template. Same operator-facing status, same reason it is not INTERNAL.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null,
+      "coverage_exception": {
+        "owner": "@BlakeMatthews-dev",
+        "issue": "#346",
+        "reason": "Shares sbx-template's preseed precondition and its owner."
+      }
+    },
+    {
+      "id": "hive-conductor-e2e-api",
+      "dockerfile": "packages/hive-conductor/tests/Dockerfile",
+      "disposition": "INTERNAL",
+      "rationale": "Five lines: pytest and httpx over the e2e directory. Built only by packages/hive-conductor/docker-compose.test.yml's api-tests service, runs only this repository's own tests, never leaves CI or a developer's machine.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    },
+    {
+      "id": "hive-conductor-e2e-playwright",
+      "dockerfile": "packages/hive-conductor/tests/Dockerfile.playwright",
+      "disposition": "INTERNAL",
+      "rationale": "The browser half of the same e2e harness, built only by docker-compose.test.yml's playwright service. Same reasoning as hive-conductor-e2e-api.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
+    }
+  ]
+}

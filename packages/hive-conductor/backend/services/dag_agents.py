@@ -12,15 +12,46 @@ work producer to say "run this DAG".
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from maistro.container import build_node_resolver
 from maistro.graph.dag_registry import DagRegistry
 from maistro.graph.definitions import Graph
-from maistro.graph.durable_runs import InMemoryDurableRunStore, run_durable_graph
+from maistro.graph.durable_runs import (
+    DurableRunStore,
+    InMemoryDurableRunStore,
+    RunStatus,
+    run_durable_graph,
+)
 from maistro.graph.seeds import daily_status_seed
 from maistro.graph.template_adapter import descriptor_to_template
+from services.node_metrics_store import record_run_completion
+
+logger = logging.getLogger(__name__)
+
+
+def _run_status(record: Any) -> str:
+    """The record's run status as a plain lowercase string, or "" if absent."""
+    run = getattr(record, "run", None)
+    status = getattr(run, "status", "")
+    return str(getattr(status, "value", status) or "").lower()
+
+
+#: Statuses that mean "not finished". Spelled as the complement of terminal so
+#: an unrecognised one falls the safe way: a status this build does not know is
+#: likelier a new terminal state than a new suspended one, and reading it as
+#: suspended would silently stop recording metrics for it — the shape of defect
+#: this whole change exists to remove.
+_SUSPENDED_RUN_STATUSES = frozenset({"created", "queued", "running", "waiting", "paused"})
+
+
+def _is_terminal(record: Any) -> bool:
+    """Whether this record describes a run that has finished advancing."""
+    status = _run_status(record)
+    return not status or status not in _SUSPENDED_RUN_STATUSES
+
 
 # Module-level registry so a per-process boot registers the seeds once.
 _registry: DagRegistry | None = None
@@ -39,6 +70,17 @@ _registry: DagRegistry | None = None
 _fallback_node_resolver = build_node_resolver()
 
 
+def _container() -> Any:
+    """The Container this process was booted with, or None when standalone."""
+    try:
+        from services.engine import get_engine
+
+        engine = get_engine()
+        return getattr(getattr(engine, "_agent_port", None), "container", None)
+    except Exception:  # pragma: no cover - engine unavailable in isolation
+        return None
+
+
 def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     """The node resolver for this execution, wired from the Container if there is one.
 
@@ -52,13 +94,7 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     that passing the wrong one type-checks and then raises AttributeError after
     the delegation has already been dispatched.
     """
-    try:
-        from services.engine import get_engine
-
-        engine = get_engine()
-        container = getattr(getattr(engine, "_agent_port", None), "container", None)
-    except Exception:  # pragma: no cover - engine unavailable in isolation
-        container = None
+    container = _container()
     if container is None:
         return _fallback_node_resolver
     # Read as attributes rather than through getattr(): the Container dataclass
@@ -73,18 +109,35 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     )
 
 
-# One store for the process, not one per invocation. A fresh store per call
-# discarded the whole Run/NodeRun history the moment the call returned, so the
-# run_id written to the audit trail named something that could not be fetched,
-# resumed, or inspected — and child-run parentage vanished with it. Sharing it
-# makes those records retrievable for the life of the process; a durable
-# implementation behind the same protocol is what outlives a restart.
-_run_store = InMemoryDurableRunStore()
+# The last-resort store, for a Conductor booted without a Container. It is
+# process-local and that is the defect, not the design: a restart empties the
+# HITL queue and two workers disagree about what is paused. It survives only
+# because a standalone Conductor has no canonical spine to project onto, and
+# it is reached only when `_container()` returns nothing.
+_fallback_run_store = InMemoryDurableRunStore()
 
 
-def get_run_store() -> InMemoryDurableRunStore:
-    """The shared durable-run store backing every registered-DAG execution."""
-    return _run_store
+def get_run_store() -> DurableRunStore:
+    """The durable store backing registered-DAG execution.
+
+    The Container's `graph_run_store` when there is one -- a `DurableRunStore`
+    in interface only, whose Run, NodeRuns and Attempts are rows on the
+    canonical spine (#44). That is what makes a DAG this process ran findable
+    through `GET /v1/runs/{id}`, sweepable by retention, and resumable by
+    another replica; the module-level in-memory store this replaces could do
+    none of those, and its records did not outlive the process that made them.
+    """
+    container = _container()
+    if container is None:
+        return _fallback_run_store
+    # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
+    # attribute loads, so a getattr("graph_run_store") read is invisible to it
+    # and the Container field would report as wired-but-unread. Naming it here
+    # is what holds this wiring in place.
+    store = container.graph_run_store
+    if store is None:
+        return _fallback_run_store
+    return store  # type: ignore[no-any-return]
 
 
 def get_registry() -> DagRegistry:
@@ -129,13 +182,68 @@ async def run_registered_dag(
     graph = template.instantiate(project_id=project_id)
     if configure is not None:
         configure(graph)
+    container = _container()
+    run_store = container.run_store if container is not None else None
+    # Admission first, then execution. Traversal consumes an admitted Run
+    # rather than creating one (#44): the create and the first traversal
+    # checkpoint are writes to two stores, so a crash between them would leave
+    # a canonical Run RUNNING with nothing to resume it. Admitting here leaves
+    # a QUEUED Run instead, which #251's consumer tick can pick up. Without a
+    # Container there is no spine, and execution takes the pre-convergence
+    # path rather than failing to start.
+    admitted_run_id = None
+    if run_store is not None:
+        admitted = await run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=user_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance={**dict(provenance or {}), "executor": "durable_graph"},
+        )
+        admitted_run_id = admitted.run_id
     record = await run_durable_graph(
         graph,
-        store=_run_store,
+        store=get_run_store(),
         node_resolver=_resolve_nodes_with(),
         actor_principal_id=user_id,
+        run_id=admitted_run_id,
+        run_store=run_store,
         parent_run_id=parent_run_id,
         parent_node_run_id=parent_node_run_id,
         provenance=provenance,
     )
+    # The metrics ingest's production caller. `record_run_completion` reads
+    # the finished NodeRuns and the Run's own graph snapshot, and had no path
+    # into it at all -- so the only observations the optimizer ever saw were
+    # the ones the UI route hand-built (#698).
+    #
+    # Terminal runs only. `run_durable_graph` returns as soon as the graph
+    # stops advancing, and a wait or HITL node stops it in `waiting` or
+    # `paused` -- a run that is not over. Ingesting that record would put the
+    # paused NodeRun in the aggregate's denominator, dragging the success rate
+    # down, while every node after the pause is simply absent; and no resume
+    # path calls back here to correct it (Codex, #698). A run that resumes to
+    # completion is #53's convergence, along with the UI route.
+    #
+    # Named, not bare: a metrics write must not fail a run that already
+    # succeeded, but "the observations for this run were not recorded" is a
+    # thing an operator needs to be able to find.
+    if _is_terminal(record):
+        try:
+            record_run_completion(record)
+        except Exception:
+            logger.warning(
+                "node_metrics_not_recorded run_id=%s dag_id=%s",
+                admitted_run_id,
+                dag_id,
+                exc_info=True,
+            )
+    else:
+        logger.info(
+            "node_metrics_deferred run_id=%s dag_id=%s status=%s",
+            admitted_run_id,
+            dag_id,
+            _run_status(record),
+        )
     return graph, record

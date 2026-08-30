@@ -15,6 +15,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
+from services import rsi_execution_policy
 
 router = APIRouter(tags=["rsi"])
 
@@ -24,7 +25,14 @@ class StartRunBody(BaseModel):
 
     mode: str = "cleanup"
     repo_path: str
-    test_command: str
+    #: The NAME of a server-held test profile, not a command (#305). A profile
+    #: resolves to an argument vector, so nothing the caller sends is ever
+    #: interpreted by a shell.
+    test_profile: str = "pytest"
+    #: Accepted only so the route can refuse it out loud. `extra="ignore"`
+    #: would drop an old client's command silently and run a different one,
+    #: which is the failure mode most likely to be mistaken for success.
+    test_command: str | None = None
     cycles: int = 10
     agent_turns: int = 2
     model: str | None = None
@@ -33,6 +41,13 @@ class StartRunBody(BaseModel):
     fitness: bool = True
     coverage_source: str | None = None
     coverage_pytest_args: str | None = None
+    #: Accepted only to be refused. These three named host directories the
+    #: loop WRITES to and, for the export child, deletes `*.patch` and
+    #: `manifest.json` from -- so containing `repo_path` while forwarding these
+    #: verbatim left three doors open beside the one being shut (#305). They
+    #: are derived server-side now; a request that sets them is rejected rather
+    #: than silently ignored, because a caller who names an output directory
+    #: and gets a different one is being misled.
     work_root: str | None = None
     report_dir: str | None = None
     export_dir: str | None = None
@@ -45,6 +60,13 @@ class ReviewDecisionBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     decision: Literal["approve", "deny"]
     reason: str | None = None
+    #: Accepted only to be refused. Approving a review runs `git am` and opens a
+    #: pull request against this path, and it reached that code unvalidated
+    #: while the run route next door resolved its `repo_path` through
+    #: `rsi_execution_policy` -- so the containment on the run was reachable
+    #: around, one route over (#305). A patch belongs to the run that produced
+    #: it, so the run's own resolved repository is the only correct answer and
+    #: an override has nothing legitimate to express.
     repo_path: str | None = None
 
 
@@ -73,6 +95,21 @@ def available_models() -> dict:
             {"id": "gemini-flash", "label": "Gemini Flash (free, 5 RPM)", "tier": "free"},
         ]
     }
+
+
+@router.get("/test-profiles")
+def rsi_test_profiles() -> dict:
+    """The test commands this deployment will run, for the UI to choose from.
+
+    The list is the policy: a caller can only start a run with a name that
+    appears here, so this endpoint is also the honest answer to "what can an
+    RSI run execute on this host?" (#305).
+    """
+    try:
+        profiles = rsi_execution_policy.test_profiles()
+    except rsi_execution_policy.RsiPolicyError as refusal:
+        raise HTTPException(status_code=500, detail=str(refusal)) from refusal
+    return {"profiles": [{"name": p.name, "argv": list(p.argv)} for p in profiles]}
 
 
 # ─── run lifecycle ─────────────────────────────────────────────────────
@@ -104,13 +141,52 @@ async def start_run(body: StartRunBody) -> dict:
         raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
     if body.mode not in ("cleanup", "greenfield"):
         raise HTTPException(status_code=400, detail="mode must be 'cleanup' or 'greenfield'")
-    if body.mode == "cleanup" and not (body.repo_path and body.test_command):
+    if body.test_command is not None:
         raise HTTPException(
-            status_code=400, detail="cleanup mode requires repo_path + test_command"
+            status_code=400,
+            detail=(
+                "test_command is no longer accepted — it was executed with a shell on "
+                "this host. Pick a test_profile; GET /v1/rsi/test-profiles lists them."
+            ),
         )
+    if body.mode == "cleanup" and not body.repo_path:
+        raise HTTPException(status_code=400, detail="cleanup mode requires repo_path")
+
+    caller_paths = [
+        name
+        for name, value in (
+            ("work_root", body.work_root),
+            ("report_dir", body.report_dir),
+            ("export_dir", body.export_dir),
+        )
+        if value is not None
+    ]
+    if caller_paths:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{', '.join(caller_paths)} is no longer accepted — the loop writes to "
+                f"these directories, and the export child has its *.patch files and "
+                f"manifest.json deleted on each promotion. They are derived from the "
+                f"run id under the server's own working root."
+            ),
+        )
+
+    # Resolve every execution decision HERE, at the trust boundary, so what the
+    # service receives is already the operator's policy rather than the
+    # caller's description of it (#305).
+    try:
+        repo = rsi_execution_policy.resolve_repo(body.repo_path)
+        profile = rsi_execution_policy.resolve_test_profile(body.test_profile)
+        isolation = rsi_execution_policy.require_isolation()
+    except rsi_execution_policy.RsiPolicyError as refusal:
+        raise HTTPException(status_code=400, detail=str(refusal)) from refusal
+
     config = {
-        "repo_path": body.repo_path,
-        "test_command": body.test_command,
+        "repo_path": str(repo),
+        "test_profile": profile.name,
+        "test_argv": list(profile.argv),
+        "isolation": isolation,
         "cycles": body.cycles,
         "agent_turns": body.agent_turns,
         "model": body.model,
@@ -119,9 +195,6 @@ async def start_run(body: StartRunBody) -> dict:
         "fitness": body.fitness,
         "coverage_source": body.coverage_source,
         "coverage_pytest_args": body.coverage_pytest_args,
-        "work_root": body.work_root,
-        "report_dir": body.report_dir,
-        "export_dir": body.export_dir,
         "genome_models": body.genome_models,
         "roster_size": body.roster_size,
         "scout": body.scout,
@@ -181,6 +254,18 @@ def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
             break
     if review_data is None:
         raise HTTPException(status_code=404, detail=f"no review for sha {sha[:12]}")
+
+    if body.repo_path is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "repo_path is no longer accepted here — approving a review applies "
+                "the patch and opens a pull request against the repository the run "
+                "was authorized for, which the run already recorded. Refused rather "
+                "than ignored: a caller who names a repository and gets a different "
+                "one is being misled."
+            ),
+        )
 
     # ── 0. idempotency: a decided review is settled ──
     # Every POST used to retrain Ralph before checking for an existing
@@ -253,7 +338,7 @@ def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
     pr_url = None
     if body.decision == "approve":
         patch_file = review_dir / f"{sha[:12]}.patch"
-        repo = body.repo_path or run.config.get("repo_path", "")
+        repo = run.config.get("repo_path", "")
         if patch_file.is_file() and repo:
             pr_url = _create_pr_from_patch(patch_file, sha, review_data, repo)
 

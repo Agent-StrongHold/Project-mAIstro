@@ -43,6 +43,20 @@ def _completed_attempt_result(record: DurableRunRecord, node_run_id: str) -> Att
     return AttemptResult.from_attempt(attempt)
 
 
+def _accept_exhausted_failure(record: DurableRunRecord, item: traversal._FrontierItem) -> bool:
+    """Return whether node policy accepts an exhausted failure as domain output.
+
+    Retry authority stays in the canonical traversal rule from #573. This policy
+    applies only once that rule says no visit remains. The physical AttemptResult
+    stays failed evidence; only the accepted logical NodeRun disposition becomes
+    COMPLETED so a domain such as MasterOrchestrator can project FAILED without
+    aborting unrelated Graph work.
+    """
+    return item.spec.policies.get(
+        "continue_on_failure"
+    ) is True and not traversal._may_revisit_after(record.graph_state, item)
+
+
 def _logical_outcome(
     record: DurableRunRecord,
     item: traversal._FrontierItem,
@@ -54,7 +68,7 @@ def _logical_outcome(
         )
         result = None
         error = None
-    elif item.result.success:
+    elif item.result.success or _accept_exhausted_failure(record, item):
         logical_status = RunStatus.COMPLETED
         result = traversal._result_output(item.result)
         error = None
@@ -210,6 +224,46 @@ async def _checkpoint_advancement(
     )
 
 
+async def _fold_failures(
+    record: DurableRunRecord,
+    graph: Graph,
+    completed: tuple[traversal._FrontierItem, ...],
+    failures: tuple[traversal._FrontierItem, ...],
+    *,
+    prior_state: GraphExecutionState,
+    store: DurableRunStore,
+) -> DurableRunRecord:
+    """Retry failed visits without discarding completed sibling advancement."""
+    exhausted = traversal.first_exhausted_failure(prior_state, failures)
+    if exhausted is not None:
+        return await traversal._mark_failed(
+            record,
+            error_code=exhausted.result.error_code or "NodeFailure",
+            error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
+            store=store,
+        )
+
+    next_ids, decisions = traversal._route_completed_items(record, graph, completed)
+    retry_ids = tuple(item.node_id for item in failures)
+    candidates = traversal._dedupe((*retry_ids, *next_ids))
+    ready, blocked_fanins = traversal._partition_ready_targets(
+        record,
+        graph,
+        candidates,
+        decisions,
+        failures,
+    )
+    record = traversal._with_deferred_fanins(record, blocked_fanins)
+    return await _checkpoint_advancement(
+        record,
+        prior_state,
+        completed,
+        ready,
+        decisions,
+        store=store,
+    )
+
+
 async def fold_authoritative_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -225,11 +279,12 @@ async def fold_authoritative_frontier(
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:
-        first = failures[0]
-        return await traversal._mark_failed(
+        return await _fold_failures(
             record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
+            graph,
+            completed,
+            failures,
+            prior_state=prior_state,
             store=store,
         )
 

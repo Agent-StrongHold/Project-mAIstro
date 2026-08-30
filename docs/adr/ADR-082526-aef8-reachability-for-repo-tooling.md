@@ -19,12 +19,12 @@ contracts:
 tests:
   - tests/test_check_reachability.py
 ac-modules:
-  AC-1: scripts/check-reachability.py
-  AC-2: scripts/check-reachability.py
-  AC-3: scripts/check-reachability.py
-  AC-4: scripts/check-reachability.py
-  AC-5: scripts/check-reachability.py
-  AC-6: scripts/check-ac-state.py
+  AC-1: '@tool/check-reachability'
+  AC-2: '@tool/check-reachability'
+  AC-3: '@tool/check-reachability'
+  AC-4: '@tool/check-reachability'
+  AC-5: '@tool/check-reachability'
+  AC-6: '@tool/check-ac-state'
 history:
   - status: Proposed
     date: 2026-08-25

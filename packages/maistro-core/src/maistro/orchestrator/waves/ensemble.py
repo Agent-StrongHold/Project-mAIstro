@@ -27,6 +27,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from maistro.agents.circuit_breaker import CircuitBreaker
 from maistro.graph.types import (
     AgentRole,
     CodeOutput,
@@ -36,6 +37,8 @@ from maistro.graph.types import (
     ReviewOutput,
 )
 from maistro.tasks.checkpoint import CheckpointKind, TaskCheckpoint
+from maistro.tasks.recovery import CrashLoopPolicy, version_compatible
+from maistro.tasks.replay import ResumeState, replay
 
 # Event names (ADR-037 dotted format).
 EVENT_WAVES_PLANNED = "waves.planned"
@@ -43,6 +46,10 @@ EVENT_WAVE_STARTED = "wave.started"
 EVENT_WAVE_COMPLETED = "wave.completed"
 EVENT_WAVE_FAILED = "wave.failed"
 EVENT_WAVES_COMPARED = "waves.compared"
+# Recovery says what it decided, on the same stream (ADR-037, #462's shape).
+EVENT_RECOVERY_RESUMED = "recovery.resumed"
+EVENT_RECOVERY_REFUSED = "recovery.refused"
+EVENT_RECOVERY_QUARANTINED = "recovery.quarantined"
 
 # Checkpoint ``payload["state"]`` markers (SPEC-070226-b624).
 STATE_WAVES_PLANNED = "waves_planned"
@@ -55,8 +62,32 @@ def _noop_emit(event: str, **fields: Any) -> None:
     return None
 
 
+def _resume_fields(state: ResumeState) -> dict[str, Any]:
+    """What the fold reconstructed, as event fields.
+
+    Counts rather than the ids themselves: the event is a statement about the
+    run, and a tool-call id is only meaningful to the subsystem that wrote it.
+    """
+    return {
+        "open_tool_calls": len(state.open_tool_calls),
+        "pending_approval_gates": len(state.pending_approval_gates),
+        "cumulative_spend": state.cumulative_spend,
+        "waves_recorded": len(state.wave_status),
+    }
+
+
 class WaveEnsembleError(Exception):
     """Raised when every wave in an ensemble failed (no result to compare)."""
+
+
+class WaveRecoveryQuarantined(Exception):
+    """Raised when a task has been recovered too many times without completing.
+
+    A distinct exception rather than a `None` return: "there is nothing to
+    recover" and "this task must stop being recovered" call for opposite
+    actions, and a caller that cannot tell them apart would answer a crash loop
+    by starting the work again (#624).
+    """
 
 
 @dataclass
@@ -259,6 +290,10 @@ class SuperPlannerConfig:
     recovery_strategy: Literal["resume", "restart"] = "resume"
     recipe_version: str = "0"
     code_registry_version: str = "0"
+    #: How many times recovery may resume one task before quarantining it
+    #: (ADR-056's crash-loop breaker). Counted from the task's own checkpoints,
+    #: so it survives the process crash it is counting.
+    max_recovery_attempts: int = 3
 
 
 class WaveOrchestrator:
@@ -349,12 +384,94 @@ class WaveOrchestrator:
         return await self._recover(task_id)
 
     async def _recover(self, task_id: str) -> WaveResult | None:
+        """Decide what to do with this task's checkpoints, and say so.
+
+        Returns a result only when the recorded work is safe to reuse. `None`
+        means "run it": either there is nothing to recover, or recovery refused
+        what it found. Every branch emits, because a recovery that cannot be
+        told from a fresh run is not inspectable (#624).
+        """
         checkpoints = await self._checkpoint_store.load(task_id)
+        if not checkpoints:
+            return None
+
+        quarantine = self._quarantine_reason(checkpoints)
+        if quarantine is not None:
+            self._emit(EVENT_RECOVERY_QUARANTINED, task_id=task_id, reason=quarantine)
+            raise WaveRecoveryQuarantined(quarantine)
+
+        drift = self._version_drift(checkpoints)
+        if drift is not None:
+            self._emit(EVENT_RECOVERY_REFUSED, task_id=task_id, **drift)
+            return None
+
+        await self._checkpoint(task_id, CheckpointKind.RECOVERY_ATTEMPTED, {"task_id": task_id})
+        state = replay(checkpoints)
         for checkpoint in reversed(checkpoints):
             if checkpoint.payload.get("state") == STATE_WAVES_COMPLETE:
                 results = [_result_from_payload(p) for p in checkpoint.payload.get("results", [])]
+                self._emit(
+                    EVENT_RECOVERY_RESUMED,
+                    task_id=task_id,
+                    complete=True,
+                    **_resume_fields(state),
+                )
                 return self._compare(task_id, results, recovered=True)
+
+        # Interrupted before the waves finished. There is no result to reuse,
+        # but what the run left open is knowable and was previously invisible:
+        # `replay` folds it, and the caller sees it rather than a silent re-run.
+        self._emit(EVENT_RECOVERY_RESUMED, task_id=task_id, complete=False, **_resume_fields(state))
         return None
+
+    def _version_drift(self, checkpoints: tuple[TaskCheckpoint, ...]) -> dict[str, str] | None:
+        """The mismatch that makes these checkpoints unusable, or None.
+
+        The checkpoint has recorded both versions since ADR-056 and recovery
+        compared neither, so an upgraded deployment resumed results produced by
+        code that no longer exists and reported them as its own (#624). The
+        newest checkpoint decides: they are written by one run under one
+        configuration, and a task whose oldest checkpoint predates an upgrade
+        is exactly the case this refuses.
+        """
+        newest = max(checkpoints, key=lambda c: c.sequence)
+        if version_compatible(
+            newest,
+            current_recipe_version=self._config.recipe_version,
+            current_code_registry_version=self._config.code_registry_version,
+        ):
+            return None
+        return {
+            "checkpoint_recipe_version": newest.recipe_version,
+            "current_recipe_version": self._config.recipe_version,
+            "checkpoint_code_registry_version": newest.code_registry_version,
+            "current_code_registry_version": self._config.code_registry_version,
+        }
+
+    def _quarantine_reason(self, checkpoints: tuple[TaskCheckpoint, ...]) -> str | None:
+        """Why this task must stop being recovered, or None.
+
+        A crash loop is a *process* crash, so an in-process breaker cannot count
+        it — the count has to survive the restart it is counting. Recovery
+        records its own attempt as a checkpoint, and the store that survives the
+        restart is therefore the one that holds the tally; `CrashLoopPolicy`
+        still makes the decision, as ADR-056 says it does.
+        """
+        attempts = sum(1 for c in checkpoints if c.kind is CheckpointKind.RECOVERY_ATTEMPTED)
+        if attempts == 0:
+            return None
+        breaker = CircuitBreaker(
+            failure_threshold=self._config.max_recovery_attempts, name=f"recovery.{id(self)}"
+        )
+        policy = CrashLoopPolicy()
+        for _ in range(attempts):
+            policy.record_crash(breaker)
+        if not policy.should_quarantine(breaker):
+            return None
+        return (
+            f"recovered {attempts} time(s) without completing; "
+            f"the limit is {self._config.max_recovery_attempts}"
+        )
 
     async def _run_wave(self, wave: Wave, task: WaveTask) -> WaveResult:
         self._emit(EVENT_WAVE_STARTED, wave_id=wave.id, task_id=task.id)
