@@ -1,0 +1,189 @@
+name: temporary #640 sync latest
+
+on:
+  push:
+    paths:
+      - .github/workflows/tmp-640-sync-latest.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with: {version: 0.12.5}
+      - name: Merge current develop and resolve execution seam
+        run: |
+          set -euo pipefail
+          git fetch origin develop
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git merge --no-commit --no-ff origin/develop || true
+          for path in $(git diff --name-only --diff-filter=U); do
+            test "$path" = "packages/maistro-core/src/maistro/runs/execution.py" || { echo "unexpected conflict: $path"; exit 1; }
+          done
+          git checkout origin/develop -- packages/maistro-core/src/maistro/runs/execution.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('packages/maistro-core/src/maistro/runs/execution.py')
+          s = p.read_text()
+          start = s.index('        runtime_name = runtime_id or type(self._runtime).__name__\n', s.index('    async def _execute_attempt('))
+          end = s.index('    async def accept_outcome(', start)
+          replacement = '''        runtime_name = runtime_id or type(self._runtime).__name__
+        attempt = await self._store.create_attempt(
+            node_run_id,
+            runtime_id=runtime_name,
+            executor_id=executor_id,
+            deadline_at=deadline_at,
+            resume_checkpoint_id=resume_checkpoint_id,
+            lease_holder=executor_id or runtime_name,
+            lease_ttl=self._lease_ttl,
+        )
+        if attempt.execution_lease is None:
+            raise RunIntegrityError("store-created Attempt is missing its execution lease")
+
+        # Persist physical recovery evidence before logical state claims that
+        # execution is active (#544). If the process dies after this point, the
+        # ordinary lease sweep has an Attempt to reclaim.
+        await self._lifecycle.prepare_execution(node_run_id)
+        return await self.execute_claimed(
+            attempt,
+            work_item,
+            execution_context,
+            executor=executor,
+            timeout_s=timeout_s,
+            reconcile_logical=reconcile_logical,
+            context_factory=context_factory,
+        )
+
+    async def execute_claimed(
+        self,
+        attempt: Attempt,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        executor: ExecutionCallable,
+        timeout_s: float | None = None,
+        reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
+    ) -> Attempt:
+        """Execute the exact leased Attempt already named by a durable claim.
+
+        Consumer claims persist Run, NodeRun and a leased RUNNING Attempt in one
+        transaction. Ordinary execution may arrive with CREATED physical
+        evidence. Both paths converge here, and both bind canonical execution
+        correlation before Runtime sees the work (#544, #707).
+        """
+        lease = attempt.execution_lease
+        if lease is None:
+            raise RunIntegrityError("claimed Attempt is missing its execution lease")
+        token = lease.fencing_token
+        if attempt.status is AttemptStatus.CREATED:
+            attempt = await self._store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=token,
+            )
+        elif attempt.status is not AttemptStatus.RUNNING:
+            raise RunIntegrityError("execute_claimed requires an active Attempt")
+
+        with contextlib.ExitStack() as correlation:
+            correlation.enter_context(bind_execution_context(node_run_id=attempt.node_run_id))
+            correlation.enter_context(bind_execution_context(attempt_id=attempt.attempt_id))
+            runtime_context = _materialize_execution_context(
+                attempt,
+                execution_context,
+                context_factory,
+            )
+
+            heartbeat = self._start_heartbeat(attempt.attempt_id, token)
+            try:
+                try:
+                    result = await self._runtime.execute(
+                        work_item,
+                        runtime_context,
+                        execution_id=attempt.attempt_id,
+                        executor=executor,
+                        timeout_s=timeout_s,
+                    )
+                finally:
+                    await self._stop_heartbeat(heartbeat)
+            except ExecutionYielded as exc:
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    AttemptStatus.YIELDED,
+                    fencing_token=token,
+                    result=exc.as_result(),
+                )
+                await self._reconcile(terminal)
+                return terminal
+            except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
+                status, cause, error = _failure_disposition(exc)
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    status,
+                    fencing_token=token,
+                    result=attempt_evidence_of(exc),
+                    error=error,
+                )
+                await self._reconcile(terminal, cancellation=cause)
+                raise
+
+            terminal = await self._terminalize(
+                attempt.attempt_id,
+                AttemptStatus.COMPLETED,
+                fencing_token=token,
+                result=result,
+            )
+            if reconcile_logical:
+                await self._reconcile(terminal)
+            return terminal
+
+'''
+          p.write_text(s[:start] + replacement + s[end:])
+          PY
+          git add packages/maistro-core/src/maistro/runs/execution.py
+      - name: Verify combined semantics
+        run: |
+          uv sync --locked --extra dev
+          uv run alembic upgrade head
+          uv run ruff format packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/consumption.py packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution_is_correlated.py
+          uv run ruff check packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/consumption.py packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution_is_correlated.py
+          uv run pytest packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution_is_correlated.py -q
+      - name: Commit synchronized tree
+        run: |
+          git rm .github/workflows/tmp-640-sync-latest.yml
+          git add -A
+          git commit -m 'merge: refresh #640 onto latest develop'
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
