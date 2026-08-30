@@ -26,7 +26,7 @@
       "maistro.graph.durable_runs"
     ],
     "Checkpoint": [
-      "maistro.events",
+      "maistro.runs",
       "maistro.graph.durable_runs"
     ]
   },
