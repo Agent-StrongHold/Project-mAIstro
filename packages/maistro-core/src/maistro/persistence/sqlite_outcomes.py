@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.observability.correlation import observed_provenance
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -37,7 +38,10 @@ CREATE TABLE IF NOT EXISTS outcomes (
     node_id TEXT NOT NULL DEFAULT '',
     thumb TEXT NOT NULL DEFAULT '',
     thumb_comment TEXT NOT NULL DEFAULT '',
-    eval_judge_score REAL
+    eval_judge_score REAL,
+    run_id TEXT,
+    node_run_id TEXT,
+    attempt_id TEXT
 )
 """
 
@@ -55,6 +59,12 @@ _ADDED_COLUMNS = (
     ("thumb", "TEXT NOT NULL DEFAULT ''"),
     ("thumb_comment", "TEXT NOT NULL DEFAULT ''"),
     ("eval_judge_score", "REAL"),
+    # Nullable for the same reason migration 026 makes them nullable in
+    # PostgreSQL: an outcome recorded with no execution in scope names none,
+    # and `''` would name a Run whose id is empty (#709).
+    ("run_id", "TEXT"),
+    ("node_run_id", "TEXT"),
+    ("attempt_id", "TEXT"),
 )
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
@@ -84,10 +94,18 @@ class SqliteOutcomeStore:
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_outcomes_thumb ON outcomes (thumb, created_at)"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_run_id ON outcomes (run_id)"
+        )
         await self._conn.commit()
 
     async def record(self, outcome: Outcome) -> int:
         """Record an outcome. Returns outcome ID."""
+        provenance = observed_provenance(
+            run_id=outcome.run_id,
+            node_run_id=outcome.node_run_id,
+            attempt_id=outcome.attempt_id,
+        )
         cursor = await self._conn.execute(
             """INSERT INTO outcomes
                (request_id, task_type, model_used, provider,
@@ -95,8 +113,9 @@ class SqliteOutcomeStore:
                 team_id, user_id, agent_id,
                 input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
                 org_id, project_id, dag_id, dag_run_id, node_id,
-                thumb, thumb_comment, eval_judge_score)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                thumb, thumb_comment, eval_judge_score,
+                run_id, node_run_id, attempt_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -130,6 +149,10 @@ class SqliteOutcomeStore:
                 outcome.thumb,
                 outcome.thumb_comment,
                 outcome.eval_judge_score,
+                # `as_columns` owns the "blank means absent" rule, so an outcome
+                # recorded outside any execution names no Run rather than one
+                # whose id is empty (#709).
+                *provenance.as_columns(),
             ),
         )
         await self._conn.commit()
@@ -384,6 +407,17 @@ def _utc_text(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat()
 
 
+def _text(row: dict[str, Any], name: str) -> str:
+    """A nullable text column as the empty string the dataclass field expects.
+
+    Eight fields spelled `r.get(name, "") or ""` inline; adding the three
+    provenance columns to that made nine and carried `_row_to_outcome` past the
+    complexity ceiling. One named rule instead — which is what the ceiling was
+    asking for (#709).
+    """
+    return str(row.get(name) or "")
+
+
 def _row_to_outcome(r: dict[str, Any]) -> Outcome:
     """Map a row to an `Outcome`, including every column the table now has.
 
@@ -402,7 +436,7 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         success=bool(r["success"]),
         error_type=r.get("error_type", ""),
         response_time_ms=r.get("response_time_ms", 0),
-        org_id=r.get("org_id", "") or "",
+        org_id=_text(r, "org_id"),
         team_id=r.get("team_id", ""),
         user_id=r.get("user_id", ""),
         agent_id=r.get("agent_id") or None,
@@ -411,11 +445,14 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         charged_microchips=r.get("charged_microchips", 0),
         pricing_version=r.get("pricing_version", ""),
         created_at=datetime.fromisoformat(r["created_at"]),
-        project_id=r.get("project_id", "") or "",
-        dag_id=r.get("dag_id", "") or "",
-        dag_run_id=r.get("dag_run_id", "") or "",
-        node_id=r.get("node_id", "") or "",
-        thumb=r.get("thumb", "") or "",
-        thumb_comment=r.get("thumb_comment", "") or "",
+        project_id=_text(r, "project_id"),
+        dag_id=_text(r, "dag_id"),
+        dag_run_id=_text(r, "dag_run_id"),
+        node_id=_text(r, "node_id"),
+        thumb=_text(r, "thumb"),
+        thumb_comment=_text(r, "thumb_comment"),
         eval_judge_score=r.get("eval_judge_score"),
+        run_id=_text(r, "run_id"),
+        node_run_id=_text(r, "node_run_id"),
+        attempt_id=_text(r, "attempt_id"),
     )
