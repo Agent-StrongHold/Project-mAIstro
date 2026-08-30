@@ -259,6 +259,7 @@ async def run_dag(dag_id: str) -> dict:
     log_audit("dag_run", "system", target=dag_id)
     exec_id = str(uuid4())
     try:
+        import contextlib
         import time as _time
 
         from services.dag_run_store import get_dag_run_store
@@ -307,10 +308,17 @@ async def run_dag(dag_id: str) -> dict:
         # that justify it. This used to assign `run.status` and `run.result`
         # to a dataclass that declared neither, so the run stayed `running`
         # with no `finished_at` forever (#697).
-        await store.finish_run(exec_id, status="completed", result=result)
+        #
+        # Suppressed, and that is the point: inside the surrounding `try` a
+        # failed history write would land in the `except` below and report the
+        # *execution* as failed -- for a DAG that had already succeeded, and
+        # whose run record `finish_run` marks completed before it persists. The
+        # caller would be told one thing and the history would say another
+        # (Codex, #697).
+        with contextlib.suppress(Exception):
+            await store.finish_run(exec_id, status="completed", result=result)
         return {"status": "completed", "execution_id": exec_id, "result": result}
     except Exception as exc:
-        import contextlib
         import logging
 
         logging.getLogger("hive.dags").warning("Graph execution failed: %s", exc)
