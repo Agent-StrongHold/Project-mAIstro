@@ -24,6 +24,7 @@ JOB_IDS: dict[str, tuple[str, ...]] = {
     "wheel_imports": ("wheel-imports",),
     "docker_build": ("docker-build",),
 }
+ALL_JOB_IDS = {job_id for job_ids in JOB_IDS.values() for job_id in job_ids}
 
 
 def _fail_closed_scope(raw: str | None) -> dict[str, bool]:
@@ -42,17 +43,16 @@ def _fail_closed_scope(raw: str | None) -> dict[str, bool]:
 
 def required_jobs(event_name: str, scope_json: str | None) -> set[str]:
     """Return the job ids whose success this candidate must prove."""
-    scope = (
-        _fail_closed_scope(scope_json)
-        if event_name == "merge_group"
-        else dict.fromkeys(LEGS, True)
-    )
-    return {
-        job_id
-        for leg, job_ids in JOB_IDS.items()
-        if scope[leg]
-        for job_id in job_ids
-    }
+    if event_name == "merge_group":
+        scope = _fail_closed_scope(scope_json)
+    else:
+        scope = dict.fromkeys(LEGS, True)
+
+    required: set[str] = set()
+    for leg, job_ids in JOB_IDS.items():
+        if scope[leg]:
+            required.update(job_ids)
+    return required
 
 
 def evaluate(
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL: malformed --result {item!r}; expected JOB=RESULT")
             return 1
         job_id, result = item.split("=", 1)
-        if not job_id or job_id not in {job for jobs in JOB_IDS.values() for job in jobs}:
+        if not job_id or job_id not in ALL_JOB_IDS:
             print(f"FAIL: unknown specialized job id {job_id!r}")
             return 1
         results[job_id] = result
