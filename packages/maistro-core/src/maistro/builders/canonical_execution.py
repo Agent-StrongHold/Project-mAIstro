@@ -245,14 +245,8 @@ def _fanout_edges(
     ]
 
 
-def _canonical_graph(
-    graph: PipelineGraph,
-    *,
-    run: Any,
-    workspace_id: str,
-    project_id: str,
-) -> Graph:
-    nodes = [
+def _canonical_stage_nodes(graph: PipelineGraph) -> list[Node]:
+    return [
         Node(
             node_id=_stage_node_id(node.name),
             node_type=_STAGE_KIND,
@@ -262,14 +256,16 @@ def _canonical_graph(
         )
         for node in graph
     ]
-    edges: list[Edge] = []
+
+
+def _dependency_edges(graph: PipelineGraph) -> list[Edge]:
     by_name = {node.name: node for node in graph}
     successors: dict[str, list[str]] = {node.name: [] for node in graph}
-
     for node in graph:
         for dependency in node.depends_on:
             successors[dependency].append(node.name)
 
+    edges: list[Edge] = []
     for predecessor_name, successor_names in successors.items():
         predecessor = by_name[predecessor_name]
         edges.extend(
@@ -279,47 +275,56 @@ def _canonical_graph(
                 condition="route == 'proceed'" if predecessor.gate is not None else None,
             )
         )
+    return edges
 
-    for node in graph:
-        if node.gate is not None and node.revise_target is not None:
-            edges.append(
-                Edge(
-                    from_node=_stage_node_id(node.name),
-                    to_node=_stage_node_id(node.revise_target),
-                    condition="route == 'revise'",
-                    metadata={"builders_revision": True},
-                )
-            )
 
+def _revision_edges(graph: PipelineGraph) -> list[Edge]:
+    return [
+        Edge(
+            from_node=_stage_node_id(node.name),
+            to_node=_stage_node_id(node.revise_target),
+            condition="route == 'revise'",
+            metadata={"builders_revision": True},
+        )
+        for node in graph
+        if node.gate is not None and node.revise_target is not None
+    ]
+
+
+def _entry_frontier(graph: PipelineGraph) -> tuple[str, list[Node], list[Edge]]:
     roots = _roots(graph)
     if len(roots) == 1:
-        entry = _stage_node_id(roots[0].name)
-    else:
-        nodes.insert(
-            0,
-            Node(
-                node_id=_START_NODE_ID,
-                node_type=_START_KIND,
-                name="Builders ready frontier",
-                policies={"max_attempts": 1},
-                metadata={"builders_control": True},
-            ),
-        )
-        edges.extend(
-            _fanout_edges(
-                _START_NODE_ID,
-                [_stage_node_id(root.name) for root in roots],
-            )
-        )
-        entry = _START_NODE_ID
+        return _stage_node_id(roots[0].name), [], []
 
+    control_node = Node(
+        node_id=_START_NODE_ID,
+        node_type=_START_KIND,
+        name="Builders ready frontier",
+        policies={"max_attempts": 1},
+        metadata={"builders_control": True},
+    )
+    control_edges = _fanout_edges(
+        _START_NODE_ID,
+        [_stage_node_id(root.name) for root in roots],
+    )
+    return _START_NODE_ID, [control_node], control_edges
+
+
+def _canonical_graph(
+    graph: PipelineGraph,
+    *,
+    run: Any,
+    workspace_id: str,
+    project_id: str,
+) -> Graph:
+    entry, control_nodes, control_edges = _entry_frontier(graph)
     return Graph(
         workspace_id=workspace_id,
         project_id=project_id,
         name=f"Builders pipeline #{run.issue_number}",
         description=str(run.title),
-        nodes=nodes,
-        edges=edges,
+        nodes=[*control_nodes, *_canonical_stage_nodes(graph)],
+        edges=[*_dependency_edges(graph), *_revision_edges(graph), *control_edges],
         metadata={
             "entry_node": entry,
             "execution_owner": "canonical_run",
