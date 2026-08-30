@@ -20,6 +20,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.store import run_cursor_key
 from maistro.types.config import AgentConfig
 
 
@@ -209,6 +210,9 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
     assert all(run.status is status for run in listed)
     limited = await store.list_by_status(status, limit=1)
     assert [run.run_id for run in limited] == [older.run_id]
+
+    continued = await store.list_by_status(status, limit=10, after=run_cursor_key(limited[0]))
+    assert [run.run_id for run in continued] == [newer.run_id]
 
     scoped = await store.list_by_status(status, limit=10, project_id=project_id)
     assert [run.run_id for run in scoped[:2]] == [older.run_id, newer.run_id]
@@ -498,3 +502,13 @@ async def test_a_disposal_that_loses_its_claim_is_logged_never_raised(
     run = await container.run_store.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.FAILED
+
+
+async def test_schedule_executor_requires_physical_claim_capability() -> None:
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.consumption import ScheduleAttemptExecutor
+    from maistro.runs.store import InMemoryRunStore, RunIntegrityError
+
+    store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+    with pytest.raises(RunIntegrityError, match="consumer claim capability"):
+        ScheduleAttemptExecutor(store)

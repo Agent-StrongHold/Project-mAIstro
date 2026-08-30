@@ -262,7 +262,7 @@ class ClaimingPgRunStore(PgRunStore):
             await conn.execute(
                 """INSERT INTO canonical_attempts
                    (attempt_id, node_run_id, ordinal, status, payload)
-                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
                 claim.attempt.attempt_id,
                 claim.attempt.node_run_id,
                 claim.attempt.ordinal,

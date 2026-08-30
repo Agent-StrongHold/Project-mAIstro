@@ -313,3 +313,49 @@ async def test_sqlite_claim_is_atomic_running_evidence_and_uses_ordinary_recover
         assert recovered_node is not None and recovered_node.status is RunStatus.WAITING
     finally:
         await conn.close()
+
+
+async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> None:
+    if pg_pool is None:
+        import pytest
+
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+
+    workspace = "postgres-consumer-claim"
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root(workspace)
+    project = await projects.create(
+        workspace_id=workspace,
+        parent_project_id=root.project_id,
+        name="claim",
+    )
+    store = ClaimingPgRunStore(pg_pool, project_store=projects)
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project.project_id,
+        name="postgres claim",
+        nodes=[Node(node_id="n0", node_type=_EligibleNode.kind)],
+    )
+    run = await store.create_run(
+        graph,
+        provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
+        initial_status=RunStatus.QUEUED,
+    )
+    claim = await store.claim_consumer_run(
+        run.run_id,
+        node_id="n0",
+        runtime_id="postgres-test",
+        executor_id=SCHEDULE_EXECUTOR_ID,
+        lease_ttl=timedelta(seconds=5),
+    )
+
+    persisted_run = await store.get_run(run.run_id)
+    persisted_node = await store.get_node_run(claim.node_run.node_run_id)
+    persisted_attempt = await store.get_attempt(claim.attempt.attempt_id)
+    assert persisted_run is not None and persisted_run.status is RunStatus.RUNNING
+    assert persisted_node is not None and persisted_node.status is RunStatus.RUNNING
+    assert persisted_attempt is not None and persisted_attempt.status is AttemptStatus.RUNNING
+    assert persisted_attempt.execution_lease is not None
