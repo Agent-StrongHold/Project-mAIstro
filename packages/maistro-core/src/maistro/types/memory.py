@@ -118,6 +118,14 @@ class Learning:
     rca_prevention: str = ""
     success_after_use: int = 0
     failure_after_use: int = 0
+    # Producer provenance (#709). Blank rather than absent because these are
+    # dataclass fields with string siblings; the stores write blank as SQL NULL,
+    # so "no execution was in scope" stays distinguishable from "a Run with no
+    # id". Filled from the ambient execution context at write time when the
+    # caller does not name them.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 @dataclass
@@ -172,6 +180,15 @@ class Outcome:
     thumb: str = ""  # "" | "up" | "down"
     thumb_comment: str = ""
     eval_judge_score: float | None = None  # 0..100 if eval-judge ran
+    # Canonical producer provenance (#709). `dag_id`/`dag_run_id`/`node_id`
+    # above stay: they name a real hive-conductor object the Conductor UI reads,
+    # and ADR-019 puts that identity on the product side. These name the
+    # canonical Run/NodeRun/Attempt the DAG run executes as (#143, #223, #697),
+    # which is what the router's scoring and the optimizer's fitness are
+    # actually evidence from.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 @dataclass

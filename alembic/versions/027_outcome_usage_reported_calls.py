@@ -1,7 +1,7 @@
 """How many of a turn's provider calls reported usage.
 
-Revision ID: 026
-Revises: 025
+Revision ID: 027
+Revises: 026
 Create Date: 2026-08-30
 
 `outcomes.input_tokens` and `output_tokens` are a sum over the provider calls
@@ -16,7 +16,7 @@ producer that did not count, and `0` there would claim it counted and found
 none — the exact conflation this column exists to end. `NULL` says "not
 recorded", which is what is true of them.
 
-The revision id is the bare number, like 024 and 025 before it: the docker
+The revision id is the bare number, like 025 and 026 before it: the docker
 smoke in `ci.yml` asserts the head `version_num` matches `^[0-9a-f]+$`, so a
 descriptive suffix fails that grep the moment it becomes head.
 """
@@ -25,8 +25,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "026"
-down_revision = "025"
+revision = "027"
+down_revision = "026"
 branch_labels = None
 depends_on = None
 

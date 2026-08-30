@@ -3,7 +3,7 @@
 A column added to one store and forgotten in the other is the failure #696 was
 filed for, on this exact table. So both legs are one parametrized suite rather
 than two files, and the PostgreSQL leg runs against a real migrated database:
-what has to hold is that migration 026 added the column and that an `INTEGER`
+what has to hold is that migration 027 added the column and that an `INTEGER`
 column accepts `None` -- neither of which a mocked connection asserting on the
 SQL string can show.
 
@@ -141,7 +141,7 @@ class TestTheCountSurvivesTheRoundTrip:
 class TestARowPredatingTheColumn:
     @pytest.mark.ac("SPEC-083026-6cef/AC-6")
     def test_a_row_with_no_such_key_maps_to_none(self) -> None:
-        """A read from a database migrated before 026 has no such key at all,
+        """A read from a database migrated before 027 has no such key at all,
         which is a different shape from a NULL and reaches the same mapper."""
         from maistro.persistence.pg_outcomes import _row_to_outcome as pg_map
         from maistro.persistence.sqlite_outcomes import _row_to_outcome as sqlite_map
