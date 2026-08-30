@@ -433,7 +433,9 @@ class CanvasCanonicalExecution:
     def _stage_node_id(run: Run, stage: str) -> str:
         graph = run.graph.materialize()
         matches = [
-            node.node_id for node in graph.nodes if node.metadata.get("canvas_stage") == stage
+            node.node_id
+            for node in graph.nodes
+            if node.metadata.get("canvas_stage") == stage
         ]
         if len(matches) != 1:
             raise RunIntegrityError(
