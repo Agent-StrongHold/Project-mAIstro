@@ -11,6 +11,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro_canvas.canvas.executor import _sanitise_error
+
 if TYPE_CHECKING:
     from maistro_canvas.canvas.executor import CanvasExecutor
 
@@ -78,8 +80,8 @@ class CanvasJobRunner:
             job.completed_at = datetime.now(UTC)
             job.leased_by = None
             job.lease_expires_at = None
-        except Exception as e:
-            logger.warning("canvas_job_failed job=%s error=%s", job.id, str(e)[:200])
+        except Exception as exc:
+            logger.warning("canvas_job_failed job=%s error=%s", job.id, str(exc)[:200])
             if job.attempts < job.max_attempts:
                 # Retryable — requeue
                 job.status = JobStatus.PENDING
@@ -88,7 +90,7 @@ class CanvasJobRunner:
             else:
                 # Terminal failure
                 job.status = JobStatus.FAILED
-                job.error_message = f"Generation failed: {str(e)[:500]}"
+                job.error_message = _sanitise_error(exc)
                 job.completed_at = datetime.now(UTC)
                 job.leased_by = None
                 job.lease_expires_at = None
