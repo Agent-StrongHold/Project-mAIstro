@@ -18,6 +18,8 @@ from maistro_design.types import (
     ArtifactNode,
     DesignOutput,
     DesignProject,
+    DesignProjectNotFoundError,
+    DesignScopeError,
     DiscoveryResult,
     OutputFormat,
 )
@@ -78,14 +80,29 @@ def _coerce_design_output(row: Any) -> DesignOutput:
 
 
 class PgDesignProjectStore:
-    """PostgreSQL implementation of DesignProjectStore protocol."""
+    """PostgreSQL implementation of DesignProjectStore protocol.
+
+    Scope is enforced here because here is where it is known. `org` is a soft
+    axis (ADR-068): no table resolves it to an owner, so the database cannot
+    answer "may this caller see this project" and the store must. Migration 003
+    looked like it did — it declared a foreign key to an `orgs` table nothing
+    populates — which is why the real gap went unnoticed while the fake one
+    blocked every write (#326, ADR-083026-cdcb).
+    """
 
     def __init__(self, session_factory: Any) -> None:
         """Initialize with AsyncSession factory."""
         self.session_factory = session_factory
 
     async def create(self, project: DesignProject) -> DesignProject:
-        """Create a new design project and persist its outputs."""
+        """Create a new design project and persist its outputs.
+
+        Refuses a project that names no scope. The `CHECK` added in migration
+        024 refuses it too; this raises the domain error rather than letting an
+        `IntegrityError` cross the service boundary unclassified.
+        """
+        if not project.org_id:
+            raise DesignScopeError("a design project must name the scope it belongs to")
         project_id = str(uuid.uuid4())
         now = datetime.now(UTC)
 
@@ -153,12 +170,19 @@ class PgDesignProjectStore:
         persisted_project.updated_at = now
         return persisted_project
 
-    async def get(self, project_id: str) -> DesignProject | None:
-        """Retrieve a design project by ID, including all outputs."""
+    async def get(self, project_id: str, *, org_id: str) -> DesignProject | None:
+        """Retrieve a design project by ID within `org_id`, including its outputs.
+
+        A project in another scope reads as absent rather than forbidden. Whether
+        one exists elsewhere is itself scoped information, and a 403 would answer
+        the question a 404 refuses to.
+        """
+        if not org_id:
+            raise DesignScopeError("a design project is read within a scope")
         async with self.session_factory() as session:
             row = await session.execute(
-                text("SELECT * FROM design_projects WHERE id = :id"),
-                {"id": project_id},
+                text("SELECT * FROM design_projects WHERE id = :id AND org_id = :org_id"),
+                {"id": project_id, "org_id": org_id},
             )
             project_row = row.fetchone()
             if not project_row:
@@ -174,6 +198,8 @@ class PgDesignProjectStore:
 
     async def list_by_skill(self, skill_slug: str, org_id: str) -> list[DesignProject]:
         """List all projects for a skill in an org."""
+        if not org_id:
+            raise DesignScopeError("design projects are listed within a scope")
         async with self.session_factory() as session:
             rows = await session.execute(
                 text("""
@@ -197,6 +223,8 @@ class PgDesignProjectStore:
 
     async def list_by_org(self, org_id: str) -> list[DesignProject]:
         """List all projects in an org."""
+        if not org_id:
+            raise DesignScopeError("design projects are listed within a scope")
         async with self.session_factory() as session:
             rows = await session.execute(
                 text("""
@@ -219,7 +247,15 @@ class PgDesignProjectStore:
             return projects
 
     async def update(self, project: DesignProject) -> DesignProject:
-        """Update an existing design project."""
+        """Update a design project, within the scope the project itself names.
+
+        Raises `DesignProjectNotFoundError` when nothing matched: the row is in
+        another scope, or gone. Both are "not yours to edit", and reporting a
+        silent success for either is what let a scoped surface behave as an
+        unscoped one.
+        """
+        if not project.org_id:
+            raise DesignScopeError("a design project must name the scope it belongs to")
         now = datetime.now(UTC)
 
         discovery_json: str | None = None
@@ -235,16 +271,17 @@ class PgDesignProjectStore:
             )
 
         async with self.session_factory() as session:
-            await session.execute(
+            result = await session.execute(
                 text("""
                     UPDATE design_projects
                     SET name = :name, trust_tier = :trust_tier,
                         canvas_id = :canvas_id, discovery_json = :discovery_json::jsonb,
                         updated_at = :updated_at
-                    WHERE id = :id
+                    WHERE id = :id AND org_id = :org_id
                 """),
                 {
                     "id": project.id,
+                    "org_id": project.org_id,
                     "name": project.name,
                     "trust_tier": project.trust_tier.value,
                     "canvas_id": project.canvas_id,
@@ -252,16 +289,22 @@ class PgDesignProjectStore:
                     "updated_at": now,
                 },
             )
+            if result.rowcount == 0:
+                raise DesignProjectNotFoundError(
+                    f"design project {project.id} is not in scope {project.org_id!r}"
+                )
             await session.commit()
 
         project.updated_at = now
         return project
 
-    async def delete(self, project_id: str) -> None:
-        """Delete a design project (cascades to outputs)."""
+    async def delete(self, project_id: str, *, org_id: str) -> None:
+        """Delete a design project within `org_id` (cascades to outputs)."""
+        if not org_id:
+            raise DesignScopeError("a design project is deleted within a scope")
         async with self.session_factory() as session:
             await session.execute(
-                text("DELETE FROM design_projects WHERE id = :id"),
-                {"id": project_id},
+                text("DELETE FROM design_projects WHERE id = :id AND org_id = :org_id"),
+                {"id": project_id, "org_id": org_id},
             )
             await session.commit()

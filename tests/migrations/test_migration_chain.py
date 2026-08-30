@@ -4,8 +4,14 @@ For a long time it could not: migration 003 declared foreign keys to `orgs.id`
 and `teams.id`, and because alembic runs the chain under transactional DDL, 003
 failing rolled 001 and 002 back with it. A fresh database ended with **zero**
 tables, at the first command of every documented Postgres setup path. The fix
-that landed creates those two scope tables in 003 itself, as the minimal
-anchors ADR-068's soft `org` and `team` axes need.
+that landed created those two scope tables in 003 itself.
+
+That made the chain apply and left the product unable to write: nothing
+populated `orgs`, so the only `org_id` the Design Studio supplies failed the
+key on every insert (#326). Migration 024 drops both constraints and both
+tables — `org` and `team` are soft scope axes (ADR-068), which is what every
+other table in this schema already assumed — so `orgs` and `teams` are absent
+from `EXPECTED_TABLES` below, and their absence is the assertion.
 
 It went unnoticed because nothing ever ran it: no workflow had a `postgres`
 service, and the synchronous driver alembic needs was declared nowhere, so the
@@ -83,7 +89,6 @@ EXPECTED_TABLES = frozenset(
         # Node's `source_template` named a version nothing could resolve after a
         # restart (#556).
         "node_templates",
-        "orgs",
         "outcomes",
         # A version and the label pointing at it were one row until 022; a
         # version may carry several labels, which that shape had no room for
@@ -104,7 +109,6 @@ EXPECTED_TABLES = frozenset(
         "session_turns",
         "sessions",
         "tasks",
-        "teams",
         "trigger_definitions",
     }
 )
@@ -137,6 +141,15 @@ def _query(sql: str, params: tuple[object, ...] = ()) -> list[tuple[object, ...]
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
         cur.execute(sql, params)  # type: ignore[arg-type]
         return list(cur.fetchall())
+
+
+def _execute(sql: str, params: tuple[object, ...] = ()) -> None:
+    """Run a statement that returns no rows. `_query` always fetches, so an
+    INSERT through it raises `the last operation didn't produce records`."""
+    import psycopg
+
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)  # type: ignore[arg-type]
 
 
 def _tables() -> set[str]:
@@ -231,3 +244,71 @@ class TestIndexIntent:
         assert set(definitions) == set(descending), f"missing: {set(descending) - set(definitions)}"
         for name, definition in definitions.items():
             assert "created_at DESC" in definition, f"{name} is not descending: {definition}"
+
+
+class TestADesignProjectIsWritableOnACleanDatabase:
+    """The half a schema assertion cannot reach (#326, SPEC-083026-6bc5).
+
+    Every check above asks what the chain built. This one asks whether the
+    product can use it, which is where #177's repair stopped: `orgs` and `teams`
+    existed, so the tables were all present and the round trip was clean, and an
+    ordinary insert still failed the foreign key because nothing ever put a row
+    in either.
+    """
+
+    #: What `routes/design.py` supplies for the Agent Conductor. Written out
+    #: rather than imported: the Conductor's package is not on this suite's path,
+    #: and a test that imported the value under test could not have caught a
+    #: constraint that rejected every value.
+    CONDUCTOR_ORG_ID = "default-org"
+
+    def _insert(self, org_id: str) -> None:
+        _execute(
+            "insert into design_projects (name, skill_slug, design_system_slug, org_id) "
+            "values (%s, %s, %s, %s)",
+            ("probe", "login-flow", "default", org_id),
+        )
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
+    def test_the_scope_the_product_supplies_can_be_written(self, empty_database) -> None:
+        _alembic("upgrade", "head")
+        self._insert(self.CONDUCTOR_ORG_ID)
+        assert _query("select count(*) from design_projects")[0][0] == 1
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
+    def test_a_project_naming_no_scope_is_refused(self, empty_database) -> None:
+        """The constraint that replaces the key. It asks whether the caller
+        named a scope, which is a question with an answer; the key asked whether
+        the scope was a row in a table nothing writes."""
+        import psycopg
+
+        _alembic("upgrade", "head")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            self._insert("")
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
+    def test_no_table_exists_only_to_be_referenced(self, empty_database) -> None:
+        """`orgs` and `teams` held nothing but ids for the foreign keys to
+        resolve. Leaving them standing is an invitation for the next migration
+        to reference them again."""
+        _alembic("upgrade", "head")
+        assert {"orgs", "teams"} & _tables() == set()
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
+    def test_the_round_trip_survives_a_row_whose_scope_names_nothing(self, empty_database) -> None:
+        """Re-adding a foreign key over such a row aborts, and after 024 every
+        row is such a row — so the downgrade has to backfill the anchors before
+        it restores the keys. That is why the pre-024 shape was never
+        round-trippable with data in it.
+        """
+        _alembic("upgrade", "head")
+        self._insert(self.CONDUCTOR_ORG_ID)
+        _execute("update design_projects set team_id = 'team-a'")
+
+        assert _alembic("downgrade", "023").returncode == 0
+        assert _query("select id from orgs") == [(self.CONDUCTOR_ORG_ID,)]
+        assert _query("select id, org_id from teams") == [("team-a", self.CONDUCTOR_ORG_ID)]
+
+        assert _alembic("upgrade", "head").returncode == 0
+        assert _query("select count(*) from design_projects")[0][0] == 1
+        assert {"orgs", "teams"} & _tables() == set()

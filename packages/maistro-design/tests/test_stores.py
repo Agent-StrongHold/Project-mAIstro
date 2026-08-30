@@ -200,11 +200,15 @@ async def test_update_modifies_project(sample_project):
     mock_factory, session = make_mock_session_factory()
     store = PgDesignProjectStore(session_factory=mock_factory)
     sample_project.name = "Updated Name"
+    # `update` refuses a statement that matched nothing, so the double has to
+    # report a row (#326); AsyncMock's default `rowcount` is a Mock, not 0.
+    session.execute.return_value.rowcount = 1
     result = await store.update(sample_project)
 
     execute_call = session.execute.await_args
     assert "UPDATE design_projects" in str(execute_call.args[0])
     assert execute_call.args[1]["id"] == "test-project-1"
+    assert execute_call.args[1]["org_id"] == "org-123"
     assert execute_call.args[1]["name"] == "Updated Name"
     session.commit.assert_awaited_once()
     assert result is sample_project
@@ -216,9 +220,9 @@ async def test_delete_project(sample_project):
     mock_factory, session = make_mock_session_factory()
     store = PgDesignProjectStore(session_factory=mock_factory)
 
-    await store.delete("proj-123")
+    await store.delete("proj-123", org_id="org-123")
 
     execute_call = session.execute.await_args
     assert "DELETE FROM design_projects" in str(execute_call.args[0])
-    assert execute_call.args[1] == {"id": "proj-123"}
+    assert execute_call.args[1] == {"id": "proj-123", "org_id": "org-123"}
     session.commit.assert_awaited_once()
