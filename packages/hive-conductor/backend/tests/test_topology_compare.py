@@ -202,7 +202,9 @@ def test_variant_bucket_success_rate_zero_when_empty() -> None:
 
     b = VariantBucket(label="x")
     assert b.success_rate == 0.0
-    assert b.p95_latency == 0
+    # Was `== 0`. A bucket with nothing in it has no p95, and reporting zero
+    # made it the fastest variant once the scoring inverted it (Codex, #698).
+    assert b.p95_latency is None
     assert b.thumb_down_rate == 0.0
 
 

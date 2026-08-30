@@ -49,6 +49,7 @@ class _Conduit:
         raises: Exception | None = None,
     ) -> None:
         self.calls = 0
+        self.turn_ids: list[str | None] = []
         self._raises = raises
         self._response: dict[str, Any] = {
             "choices": [
@@ -61,8 +62,9 @@ class _Conduit:
         if agent is not None:
             self._response["agent"] = agent
 
-    async def route_request(self, messages: list[dict[str, Any]], **_kw: Any) -> dict[str, Any]:
+    async def route_request(self, messages: list[dict[str, Any]], **kw: Any) -> dict[str, Any]:
         self.calls += 1
+        self.turn_ids.append(kw.get("turn_id"))
         if self._raises is not None:
             raise self._raises
         return dict(self._response)
@@ -338,6 +340,56 @@ class TestARetryIsASecondAttemptNotASecondNodeRun:
         assert attempts[0].status is AttemptStatus.FAILED
         assert attempts[1].status is AttemptStatus.COMPLETED
         assert attempts[0].created_at <= attempts[1].created_at
+
+
+class TestTheTurnNamesItselfToTheSessionStore:
+    """The container half of SPEC-083026-5fab AC-9. The agent half — that the
+    identity actually suppresses the second append — is in `tests/agents`,
+    against a store that enforces it."""
+
+    @pytest.mark.ac("SPEC-083026-5fab/AC-9")
+    async def test_the_dispatch_carries_the_runs_own_id(self) -> None:
+        container = await _container()
+        container.conduit = conduit = _Conduit()
+
+        result = await container.route_request(MESSAGES)
+
+        assert conduit.turn_ids == [result["run_id"]]
+
+    @pytest.mark.ac("SPEC-083026-5fab/AC-9")
+    async def test_a_second_attempt_on_one_run_carries_the_same_identity(self) -> None:
+        """What makes the identity a *retry* identity. Two Attempts under one
+        Run must name the same turn, or the retry writes a second copy."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        container.conduit = conduit = _Conduit()
+        executor = ChatAttemptExecutor(container.run_store)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+        async def _dispatch() -> dict[str, Any]:
+            return await conduit.route_request(MESSAGES, turn_id=run.run_id)
+
+        with pytest.raises(RuntimeError):
+            await executor.execute(
+                run.run_id,
+                MESSAGES,
+                lambda: _Conduit(raises=RuntimeError("boom")).route_request(MESSAGES),
+            )
+        await executor.execute(run.run_id, MESSAGES, _dispatch)
+
+        assert conduit.turn_ids == [run.run_id]
+
+    async def test_a_turn_with_no_run_names_no_identity(self) -> None:
+        """A container with no chat admitter has no Run, so it has no identity
+        to give — and an append with none is the unchanged one."""
+        container = await _container()
+        container.chat_admitter = None
+        container.conduit = conduit = _Conduit()
+
+        await container.route_request(MESSAGES)
+
+        assert conduit.turn_ids == [None]
 
 
 class TestTheAttemptResult:
