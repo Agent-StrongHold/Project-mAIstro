@@ -80,6 +80,22 @@ def _append_execution_ref(genome: Any, ctx: NodeContext) -> None:
         refs.append(ref)
 
 
+def _published_evaluation_ref(genome: Any, node_run_id: str) -> dict[str, str] | None:
+    """Return evidence when this logical evaluation NodeRun already published domain state."""
+    for item in genome.harness_params.get("evaluation_runs", []):
+        if not isinstance(item, dict) or str(item.get("node_run_id") or "") != node_run_id:
+            continue
+        run_id = str(item.get("run_id") or "")
+        attempt_id = str(item.get("attempt_id") or "")
+        if run_id and attempt_id:
+            return {
+                "run_id": run_id,
+                "node_run_id": node_run_id,
+                "attempt_id": attempt_id,
+            }
+    return None
+
+
 async def _evaluate_one(
     cycle: Any,
     population: Any,
@@ -88,18 +104,34 @@ async def _evaluate_one(
     genome_id: str,
     ctx: NodeContext,
 ) -> _EvaluateOutput:
-    """Evaluate one genome and publish domain changes only after the Attempt succeeds."""
+    """Evaluate one genome and publish domain changes at most once per logical NodeRun."""
     from datetime import UTC, datetime
 
     genome = population.get(genome_id)
     if genome is None:
         raise ValueError(f"evolution genome {genome_id!r} disappeared before evaluation")
 
+    # Process-loss recovery creates a fresh Attempt beneath the same NodeRun.
+    # If the prior process committed the domain state but died before its
+    # Attempt could be terminalized, the persisted NodeRun marker is the
+    # idempotency key: accept the already-published score instead of evaluating
+    # and folding it a second time. A genuine logical retry is a new NodeRun, so
+    # it still evaluates normally.
+    published = _published_evaluation_ref(genome, ctx.node_run_id)
+    if published is not None:
+        return _EvaluateOutput(
+            genome_id=genome.id,
+            benchmarks=dict(genome.eval_scores),
+            evaluation_run_id=published["run_id"],
+            evaluation_node_run_id=published["node_run_id"],
+            evaluation_attempt_id=published["attempt_id"],
+        )
+
     # Evaluation is physical work beneath one Attempt. Stage every score/cost
     # mutation on a private copy so an exception anywhere in the Attempt leaves
-    # the population unchanged. A later retry therefore gets a new Attempt and
-    # re-evaluates the last committed genome rather than folding over a partial
-    # failed score.
+    # the population unchanged. A later logical retry therefore gets a new
+    # NodeRun/Attempt and re-evaluates the last committed genome rather than
+    # folding over a partial failed score.
     working = deepcopy(genome)
     results = await cycle.harness.evaluate_genome(working, config.target_benchmarks, llm_call)
     for result in results:
