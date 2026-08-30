@@ -138,7 +138,12 @@ _VERSION_FALLBACK_SITES = [
 # E2 (#295) scope, not this script's.
 _INTERPKG_SITES = [
     _interpkg_dep("packages/maistro-canvas/pyproject.toml", "maistro-core"),
-    _interpkg_dep("packages/maistro-server/pyproject.toml", "maistro-core"),
+    # `[llm]`, not bare: maistro-server reaches FastMCP through the core tool
+    # modules it imports and now asks for the extra rather than restating the
+    # pin (#514). The site has to name the expression the file actually holds
+    # or the version bound stops being checked -- silently, since "found 0"
+    # was only a failure because this list said one was expected.
+    _interpkg_dep("packages/maistro-server/pyproject.toml", "maistro-core[llm]"),
     _interpkg_dep("packages/maistro-turing/pyproject.toml", "maistro-core"),
     _interpkg_dep("packages/maistro-rsi/pyproject.toml", "maistro-core[llm]"),
     _interpkg_dep("packages/maistro-rsi/pyproject.toml", "maistro-evolve"),

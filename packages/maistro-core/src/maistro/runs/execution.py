@@ -15,17 +15,63 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.runs.model import AcceptedNodeOutcome, Attempt, AttemptStatus, NodeRun
+from maistro.runs.model import (
+    PAUSE_AWAITS_HUMAN,
+    AcceptedNodeOutcome,
+    Attempt,
+    AttemptStatus,
+    NodeRun,
+)
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
     AttemptLifecycleStore,
     CancellationCause,
 )
 from maistro.runs.store import RunIntegrityError
-from maistro.runtime import ExecutionCallable, ExecutionRuntime, RuntimeDeadlineExceeded
+from maistro.runtime import (
+    ExecutionCallable,
+    ExecutionPaused,
+    ExecutionRuntime,
+    RuntimeDeadlineExceeded,
+)
 
 AttemptReconciler = Callable[[Attempt], Awaitable[None]]
 AttemptContextFactory = Callable[[Attempt, Any], Any]
+
+
+class ExecutionYielded(ExecutionPaused):
+    """The work paused rather than finishing or failing.
+
+    A wait or HITL node that returns successfully with ``status="paused"`` has
+    not failed, and recording it as a failure loses the two things a pause is
+    for: what it waits on, and when to come back. `AttemptStatus.YIELDED` is
+    the physical outcome the canonical model already had for this -- it was
+    simply never produced by anything.
+
+    Carrying the disposition on an exception rather than a return value is
+    deliberate: it is the same seam `RuntimeDeadlineExceeded` uses, so the
+    generic Runtime keeps knowing nothing about wait or HITL semantics.
+
+    It subclasses `ExecutionPaused` so that Runtime can count the pause without
+    learning what it waits on (#642). Runtime's broad `except Exception` had no
+    way to tell a deliberate stop from a crash, so every successful pause was
+    recorded as a failed execution -- the same defect this class fixes one level
+    up, in the record the migration decision is actually read from.
+    """
+
+    def __init__(self, *, awaits_human: bool = False, evidence: object = None) -> None:
+        super().__init__("execution yielded")
+        self.awaits_human = awaits_human
+        self.evidence = evidence
+
+    def as_result(self) -> dict[str, object]:
+        """The JSON-safe record persisted on the yielded Attempt."""
+        record: dict[str, object] = {PAUSE_AWAITS_HUMAN: self.awaits_human}
+        if isinstance(self.evidence, dict):
+            record.update(self.evidence)
+        elif self.evidence is not None:
+            record["evidence"] = self.evidence
+        return record
 
 
 @runtime_checkable
@@ -55,6 +101,23 @@ def attempt_evidence_of(exc: BaseException) -> object | None:
     if isinstance(exc, CarriesAttemptEvidence):
         return exc.attempt_evidence
     return None
+
+
+def _failure_disposition(
+    exc: BaseException,
+) -> tuple[AttemptStatus, CancellationCause, str]:
+    """The physical outcome, cancellation meaning and recorded error for `exc`.
+
+    `CancellationCause.REQUESTED` for a cancelled coroutine: something asked the
+    work to stop, so the NodeRun is terminal rather than parked awaiting a retry
+    decision that has already been taken (#230). Recovery's own cancellations
+    reconcile elsewhere and keep the parking default.
+    """
+    if isinstance(exc, asyncio.CancelledError):
+        return AttemptStatus.CANCELLED, CancellationCause.REQUESTED, "execution cancelled"
+    if isinstance(exc, RuntimeDeadlineExceeded):
+        return AttemptStatus.TIMED_OUT, CancellationCause.RECOVERED, str(exc)
+    return AttemptStatus.FAILED, CancellationCause.RECOVERED, str(exc)
 
 
 def _materialize_execution_context(
@@ -263,40 +326,36 @@ class AttemptExecutionService:
                 )
             finally:
                 await self._stop_heartbeat(heartbeat)
-        except asyncio.CancelledError as exc:
+        except ExecutionYielded as exc:
+            # Before the combined handler below, and it has to stay there:
+            # `ExecutionYielded` is an `Exception`, so the broader clause would
+            # catch it first and record a pause as a failure -- which is the
+            # defect this whole change exists to remove.
             terminal = await self._terminalize(
                 attempt.attempt_id,
-                AttemptStatus.CANCELLED,
+                AttemptStatus.YIELDED,
                 fencing_token=token,
-                result=attempt_evidence_of(exc),
-                error="execution cancelled",
+                result=exc.as_result(),
             )
-            # REQUESTED: this coroutine was cancelled while running, which means
-            # something asked the work to stop. The NodeRun is terminal, not
-            # parked awaiting a retry decision that has already been taken
-            # (#230). Recovery's cancellations reconcile elsewhere and keep the
-            # parking default.
-            await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
-            raise
-        except RuntimeDeadlineExceeded as exc:
-            terminal = await self._terminalize(
-                attempt.attempt_id,
-                AttemptStatus.TIMED_OUT,
-                fencing_token=token,
-                result=attempt_evidence_of(exc),
-                error=str(exc),
-            )
+            # A pause is a disposition, not an error, so this returns where the
+            # handler below re-raises. The reconciler reads the persisted result
+            # to decide PAUSED against WAITING.
             await self._reconcile(terminal)
-            raise
-        except Exception as exc:
+            return terminal
+        except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
+            # One handler, with the physical outcome as data. These were three
+            # `except` blocks whose bodies differed only in the status and the
+            # error text; separating the mapping from the writing keeps "which
+            # status does this exception mean" reviewable in one place.
+            status, cause, error = _failure_disposition(exc)
             terminal = await self._terminalize(
                 attempt.attempt_id,
-                AttemptStatus.FAILED,
+                status,
                 fencing_token=token,
                 result=attempt_evidence_of(exc),
-                error=str(exc),
+                error=error,
             )
-            await self._reconcile(terminal)
+            await self._reconcile(terminal, cancellation=cause)
             raise
 
         terminal = await self._terminalize(
@@ -371,10 +430,12 @@ class AttemptExecutionService:
 
 
 __all__ = [
+    "PAUSE_AWAITS_HUMAN",
     "AttemptContextFactory",
     "AttemptExecutionService",
     "AttemptExecutionStore",
     "AttemptReconciler",
     "CarriesAttemptEvidence",
+    "ExecutionYielded",
     "attempt_evidence_of",
 ]

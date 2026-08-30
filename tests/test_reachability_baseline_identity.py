@@ -23,6 +23,13 @@ AC_STATE = ROOT / "scripts" / "check_ac_state_impl.py"
 BASELINE = ROOT / "quality" / "reachability-baseline.json"
 DISPOSITIONS = ROOT / "quality" / "reachability-dispositions.json"
 
+# SPEC-082926-f1c3 declares `contracts: [behavioral]`, and ADR-032 says a
+# document claiming a kind has a test marked with that kind. Nothing consumed
+# the marker until #345, so the claim went unchecked; the spec is about how a
+# ledger behaves under a lookup, which is behavioral, so the marker is the
+# claim becoming true rather than the ledger absorbing another entry.
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)

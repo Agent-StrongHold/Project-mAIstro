@@ -556,3 +556,27 @@ async def test_iter_task_events_returns_when_task_disappears() -> None:
     svc._backend = _B()
     events = [ev async for ev in svc.iter_task_events("missing")]
     assert events == []
+
+
+async def test_schedule_admitter_is_none_without_a_bridge() -> None:
+    """No `_agent_port` at all (unconfigured), like `episodic_store`'s stub case."""
+    from services.engine import EngineService
+
+    svc = EngineService()
+
+    assert svc.schedule_admitter is None
+
+
+async def test_schedule_admitter_exposes_the_container_seam_when_bridged() -> None:
+    from services.engine import EngineService
+
+    class _Container:
+        schedule_admitter = "the-admitter"
+
+    class _Bridge:
+        container = _Container()
+
+    svc = EngineService()
+    svc._agent_port = _Bridge()
+
+    assert svc.schedule_admitter == "the-admitter"

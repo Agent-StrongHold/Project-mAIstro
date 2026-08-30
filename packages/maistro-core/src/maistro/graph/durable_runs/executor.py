@@ -24,7 +24,12 @@ from maistro.graph.execution_state import (
     GraphExecutionState,
     thaw_json_value,
 )
-from maistro.graph.nodes.base import BaseNode, NodeContext, NodeResult
+from maistro.graph.nodes.base import (
+    HUMAN_PAUSE_REASONS,
+    BaseNode,
+    NodeContext,
+    NodeResult,
+)
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
@@ -913,10 +918,7 @@ def _dedupe(values: Iterable[str]) -> tuple[str, ...]:
 
 def _is_human_pause(result: NodeResult) -> bool:
     """Return whether a node result represents a human-in-the-loop pause."""
-    return str((result.metadata or {}).get("paused_reason") or "") in {
-        "awaiting_human_answer",
-        "awaiting_human_approval",
-    }
+    return str((result.metadata or {}).get("paused_reason") or "") in HUMAN_PAUSE_REASONS
 
 
 def _pause_entry(result: NodeResult) -> dict[str, object]:
