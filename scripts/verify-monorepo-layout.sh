@@ -28,18 +28,3 @@ if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi
 echo "ok: monorepo layout"
-
-# TEMPORARY formatting probe for PR #658. Reverted after CI prints Ruff's exact
-# formatter delta; no probe code is intended to merge.
-echo "::group::PR #658 exact Ruff formatting probe"
-uv run ruff format \
-  scripts/check-citation-status-provenance.py \
-  scripts/check-contract-markers-provenance.py \
-  scripts/check-promotion-surface-provenance.py \
-  scripts/check-shell-execution-provenance.py
-git diff -- \
-  scripts/check-citation-status-provenance.py \
-  scripts/check-contract-markers-provenance.py \
-  scripts/check-promotion-surface-provenance.py \
-  scripts/check-shell-execution-provenance.py
-echo "::endgroup::"
