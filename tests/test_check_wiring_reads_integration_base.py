@@ -43,9 +43,7 @@ class _Provenance:
         return _Baseline()
 
 
-def test_pull_request_uses_current_integration_target_not_historical_base_sha(
-    check, monkeypatch
-):
+def test_pull_request_uses_current_integration_target_not_historical_base_sha(check, monkeypatch):
     """A long-lived PR must not inherit debt that landed later on its target branch."""
     prov = _Provenance()
     monkeypatch.setattr(check, "_provenance", lambda: prov)
