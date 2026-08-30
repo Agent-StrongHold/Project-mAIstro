@@ -174,5 +174,40 @@ async def test_completed_stage_reuses_attempt_evidence_without_reexecuting_provi
     assert len(attempts) == 1
 
 
+async def test_terminal_canvas_failure_settles_stranded_physical_attempt_first() -> None:
+    """Final worker lease loss cannot leave a RUNNING Attempt under a FAILED Run."""
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-worker-loss",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    node_run = await runs.create_node_run(run_id, node_id="canvas:job-worker-loss:generate")
+    await runs.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await runs.create_attempt(node_run.node_run_id, executor_id="dead-canvas-worker")
+    assert attempt.execution_lease is not None
+    await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+
+    await adapter.fail(run_id, "Generation failed: worker lease expired.")
+
+    settled_attempt = await runs.get_attempt(attempt.attempt_id)
+    assert settled_attempt is not None
+    assert settled_attempt.status is AttemptStatus.CANCELLED
+    settled_node = await runs.get_node_run(node_run.node_run_id)
+    assert settled_node is not None
+    assert settled_node.status is RunStatus.WAITING
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error == "Generation failed: worker lease expired."
+
+
 async def _result(value: list[str]) -> list[str]:
     return value
