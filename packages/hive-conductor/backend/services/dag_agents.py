@@ -12,6 +12,7 @@ work producer to say "run this DAG".
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -26,6 +27,31 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.seeds import daily_status_seed
 from maistro.graph.template_adapter import descriptor_to_template
+from services.node_metrics_store import record_run_completion
+
+logger = logging.getLogger(__name__)
+
+
+def _run_status(record: Any) -> str:
+    """The record's run status as a plain lowercase string, or "" if absent."""
+    run = getattr(record, "run", None)
+    status = getattr(run, "status", "")
+    return str(getattr(status, "value", status) or "").lower()
+
+
+#: Statuses that mean "not finished". Spelled as the complement of terminal so
+#: an unrecognised one falls the safe way: a status this build does not know is
+#: likelier a new terminal state than a new suspended one, and reading it as
+#: suspended would silently stop recording metrics for it — the shape of defect
+#: this whole change exists to remove.
+_SUSPENDED_RUN_STATUSES = frozenset({"created", "queued", "running", "waiting", "paused"})
+
+
+def _is_terminal(record: Any) -> bool:
+    """Whether this record describes a run that has finished advancing."""
+    status = _run_status(record)
+    return not status or status not in _SUSPENDED_RUN_STATUSES
+
 
 # Module-level registry so a per-process boot registers the seeds once.
 _registry: DagRegistry | None = None
@@ -187,4 +213,37 @@ async def run_registered_dag(
         parent_node_run_id=parent_node_run_id,
         provenance=provenance,
     )
+    # The metrics ingest's production caller. `record_run_completion` reads
+    # the finished NodeRuns and the Run's own graph snapshot, and had no path
+    # into it at all -- so the only observations the optimizer ever saw were
+    # the ones the UI route hand-built (#698).
+    #
+    # Terminal runs only. `run_durable_graph` returns as soon as the graph
+    # stops advancing, and a wait or HITL node stops it in `waiting` or
+    # `paused` -- a run that is not over. Ingesting that record would put the
+    # paused NodeRun in the aggregate's denominator, dragging the success rate
+    # down, while every node after the pause is simply absent; and no resume
+    # path calls back here to correct it (Codex, #698). A run that resumes to
+    # completion is #53's convergence, along with the UI route.
+    #
+    # Named, not bare: a metrics write must not fail a run that already
+    # succeeded, but "the observations for this run were not recorded" is a
+    # thing an operator needs to be able to find.
+    if _is_terminal(record):
+        try:
+            record_run_completion(record)
+        except Exception:
+            logger.warning(
+                "node_metrics_not_recorded run_id=%s dag_id=%s",
+                admitted_run_id,
+                dag_id,
+                exc_info=True,
+            )
+    else:
+        logger.info(
+            "node_metrics_deferred run_id=%s dag_id=%s status=%s",
+            admitted_run_id,
+            dag_id,
+            _run_status(record),
+        )
     return graph, record

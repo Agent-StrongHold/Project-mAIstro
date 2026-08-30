@@ -128,6 +128,14 @@ class EngineService:
 
         self._wire_capabilities(settings)
 
+        # A fresh metrics buffer per engine start. `set_store` had no
+        # production caller -- the wired-but-unread shape #236 gates -- and a
+        # buffer carried across a restart would mix the previous process's
+        # observations into this one's window (#698).
+        from services.node_metrics_store import reset_store
+
+        reset_store()
+
         try:
             if settings.hive_mode == "demo":
                 import os

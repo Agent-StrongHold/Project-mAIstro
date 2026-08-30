@@ -114,16 +114,18 @@ def _collect_node_metrics(dag_id: str, window_seconds: int) -> dict[str, dict[st
     store = _metrics_store()
     # Roll up by node_id (per-node) so optimizer can target a specific
     # node, but also keep a per-kind view for kind-level decisions.
-    obs = store._filter(dag_id=dag_id, window_seconds=window_seconds)
+    #
+    # `observations` and `summarize`, not `store._filter` and `_aggregate`:
+    # those are private to one implementation, so a different metrics store
+    # would break this reader without a type error anywhere (#698).
+    obs = store.observations(dag_id=dag_id, window_seconds=window_seconds)
     by_node: dict[str, list[Any]] = {}
     for o in obs:
         by_node.setdefault(o.node_id, []).append(o)
     out: dict[str, dict[str, Any]] = {}
     for node_id, group in by_node.items():
         items = list(group)
-        from services.node_metrics_store import _aggregate
-
-        out[node_id] = _aggregate(items)
+        out[node_id] = store.summarize(items)
         out[node_id]["node_kind"] = items[0].node_kind if items else ""
     return out
 
