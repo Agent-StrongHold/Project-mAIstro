@@ -362,7 +362,6 @@
         "packages/maistro-core/src/maistro/types/feedback.py::unused variable 'AMBIGUOUS'",
         "packages/maistro-core/src/maistro/types/feedback.py::unused variable 'LOW'",
         "packages/maistro-core/src/maistro/types/feedback.py::unused variable 'reviewed_at'",
-        "packages/maistro-core/src/maistro/types/memory.py::unused variable 'flagged_for_review'",
         "packages/maistro-core/src/maistro/types/memory.py::unused variable 'mutation_type'",
         "packages/maistro-core/src/maistro/types/memory.py::unused variable 'new_prompt_hash'",
         "packages/maistro-core/src/maistro/types/memory.py::unused variable 'old_prompt_hash'",
