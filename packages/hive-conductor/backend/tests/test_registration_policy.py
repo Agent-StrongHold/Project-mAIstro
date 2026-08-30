@@ -76,9 +76,7 @@ def test_public_registration_is_closed_by_default_after_setup(isolated_registrat
     assert response.json() == {"detail": "Registration is closed."}
 
 
-def test_admin_can_explicitly_open_registration(
-    isolated_registration_state, admin_client
-) -> None:
+def test_admin_can_explicitly_open_registration(isolated_registration_state, admin_client) -> None:
     response = admin_client.put(
         "/v1/settings/registration-policy",
         json={"mode": "open"},
@@ -144,9 +142,7 @@ def test_failed_registration_restores_claimed_invitation(
     assert retry.status_code == 200
 
 
-def test_plaintext_invitation_is_never_persisted(
-    isolated_registration_state, admin_client
-) -> None:
+def test_plaintext_invitation_is_never_persisted(isolated_registration_state, admin_client) -> None:
     import stores
 
     issued = admin_client.post(

@@ -60,7 +60,11 @@ class TestSecurityHeadersPresence:
         assert r.headers["X-Content-Type-Options"] == "nosniff"
 
     def test_public_registration_is_fail_closed(self) -> None:
-        """Setup is the only anonymous account creator while #313 is deferred."""
+        """Registration is closed by default after setup (#313): the policy
+        gate lives in RegistrationPolicyMiddleware now, not a hard block here,
+        but SecurityHeadersMiddleware still wraps its rejection and must still
+        decorate the response -- that wrapping is what this test actually
+        pins, not which layer produces the 403."""
         c = _client()
         r = c.post(
             "/v1/auth/register",
@@ -71,7 +75,7 @@ class TestSecurityHeadersPresence:
             },
         )
         assert r.status_code == 403
-        assert r.json()["detail"].startswith("Public registration is disabled")
+        assert r.json()["detail"] == "Registration is closed."
         assert r.headers["X-Frame-Options"] == "DENY"
         assert r.headers["X-Content-Type-Options"] == "nosniff"
 

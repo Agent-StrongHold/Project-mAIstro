@@ -8,11 +8,6 @@ from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-
-from routes.audit import log_audit
 from services.registration_policy import (
     claim_invitation,
     create_invitation,
@@ -20,6 +15,11 @@ from services.registration_policy import (
     restore_invitation,
     set_policy,
 )
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+
+from routes.audit import log_audit
 
 public_router = APIRouter(tags=["setup"])
 admin_router = APIRouter(tags=["settings"])
