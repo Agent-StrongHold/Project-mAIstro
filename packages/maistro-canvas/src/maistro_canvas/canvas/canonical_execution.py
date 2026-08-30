@@ -20,6 +20,7 @@ from maistro.runs.model import (
     Attempt,
     AttemptStatus,
     CancellationCause,
+    Run,
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
@@ -404,7 +405,7 @@ class CanvasCanonicalExecution:
             terminal = raced
         await self._reconciler.reconcile(terminal, cancellation=cancellation)
 
-    async def _require_run(self, run_id: str):
+    async def _require_run(self, run_id: str) -> Run:
         run = await self._runs.get_run(run_id)
         if run is None:
             raise RunIntegrityError(f"Canvas canonical Run {run_id!r} does not exist")
@@ -429,9 +430,8 @@ class CanvasCanonicalExecution:
         )
 
     @staticmethod
-    def _stage_node_id(run: object, stage: str) -> str:
-        graph_snapshot = getattr(run, "graph")
-        graph = graph_snapshot.materialize()
+    def _stage_node_id(run: Run, stage: str) -> str:
+        graph = run.graph.materialize()
         matches = [
             node.node_id for node in graph.nodes if node.metadata.get("canvas_stage") == stage
         ]
