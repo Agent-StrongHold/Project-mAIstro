@@ -44,5 +44,5 @@ they already have sends them after the wrong problem.
 
 The seventh closes the last branch arc: a *repeated* setup failure is reported
 once too. Same restraint as the missing-package report and for the same reason
-—  runs on every traced call, so a provider that keeps refusing
+— `_init_tracer` runs on every traced call, so a provider that keeps refusing
 would otherwise write a line per LLM request.
