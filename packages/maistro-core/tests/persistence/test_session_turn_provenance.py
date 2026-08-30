@@ -249,3 +249,104 @@ class TestTheSessionStoreOwnsNoExecutionLifecycle:
         # Partial: only chat Runs carry a session, and indexing every other
         # Run's NULL would be most of the table for none of the queries.
         assert "WHERE" in definition.upper()
+
+
+#: The three-column `session_turns` a homelab file created before 028 holds.
+#: Spelled out rather than derived from the current schema: a constant that
+#: tracked the new table would stop describing the old one the moment it
+#: changed, which is the failure this whole class exists to catch.
+_PRE_028_TURNS = """
+CREATE TABLE session_turns (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    PRIMARY KEY (session_id, turn_id)
+)
+"""
+
+
+class TestAStoreFileFromBeforeTheColumns:
+    """`CREATE TABLE IF NOT EXISTS` leaves an existing table exactly as it was.
+
+    So a homelab file created before 028 keeps its three-column
+    `session_turns`, and every append would fail on the insert -- the failure
+    #710 hit on the same shape of change. The `ALTER` path in `ensure_schema`
+    exists for this, and on a fresh database it never runs, so nothing
+    exercised it until these.
+    """
+
+    async def _older_file(self) -> Any:
+        conn = await aiosqlite.connect(":memory:")
+        await conn.execute(_PRE_028_TURNS)
+        await conn.commit()
+        return conn
+
+    @pytest.mark.ac("SPEC-083026-56ee/AC-2")
+    async def test_ensure_schema_adds_the_columns_an_older_file_lacks(self) -> None:
+        conn = await self._older_file()
+        try:
+            await SqliteSessionStore(conn).ensure_schema()
+
+            cursor = await conn.execute("PRAGMA table_info(session_turns)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            assert {"run_id", "node_run_id", "attempt_id"} <= columns
+        finally:
+            await conn.close()
+
+    @pytest.mark.ac("SPEC-083026-56ee/AC-1")
+    async def test_an_append_against_an_upgraded_older_file_records_its_run(self) -> None:
+        """The point of the `ALTER`: not that the columns exist, but that the
+        append which needs them succeeds."""
+        conn = await self._older_file()
+        try:
+            store = SqliteSessionStore(conn)
+            await store.ensure_schema()
+            with bind_execution_context(run_id="r-1", node_run_id="nr-1", attempt_id="a-1"):
+                await store.append_messages("sess-1", _BATCH, "turn-1")
+
+            cursor = await conn.execute(
+                "SELECT run_id, node_run_id, attempt_id FROM session_turns "
+                "WHERE session_id = ? AND turn_id = ?",
+                ("sess-1", "turn-1"),
+            )
+            assert await cursor.fetchone() == ("r-1", "nr-1", "a-1")
+        finally:
+            await conn.close()
+
+    @pytest.mark.ac("SPEC-083026-56ee/AC-3")
+    async def test_rows_written_before_the_upgrade_are_kept(self) -> None:
+        """An `ALTER TABLE ADD COLUMN` must not cost the markers already there:
+        losing one would let a turn it admitted be appended a second time."""
+        conn = await self._older_file()
+        try:
+            await conn.execute(
+                "INSERT INTO session_turns (session_id, turn_id, timestamp) VALUES (?, ?, ?)",
+                ("sess-1", "turn-old", 1.0),
+            )
+            await conn.commit()
+
+            await SqliteSessionStore(conn).ensure_schema()
+
+            cursor = await conn.execute(
+                "SELECT turn_id, run_id FROM session_turns WHERE session_id = ?", ("sess-1",)
+            )
+            assert await cursor.fetchall() == [("turn-old", None)]
+        finally:
+            await conn.close()
+
+    @pytest.mark.ac("SPEC-083026-56ee/AC-2")
+    async def test_ensure_schema_is_idempotent_on_an_already_upgraded_file(self) -> None:
+        """Called twice, the second call must take the other side of the branch
+        -- `ALTER TABLE ADD COLUMN` on an existing column is an error, not a
+        no-op, so an unguarded loop would break every restart."""
+        conn = await self._older_file()
+        try:
+            store = SqliteSessionStore(conn)
+            await store.ensure_schema()
+            await store.ensure_schema()
+
+            cursor = await conn.execute("PRAGMA table_info(session_turns)")
+            names = [row[1] for row in await cursor.fetchall()]
+            assert names.count("run_id") == 1
+        finally:
+            await conn.close()
