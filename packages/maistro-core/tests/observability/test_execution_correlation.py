@@ -36,6 +36,7 @@ pytestmark = [pytest.mark.contract("behavioral")]
 class TestBindingIsAdditive:
     """What a caller does not name, it inherits."""
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-1")
     def test_an_inner_binding_keeps_the_outer_ids(self) -> None:
         with (
             bind_execution_context(run_id="run-1", workspace_id="ws-1"),
@@ -46,6 +47,7 @@ class TestBindingIsAdditive:
         assert seen.workspace_id == "ws-1"
         assert seen.node_run_id == "nr-1"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-1")
     def test_an_inner_binding_may_override_an_outer_id(self) -> None:
         """A child Run is a different Run, and says so."""
         with bind_execution_context(run_id="parent"):
@@ -53,6 +55,7 @@ class TestBindingIsAdditive:
                 assert current_execution_context().run_id == "child"
             assert current_execution_context().run_id == "parent"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-1")
     def test_three_levels_compose(self) -> None:
         with (
             bind_execution_context(run_id="r"),
@@ -68,10 +71,12 @@ class TestABlankNeverErases:
     does not try."""
 
     @pytest.mark.parametrize("blank", ["", None])
+    @pytest.mark.ac("SPEC-083026-20b2/AC-2")
     def test_a_blank_value_leaves_the_inherited_id_standing(self, blank: str | None) -> None:
         with bind_execution_context(run_id="run-1"), bind_execution_context(run_id=blank):
             assert current_execution_context().run_id == "run-1"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-2")
     def test_a_binding_of_only_blanks_is_the_same_context(self) -> None:
         with (
             bind_execution_context(run_id="run-1") as outer,
@@ -79,25 +84,30 @@ class TestABlankNeverErases:
         ):
             assert inner == outer
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-2")
     def test_a_blank_on_an_unbound_context_stays_absent_rather_than_empty(self) -> None:
         with bind_execution_context(run_id=""):
             assert "run_id" not in current_execution_context().as_log_fields()
 
 
 class TestTheScopeIsTheLifetime:
+    @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     def test_the_context_is_empty_before_anything_binds(self) -> None:
         assert current_execution_context() == EMPTY
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     def test_the_binding_is_gone_after_the_block(self) -> None:
         with bind_execution_context(run_id="run-1"):
             pass
         assert current_execution_context().run_id == ""
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     def test_the_binding_is_gone_after_an_exception(self) -> None:
         with pytest.raises(RuntimeError), bind_execution_context(run_id="run-1"):
             raise RuntimeError("boom")
         assert current_execution_context().run_id == ""
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     async def test_a_sibling_task_does_not_see_a_later_binding(self) -> None:
         """Tasks copy the context at creation. A task started before the bind
         must not acquire ids that belong to work it is not doing."""
@@ -127,6 +137,7 @@ class TestTheScopeIsTheLifetime:
             await asyncio.create_task(child())
         assert seen == ["run-1"]
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     async def test_a_child_task_binding_does_not_escape_to_its_parent(self) -> None:
         async def child() -> None:
             with bind_execution_context(attempt_id="leaked"):
@@ -156,6 +167,7 @@ class TestAnUnknownIdIsRefused:
 
 
 class TestBlankIdsAreAbsentNotEmpty:
+    @pytest.mark.ac("SPEC-083026-20b2/AC-2")
     def test_only_the_ids_that_are_set_are_reported(self) -> None:
         with bind_execution_context(run_id="run-1"):
             assert current_execution_context().as_log_fields() == {"run_id": "run-1"}
@@ -260,6 +272,7 @@ class TestSpansCarryTheIds:
             assert await handle() == "done"
         return span
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-6")
     async def test_the_span_names_the_execution_it_traced(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -267,12 +280,14 @@ class TestSpansCarryTheIds:
         assert span.attributes["maistro.run_id"] == "r-1"
         assert span.attributes["maistro.attempt_id"] == "a-1"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-6")
     async def test_an_unset_id_is_not_written_as_an_empty_attribute(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         span = await self._run_traced(monkeypatch, run_id="r-1")
         assert "maistro.node_run_id" not in span.attributes
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-6")
     async def test_tracing_still_works_with_no_context_bound(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -284,6 +299,7 @@ class TestSpansCarryTheIds:
 
 
 class TestABlankEnvelopeFieldIsFilledFromContext:
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     def test_the_ids_the_producer_omitted_are_filled(self) -> None:
         with bind_execution_context(run_id="r-1", node_run_id="nr-1", attempt_id="a-1"):
             event = correlated(EventEnvelope(type="x", workspace_id="ws-1"))
@@ -291,17 +307,20 @@ class TestABlankEnvelopeFieldIsFilledFromContext:
         assert event.node_run_id == "nr-1"
         assert event.attempt_id == "a-1"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     def test_correlation_id_falls_back_to_the_run(self) -> None:
         with bind_execution_context(run_id="r-1"):
             event = correlated(EventEnvelope(type="x", workspace_id="ws-1"))
         assert event.correlation_id == "r-1"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     def test_an_id_the_producer_set_is_never_overwritten(self) -> None:
         """An event *about* another Run says something the context does not."""
         with bind_execution_context(run_id="ambient"):
             event = correlated(EventEnvelope(type="x", workspace_id="ws-1", run_id="named"))
         assert event.run_id == "named"
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     def test_a_correlation_id_the_producer_set_is_kept(self) -> None:
         with bind_execution_context(run_id="ambient"):
             event = correlated(
@@ -313,6 +332,7 @@ class TestABlankEnvelopeFieldIsFilledFromContext:
         original = EventEnvelope(type="x", workspace_id="ws-1")
         assert correlated(original) is original
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     def test_an_alternate_stream_scope_is_left_alone(self) -> None:
         """Filling `workspace_id` here would move the event to another stream,
         or raise on the envelope's own mutual-exclusion rule."""
@@ -328,6 +348,7 @@ class TestABlankEnvelopeFieldIsFilledFromContext:
 
 
 class TestAppendCorrelatesWhatItPersists:
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     async def test_a_stored_event_carries_the_run_that_produced_it(self) -> None:
         store = InMemoryEventStore()
         with bind_execution_context(run_id="r-1", node_run_id="nr-1"):
@@ -336,6 +357,7 @@ class TestAppendCorrelatesWhatItPersists:
         assert stored is not None
         assert (stored.run_id, stored.node_run_id) == ("r-1", "nr-1")
 
+    @pytest.mark.ac("SPEC-083026-20b2/AC-7")
     async def test_an_event_already_present_is_returned_as_it_was_stored(self) -> None:
         """Re-appending must not re-correlate: the first write is the record."""
         store = InMemoryEventStore()

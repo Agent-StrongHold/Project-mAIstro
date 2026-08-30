@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
@@ -52,6 +53,7 @@ def _context_app() -> Starlette:
     return app
 
 
+@pytest.mark.ac("SPEC-083026-20b2/AC-8")
 def test_the_handler_runs_under_the_requests_execution_context() -> None:
     """The binding used to go straight into structlog's contextvars, which
     correlated log lines and nothing else. A handler could not read it, so a
@@ -61,12 +63,14 @@ def test_the_handler_runs_under_the_requests_execution_context() -> None:
     assert body == "req-abc|req-abc"
 
 
+@pytest.mark.ac("SPEC-083026-20b2/AC-8")
 def test_the_context_does_not_outlive_the_request() -> None:
     client = TestClient(_context_app())
     client.get("/", headers={"X-Request-ID": "req-abc"})
     assert current_execution_context().request_id == ""
 
 
+@pytest.mark.ac("SPEC-083026-20b2/AC-8")
 def test_a_binding_made_outside_the_request_survives_it() -> None:
     """`clear_contextvars()` went with the rewrite: it wiped bindings an outer
     middleware had deliberately made, and there was never a previous request's
