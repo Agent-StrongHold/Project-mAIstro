@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.types.memory import REINFORCE_DELTA
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -40,6 +41,17 @@ class LearningStore(Protocol):
 
     async def mark_used(self, learning_ids: list[int]) -> None:
         """Increment hit_count for used learnings."""
+        ...
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Return the learnings one Run produced.
+
+        The read that makes producer provenance worth recording. A learning is a
+        correction the system applies to future work, so when one turns out to
+        be wrong the first question is which execution taught it -- and until
+        #709 nothing could answer it. Scoped like every other read here: an
+        `org_id` filters, and a blank one matches only rows that have none.
+        """
         ...
 
     async def mark_outcome(
@@ -107,7 +119,7 @@ class EpisodicStore(Protocol):
         """Retrieve relevant memories, scope-filtered."""
         ...
 
-    async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
+    async def reinforce(self, memory_id: str, delta: float = REINFORCE_DELTA) -> None:
         """Reinforce a memory (increase weight, clamped to tier ceiling)."""
         ...
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
+from uuid import uuid4
 
 
 class MemoryTier(StrEnum):
@@ -116,11 +118,26 @@ class Learning:
     rca_prevention: str = ""
     success_after_use: int = 0
     failure_after_use: int = 0
+    # Producer provenance (#709). Blank rather than absent because these are
+    # dataclass fields with string siblings; the stores write blank as SQL NULL,
+    # so "no execution was in scope" stays distinguishable from "a Run with no
+    # id". Filled from the ambient execution context at write time when the
+    # caller does not name them.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 @dataclass
 class Outcome:
-    """The outcome of a completed request — tracks task completion rate."""
+    """The outcome of a completed request — tracks task completion rate.
+
+    `input_tokens` and `output_tokens` are a **sum over the provider calls of
+    one turn**, not one call's usage: a ReAct loop making four calls produces
+    one Outcome with one pair. Which call was expensive, and which model served
+    which step, needs a per-call record — that is the Invocation, and nothing
+    constructs one yet (#55, and ADR-083026-aba1 for why this record says so).
+    """
 
     request_id: str = ""
     task_type: str = ""
@@ -136,6 +153,15 @@ class Outcome:
     agent_id: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    #: How many of the turn's provider calls returned a `usage` object.
+    #: `None` when the writer did not count — a row written before this
+    #: existed, or a producer that does not know. Without it,
+    #: `input_tokens = 0` reads as "free" and "nobody reported" at once, and
+    #: the strategies spelled `usage.get("prompt_tokens", 0)` so both really
+    #: did land as `0`. `0 over 3 reporting calls` and `0 over 0` are
+    #: different facts (ADR-083026-aba1, #717; the same rule
+    #: ADR-083026-a91e set for node metrics).
+    usage_reported_calls: int | None = None
     charged_microchips: int = 0
     pricing_version: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -154,6 +180,15 @@ class Outcome:
     thumb: str = ""  # "" | "up" | "down"
     thumb_comment: str = ""
     eval_judge_score: float | None = None  # 0..100 if eval-judge ran
+    # Canonical producer provenance (#709). `dag_id`/`dag_run_id`/`node_id`
+    # above stay: they name a real hive-conductor object the Conductor UI reads,
+    # and ADR-019 puts that identity on the product side. These name the
+    # canonical Run/NodeRun/Attempt the DAG run executes as (#143, #223, #697),
+    # which is what the router's scoring and the optimizer's fitness are
+    # actually evidence from.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 @dataclass
@@ -175,7 +210,13 @@ class SkillMutation:
 class EpisodicMemory:
     """A single episodic memory in the 7-tier weighted system."""
 
-    memory_id: str = ""
+    #: Minted when the caller does not supply one. It used to default to `""`,
+    #: and `TuringMemoryBridge.store_episode` constructs an `EpisodicMemory`
+    #: without an id — so every episode shared one. The in-memory store appended
+    #: them all and only the ids were wrong; the durable stores upsert on this
+    #: column, which turned the same gap into each episode overwriting the last
+    #: (Codex, #710).
+    memory_id: str = field(default_factory=lambda: uuid4().hex)
     tier: MemoryTier = MemoryTier.OBSERVATION
     content: str = ""
     weight: float = 0.3
@@ -186,7 +227,13 @@ class EpisodicMemory:
     scope: MemoryScope = MemoryScope.AGENT
     project_id: str = ""
     source: str = ""
-    context: dict[str, str] = field(default_factory=dict)
+    #: `Any`, not `str`: `TuringMemoryBridge.store_episode` declares
+    #: `context: dict[str, Any]` and passes it straight through, and the
+    #: in-memory store keeps what it was handed. The annotation said `str` while
+    #: the only producer sent numbers and nested objects, so a durable store
+    #: reading it back faithfully would have contradicted the type, and one
+    #: coercing to `str` would have contradicted the other store (Codex, #710).
+    context: dict[str, Any] = field(default_factory=dict)
     reinforcement_count: int = 0
     contradiction_count: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))

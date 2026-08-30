@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.correlation import observed_provenance
 from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
@@ -26,9 +27,17 @@ CREATE TABLE IF NOT EXISTS learnings (
     rca_category TEXT,
     rca_prevention TEXT NOT NULL DEFAULT '',
     success_after_use INTEGER NOT NULL DEFAULT 0,
-    failure_after_use INTEGER NOT NULL DEFAULT 0
+    failure_after_use INTEGER NOT NULL DEFAULT 0,
+    run_id TEXT,
+    node_run_id TEXT,
+    attempt_id TEXT
 )
 """
+
+#: The producer columns, nullable for the same reason migration 026 makes them
+#: nullable in PostgreSQL: a row written with no execution in scope names none,
+#: and `''` would name a Run whose id is empty (#709).
+_PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
 
 class SqliteLearningStore:
@@ -38,7 +47,7 @@ class SqliteLearningStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        """Create the learnings table, and upgrade one created before org_id.
+        """Create the learnings table, and upgrade one created before its columns.
 
         `org_id` was in the `Learning` dataclass and in every store method's
         signature long before it was a column, so a database created by an
@@ -54,13 +63,31 @@ class SqliteLearningStore:
             await self._conn.execute(
                 "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
             )
+        # The same in-place upgrade for the producer columns. A file created
+        # before #709 holds real learnings; recreating the table would be the
+        # only alternative, and it would lose them (#709).
+        for column in _PROVENANCE_COLUMNS:
+            if column not in columns:
+                await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
+        )
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
         )
         await self._conn.commit()
 
     async def store(self, learning: Learning) -> int:
-        """Store a learning. Dedup by tool_name + trigger_key overlap."""
+        """Store a learning, naming the execution that produced it.
+
+        Resolved before the dedup probe for the same reason as the PostgreSQL
+        original: the deduplicating branch returns early (#709).
+        """
+        provenance = observed_provenance(
+            run_id=learning.run_id,
+            node_run_id=learning.node_run_id,
+            attempt_id=learning.attempt_id,
+        )
         # Scope the dedup probe too. Without `org_id` here, storing a learning
         # for org A could match org B's row, bump B's hit_count and return B's
         # id to A — a cross-scope write and an id leak, not merely a missed
@@ -89,8 +116,9 @@ class SqliteLearningStore:
                (category, trigger_keys, learning, tool_name,
                 agent_id, user_id, org_id, scope, status,
                 rca_category, rca_prevention,
-                success_after_use, failure_after_use)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                success_after_use, failure_after_use,
+                run_id, node_run_id, attempt_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -105,6 +133,7 @@ class SqliteLearningStore:
                 learning.rca_prevention,
                 learning.success_after_use,
                 learning.failure_after_use,
+                *provenance.as_columns(),
             ),
         )
         await self._conn.commit()
@@ -174,6 +203,25 @@ class SqliteLearningStore:
             learning_ids,
         )
         await self._conn.commit()
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Return the learnings this Run produced, newest first.
+
+        Same rule as the PostgreSQL original, including that a blank `run_id`
+        returns nothing rather than every unattributed row (#709).
+        """
+        if not run_id:
+            return []
+        cursor = await self._conn.execute(
+            "SELECT * FROM learnings WHERE run_id = ? AND org_id = ? ORDER BY id DESC",
+            (run_id, org_id),
+        )
+        # `cursor.description`, not a row factory: `aiosqlite` is a
+        # `TYPE_CHECKING`-only import here, and setting `row_factory` on the
+        # shared connection would change what every other method on it returns.
+        names = [column[0] for column in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_learning(dict(zip(names, row, strict=True))) for row in rows]
 
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
@@ -248,6 +296,16 @@ class SqliteLearningStore:
         return [_row_to_learning(dict(zip(columns, r, strict=True))) for r in rows]
 
 
+def _text(row: dict[str, Any], name: str) -> str:
+    """Read a nullable text column as the empty string the dataclass expects.
+
+    A nullable column and a non-optional field: a row with no producer reads
+    back as a `Learning` naming none, which is the same fact in the shape the
+    caller expects (#709).
+    """
+    return str(row.get(name) or "")
+
+
 def _row_to_learning(row: dict[str, Any]) -> Learning:
     return Learning(
         id=row["id"],
@@ -263,6 +321,9 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         status=row.get("status") or "active",
         rca_category=row.get("rca_category"),
         rca_prevention=row.get("rca_prevention") or "",
+        run_id=_text(row, "run_id"),
+        node_run_id=_text(row, "node_run_id"),
+        attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
     )
