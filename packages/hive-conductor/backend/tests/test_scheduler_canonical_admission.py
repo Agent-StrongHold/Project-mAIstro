@@ -115,13 +115,17 @@ def _remove_row(row: Any) -> None:
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
-def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_two_live_runners_claim_one_occurrence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, root = await _fixture()
         _install_row(row)
-        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
         now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
         try:
             await asyncio.gather(
@@ -149,13 +153,17 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(scenario())
 
 
-def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_persisted_template_survives_empty_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
         _install_row(row)
-        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
 
         import services.dag_agents as dag_agents
 
@@ -175,13 +183,17 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
     asyncio.run(scenario())
 
 
-def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_template_keeps_occurrence_owed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture(template=False)
         _install_row(row)
-        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
         before = row.last_run
         try:
             await _ScheduleRunner()._evaluate_schedule(
@@ -198,13 +210,17 @@ def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch)
     asyncio.run(scenario())
 
 
-def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_creation_failure_keeps_occurrence_owed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
         _install_row(row)
-        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
         before = row.last_run
 
         async def _fail_create_run(*args: Any, **kwargs: Any) -> Any:
@@ -226,7 +242,9 @@ def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPa
     asyncio.run(scenario())
 
 
-def test_max_runs_disables_canonical_and_product_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_max_runs_disables_canonical_and_product_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -234,7 +252,9 @@ def test_max_runs_disables_canonical_and_product_projection(monkeypatch: pytest.
 
         container, row, _root = await _fixture(max_runs=1)
         _install_row(row)
-        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
         try:
             await _ScheduleRunner()._evaluate_schedule(
                 "s-1", row, now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
