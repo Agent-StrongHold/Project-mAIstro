@@ -76,17 +76,27 @@ recorded as a deliberate candidate-authored/derived exception with a reason.
 
 The required `Vulture Ratchet` workflow executes the full inventory and every
 live delegated adapter before its Vulture comparison. It checks out full history
-because trusted resolution uses `git merge-base`/`git show`, and it supplies
-`RATCHET_BASE_REV` from the event itself: PR base SHA, merge-group base SHA, or
-the previous SHA on a protected-branch push. A depth-1 checkout or an implicit
-candidate-tree fallback is not an acceptable monotonicity verdict.
+because trusted resolution uses `git merge-base`/`git show`. For a pull request
+it names the current target remote-tracking ref (`origin/<github.base_ref>`), not
+the PR event's historical `base.sha`. GitHub checks a PR as a synthetic
+target+candidate merge, so the shared resolver's merge-base is then the exact
+target state the candidate is being integrated into. This prevents a long-lived
+PR from being charged for ratchets or debt that landed independently on its
+target after the branch was cut, while a stacked PR naturally resolves against
+its parent branch rather than assuming `develop`. Merge groups use their supplied
+base SHA. Protected-branch pushes use the previous SHA so the pushed commit cannot
+bless its own ledger. A depth-1 checkout or a candidate-tree fallback is not an
+acceptable monotonicity verdict.
 
 `tests/test_ratchet_provenance_repository.py` independently runs the same
 inventory and delegated adapters from the root test suite. The unit contract also
-pins the required workflow to full history, an event-bound base, and the full
-provenance command rather than `--inventory-only`. Adding a new ratchet therefore
-requires choosing and enforcing its provenance model in the same change rather
-than inheriting candidate-controlled comparison by accident.
+pins the required workflow to full history, the integration target, and the full
+provenance command rather than `--inventory-only`. A separate real-git test builds
+the long-lived-PR shape explicitly: the candidate forks, the target later creates
+a ratchet, and the synthetic merge must read that target ledger rather than treat
+it as candidate-authored debt. Adding a new ratchet therefore requires choosing
+and enforcing its provenance model in the same change rather than inheriting
+candidate-controlled comparison by accident.
 
 A trusted-base ratchet must fail closed when the base revision or ledger cannot
 be read, identify the base and candidate revisions in its provenance record, and
