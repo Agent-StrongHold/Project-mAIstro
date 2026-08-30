@@ -709,9 +709,7 @@ class Container:
         )
         executed = 0
         while executed < limit:
-            queued = await self.run_store.list_by_status(
-                RunStatus.QUEUED, limit=limit, after=after
-            )
+            queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit, after=after)
             if not queued:
                 break
             for run in queued:

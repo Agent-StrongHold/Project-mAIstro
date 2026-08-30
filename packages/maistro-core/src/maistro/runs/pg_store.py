@@ -486,10 +486,7 @@ class PgRunStore:
             params.append(project_id)
         if after is not None:
             cursor_param = len(params) + 1
-            sql += (
-                f" AND (payload->>'created_at', run_id) > "
-                f"(${cursor_param}, ${cursor_param + 1})"
-            )
+            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
             params.extend(after)
         sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
         params.append(limit)
