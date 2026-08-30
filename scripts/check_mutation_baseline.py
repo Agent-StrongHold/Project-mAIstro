@@ -1,28 +1,49 @@
 #!/usr/bin/env python3
-"""Ratchet Cosmic Ray mutation quality per production source file.
+"""Ratchet mutation quality against trusted baseline/history provenance (#542, #319).
 
-PR-era callers can still score raw Cosmic Ray dump JSONL. Repository-health
-candidate generation uses the complete viability-adjusted telemetry emitted by
-the scheduler, enforcing both the global floor and any stricter reviewed
-per-source baseline. Automated candidates may tighten but never weaken reviewed
-baselines.
+The comparison baseline and mutation-history evidence are read from the merge
+base through ``ratchet_provenance``. A candidate may generate a tighter baseline
+candidate, but it cannot weaken the quality floor or rewrite runtime history in
+the same change that is being judged.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = ROOT / "quality" / "mutation-baseline.json"
+DEFAULT_HISTORY = ROOT / "quality" / "mutation-history.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 FLOOR = 0.90
+RATCHET = "mutation"
+METRIC_DEFINITION_VERSION = "2"
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
 
 
 def scores(rows_path: Path) -> dict[str, tuple[int, int]]:
-    """Return ``source -> (killed, total)`` from Cosmic Ray dump JSONL."""
     result: dict[str, list[int]] = {}
     for raw in rows_path.read_text(encoding="utf-8").splitlines():
         if not raw.strip():
@@ -45,7 +66,6 @@ def scores(rows_path: Path) -> dict[str, tuple[int, int]]:
 def payload(
     current: dict[str, tuple[int, int]], baseline: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Legacy raw-row candidate builder retained for non-scheduler callers."""
     entries = dict((baseline or {}).get("entries", {}))
     entries.update(
         {
@@ -66,7 +86,6 @@ def payload(
 
 
 def enforce(current: dict[str, tuple[int, int]], baseline: dict[str, Any]) -> list[str]:
-    """Enforce the global floor plus source-specific reviewed non-regression."""
     entries = baseline.get("entries", {})
     failures: list[str] = []
     for source, (killed, total) in sorted(current.items()):
@@ -88,10 +107,6 @@ def _scheduler_telemetry_for(rows_path: Path) -> Path | None:
 
 
 def _publish_ratchet_into_health_report(rows_path: Path, report: dict[str, Any]) -> None:
-    # Imported here, not at module scope: this file sits in scripts/ and imports
-    # a sibling, which only resolves when Python puts scripts/ on sys.path — true
-    # for `python scripts/check_mutation_baseline.py`, false for a test that
-    # loads this file by path. A lazy import keeps both working.
     import mutation_ratchet
 
     json_path = rows_path.with_name("mutation-health-report.json")
@@ -111,22 +126,47 @@ def _publish_ratchet_into_health_report(rows_path: Path, report: dict[str, Any])
         )
 
 
-def _write_scheduler_candidate(rows_path: Path, baseline_path: Path) -> int:
+def _trusted_json(path: Path, *, prov: ModuleType) -> tuple[dict[str, Any], object]:
+    baseline = prov.resolve_baseline(path, root=ROOT)
+    loaded = baseline.loads(default={"entries": {}})
+    if not isinstance(loaded, dict):
+        raise prov.RatchetProvenanceError(f"{path.name}: trusted content is not a JSON object")
+    return loaded, baseline
+
+
+def _write_scheduler_candidate(
+    rows_path: Path,
+    baseline_path: Path,
+    *,
+    trusted_baseline: dict[str, Any],
+    trusted_history: dict[str, Any],
+    provenance: object,
+    prov: ModuleType,
+) -> int:
     import mutation_ratchet
 
     telemetry_path = _scheduler_telemetry_for(rows_path)
     if telemetry_path is None:
         raise ValueError("scheduler telemetry not found beside aggregate mutation rows")
     telemetry = mutation_ratchet.read_telemetry(telemetry_path)
-    baseline = mutation_ratchet.load_json(baseline_path)
-    history_path = ROOT / "quality" / "mutation-history.json"
-    history = mutation_ratchet.load_json(history_path)
-    report = mutation_ratchet.evaluate(telemetry, baseline, history, floor=FLOOR)
-    candidate = mutation_ratchet.baseline_candidate(telemetry, baseline, floor=FLOOR)
+    prov.require_measurement(telemetry, ratchet=RATCHET, what="mutation telemetry rows")
+    report = mutation_ratchet.evaluate(telemetry, trusted_baseline, trusted_history, floor=FLOOR)
+    candidate = mutation_ratchet.baseline_candidate(telemetry, trusted_baseline, floor=FLOOR)
     baseline_path.write_text(
         json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     _publish_ratchet_into_health_report(rows_path, report)
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=provenance,
+            tool="cosmic-ray scheduler telemetry",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted_baseline.get('entries', {}))} reviewed source floor(s)",
+            new_value=f"{len(telemetry)} measured source(s)",
+            candidate_sha=prov.head_sha(ROOT),
+        ).render()
+    )
     print(
         f"wrote viability-adjusted mutation baseline candidate for {len(telemetry)} source file(s): "
         f"{baseline_path}"
@@ -148,9 +188,24 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--write-baseline", action="store_true")
     args = parser.parse_args(argv)
 
+    prov = _provenance()
+    try:
+        trusted_baseline, baseline_ref = _trusted_json(args.baseline, prov=prov)
+        trusted_history, _history_ref = _trusted_json(DEFAULT_HISTORY, prov=prov)
+    except prov.RatchetProvenanceError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 2
+
     if args.write_baseline and _scheduler_telemetry_for(args.rows) is not None:
         try:
-            return _write_scheduler_candidate(args.rows, args.baseline)
+            return _write_scheduler_candidate(
+                args.rows,
+                args.baseline,
+                trusted_baseline=trusted_baseline,
+                trusted_history=trusted_history,
+                provenance=baseline_ref,
+                prov=prov,
+            )
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             print(f"::error::{exc}", file=sys.stderr)
             return 2
@@ -161,25 +216,48 @@ def main(argv: list[str]) -> int:
             "::error::No mutation outcomes found; this is a configuration failure.", file=sys.stderr
         )
         return 1
+    try:
+        prov.require_measurement(current, ratchet=RATCHET, what="mutation source outcomes")
+    except prov.RatchetProvenanceError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 2
+
     if args.write_baseline:
-        existing = (
-            json.loads(args.baseline.read_text(encoding="utf-8"))
-            if args.baseline.is_file()
-            else None
-        )
+        # Candidate construction starts from the trusted baseline, not the
+        # candidate's possibly weakened copy. A generated file can therefore
+        # tighten or extend the reviewed state but cannot erase its floor.
         args.baseline.write_text(
-            json.dumps(payload(current, existing), indent=2, sort_keys=True) + "\n",
+            json.dumps(payload(current, trusted_baseline), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
+        )
+        print(
+            prov.Provenance(
+                ratchet=RATCHET,
+                baseline=baseline_ref,
+                tool="cosmic-ray raw outcomes",
+                metric_definition_version="1",
+                old_value=f"{len(trusted_baseline.get('entries', {}))} reviewed source floor(s)",
+                new_value=f"{len(current)} measured source(s)",
+                candidate_sha=prov.head_sha(ROOT),
+            ).render()
         )
         print(
             f"wrote legacy candidate mutation baseline for {len(current)} source file(s): {args.baseline}"
         )
         return 0
-    if not args.baseline.is_file():
-        print(f"::error::Missing mutation baseline: {args.baseline}", file=sys.stderr)
-        return 1
-    baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
-    failures = enforce(current, baseline)
+
+    failures = enforce(current, trusted_baseline)
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=baseline_ref,
+            tool="cosmic-ray raw outcomes",
+            metric_definition_version="1",
+            old_value=f"{len(trusted_baseline.get('entries', {}))} reviewed source floor(s)",
+            new_value=f"{len(current)} measured source(s)",
+            candidate_sha=prov.head_sha(ROOT),
+        ).render()
+    )
     print(
         f"mutation baseline summary: {len(current)} source file(s), {len(failures)} regression(s)"
     )
