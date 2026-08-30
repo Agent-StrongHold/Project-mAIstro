@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -185,7 +185,7 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
     assert stored.status is RunStatus.COMPLETED
     assert stored.provenance["admission_source"] == "builders"
     assert stored.provenance["pipeline_id"] == "builders-domain-run"
-    assert canonical_run.canonical_run_id == record.run_id
+    assert getattr(canonical_run, "canonical_run_id") == record.run_id
 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     assert [item.node_id for item in node_runs] == [
