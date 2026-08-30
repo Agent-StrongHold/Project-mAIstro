@@ -149,21 +149,14 @@ def test_required_json_prints_selected_checks(check, capsys) -> None:
 
 def test_main_rejects_malformed_result(check, capsys) -> None:
     assert (
-        check.main(
-            ["--event-name", "merge_group", "--result", "postgres (pg17)"]
-        )
+        check.main(["--event-name", "merge_group", "--result", "postgres (pg17)"])
         == 1
     )
     assert "malformed --result" in capsys.readouterr().out
 
 
 def test_main_rejects_unknown_check(check, capsys) -> None:
-    assert (
-        check.main(
-            ["--event-name", "merge_group", "--result", "unknown=success"]
-        )
-        == 1
-    )
+    assert check.main(["--event-name", "merge_group", "--result", "unknown=success"]) == 1
     assert "unknown specialized check name 'unknown'" in capsys.readouterr().out
 
 
