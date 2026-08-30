@@ -83,9 +83,8 @@ def test_malformed_scope_fails_closed_to_every_check(check) -> None:
 
 
 def test_incomplete_scope_fails_closed_to_every_check(check) -> None:
-    assert check.required_checks("merge_group", json.dumps({"postgres": False})) == set(
-        ALL_RESULTS
-    )
+    scope_json = json.dumps({"postgres": False})
+    assert check.required_checks("merge_group", scope_json) == set(ALL_RESULTS)
 
 
 def test_non_boolean_scope_fails_closed_to_every_check(check) -> None:
