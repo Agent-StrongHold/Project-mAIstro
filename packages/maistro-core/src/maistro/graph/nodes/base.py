@@ -17,7 +17,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -74,7 +74,26 @@ class NodeResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     success: bool
-    output: dict[str, Any] | BaseModel | None = None
+    #: ``SerializeAsAny`` because the union member is bare ``BaseModel``, which
+    #: declares no fields. Without it Pydantic serializes a typed output through
+    #: that empty declared schema and the node's own fields are dropped -- so a
+    #: persisted Attempt said the node produced nothing (#566). Duck-typed
+    #: serialization writes the runtime model's real fields instead.
+    #:
+    #: ``JsonValue`` *beside* ``dict[str, Any]``, not instead of it. The write
+    #: side accepts every ``BaseModel``, and a ``RootModel`` serializes to its
+    #: root -- a list, or a bare scalar -- which a dict-only branch could not
+    #: read back. But ``JsonValue`` alone narrows the write side: a mapping
+    #: Pydantic can serialize without it already being JSON, say
+    #: ``{"created_at": datetime.now(UTC)}``, then falls past both branches into
+    #: the model one and raises from Pydantic's internals. The dict branch keeps
+    #: those callers; ``JsonValue`` adds the shapes a serialized root model
+    #: takes. Order matters: dict first, so a mapping never reaches the rest.
+    #:
+    #: Reading a record back gives the JSON value, not the original class: the
+    #: envelope never recorded which model it was, and inventing one would be a
+    #: guess.
+    output: dict[str, Any] | JsonValue | SerializeAsAny[BaseModel] | None = None
     latency_ms: int = 0
     error_code: str | None = None  # http status / exception class / "timeout"
     error_message: str | None = None
@@ -203,6 +222,117 @@ class _NodePaused(Exception):
         self.resume_at = resume_at
         self.metadata = metadata or {}
         super().__init__(reason)
+
+
+#: Every ``paused_reason`` a node in this package passes to :func:`pause_until`,
+#: mapped to who is owed the next action.
+#:
+#: A pause reason is a cross-module contract, not a node-local string: the node
+#: writes it and two *other* modules read it back to decide whether a person or
+#: the system is waited on. One table here, beside the function that carries
+#: the reason, is what lets those readers agree by construction instead of by
+#: both being edited on the same day.
+#:
+#: They previously held two hand-written allowlists which agreed on two reasons
+#: and omitted the rest, so `human.review_and_edit` and `human.delegate_to_role`
+#: parked as "the system will retry" on both paths: a prompt nobody can see,
+#: indistinguishable from a provider being down. A second literal set is a
+#: second thing to forget, and the reason it got forgotten is that nothing
+#: failed when it was.
+#:
+#: A reason absent from this table is not a new feature but an unclassified
+#: one -- the readers fall back to WAITING and nothing says whether that was
+#: the intent. A structural test over the node package's calls is what turns
+#: that silent default into a failing one.
+PAUSE_AWAITING_HUMAN_ANSWER = "awaiting_human_answer"
+PAUSE_AWAITING_HUMAN_APPROVAL = "awaiting_human_approval"
+PAUSE_AWAITING_HUMAN_REVIEW = "awaiting_human_review"
+PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
+PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
+PAUSE_AWAITING_HARNESS = "awaiting_harness"
+PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
+
+#: Who each pause waits on. "human" means a person owes the next action and the
+#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
+#: WAITING. Every reason states its own answer, so adding a pausing node is a
+#: question a reviewer sees rather than a default nobody chose.
+PAUSE_REASON_OWNERS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: "human",
+    PAUSE_AWAITING_HUMAN_APPROVAL: "human",
+    PAUSE_AWAITING_HUMAN_REVIEW: "human",
+    PAUSE_AWAITING_ROLE_DELEGATE: "human",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_HARNESS: "system",
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+}
+
+#: The reasons a *person* is owed an action, derived from the table above so
+#: the two can never disagree. Both readers -- the durable graph executor's
+#: `_is_human_pause` and the schedule consumer's yield disposition -- import
+#: this rather than spelling the set themselves.
+HUMAN_PAUSE_REASONS = frozenset(
+    reason for reason, owner in PAUSE_REASON_OWNERS.items() if owner == "human"
+)
+
+#: The two things that can make a pause resumable, named rather than inferred.
+#:
+#: ANSWER: the node dispatched something and is waiting to be told the outcome.
+#: Re-entering it without that answer takes the *dispatch* branch again, so an
+#: elapsed timer would repeat whatever the node already did -- for
+#: `agent.delegate_remote`, a second delegation.
+#:
+#: ELAPSED: the node polls. Re-entering it re-reads the world, which is the
+#: intended behaviour and is idempotent by construction.
+RESUME_ON_ANSWER = "answer"
+RESUME_ON_ELAPSED = "elapsed"
+
+#: What each pause is waiting *for*, which is a different question from
+#: `PAUSE_REASON_OWNERS`' "who owes the next action" and cannot be derived from
+#: it: `awaiting_remote_delegation` is owed by the system and is still
+#: answer-gated, because the system that owes it is another agent session.
+#:
+#: One table, beside the owners, for the same reason that one exists: a reader
+#: that decides "may I run this node again?" from the reason string is making a
+#: safety judgement, and a judgement spelled out per reason is one a reviewer
+#: sees. A reason absent here is unclassified, not resumable -- the pause stays
+#: parked and visible, which is the honest answer for a condition nobody stated.
+PAUSE_RESUME_CONDITIONS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_HUMAN_APPROVAL: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
+}
+
+#: The reasons a timer alone may re-enter, derived so the two cannot disagree.
+TIMER_RESUMABLE_PAUSE_REASONS = frozenset(
+    reason
+    for reason, condition in PAUSE_RESUME_CONDITIONS.items()
+    if condition == RESUME_ON_ELAPSED
+)
+
+#: Where a resumed execution finds what its own previous pause recorded.
+#:
+#: A node that pauses to poll needs its first-reach timestamp back, or its
+#: overall timeout can never expire and the poll runs forever -- which is the
+#: unbounded loop a resume tick would otherwise create. Carrying the pause
+#: metadata verbatim keeps the transport generic: the consumer copies a dict it
+#: does not read, and each node reads the keys it wrote.
+RESUMED_PAUSE_KEY = "resumed_pause"
+
+
+def resumed_pause(ctx: NodeContext) -> dict[str, Any]:
+    """What this node's previous pause recorded, or ``{}`` on a first reach.
+
+    Read through here rather than off `ctx.metadata` directly so that a node
+    asking "have I been here before?" and the consumer answering it name the
+    same key -- the failure mode being a key written by one and read by
+    neither, which is what `wait_first_seen:` was.
+    """
+    carried = (ctx.metadata or {}).get(RESUMED_PAUSE_KEY)
+    return dict(carried) if isinstance(carried, dict) else {}
 
 
 def pause_until(

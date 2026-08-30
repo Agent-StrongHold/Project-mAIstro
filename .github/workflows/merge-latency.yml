@@ -1,0 +1,53 @@
+name: Merge-queue latency
+
+# Manual only, on purpose.
+#
+# This regenerates the measurement behind docs/ci/MERGE-LATENCY.md — the
+# before/after efficiency metric #655 names (ready-to-merge -> merge-group
+# completion, and the queue's requeue rate) and #654 promises to move. It is
+# not a gate and it is not a per-PR job: it reads the Actions API over a
+# window of recent merge-group runs, so running it on every PR would measure
+# mostly itself.
+#
+# It is also what makes `scripts/measure-merge-latency.py` a *real* entry
+# point rather than a script nobody can reach: `scripts/check-reachability.py`
+# roots tooling at the workflow steps that execute it, matching on filename.
+# This job runs it.
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "API pages of merge-group runs to read (100 per page)"
+        required: false
+        default: "3"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  # The admission upgrade reads each queued PR's issue timeline
+  # (added_to_merge_queue); without these the token 403s and every
+  # residency silently degrades to the run-start fallback.
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: merge-latency
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: measure
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Measure queue latency and requeue rate on develop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/measure-merge-latency.py --pages "${{ inputs.pages }}"

@@ -112,6 +112,7 @@ _PG_SCRATCH_TABLES = (
     "learnings",
     "outcomes",
     "prompts",
+    "prompt_labels",
     "canonical_attempts",
     "canonical_node_runs",
     "canonical_runs",
@@ -126,6 +127,12 @@ _PG_SCRATCH_TABLES = (
     "event_log",
     "schedules",
     "graph_templates",
+    "graph_continuations",
+    # (#563) Absent from this list, rows survived between runs — and these
+    # suites derive deterministic ids from their test names, so a later run
+    # read a previous run's row. A regression that stopped `put` writing would
+    # have been masked by data the fixture never cleared.
+    "node_templates",
 )
 
 

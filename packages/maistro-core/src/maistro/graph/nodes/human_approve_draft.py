@@ -17,7 +17,13 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_AWAITING_HUMAN_APPROVAL,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+)
 
 
 class ApproveDraftIn(BaseModel):
@@ -66,7 +72,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
 
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(
-            "awaiting_human_approval",
+            PAUSE_AWAITING_HUMAN_APPROVAL,
             resume_at=resume_at,
             metadata={
                 "draft": inputs.draft,

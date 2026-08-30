@@ -18,12 +18,25 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "check-ac-state.py"
+
+
+#: The measurement lives in `check_ac_state_impl`; `check-ac-state.py` is a thin
+#: entry point over it that adds the merge guard. These tests are about the
+#: measurement, and several of them monkeypatch what it reads -- `SPEC_DIR`,
+#: `_passing_in_root`. Patching the entry point cannot work: it re-exports by
+#: copying names into its own globals, and a re-exported function still closes
+#: over the implementation's, so the patch rebinds something nothing reads.
+#:
+#: Making the entry point proxy those writes was tried and is worse: the same
+#: file is loaded under four module names across this suite, and a shared
+#: implementation turns one test's patch into every other load's problem. The
+#: seam being tested is the implementation, so this names it.
+IMPL = ROOT / "scripts" / "check_ac_state_impl.py"
 
 
 @pytest.fixture(scope="module")
 def check():
-    spec = importlib.util.spec_from_file_location("check_ac_state", SCRIPT)
+    spec = importlib.util.spec_from_file_location("check_ac_state_impl_under_test", IMPL)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -688,14 +701,36 @@ class TestDesignCoverage:
         assert after > before, "one proven criterion rounded away to no change"
         assert round(after - before, check.COVERAGE_PRECISION) == pytest.approx(0.022, abs=0.001)
 
-    def test_the_shipped_floor_is_the_measured_value(self, check):
+    def test_the_shipped_notes_agree_with_the_folded_floor(self, check):
         """The ADR banks 4.0% and says so in its own Consequences: a metric
-        chosen to flatter would not be worth ratcheting. This pins the shipped
-        floor to the report so the two cannot drift apart silently."""
-        recorded = json.loads((ROOT / "quality" / "ac-state-ceilings.json").read_text())
-        report = json.loads((ROOT / "quality" / "ac-state.json").read_text())
-        assert recorded["ceilings"]["design_coverage"] == report["totals"]["design_coverage"]
-        assert report["design_coverage"]["percent"] == report["totals"]["design_coverage"]
+        chosen to flatter would not be worth ratcheting.
+
+        This used to pin the shipped ceiling to the shipped report. #585 retired
+        both: the ceiling is folded from `quality/ac-state-notes/` and the report
+        is generated rather than committed, so there is no committed pair left
+        to drift apart. What survives here is the half that is still a property
+        of the shipped files — every note is well-formed, and the fold over them
+        is exactly the maximum any one of them claims, so no note can hold a
+        floor the ledger does not actually support.
+
+        The other half — that the floor equals what the tree *measures* — is now
+        the gate's own assertion: `--ratchet` fails both a fall below the bound
+        and an unbanked rise above it, so a hand-edited number cannot survive a
+        run. It is checked by running the gate, not by reading a file.
+        """
+        notes_dir = ROOT / "quality" / "ac-state-notes"
+        notes = [
+            check.ac_state_notes.Note.parse(path.name, path.read_text())
+            for path in sorted(notes_dir.glob("*.json"))
+        ]
+        assert notes, "the notes directory is the ledger; it may not be empty"
+
+        folded = check.ac_state_notes.fold(notes)
+
+        assert folded["design_coverage"] == max(
+            note.counters["design_coverage"] for note in notes if "design_coverage" in note.counters
+        )
+        assert not (ROOT / "quality" / "ac-state-ceilings.json").exists()
 
 
 class TestToolingReachesTheTopRung:
@@ -707,28 +742,38 @@ class TestToolingReachesTheTopRung:
     directions, because a ladder that says `reachable` for *any* tooling module
     would be worse than one that says it for none: it would grant the top rung
     to the nine mutation scripts that are dead behind a disabled workflow.
+
+    Tooling is spelled `@tool/<stem>` here, the identity the reachability walk
+    produces. The hand-made sets below would agree with themselves in either
+    spelling; `test_the_real_ledger_agrees_with_both` is the one that has to
+    match the committed file, and it read `scripts/mutation_ratchet.py` as
+    *reachable* the moment the baseline started storing identities (#651) —
+    the defect stated as the grade it produced.
     """
+
+    DEAD_TOOL = "@tool/mutation_ratchet"
+    LIVE_TOOL = "@tool/check-wiring-reads"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")
     def test_a_workflow_rooted_tooling_module_reaches_the_top_rung(self, check) -> None:
         criterion = check.Criterion(
             ac_id="ADR-X/AC-1",
-            module="scripts/check-wiring-reads.py",
+            module=self.LIVE_TOOL,
             covered_by=["tests/test_check_wiring_reads.py::test_x"],
             passing=True,
         )
-        assert criterion.rung({"scripts/mutation_ratchet.py"}) == "reachable"
+        assert criterion.rung({self.DEAD_TOOL}) == "reachable"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")
     def test_an_unreachable_tooling_module_stays_at_passing(self, check) -> None:
         """The counterweight: a dead script's tests prove they run, not that it does."""
         criterion = check.Criterion(
             ac_id="ADR-X/AC-1",
-            module="scripts/mutation_ratchet.py",
+            module=self.DEAD_TOOL,
             covered_by=["tests/test_mutation.py::test_x"],
             passing=True,
         )
-        assert criterion.rung({"scripts/mutation_ratchet.py"}) == "passing"
+        assert criterion.rung({self.DEAD_TOOL}) == "passing"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")
     def test_the_real_ledger_agrees_with_both(self, check) -> None:
@@ -740,15 +785,16 @@ class TestToolingReachesTheTopRung:
         unreachable = set(
             json.loads((root / "quality" / "reachability-baseline.json").read_text())["unreachable"]
         )
+        assert self.DEAD_TOOL in unreachable, "the dead-script stand-in must still be baselined"
         live = check.Criterion(
             ac_id="ADR-X/AC-1",
-            module="scripts/check-wiring-reads.py",
+            module=self.LIVE_TOOL,
             covered_by=["t::x"],
             passing=True,
         )
         dead = check.Criterion(
             ac_id="ADR-X/AC-2",
-            module="scripts/mutation_ratchet.py",
+            module=self.DEAD_TOOL,
             covered_by=["t::x"],
             passing=True,
         )

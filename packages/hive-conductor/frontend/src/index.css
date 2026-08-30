@@ -1166,3 +1166,28 @@ input, select, textarea {
         .chat-reasoning > summary { cursor: pointer; user-select: none; opacity: 0.85; }
         .chat-reasoning-body { margin-top: 4px; padding: 8px 10px; border-left: 2px solid var(--rule, #e4e4e4); white-space: pre-wrap; font-family: var(--mono, ui-monospace, monospace); opacity: 0.85; }
         @keyframes loading-spin { to { transform: rotate(360deg); } }
+
+/* ── Shared modal (#371) ───────────────────────────────────────
+   The shared Modal is a real <dialog> opened with showModal(), so the element
+   below *is* the panel and the browser paints ::backdrop behind it, keeps
+   focus inside, makes the rest of the page inert, and stacks nested dialogs
+   in the top layer. A <dialog> is display:none until open and gets its
+   centring from `margin: auto` in the top layer, so only the panel's own
+   appearance is set here — the parts the old two-<div> version was drawing by
+   hand with fixed positioning and a z-index. */
+.modal-dialog {
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  /* A top-layer <dialog>'s percentage width resolves against the viewport, so
+     a bare 100% would leave a phone-width dialog with no margin at all. The
+     per-dialog `max-width` (420, or 640 when `wide`) still decides the size on
+     anything larger. */
+  width: calc(100% - 32px);
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+.modal-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }

@@ -10,16 +10,19 @@ which Workspace a Run belongs to.
 from __future__ import annotations
 
 import logging
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.agents.intents import IntentRegistry
 from maistro.archive.protocols import ArchiveStore
-from maistro.graph.templates import GraphTemplateStore
+from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.store import RunStore
 from maistro.scheduling.store import ScheduleStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.graph.durable_runs.continuation import GraphContinuationStore
 
 __all__ = ["wire_chat_admission", "wire_execution_spine"]
 
@@ -73,6 +76,35 @@ async def _spine_is_migrated(pg_pool: Any) -> bool:
     return False
 
 
+async def _pg_node_template_store(pg_pool: Any) -> NodeTemplateStore:
+    """The PostgreSQL NodeTemplate registry, or an in-memory one with a warning.
+
+    Probed separately from `SPINE_PG_TABLES`, for the reason `_pg_schedule_store`
+    records: a Run does not need a NodeTemplate to exist, so a database migrated
+    to `019` but not `020` has a perfectly good durable spine. Folding
+    `node_templates` into that tuple would drop such a deployment's Runs to
+    in-memory over a table it never asked for.
+
+    Warned rather than silent: a durable pool that ends up with ephemeral
+    NodeTemplates is the shape of #122, and every Node instantiated from one
+    would record provenance naming a template that vanishes on restart.
+    """
+    if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.node_templates"):
+        from maistro.graph.pg_templates import PgNodeTemplateStore
+
+        return PgNodeTemplateStore(pg_pool)
+
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+
+    logger.warning(
+        "PostgreSQL pool has no `node_templates` table, so NodeTemplates are in-process "
+        "and lost on restart, and every Node instantiated from one records provenance "
+        "nothing can resolve afterwards. Run `alembic upgrade head` against this "
+        "database to make them durable (#556)."
+    )
+    return InMemoryNodeTemplateStore()
+
+
 async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
     """The PostgreSQL schedule store, or an in-memory one with a warning.
 
@@ -101,6 +133,30 @@ async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
     return InMemoryScheduleStore()
 
 
+async def _pg_continuation_store(pg_pool: Any) -> GraphContinuationStore:
+    """The durable continuation store, or an in-memory one with a warning.
+
+    Same shape as `_pg_schedule_store` and for the same reason: `021` may not
+    have run on a caller-supplied pool, and `UndefinedTableError` on the first
+    graph checkpoint is a worse answer than starting without the table and
+    saying so. A durable pool that ends up with ephemeral graph continuations
+    means a restart loses every paused HITL frontier -- which is exactly the
+    defect this convergence removes, so it is warned about rather than silent.
+    """
+    if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.graph_continuations"):
+        from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
+
+        return PgGraphContinuationStore(pg_pool)
+
+    from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
+
+    logger.warning(
+        "graph_continuations table is absent; durable graph runs will not survive a "
+        "restart. Run alembic migration 021 to make them durable."
+    )
+    return InMemoryGraphContinuationStore()
+
+
 async def wire_execution_spine(
     conn: Any,
     *,
@@ -108,8 +164,14 @@ async def wire_execution_spine(
     intents: IntentRegistry | None = None,
     pg_pool: Any = None,
     archive_store: ArchiveStore | None = None,
+    prime: bool = True,
 ) -> tuple[
-    ProjectScopeStore, RunStore, WorkspaceRoutingAdmitter, GraphTemplateStore, ScheduleStore
+    ProjectScopeStore,
+    RunStore,
+    WorkspaceRoutingAdmitter,
+    GraphTemplateStore,
+    ScheduleStore,
+    GraphContinuationStore,
 ]:
     """Wire the canonical Run spine and the seam tasks are admitted through (#41).
 
@@ -127,7 +189,11 @@ async def wire_execution_spine(
     The Graph template store is wired here rather than separately because a
     Run's Graph and the template it was instantiated from must live in the same
     database — a registry pointing at one and a spine at another is how a Run
-    ends up citing a template version nothing can resolve.
+    ends up citing a template version nothing can resolve. The graph
+    continuation store is here for the same reason and a sharper one: a
+    continuation is half of a durable graph run and the canonical Run is the
+    other half (#44), so a restart that finds them in different databases finds
+    traversal state whose Run cannot be resolved at all.
 
     `archive_store` reaches the two stores that can use it (#273). It is the
     Container's own `archive_store`, so a deployment gets one archive tier
@@ -141,6 +207,7 @@ async def wire_execution_spine(
     run_store: RunStore
     template_store: GraphTemplateStore
     schedule_store: ScheduleStore
+    continuation_store: GraphContinuationStore
     if pg_pool is not None and await _spine_is_migrated(pg_pool):
         # No ensure_schema: these tables come from `alembic/versions/012` and
         # `014`. A store that quietly created its own tables would be a second
@@ -156,7 +223,9 @@ async def wire_execution_spine(
         )
         template_store = PgGraphTemplateStore(pg_pool)
         schedule_store = await _pg_schedule_store(pg_pool)
+        continuation_store = await _pg_continuation_store(pg_pool)
     elif conn is not None:
+        from maistro.graph.durable_runs.continuation import SqliteGraphContinuationStore
         from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
         from maistro.runs.sqlite_store import SqliteRunStore
@@ -170,11 +239,15 @@ async def wire_execution_spine(
         await sqlite_template_store.ensure_schema()
         sqlite_schedule_store = SqliteScheduleStore(conn)
         await sqlite_schedule_store.ensure_schema()
+        sqlite_continuation_store = SqliteGraphContinuationStore(conn)
+        await sqlite_continuation_store.ensure_schema()
+        continuation_store = sqlite_continuation_store
         project_scope_store = sqlite_scope_store
         run_store = sqlite_run_store
         template_store = sqlite_template_store
         schedule_store = sqlite_schedule_store
     else:
+        from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
         from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
         from maistro.runs.store import InMemoryRunStore
@@ -184,6 +257,7 @@ async def wire_execution_spine(
         run_store = InMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()
+        continuation_store = InMemoryGraphContinuationStore()
 
     # The Project store refuses to delete a Project that owns Runs, and only
     # the Run store can answer that. PostgreSQL has a foreign key for it; this
@@ -207,8 +281,60 @@ async def wire_execution_spine(
     # the docstring above true for the case every deployment has. Workspaces a
     # submission names later (#158) are built on first use, because they do not
     # exist yet at startup.
-    await admitter.admitter_for(workspace_id)
-    return project_scope_store, run_store, admitter, template_store, schedule_store
+    #
+    # `prime=False` is for a caller that only reads. Priming *writes* -- it
+    # creates the Root Project, and on SQLite the schemas besides -- so a
+    # read-only tool wired through here mutated the database it was only meant
+    # to inspect (Codex, #690). The default is unchanged, because every
+    # deployment that submits work needs the Root before it does.
+    if prime:
+        await admitter.admitter_for(workspace_id)
+    return (
+        project_scope_store,
+        run_store,
+        admitter,
+        template_store,
+        schedule_store,
+        continuation_store,
+    )
+
+
+async def wire_node_template_store(
+    conn: Any,
+    *,
+    pg_pool: Any = None,
+) -> NodeTemplateStore:
+    """The reusable-NodeTemplate registry, on the backend the spine chose (#556).
+
+    A separate function rather than a sixth element of `wire_execution_spine`'s
+    tuple, for the reason `wire_chat_admission` is separate: the spine is what a
+    process needs to execute anything, and this is one thing built on top of it.
+    A process that executes Runs and never instantiates a NodeTemplate should
+    not have to unpack an element it ignores.
+
+    That reasoning arrived as a review finding rather than a design choice, and
+    the finding was right on a stronger ground than symmetry: `maistro-core` is
+    shared substrate, `wire_execution_spine` is exported, and every downstream
+    caller unpacking five values would meet `ValueError: too many values to
+    unpack` on upgrade. That every in-repo caller needed editing was the
+    evidence — it was a required migration for consumers this repository cannot
+    see.
+
+    The backend order is the spine's own, so a Workspace's Runs and the
+    NodeTemplates they instantiate land in one database.
+    """
+    if pg_pool is not None and await _spine_is_migrated(pg_pool):
+        return await _pg_node_template_store(pg_pool)
+    if conn is not None:
+        from maistro.graph.sqlite_templates import SqliteNodeTemplateStore
+
+        store = SqliteNodeTemplateStore(conn)
+        await store.ensure_schema()
+        return store
+
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+
+    return InMemoryNodeTemplateStore()
 
 
 def wire_chat_admission(

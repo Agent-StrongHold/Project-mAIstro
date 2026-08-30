@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Modal } from "./shared";
 
 const STEPS = [
   { title: "Welcome to Hive", body: "Your AI-powered project management assistant. Let's get you set up in under 60 seconds.", icon: "🐝" },
@@ -11,11 +12,18 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState(0);
   const current = STEPS[step];
 
+  const dismiss = () => { localStorage.setItem("hive_onboarded", "1"); onComplete(); };
+
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} role="dialog" aria-modal="true" aria-label="Onboarding">
-      <div style={{ background: "var(--paper)", borderRadius: 16, padding: 32, maxWidth: 400, width: "90%", textAlign: "center", boxShadow: "0 8px 32px rgba(0,0,0,0.2)" }}>
+    // The shared Modal, not a hand-rolled overlay (#371). This was a
+    // fixed-position <div> carrying `role="dialog"` on the *backdrop* rather
+    // than on the panel, with no focus management and no Escape — the first
+    // thing a new user meets, and it left every control on the page behind it
+    // in the tab order. Escape and the ✕ both take the "Skip onboarding" path
+    // this dialog already offered, so nothing is lost by leaving.
+    <Modal open onClose={dismiss} title={current.title}>
+      <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>{current.icon}</div>
-        <h2 style={{ fontFamily: "var(--hand)", fontSize: 22, margin: "0 0 8px", color: "var(--ink)" }}>{current.title}</h2>
         <p style={{ fontFamily: "var(--hand)", fontSize: 14, color: "var(--pencil)", margin: "0 0 24px", lineHeight: 1.5 }}>{current.body}</p>
 
         {/* Progress dots */}
@@ -36,16 +44,16 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
               Next
             </button>
           ) : (
-            <button onClick={() => { localStorage.setItem("hive_onboarded", "1"); onComplete(); }} className="btn-primary" style={{ padding: "8px 24px", borderRadius: 8, fontFamily: "var(--hand)", cursor: "pointer" }}>
+            <button onClick={dismiss} className="btn-primary" style={{ padding: "8px 24px", borderRadius: 8, fontFamily: "var(--hand)", cursor: "pointer" }}>
               Get Started
             </button>
           )}
         </div>
 
-        <button onClick={() => { localStorage.setItem("hive_onboarded", "1"); onComplete(); }} style={{ marginTop: 16, background: "none", border: "none", color: "var(--pencil)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10, textDecoration: "underline" }}>
+        <button onClick={dismiss} style={{ marginTop: 16, background: "none", border: "none", color: "var(--pencil)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10, textDecoration: "underline" }}>
           Skip onboarding
         </button>
       </div>
-    </div>
+    </Modal>
   );
 }

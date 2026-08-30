@@ -164,6 +164,10 @@ class MaistroCoreBridge:
             warden=self._container.warden,
             sentinel=self._container.sentinel,
             learning_store=self._container.learning_store,
+            # ADR-091's Layer 0-4 assembly. The container has always built this
+            # and nothing read it back, so the episodic memories the Conductor
+            # stores never reached a prompt (#622).
+            context_assembly_policy=self._container.context_assembly_policy,
             learning_extractor=self._container.learning_extractor,
             outcome_store=self._container.outcome_store,
             session_store=self._container.session_store,

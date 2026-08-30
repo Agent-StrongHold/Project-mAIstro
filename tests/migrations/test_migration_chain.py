@@ -62,18 +62,33 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
+        # The Workspace those Projects and Runs belong to (#516). Their
+        # `workspace_id` columns were bare Text with nothing to reference
+        # until migration 019 gave the Workspace a table of its own.
+        "canonical_workspaces",
+        "canonical_workspace_memberships",
         "child_profiles",
         "design_outputs",
         "design_projects",
         "episodic_memories",
         "event_log",
+        "graph_continuations",
         "graph_templates",
         "handler_invocations",
         "knowledge_nodes",
         "learnings",
         "memory_entries",
+        # The NodeTemplate half of the reusable-definition model (020). Its
+        # GraphTemplate sibling has been durable since 014; without this one a
+        # Node's `source_template` named a version nothing could resolve after a
+        # restart (#556).
+        "node_templates",
         "orgs",
         "outcomes",
+        # A version and the label pointing at it were one row until 022; a
+        # version may carry several labels, which that shape had no room for
+        # (#328).
+        "prompt_labels",
         "prompts",
         "quota_usage",
         # Schedule definitions and their fire cursors (016). Durable so that a
@@ -83,6 +98,10 @@ EXPECTED_TABLES = frozenset(
         "security_rate_limits",
         "security_strikes",
         "security_violations",
+        # A turn's at-most-once marker, a row of its own since 023: one turn
+        # writes several messages, so the key that admits a turn once cannot
+        # live on the message table (#327).
+        "session_turns",
         "sessions",
         "tasks",
         "teams",

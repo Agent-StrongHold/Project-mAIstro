@@ -67,9 +67,10 @@ class FakePool:
 
 @pytest.fixture(autouse=True)
 def _reset_pool() -> None:
-    persistence_module._pool = None
+    """Empty the per-DSN registry around every test (#335)."""
+    persistence_module._pools.clear()
     yield
-    persistence_module._pool = None
+    persistence_module._pools.clear()
 
 
 class TestGetPool:
@@ -108,12 +109,12 @@ class TestClosePool:
             await get_pool("postgres://user:pass@host/db")
         await close_pool()
         assert fake_pool.closed is True
-        assert persistence_module._pool is None
+        assert persistence_module._pools == {}
 
     @pytest.mark.asyncio
     async def test_noop_when_no_pool(self) -> None:
         await close_pool()
-        assert persistence_module._pool is None
+        assert persistence_module._pools == {}
 
 
 class TestRunMigrations:

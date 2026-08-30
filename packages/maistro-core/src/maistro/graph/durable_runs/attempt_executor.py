@@ -20,12 +20,14 @@ from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
+from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
 from .protocol import DurableRunStore
+from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
 NodeResolver = traversal.NodeResolver
@@ -44,6 +46,7 @@ async def run_durable_graph(
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
@@ -59,15 +62,29 @@ async def run_durable_graph(
     dispatching a sub-graph threads facts the child cannot derive — the
     recursion depth its own `synth_depth` cap enforces (#520) — without the
     parent's whole blackboard leaking across the Run boundary.
+
+    ``run_store`` converges the Run's identity onto the canonical spine (#44,
+    ADR-082826-d9f5). With it, this consumes an already-admitted Run rather
+    than creating one -- admission owns Run identity, and a `run_id` is an
+    authority binding checked against the supplied Graph and scope before any
+    physical work. Without it, the pre-convergence in-memory mint is unchanged,
+    so a caller with no spine wired still runs.
     """
-    run = traversal._new_run(
-        graph,
-        run_id=run_id,
-        actor_principal_id=actor_principal_id,
-        parent_run_id=parent_run_id,
-        parent_node_run_id=parent_node_run_id,
-        provenance=provenance,
-    )
+    if run_store is not None:
+        run = await traversal._adopt_admitted_run(
+            graph,
+            run_store=run_store,
+            run_id=traversal._require_admitted(run_id),
+        )
+    else:
+        run = traversal._new_run(
+            graph,
+            run_id=run_id,
+            actor_principal_id=actor_principal_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance=provenance,
+        )
     state = GraphExecutionState(
         run_id=run.run_id,
         active_node_ids=(traversal._entry_node(graph),),
@@ -85,6 +102,7 @@ async def run_durable_graph(
         store=store,
         node_resolver=node_resolver,
         runtime=runtime or PythonExecutionRuntime(),
+        run_store=run_store,
     )
 
 
@@ -94,6 +112,7 @@ async def resume_durable_graph(
     store: DurableRunStore,
     node_resolver: NodeResolver,
     runtime: ExecutionRuntime | None = None,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Resume after reconciling persisted physical evidence before redispatch."""
     record = await store.get(run_id)
@@ -108,7 +127,8 @@ async def resume_durable_graph(
     }:
         raise ValueError(f"cannot resume run in status {record.run.status!r}")
 
-    record = await _reconcile_orphaned_attempts(record, store=store)
+    spine = await traversal._canonical_spine(record, run_store)
+    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine)
 
     run = record.run
     if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
@@ -124,6 +144,7 @@ async def resume_durable_graph(
         store=store,
         node_resolver=node_resolver,
         runtime=runtime or PythonExecutionRuntime(),
+        run_store=spine,
     )
 
 
@@ -131,6 +152,7 @@ async def _reconcile_orphaned_attempts(
     record: DurableRunRecord,
     *,
     store: DurableRunStore,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Terminalize process-lost active Attempts and reconcile their NodeRuns.
 
@@ -145,7 +167,7 @@ async def _reconcile_orphaned_attempts(
     the caller's assertion that the owning process is gone — it is genuinely
     orphaned and is recovered as before.
     """
-    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
     lifecycle = AttemptLifecycleReconciler(execution_store)
     active = tuple(
         attempt
@@ -211,10 +233,12 @@ async def _walk(
     node_resolver: NodeResolver,
     runtime: ExecutionRuntime,
     max_steps: int = 256,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Execute persisted frontiers through Attempts, then fold Graph semantics."""
     graph = record.run.graph.materialize()
-    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    spine = await traversal._canonical_spine(record, run_store)
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=spine)
     execution_service = AttemptExecutionService(store=execution_store, runtime=runtime)
     steps = 0
 
@@ -227,15 +251,19 @@ async def _walk(
             node_resolver=node_resolver,
             execution_service=execution_service,
             execution_store=execution_store,
+            run_store=spine,
         )
+        await mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
 
-    return await traversal._finish_walk(
+    record = await traversal._finish_walk(
         record,
         store=store,
         max_steps=max_steps,
     )
+    await mirror_lifecycle(record, run_store=spine)
+    return record
 
 
 async def _walk_frontier(
@@ -246,6 +274,7 @@ async def _walk_frontier(
     node_resolver: NodeResolver,
     execution_service: AttemptExecutionService,
     execution_store: DurableRunExecutionStore,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     frontier = record.graph_state.active_node_ids
     unknown = next(
@@ -264,6 +293,7 @@ async def _walk_frontier(
         record,
         frontier,
         store=store,
+        run_store=run_store,
     )
     try:
         items = await _execute_frontier(
@@ -276,7 +306,9 @@ async def _walk_frontier(
             execution_store=execution_store,
         )
     except asyncio.CancelledError:
-        await asyncio.shield(_persist_cancelled_run(record.run_id, store=store))
+        await asyncio.shield(
+            _persist_cancelled_run(record.run_id, store=store, run_store=run_store)
+        )
         raise
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
@@ -314,6 +346,7 @@ async def _persist_cancelled_run(
     run_id: str,
     *,
     store: DurableRunStore,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     latest = await store.get(run_id)
     if latest is None:
@@ -330,13 +363,15 @@ async def _persist_cancelled_run(
         latest.graph_state,
         active_node_ids=(),
     )
-    return await traversal._checkpoint(
+    cancelled = await traversal._checkpoint(
         latest,
         store=store,
         run=run,
         graph_state=state,
         resume_at=None,
     )
+    await mirror_lifecycle(cancelled, run_store=run_store)
+    return cancelled
 
 
 async def _execute_frontier(

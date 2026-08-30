@@ -218,7 +218,7 @@ ${slides.map(s => `<div class="slide">${s.html}</div>`).join("\n")}</div></body>
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter Variable', 'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
