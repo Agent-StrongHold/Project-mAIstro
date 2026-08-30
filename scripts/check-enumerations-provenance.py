@@ -89,9 +89,7 @@ def main() -> int:
             old_value=f"{len(trusted)} tolerated gaps",
             new_value=f"{len(current)} current gaps",
             candidate_sha=prov.head_sha(ROOT),
-            authorizations=tuple(
-                f"{key}: {authorized[key]}" for key in added if key in authorized
-            ),
+            authorizations=tuple(f"{key}: {authorized[key]}" for key in added if key in authorized),
         ).render()
     )
 
@@ -105,7 +103,9 @@ def main() -> int:
         for key in unbanked_authorized
     )
     failures.extend(f"{key}: current gap missing from candidate ledger" for key in candidate_new)
-    failures.extend(f"{key}: stale candidate ledger entry must be pruned" for key in candidate_stale)
+    failures.extend(
+        f"{key}: stale candidate ledger entry must be pruned" for key in candidate_stale
+    )
 
     if failures:
         print("FAIL: enumeration ratchet moved away from trusted state", file=sys.stderr)
