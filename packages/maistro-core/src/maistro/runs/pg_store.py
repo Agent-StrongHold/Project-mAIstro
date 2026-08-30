@@ -75,6 +75,9 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    outcome_embeds_attempt,
+    repaired_accepted_outcome,
+    require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
@@ -785,6 +788,39 @@ class PgRunStore:
                 attempt, target, at=at, result=result, error=error, metrics=metrics
             )
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
+        return updated
+
+    async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:
+        """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
+
+        The twin of `InMemoryRunStore.repair_attempt_result`; see the protocol
+        for why both copies move in one operation (ADR-083026-14c3). Both rows
+        are locked and written inside one transaction, so a concurrent reader
+        never sees the Attempt repaired and its accepted outcome not.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            require_repairable_attempt(attempt)
+            updated = attempt.model_copy(update={"result": result})
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
+
+            node_run = NodeRun.model_validate(
+                await self._locked(conn, "canonical_node_runs", "node_run_id", attempt.node_run_id)
+            )
+            if outcome_embeds_attempt(node_run, attempt_id):
+                assert node_run.accepted_outcome is not None  # narrowed above
+                repaired = node_run.model_copy(
+                    update={
+                        "accepted_outcome": repaired_accepted_outcome(
+                            node_run.accepted_outcome, updated
+                        )
+                    }
+                )
+                await self._write(
+                    conn, "canonical_node_runs", "node_run_id", node_run.node_run_id, repaired
+                )
         return updated
 
     # ── internals ─────────────────────────────────────────────────
