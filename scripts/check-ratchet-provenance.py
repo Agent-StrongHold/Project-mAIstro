@@ -45,18 +45,22 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ),
 }
 
+# Adapter values are tooling identities (filename stems), not paths. Keeping the
+# identity in the same form as check-reachability.py's tooling graph means the
+# dynamic load below is visible as a real edge instead of making live CI tooling
+# look unreachable merely because Python loads it from a filename.
 TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
     ("check_enumerations.py", "quality/enumeration-baseline.json"): (
-        "check-enumerations-provenance.py"
+        "check-enumerations-provenance"
     ),
     ("check-reachability.py", "quality/reachability-baseline.json"): (
-        "check-reachability-provenance.py"
+        "check-reachability-provenance"
     ),
     ("check-reachability-dispositions.py", "quality/reachability-baseline.json"): (
-        "check-reachability-dispositions-provenance.py"
+        "check-reachability-dispositions-provenance"
     ),
     ("check-reachability-dispositions.py", "quality/reachability-dispositions.json"): (
-        "check-reachability-dispositions-provenance.py"
+        "check-reachability-dispositions-provenance"
     ),
 }
 
@@ -148,12 +152,18 @@ def _uses_trusted_resolver(path: Path) -> bool:
     )
 
 
+def _adapter_filename(adapter_name: str) -> str:
+    """Return the on-disk filename for a tooling identity or legacy filename."""
+    return adapter_name if adapter_name.endswith(".py") else f"{adapter_name}.py"
+
+
 def _adapter_problem(root: Path, adapter_name: str) -> str | None:
-    adapter = root / "scripts" / adapter_name
+    filename = _adapter_filename(adapter_name)
+    adapter = root / "scripts" / filename
     if not adapter.is_file():
-        return f"delegated trusted-base adapter {adapter_name} does not exist"
+        return f"delegated trusted-base adapter {filename} does not exist"
     if not _uses_trusted_resolver(adapter):
-        return f"delegated adapter {adapter_name} does not use ratchet_provenance"
+        return f"delegated adapter {filename} does not use ratchet_provenance"
     return None
 
 
@@ -211,28 +221,36 @@ def run_delegated(root: Path = ROOT) -> list[str]:
         if key not in live_keys or adapter_name in seen_adapters:
             continue
         seen_adapters.add(adapter_name)
-        adapter = root / "scripts" / adapter_name
+        filename = _adapter_filename(adapter_name)
+        adapter = root / "scripts" / filename
         try:
             module = _load_module(adapter, f"_ratchet_adapter_{index}")
             result = int(module.main())
         except Exception as exc:
-            failures.append(f"{adapter_name}: could not execute: {type(exc).__name__}: {exc}")
+            failures.append(f"{filename}: could not execute: {type(exc).__name__}: {exc}")
             continue
         if result != 0:
-            failures.append(f"{adapter_name}: trusted-base gate returned {result}")
+            failures.append(f"{filename}: trusted-base gate returned {result}")
     return failures
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    unknown = [arg for arg in args if arg != "--inventory-only"]
+    if unknown:
+        print(f"FAIL: unknown argument(s): {' '.join(unknown)}", file=sys.stderr)
+        return 2
+
     errors = violations(ROOT)
-    if not errors:
+    if not errors and "--inventory-only" not in args:
         errors.extend(run_delegated(ROOT))
     if errors:
         print("FAIL: ratchet provenance inventory is incomplete", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print(f"OK: {len(consumers(ROOT))} quality JSON consumer(s) have explicit provenance")
+    mode = "inventory" if "--inventory-only" in args else "inventory + delegated gates"
+    print(f"OK: {len(consumers(ROOT))} quality JSON consumer(s) have explicit provenance ({mode})")
     return 0
 
 
