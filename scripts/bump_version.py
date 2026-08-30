@@ -5,10 +5,10 @@ The monorepo versions in lockstep: one `VERSION` file at the repo root is the
 source of truth, and every other version site — each package's
 `pyproject.toml`, each package's `__version__` fallback (when
 `importlib.metadata` can't find installed dist-info, e.g. an editable/unbuilt
-checkout), the inter-package dependency lower bounds, and a handful of
-app-level `FastAPI(version=...)` literals in the non-packaged apps
-(hive-conductor, the turing backend, the canvas frontend's lulu service) —
-must agree with it.
+checkout), the inter-package dependency lower bounds (capped or not), and a
+handful of app-level `FastAPI(version=...)` literals in the apps that report a
+version without being installed as a dist (hive-conductor, the turing backend,
+the canvas frontend's lulu service) — must agree with it.
 
 Usage:
     scripts/bump_version.py 1.0.0     # rewrite every site to 1.0.0 + VERSION
@@ -49,6 +49,11 @@ _PYPROJECT_VERSION_RE = re.compile(r'(?m)^version = "([^"]+)"$')
 _VERSION_FALLBACK_RE = re.compile(r'(?:__version__|APP_VERSION) = "([^"]+)-dev"')
 _DICT_VERSION_RE = re.compile(r'"version": "([^"]+)"')
 _KWARG_VERSION_RE = re.compile(r'version="([^"]+)"')
+# An optional `,<N` cap after an inter-package lower bound. Most declarations
+# in the tree are uncapped; hive-conductor's two are not, which is why the
+# pattern has to admit the clause -- see `_interpkg_pattern` for why it admits
+# only this one shape.
+_UPPER_BOUND = r"(?:\s*,\s*<=?\s*[\d.]+)?"
 
 
 @dataclass(frozen=True)
@@ -69,11 +74,31 @@ class Site:
             )
         return matches[0]
 
+    @staticmethod
+    def _replace_capture(new_version: str):
+        """Rewrite the capture group's span, and nothing else in the match.
+
+        This used to be `m.group(0).replace(m.group(1), new_version)`, which
+        replaces *every* occurrence of the old version inside the match. That
+        was safe only while no pattern could match more than the version
+        itself. An inter-package row now spans an optional upper bound too, so
+        a cap that happens to contain the version text moved with it:
+        `">=0.9.0,<10.9.0"` bumped to 1.0.0 became `">=1.0.0,<11.0.0"`,
+        silently widening a compatibility cap this script promises to leave
+        alone. Splicing by `span(1)` makes the capture the only thing that can
+        move (#660).
+        """
+
+        def _splice(match: re.Match[str]) -> str:
+            start, end = match.span(1)
+            whole, offset = match.group(0), match.start()
+            return whole[: start - offset] + new_version + whole[end - offset :]
+
+        return _splice
+
     def rewrite(self, new_version: str) -> None:
         text = self.path.read_text(encoding="utf-8")
-        new_text, count = self.pattern.subn(
-            lambda m: m.group(0).replace(m.group(1), new_version), text
-        )
+        new_text, count = self.pattern.subn(self._replace_capture(new_version), text)
         if count != 1:
             raise SystemExit(
                 f"{self.label}: expected exactly 1 match in {self.path}, found {count}"
@@ -89,18 +114,36 @@ def _version_fallback(rel_path: str) -> Site:
     return Site(ROOT / rel_path, _VERSION_FALLBACK_RE, f"version fallback:{rel_path}")
 
 
+def _interpkg_pattern(pkg_expr: str) -> re.Pattern[str]:
+    """The lower bound of one inter-package requirement, capped or not.
+
+    The trailing group is a *constrained* alternative rather than `.*`: exactly
+    one upper-bound clause, and nothing else. That distinction is the whole
+    safety of this change. `Site.extract` treats "found 0" as a failure, which
+    is the only reason a declaration that drifts out of shape is noticed at
+    all; a pattern that accepted anything after the version would keep matching
+    such a site and pass, turning a loud failure into a silent one across all
+    of them at once.
+    """
+    return re.compile(rf'"{re.escape(pkg_expr)}>=([\d.]+){_UPPER_BOUND}"')
+
+
 def _interpkg_dep(rel_path: str, pkg_expr: str) -> Site:
-    pattern = re.compile(rf'"{re.escape(pkg_expr)}>=([\d.]+)"')
-    return Site(ROOT / rel_path, pattern, f"inter-package dep:{rel_path}:{pkg_expr}")
+    return Site(
+        ROOT / rel_path, _interpkg_pattern(pkg_expr), f"inter-package dep:{rel_path}:{pkg_expr}"
+    )
 
 
 def _app_literal(rel_path: str, pattern: re.Pattern[str]) -> Site:
     return Site(ROOT / rel_path, pattern, f"app version literal:{rel_path}")
 
 
-# Every [project] `version = "..."` line — root workspace meta-package + all
-# 9 library packages. hive-conductor has no pyproject.toml (see its CLAUDE.md
-# — an application, not a library) and is intentionally absent here.
+# Every [project] `version = "..."` line — root workspace meta-package, all 9
+# library packages, and hive-conductor. The app is not in the publish set, but
+# it has carried a pyproject.toml since it was enrolled in the workspace lock
+# and the wheel-imports loop, and the wheel it builds declares a version like
+# any other. A comment here used to say the file did not exist; that is how the
+# whole file went unregistered (#660).
 _PYPROJECT_SITES = [
     _pyproject("pyproject.toml"),
     _pyproject("packages/maistro-core/pyproject.toml"),
@@ -112,6 +155,7 @@ _PYPROJECT_SITES = [
     _pyproject("packages/maistro-rsi/pyproject.toml"),
     _pyproject("packages/maistro-design/pyproject.toml"),
     _pyproject("packages/maistro-bootstrap/pyproject.toml"),
+    _pyproject("packages/hive-conductor/pyproject.toml"),
 ]
 
 # Every package's `__version__`/`APP_VERSION` PackageNotFoundError fallback
@@ -150,10 +194,20 @@ _INTERPKG_SITES = [
     _interpkg_dep("packages/maistro-rsi/pyproject.toml", "maistro-bootstrap"),
     _interpkg_dep("packages/maistro-design/pyproject.toml", "maistro-core"),
     _interpkg_dep("packages/maistro-design/pyproject.toml", "maistro-canvas"),
+    # Two rows, not one: hive-conductor names `maistro-core` twice under two
+    # different extras, in two different tables (#514), and each expression
+    # carries its own bound. A single row would check one and leave the other
+    # to drift -- and the drift would be invisible, since a row that matches
+    # once is a pass.
+    _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[bcrypt]"),
+    _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[observability]"),
 ]
 
-# App-level FastAPI(version=...) / dict "version" literals in the
-# non-packaged apps (no pyproject.toml / installed dist-info to source from).
+# App-level FastAPI(version=...) / dict "version" literals in the apps that
+# report a version at runtime without being installed as a dist. hive-conductor
+# has a pyproject.toml, but its image runs the sources off `PYTHONPATH` rather
+# than installing the wheel, so there is no dist-info for importlib.metadata to
+# read and the literal is the only value `/health` can return.
 _APP_LITERAL_SITES = [
     _app_literal("packages/hive-conductor/backend/routes/health.py", _DICT_VERSION_RE),
     _app_literal("packages/hive-conductor/backend/main.py", _KWARG_VERSION_RE),
