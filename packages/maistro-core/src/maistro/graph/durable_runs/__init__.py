@@ -27,6 +27,12 @@ from .continuation import (
     SqliteGraphContinuationStore,
 )
 from .execution_store import DurableRunExecutionStore
+from .hitl import (
+    HitlDeadlineElapsed,
+    HitlDeadlinePending,
+    HitlSettlementError,
+    expire_hitl_pauses,
+)
 from .legacy_archive import (
     ArchivedGraphRun,
     LegacyGraphRunArchive,
@@ -44,6 +50,9 @@ __all__ = [
     "DurableRunStore",
     "GraphContinuation",
     "GraphContinuationStore",
+    "HitlDeadlineElapsed",
+    "HitlDeadlinePending",
+    "HitlSettlementError",
     "InMemoryDurableRunStore",
     "InMemoryGraphContinuationStore",
     "LegacyGraphRunArchive",
@@ -52,6 +61,7 @@ __all__ = [
     "RunStatus",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
+    "expire_hitl_pauses",
     "resume_durable_graph",
     "run_durable_graph",
 ]

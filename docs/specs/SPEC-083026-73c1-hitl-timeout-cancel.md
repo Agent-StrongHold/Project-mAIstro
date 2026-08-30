@@ -40,7 +40,7 @@ ac-modules:
   AC-3: maistro.graph.durable_runs.stores
   AC-4: maistro.graph.durable_runs.stores
   AC-5: maistro.graph.durable_runs.stores
-  AC-6: maistro.graph.durable_runs.hitl
+  AC-6: '@flat/hive-conductor/routes.hitl'
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
