@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.correlation import observed_provenance
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -28,9 +29,17 @@ CREATE TABLE IF NOT EXISTS outcomes (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     charged_microchips INTEGER NOT NULL DEFAULT 0,
     pricing_version TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    run_id TEXT,
+    node_run_id TEXT,
+    attempt_id TEXT
 )
 """
+
+#: Nullable for the same reason migration 025 makes them nullable in
+#: PostgreSQL: an outcome recorded with no execution in scope names none, and
+#: `''` would name a Run whose id is empty (#709).
+_PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
 
@@ -42,19 +51,38 @@ class SqliteOutcomeStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        """Create the outcomes table if it doesn't exist."""
+        """Create the outcomes table, and upgrade one created before its columns.
+
+        The in-place branch is what makes this safe on a file that already holds
+        outcomes: SQLite has no `ADD COLUMN IF NOT EXISTS`, and recreating the
+        table would be the only alternative (#709).
+        """
         await self._conn.execute(_SCHEMA)
+        cursor = await self._conn.execute("PRAGMA table_info(outcomes)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        for column in _PROVENANCE_COLUMNS:
+            if column not in columns:
+                await self._conn.execute(f"ALTER TABLE outcomes ADD COLUMN {column} TEXT")
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_run_id ON outcomes (run_id)"
+        )
         await self._conn.commit()
 
     async def record(self, outcome: Outcome) -> int:
-        """Record an outcome. Returns outcome ID."""
+        """Record an outcome, naming the execution that produced it (#709)."""
+        provenance = observed_provenance(
+            run_id=outcome.run_id,
+            node_run_id=outcome.node_run_id,
+            attempt_id=outcome.attempt_id,
+        )
         cursor = await self._conn.execute(
             """INSERT INTO outcomes
                (request_id, task_type, model_used, provider,
                 tool_calls, success, error_type, response_time_ms,
                 team_id, user_id, agent_id,
-                input_tokens, output_tokens, charged_microchips, pricing_version, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
+                run_id, node_run_id, attempt_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -72,6 +100,9 @@ class SqliteOutcomeStore:
                 outcome.charged_microchips,
                 outcome.pricing_version,
                 outcome.created_at.isoformat(),
+                provenance.run_id or None,
+                provenance.node_run_id or None,
+                provenance.attempt_id or None,
             ),
         )
         await self._conn.commit()

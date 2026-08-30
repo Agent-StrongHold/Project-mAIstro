@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.correlation import observed_provenance
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -52,7 +53,18 @@ class PgOutcomeStore:
         self._pool = pool
 
     async def record(self, outcome: Outcome) -> int:
-        """Record an outcome. Returns outcome ID."""
+        """Record an outcome, naming the execution that produced it.
+
+        Outcomes are what the router's scoring and the optimizer's fitness read,
+        so this is the evidence path behind automated decisions -- and until
+        #709 the only execution reference on it was the Conductor's DAG
+        identity, which ADR-019 puts on the product side of the split.
+        """
+        provenance = observed_provenance(
+            run_id=outcome.run_id,
+            node_run_id=outcome.node_run_id,
+            attempt_id=outcome.attempt_id,
+        )
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 # org_id is written, not omitted: every read path on this
@@ -64,9 +76,10 @@ class PgOutcomeStore:
                     org_id, team_id, user_id, agent_id,
                     input_tokens, output_tokens, charged_microchips, pricing_version,
                     project_id, dag_id, dag_run_id, node_id,
-                    thumb, thumb_comment, eval_judge_score)
+                    thumb, thumb_comment, eval_judge_score,
+                    run_id, node_run_id, attempt_id)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                           $17,$18,$19,$20,$21,$22,$23)
+                           $17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
@@ -106,6 +119,14 @@ class PgOutcomeStore:
                 outcome.thumb,
                 outcome.thumb_comment,
                 outcome.eval_judge_score,
+                # The canonical producer, beside the DAG identity rather than
+                # instead of it: `dag_run_id` names a real hive-conductor object
+                # the Conductor UI reads, and these name the Run/NodeRun/Attempt
+                # it executes as. NULL rather than "" so an outcome recorded
+                # outside any execution names none (#709).
+                provenance.run_id or None,
+                provenance.node_run_id or None,
+                provenance.attempt_id or None,
             )
             return int(row["id"]) if row else 0
 
@@ -391,6 +412,9 @@ def _row_to_outcome(r: asyncpg.Record) -> Outcome:
         dag_id=r.get("dag_id", ""),
         dag_run_id=r.get("dag_run_id", ""),
         node_id=r.get("node_id", ""),
+        run_id=r.get("run_id") or "",
+        node_run_id=r.get("node_run_id") or "",
+        attempt_id=r.get("attempt_id") or "",
         thumb=r.get("thumb", ""),
         thumb_comment=r.get("thumb_comment", ""),
         eval_judge_score=r.get("eval_judge_score"),
