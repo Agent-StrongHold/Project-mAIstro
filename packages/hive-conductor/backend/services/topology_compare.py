@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.feedback_service import get_outcome_store
+from services.feedback_service import collect_thumbs
 from services.node_metrics_store import (
     NodeObservation,
 )
@@ -106,7 +106,7 @@ def _bucket_observations(
     return buckets
 
 
-def _fold_in_thumbs(
+async def _fold_in_thumbs(
     buckets: dict[str, VariantBucket],
     *,
     dag_id: str,
@@ -114,22 +114,25 @@ def _fold_in_thumbs(
 ) -> None:
     """For each Outcome with a thumb in scope of this DAG, attribute to
     the bucket whose label matches the outcome's `node_id` (only valid
-    when group_by='node_id' — otherwise thumbs aren't bucket-scoped)."""
+    when group_by='node_id' — otherwise thumbs aren't bucket-scoped).
+
+    Reads through `feedback_service.collect_thumbs`, which is the same
+    aggregation the optimizer uses. Both used to keep their own copy of this
+    loop over the store's private `_outcomes` list, so they could disagree
+    about what a thumb counts for, and both went blind against a durable
+    store (#696).
+
+    A run-level thumb has no `node_id` and lands under `"(unset)"`, the label
+    this comparison has always given it.
+    """
     if group_by != "node_id":
         return
-    store = get_outcome_store()
-    for o in getattr(store, "_outcomes", []):
-        if dag_id and getattr(o, "dag_id", "") and o.dag_id != dag_id:
-            continue
-        if not getattr(o, "thumb", ""):
-            continue
-        label = o.node_id or "(unset)"
+    for node_id, counts in (await collect_thumbs(dag_id)).items():
+        label = node_id or "(unset)"
         if label not in buckets:
             buckets[label] = VariantBucket(label=label)
-        if o.thumb == "up":
-            buckets[label].thumb_up += 1
-        elif o.thumb == "down":
-            buckets[label].thumb_down += 1
+        buckets[label].thumb_up += counts["up"]
+        buckets[label].thumb_down += counts["down"]
 
 
 def _normalize(values: list[float], invert: bool = True) -> list[float]:
@@ -182,7 +185,7 @@ def _composite(
     ]
 
 
-def compare_variants(
+async def compare_variants(
     dag_id: str,
     *,
     group_by: str = "model_used",
@@ -224,7 +227,7 @@ def compare_variants(
         now=now,
     )
     buckets = _bucket_observations(obs, group_by)
-    _fold_in_thumbs(buckets, dag_id=dag_id, group_by=group_by)
+    await _fold_in_thumbs(buckets, dag_id=dag_id, group_by=group_by)
 
     if not buckets:
         return {"dag_id": dag_id, "group_by": group_by, "variants": [], "winner": ""}
