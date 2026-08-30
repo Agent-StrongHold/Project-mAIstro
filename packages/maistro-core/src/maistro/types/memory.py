@@ -130,7 +130,14 @@ class Learning:
 
 @dataclass
 class Outcome:
-    """The outcome of a completed request — tracks task completion rate."""
+    """The outcome of a completed request — tracks task completion rate.
+
+    `input_tokens` and `output_tokens` are a **sum over the provider calls of
+    one turn**, not one call's usage: a ReAct loop making four calls produces
+    one Outcome with one pair. Which call was expensive, and which model served
+    which step, needs a per-call record — that is the Invocation, and nothing
+    constructs one yet (#55, and ADR-083026-aba1 for why this record says so).
+    """
 
     request_id: str = ""
     task_type: str = ""
@@ -146,6 +153,15 @@ class Outcome:
     agent_id: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    #: How many of the turn's provider calls returned a `usage` object.
+    #: `None` when the writer did not count — a row written before this
+    #: existed, or a producer that does not know. Without it,
+    #: `input_tokens = 0` reads as "free" and "nobody reported" at once, and
+    #: the strategies spelled `usage.get("prompt_tokens", 0)` so both really
+    #: did land as `0`. `0 over 3 reporting calls` and `0 over 0` are
+    #: different facts (ADR-083026-aba1, #717; the same rule
+    #: ADR-083026-a91e set for node metrics).
+    usage_reported_calls: int | None = None
     charged_microchips: int = 0
     pricing_version: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
