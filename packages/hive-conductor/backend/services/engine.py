@@ -106,6 +106,38 @@ class EngineService:
         container = getattr(getattr(self, "_agent_port", None), "container", None)
         return getattr(container, "schedule_admitter", None)
 
+    @property
+    def outcome_store(self) -> Any:
+        """The core Container's durable outcome store, or None.
+
+        None for the same reason as `run_store`: without the bridge there is no
+        durable store in this process, and `feedback_service` then keeps the
+        Hive-local in-memory one rather than writing thumbs nowhere.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "outcome_store", None)
+
+    def _wire_outcome_store(self) -> None:
+        """Point feedback writes at the container's durable store.
+
+        `set_outcome_store` has existed since the feedback route landed and had
+        no production caller, so every thumb a user gave went into a capped
+        in-process list and was lost on restart. This is the call the setter's
+        own docstring already described (#696).
+
+        Without the bridge there is no container, so the Hive-local default
+        stands: a thumb still records, deterministically, into memory. That is
+        the honest behaviour for a process with no durable backend, and it is
+        the mode the tests run in.
+        """
+        store = self.outcome_store
+        if store is None:
+            return
+        from services import feedback_service
+
+        feedback_service.set_outcome_store(store)
+        logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
@@ -127,6 +159,7 @@ class EngineService:
             self._agent_port = StubAgentPort()
 
         self._wire_capabilities(settings)
+        self._wire_outcome_store()
 
         try:
             if settings.hive_mode == "demo":

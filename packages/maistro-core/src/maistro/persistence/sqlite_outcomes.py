@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -28,9 +29,33 @@ CREATE TABLE IF NOT EXISTS outcomes (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     charged_microchips INTEGER NOT NULL DEFAULT 0,
     pricing_version TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    org_id TEXT NOT NULL DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT '',
+    dag_id TEXT NOT NULL DEFAULT '',
+    dag_run_id TEXT NOT NULL DEFAULT '',
+    node_id TEXT NOT NULL DEFAULT '',
+    thumb TEXT NOT NULL DEFAULT '',
+    thumb_comment TEXT NOT NULL DEFAULT '',
+    eval_judge_score REAL
 )
 """
+
+# Every column this table gained after its first version. PostgreSQL got them
+# in migrations 006 and 010; the SQLite twin got neither, so `record()` had no
+# column to write a thumb into and dropped it -- along with the org and project
+# the row belonged to. A thumb written to a SQLite deployment was accepted,
+# acknowledged with an id, and discarded (#696).
+_ADDED_COLUMNS = (
+    ("org_id", "TEXT NOT NULL DEFAULT ''"),
+    ("project_id", "TEXT NOT NULL DEFAULT ''"),
+    ("dag_id", "TEXT NOT NULL DEFAULT ''"),
+    ("dag_run_id", "TEXT NOT NULL DEFAULT ''"),
+    ("node_id", "TEXT NOT NULL DEFAULT ''"),
+    ("thumb", "TEXT NOT NULL DEFAULT ''"),
+    ("thumb_comment", "TEXT NOT NULL DEFAULT ''"),
+    ("eval_judge_score", "REAL"),
+)
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
 
@@ -42,8 +67,23 @@ class SqliteOutcomeStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        """Create the outcomes table if it doesn't exist."""
+        """Create the outcomes table, and upgrade one created before the scope
+        and feedback columns.
+
+        SQLite has no `ADD COLUMN IF NOT EXISTS`, so the column list is
+        inspected first, the same way `SqliteLearningStore` handles its own
+        late `org_id`. `ALTER TABLE ... ADD COLUMN` with a constant default is
+        metadata-only, so this stays cheap on a large table.
+        """
         await self._conn.execute(_SCHEMA)
+        cursor = await self._conn.execute("PRAGMA table_info(outcomes)")
+        existing = {row[1] for row in await cursor.fetchall()}
+        for column, ddl in _ADDED_COLUMNS:
+            if column not in existing:
+                await self._conn.execute(f"ALTER TABLE outcomes ADD COLUMN {column} {ddl}")
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_thumb ON outcomes (thumb, created_at)"
+        )
         await self._conn.commit()
 
     async def record(self, outcome: Outcome) -> int:
@@ -53,8 +93,10 @@ class SqliteOutcomeStore:
                (request_id, task_type, model_used, provider,
                 tool_calls, success, error_type, response_time_ms,
                 team_id, user_id, agent_id,
-                input_tokens, output_tokens, charged_microchips, pricing_version, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
+                org_id, project_id, dag_id, dag_run_id, node_id,
+                thumb, thumb_comment, eval_judge_score)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -72,6 +114,14 @@ class SqliteOutcomeStore:
                 outcome.charged_microchips,
                 outcome.pricing_version,
                 outcome.created_at.isoformat(),
+                outcome.org_id,
+                outcome.project_id,
+                outcome.dag_id,
+                outcome.dag_run_id,
+                outcome.node_id,
+                outcome.thumb,
+                outcome.thumb_comment,
+                outcome.eval_judge_score,
             ),
         )
         await self._conn.commit()
@@ -279,26 +329,72 @@ class SqliteOutcomeStore:
         columns = [d[0] for d in cursor.description]
         rows = await cursor.fetchall()
 
-        outcomes = []
-        for raw in rows:
-            r = dict(zip(columns, raw, strict=True))
-            outcomes.append(
-                Outcome(
-                    id=r["id"],
-                    request_id=r.get("request_id", ""),
-                    task_type=r.get("task_type", ""),
-                    model_used=r.get("model_used", ""),
-                    success=bool(r["success"]),
-                    error_type=r.get("error_type", ""),
-                    response_time_ms=r.get("response_time_ms", 0),
-                    team_id=r.get("team_id", ""),
-                    user_id=r.get("user_id", ""),
-                    agent_id=r.get("agent_id") or None,
-                    input_tokens=r.get("input_tokens", 0),
-                    output_tokens=r.get("output_tokens", 0),
-                    charged_microchips=r.get("charged_microchips", 0),
-                    pricing_version=r.get("pricing_version", ""),
-                    created_at=datetime.fromisoformat(r["created_at"]),
-                )
-            )
-        return outcomes
+        return [_row_to_outcome(dict(zip(columns, raw, strict=True))) for raw in rows]
+
+    async def list_thumbs(
+        self,
+        *,
+        dag_id: str = "",
+        days: int = THUMB_WINDOW_DAYS,
+        limit: int = THUMB_LIMIT,
+        org_id: str = "",
+    ) -> list[Outcome]:
+        """Outcomes carrying a thumb, most recent first.
+
+        `(dag_id = ? OR dag_id = '')` rather than equality, matching
+        `_dag_matches`: a thumb with no `dag_id` predates the attribution wire
+        and belongs to every DAG. The predicate is pushed into SQL so the limit
+        bounds rows that could match, not rows that are then thrown away.
+        """
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        query = "SELECT * FROM outcomes WHERE created_at >= ? AND thumb <> ''"
+        params: list[Any] = [cutoff]
+        if dag_id:
+            query += " AND (dag_id = ? OR dag_id = '')"
+            params.append(dag_id)
+        if org_id:
+            query += " AND org_id = ?"
+            params.append(org_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(query, params)
+        columns = [d[0] for d in cursor.description]
+        rows = await cursor.fetchall()
+        return [_row_to_outcome(dict(zip(columns, raw, strict=True))) for raw in rows]
+
+
+def _row_to_outcome(r: dict[str, Any]) -> Outcome:
+    """Map a row to an `Outcome`, including every column the table now has.
+
+    The previous inline mapping stopped at `created_at`, so a round-tripped
+    outcome came back with no org, no project, no DAG attribution and no
+    thumb -- the same omission `PgOutcomeStore._row_to_outcome` was extracted
+    to fix, still present in the twin (#696). One mapper, so the next column
+    cannot be added to one read and forgotten in another.
+    """
+    return Outcome(
+        id=r["id"],
+        request_id=r.get("request_id", ""),
+        task_type=r.get("task_type", ""),
+        model_used=r.get("model_used", ""),
+        provider=r.get("provider", ""),
+        success=bool(r["success"]),
+        error_type=r.get("error_type", ""),
+        response_time_ms=r.get("response_time_ms", 0),
+        org_id=r.get("org_id", "") or "",
+        team_id=r.get("team_id", ""),
+        user_id=r.get("user_id", ""),
+        agent_id=r.get("agent_id") or None,
+        input_tokens=r.get("input_tokens", 0),
+        output_tokens=r.get("output_tokens", 0),
+        charged_microchips=r.get("charged_microchips", 0),
+        pricing_version=r.get("pricing_version", ""),
+        created_at=datetime.fromisoformat(r["created_at"]),
+        project_id=r.get("project_id", "") or "",
+        dag_id=r.get("dag_id", "") or "",
+        dag_run_id=r.get("dag_run_id", "") or "",
+        node_id=r.get("node_id", "") or "",
+        thumb=r.get("thumb", "") or "",
+        thumb_comment=r.get("thumb_comment", "") or "",
+        eval_judge_score=r.get("eval_judge_score"),
+    )
