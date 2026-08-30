@@ -1,10 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { escapeDeckText, sanitizeDeckMarkup } from "../lib/deckSanitizer";
 
 const C = { bg: "#0a0914", card: "#11101e", border: "rgba(196,166,97,0.14)", gold: "#c4a661", ink: "#f3f0fb", muted: "#8b83a8", dim: "#5a5478", acc: "#a78bfa", danger: "#e87c7c" };
 
 interface Slide { id: string; html: string; notes: string; }
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function safeSlide(slide: Slide): Slide {
+  return { ...slide, html: sanitizeDeckMarkup(slide.html) };
+}
 
 const BLANK_SLIDE: () => Slide = () => ({ id: uid(), html: "<h1>Title</h1><p>Content</p>", notes: "" });
 
@@ -123,20 +128,20 @@ function DeckChat({ slides, onUpdateSlides, activeIdx }: { slides: Slide[]; onUp
       const reply = data?.choices?.[0]?.message?.content || data?.content || "No response";
       setMsgs(m => [...m, { role: "assistant", content: reply }]);
 
-      // Parse <slide> tags from response and apply them
+      // Parse <slide> tags from response, sanitize before state publication, and apply them.
       const slideMatches = [...reply.matchAll(/<slide(?:\s+index="(\d+)")?>([\s\S]*?)<\/slide>/gi)];
       if (slideMatches.length > 0) {
         const newSlides = [...slides];
         for (const match of slideMatches) {
           const idx = match[1] ? parseInt(match[1]) - 1 : -1;
-          const html = match[2].trim();
+          const html = sanitizeDeckMarkup(match[2].trim());
           if (idx >= 0 && idx < newSlides.length) {
             newSlides[idx] = { ...newSlides[idx], html };
           } else {
             newSlides.push({ id: uid(), html, notes: "" });
           }
         }
-        onUpdateSlides(newSlides);
+        onUpdateSlides(newSlides.map(safeSlide));
       }
     } catch {
       setMsgs(m => [...m, { role: "assistant", content: "Connection error — check that the backend is running." }]);
@@ -176,8 +181,12 @@ export default function DeckBuilder() {
   const [presenting, setPresenting] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
 
+  const replaceSlides = useCallback((nextSlides: Slide[]) => {
+    setSlides(nextSlides.map(safeSlide));
+  }, []);
+
   const updateSlide = useCallback((idx: number, html: string) => {
-    setSlides(s => s.map((sl, i) => i === idx ? { ...sl, html } : sl));
+    setSlides(s => s.map((sl, i) => i === idx ? { ...sl, html: sanitizeDeckMarkup(html) } : sl));
   }, []);
 
   const addSlide = () => { setSlides(s => [...s, BLANK_SLIDE()]); setActive(slides.length); };
@@ -190,26 +199,33 @@ export default function DeckBuilder() {
   };
 
   const exportHTML = () => {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><style>
+    const safeTitle = escapeDeckText(title);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>
 *{margin:0;padding:0;box-sizing:border-box}html,body{height:100%;overflow:hidden;font-family:system-ui,sans-serif;background:#0a0914;color:#f3f0fb}
 .deck{height:100vh;overflow-y:scroll;scroll-snap-type:y mandatory}.slide{height:100vh;scroll-snap-align:start;display:flex;align-items:center;justify-content:center;padding:4rem;flex-direction:column}
 .slide h1{font-size:3rem;margin-bottom:1rem;font-family:Georgia,serif}.slide h2{font-size:2rem;margin-bottom:0.75rem}.slide p{font-size:1.25rem;opacity:0.8;max-width:60ch;line-height:1.6}
 .slide ul,.slide ol{font-size:1.1rem;text-align:left;line-height:2}</style></head><body><div class="deck">
-${slides.map(s => `<div class="slide">${s.html}</div>`).join("\n")}</div></body></html>`;
+${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join("\n")}</div></body></html>`;
     const blob = new Blob([html], { type: "text/html" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${title.replace(/\s+/g, "-")}.html`; a.click();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = `${title.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "deck"}.html`;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
   };
 
   const exportPDF = () => { window.print(); };
 
-  // Presentation mode
+  // Presentation mode. Sanitize again at the sink so legacy/raw state from a
+  // future loader cannot bypass the publication-time boundary above.
   if (presenting) {
     return (
       <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 9999, overflow: "hidden" }}>
         <div style={{ height: "100vh", overflowY: "scroll", scrollSnapType: "y mandatory" }}>
           {slides.map((s) => (
             <div key={s.id} style={{ height: "100vh", scrollSnapAlign: "start", display: "flex", alignItems: "center", justifyContent: "center", padding: "4rem", flexDirection: "column" }}
-              dangerouslySetInnerHTML={{ __html: s.html }} />
+              dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(s.html) }} />
           ))}
         </div>
         <button onClick={() => setPresenting(false)} style={{ position: "fixed", top: 12, right: 12, background: "rgba(0,0,0,0.6)", border: "none", color: C.ink, padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: "0.7rem" }}>Exit (Esc)</button>
@@ -250,10 +266,10 @@ ${slides.map(s => `<div class="slide">${s.html}</div>`).join("\n")}</div></body>
             <button onClick={() => moveSlide(active, 1)} disabled={active === slides.length - 1} style={{ background: "none", border: "none", color: active === slides.length - 1 ? C.dim : C.muted, cursor: "pointer", fontSize: "0.7rem" }}>Move ▶</button>
             <button onClick={() => removeSlide(active)} disabled={slides.length <= 1} style={{ background: "none", border: "none", color: slides.length <= 1 ? C.dim : C.danger ?? "#e87c7c", cursor: "pointer", fontSize: "0.7rem", marginLeft: "auto" }}>Delete</button>
           </div>
-          {/* Editable slide preview */}
+          {/* Editable slide preview. The sink repeats sanitization intentionally. */}
           <div ref={previewRef} contentEditable suppressContentEditableWarning
             onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
-            dangerouslySetInnerHTML={{ __html: slides[active]?.html || "" }}
+            dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
             style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "0.7rem" }} />
           {/* Speaker notes */}
           <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
@@ -265,7 +281,7 @@ ${slides.map(s => `<div class="slide">${s.html}</div>`).join("\n")}</div></body>
             <div style={{ fontSize: "0.6rem", color: C.muted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Templates</div>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {TEMPLATES.map(t => (
-                <button key={t.name} onClick={() => { setSlides(s => [...s, { id: uid(), html: t.html, notes: "" }]); setActive(slides.length); }}
+                <button key={t.name} onClick={() => { setSlides(s => [...s, safeSlide({ id: uid(), html: t.html, notes: "" })]); setActive(slides.length); }}
                   style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.6rem", cursor: "pointer" }}>
                   {t.name}
                 </button>
@@ -274,7 +290,7 @@ ${slides.map(s => `<div class="slide">${s.html}</div>`).join("\n")}</div></body>
           </div>
 
           {/* AI Assistant */}
-          <DeckChat slides={slides} onUpdateSlides={setSlides} activeIdx={active} />
+          <DeckChat slides={slides} onUpdateSlides={replaceSlides} activeIdx={active} />
         </div>
       </div>
     </div>
