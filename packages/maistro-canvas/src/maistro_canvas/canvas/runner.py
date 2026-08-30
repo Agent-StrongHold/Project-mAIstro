@@ -82,6 +82,16 @@ class CanvasJobRunner:
         """Claim and execute one job. Returns True if work was done."""
         from maistro_canvas.types import JobStatus
 
+        # A real CanvasExecutor exposes this flag. Refuse before taking a lease
+        # when production composition forgot the canonical binding: claiming
+        # first would make an unavailable execution path look like worker loss.
+        # Runner-focused test doubles predate the adapter and intentionally omit
+        # the attribute, so None preserves their narrow claim/retry contract.
+        if getattr(self._executor, "canonical_enabled", None) is False:
+            raise RuntimeError(
+                "CanvasJobRunner requires canonical execution binding before claiming provider work"
+            )
+
         job = await self._store.claim_next_pending(self._worker_id, self._lease_seconds)
         if job is None:
             return False
