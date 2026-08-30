@@ -23,6 +23,7 @@ from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+_ROOT_NAMES = frozenset({"ROOT", "REPO", "REPO_ROOT"})
 
 CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
@@ -64,7 +65,11 @@ TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
     ),
 }
 
-SPECIAL_TRUSTED_CONSUMERS = {"ac_state_notes.py"}
+# These consumers are themselves provenance mechanisms. ac_state_notes.py folds
+# a trusted directory through ratchet_provenance; ratchet_provenance.py owns the
+# resolver that base-resolves ratchet-authorizations.json, so requiring it to
+# import itself would be nonsense rather than stronger enforcement.
+SPECIAL_TRUSTED_CONSUMERS = {"ac_state_notes.py", "ratchet_provenance.py"}
 
 
 @dataclass(frozen=True, order=True)
@@ -83,7 +88,7 @@ def _expr_path(node: ast.AST, env: dict[str, str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.Name):
-        if node.id in {"ROOT", "REPO"}:
+        if node.id in _ROOT_NAMES:
             return "ROOT"
         return env.get(node.id)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
