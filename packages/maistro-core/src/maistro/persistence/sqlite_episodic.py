@@ -57,6 +57,37 @@ CREATE TABLE IF NOT EXISTS episodic_memories (
 
 _SELECT = f"SELECT {', '.join(COLUMNS)} FROM episodic_memories"
 
+#: The upsert, written out rather than assembled from `COLUMNS`.
+#:
+#: Bandit's B608 fires on any SQL built by string formatting and this repo runs
+#: it at a strict zero baseline, so the choice is a literal statement or a
+#: `# nosec` on an injection warning. A literal is the better answer: it is
+#: greppable, and `test_the_insert_matches_the_column_list` fails if it ever
+#: drifts from `COLUMNS`, which is the only property the assembled version
+#: actually bought.
+_UPSERT = """INSERT INTO episodic_memories (
+    memory_id, tier, content, weight, org_id, team_id, agent_id, user_id,
+    scope, project_id, source, context, reinforcement_count,
+    contradiction_count, created_at, last_accessed_at, deleted, decay_rate,
+    shared, flagged_for_review
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+) ON CONFLICT (memory_id) DO UPDATE SET
+    tier = excluded.tier, content = excluded.content,
+    weight = excluded.weight, org_id = excluded.org_id,
+    team_id = excluded.team_id, agent_id = excluded.agent_id,
+    user_id = excluded.user_id, scope = excluded.scope,
+    project_id = excluded.project_id, source = excluded.source,
+    context = excluded.context,
+    reinforcement_count = excluded.reinforcement_count,
+    contradiction_count = excluded.contradiction_count,
+    created_at = excluded.created_at,
+    last_accessed_at = excluded.last_accessed_at,
+    deleted = excluded.deleted, decay_rate = excluded.decay_rate,
+    shared = excluded.shared,
+    flagged_for_review = excluded.flagged_for_review
+"""
+
 
 def _mapped(cursor: Any, row: Any) -> dict[str, Any]:
     """One row as a name-keyed mapping, so `from_row` can read it.
@@ -101,13 +132,7 @@ class SqliteEpisodicStore:
 
     async def store(self, memory: EpisodicMemory) -> str:
         """Store a memory. Returns its `memory_id`. Upsert, as in PostgreSQL."""
-        assignments = ", ".join(f"{name} = excluded.{name}" for name in COLUMNS[1:])
-        await self._conn.execute(
-            f"INSERT INTO episodic_memories ({', '.join(COLUMNS)})"
-            f" VALUES ({', '.join('?' * len(COLUMNS))})"
-            f" ON CONFLICT (memory_id) DO UPDATE SET {assignments}",
-            to_row(memory, text_encoded=True),
-        )
+        await self._conn.execute(_UPSERT, to_row(memory, text_encoded=True))
         await self._conn.commit()
         return memory.memory_id
 

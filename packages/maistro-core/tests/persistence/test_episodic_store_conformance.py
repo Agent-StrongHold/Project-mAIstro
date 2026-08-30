@@ -17,6 +17,7 @@ object would prove only that the object remembers.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,6 +26,7 @@ import pytest
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.episodic.tiers import clamp_weight
+from maistro.persistence.episodic_rows import COLUMNS
 from maistro.persistence.pg_episodic import PgEpisodicStore
 from maistro.types.memory import EpisodicMemory, MemoryScope, MemoryTier
 
@@ -336,3 +338,46 @@ class TestTheThreeStoresAgree:
         assert [
             m.memory_id for m in await durable_store.list_by_scope(org_id="org-a", min_weight=0.5)
         ] == [m.memory_id for m in await volatile.list_by_scope(org_id="org-a", min_weight=0.5)]
+
+
+def _named_columns(statement: str) -> list[str]:
+    """The column list of an `INSERT INTO … ( … ) VALUES` statement."""
+    body = re.search(r"\(([^)]*)\)\s*VALUES", statement, re.S)
+    assert body is not None, "statement is not an INSERT … VALUES"
+    return [name.strip() for name in body.group(1).split(",")]
+
+
+class TestTheLiteralUpsertsMatchTheColumnList:
+    """The upserts are written out rather than assembled from `COLUMNS`.
+
+    Bandit's B608 flags SQL built by string formatting and this repo runs it at
+    a strict zero baseline, so the literal is the honest answer rather than a
+    `# nosec` on an injection warning. What the assembled version bought was
+    that the statement could not drift from `COLUMNS`; these tests buy it back.
+    """
+
+    def test_the_postgres_upsert_names_every_column_in_order(self) -> None:
+        from maistro.persistence.pg_episodic import _UPSERT
+
+        assert _named_columns(_UPSERT) == list(COLUMNS)
+        assert _UPSERT.count(f"${len(COLUMNS)}") == 1
+        assert f"${len(COLUMNS) + 1}" not in _UPSERT
+
+    def test_the_sqlite_upsert_names_every_column_in_order(self) -> None:
+        from maistro.persistence.sqlite_episodic import _UPSERT
+
+        assert _named_columns(_UPSERT) == list(COLUMNS)
+        assert _UPSERT.count("?") == len(COLUMNS)
+
+    def test_every_column_but_the_key_is_updated_on_conflict(self) -> None:
+        """A column missing from the SET clause keeps its first-stored value
+        forever — a silent half-update, which is worse than a failed one."""
+        from maistro.persistence.pg_episodic import _UPSERT as pg_upsert
+        from maistro.persistence.sqlite_episodic import _UPSERT as sqlite_upsert
+
+        for statement, keyword in ((pg_upsert, "EXCLUDED"), (sqlite_upsert, "excluded")):
+            updated = statement.split("DO UPDATE SET", 1)[1]
+            assert [
+                name for name in COLUMNS[1:] if f"{name} = {keyword}.{name}" in updated
+            ] == list(COLUMNS[1:])
+            assert f"memory_id = {keyword}.memory_id" not in updated

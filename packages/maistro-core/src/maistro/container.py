@@ -1241,7 +1241,9 @@ async def create_container(
     # backend does not grow the orchestration branch count (#122).
     prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
 
-    episodic_store = await _wire_episodic_store(pg_pool=pg_pool, db_pool=db_pool)
+    episodic_store = await _wire_episodic_store(
+        database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
+    )
     project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
@@ -1539,19 +1541,26 @@ async def create_container(
     return container
 
 
-async def _wire_episodic_store(*, pg_pool: Any, db_pool: Any) -> EpisodicStore:
+async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any) -> EpisodicStore:
     """Select the episodic store from the configured relational backend.
 
     Kept out of `create_container` for the reason `_wire_prompt_manager` states:
-    adding a backend must not grow that function's branch count (#122).
+    adding a backend must not grow that function's branch count (#122). The
+    `database_url` test lives here for the same reason.
 
-    Until #710 this line read `InMemoryEpisodicStore()` unconditionally — and it
-    sits *after* the backend branch, so a `postgresql://` URL got it too. Every
-    tier, weight and reinforcement count in ADR-080 was a property of one
+    Until #710 this read `InMemoryEpisodicStore()` unconditionally — and the
+    line sits *after* the backend branch, so a `postgresql://` URL got it too.
+    Every tier, weight and reinforcement count in ADR-080 was a property of one
     process's uptime. A `memory://` deployment still gets the in-memory store,
     and now that is a choice rather than the only option (ADR-083026-a322).
+
+    The URL decides, not the pool in hand: `pg_pool` can be a caller-supplied
+    pool for the durable-event stores while learnings, outcomes and sessions are
+    SQLite, and episodic memory belongs with those. Filing it in a database this
+    container does not own would also run this store's DDL there — which is how
+    `test_container_pg_durable_events.py` caught it.
     """
-    if pg_pool is not None:
+    if pg_pool is not None and database_url.startswith(POSTGRES_SCHEMES):
         from maistro.persistence.pg_episodic import PgEpisodicStore
 
         store = PgEpisodicStore(pg_pool)

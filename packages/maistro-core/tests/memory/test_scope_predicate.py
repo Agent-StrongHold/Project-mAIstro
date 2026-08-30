@@ -78,10 +78,7 @@ async def corpus_db() -> AsyncIterator[Any]:
     )
     await conn.executemany(
         "INSERT INTO episodic_memories VALUES (?, ?, ?, ?, ?, ?)",
-        [
-            (m.memory_id, str(m.scope), m.org_id, m.team_id, m.user_id, m.agent_id)
-            for m in CORPUS
-        ],
+        [(m.memory_id, str(m.scope), m.org_id, m.team_id, m.user_id, m.agent_id) for m in CORPUS],
     )
     await conn.commit()
     try:
@@ -91,9 +88,7 @@ async def corpus_db() -> AsyncIterator[Any]:
 
 
 async def _sql_visible(conn: Any, caller: dict[str, str]) -> set[str]:
-    predicate, params = scope_predicate(
-        build_scope_filter(**caller), itertools.repeat("?")
-    )
+    predicate, params = scope_predicate(build_scope_filter(**caller), itertools.repeat("?"))
     cursor = await conn.execute(
         f"SELECT memory_id FROM episodic_memories WHERE {predicate}", tuple(params)
     )
@@ -114,9 +109,7 @@ class TestBothSpellingsAgree:
         assert await _sql_visible(corpus_db, caller) == _python_visible(caller)
 
     @pytest.mark.ac("SPEC-083026-ba26/AC-3")
-    async def test_a_global_memory_of_another_org_is_refused_by_both(
-        self, corpus_db: Any
-    ) -> None:
+    async def test_a_global_memory_of_another_org_is_refused_by_both(self, corpus_db: Any) -> None:
         """The first cross-org clause. Without it a global memory written under
         one org is readable by every other, which is the leak the rule exists
         for — and the clause a SQL rewrite is most likely to drop."""
@@ -135,9 +128,7 @@ class TestBothSpellingsAgree:
         assert "team-b" not in await _sql_visible(corpus_db, caller)
         assert "team-a" in await _sql_visible(corpus_db, caller)
 
-    async def test_a_team_caller_with_no_org_sees_no_team_memory(
-        self, corpus_db: Any
-    ) -> None:
+    async def test_a_team_caller_with_no_org_sees_no_team_memory(self, corpus_db: Any) -> None:
         """`matches_scope` requires `mem.org_id == caller_org`, and an absent
         caller org is `''`, which no stored team memory carries. Both spellings
         must reach that same nothing rather than one of them treating the
@@ -171,9 +162,7 @@ class TestThePredicateIsParameterised:
     async def test_a_bound_value_is_matched_literally(self, corpus_db: Any) -> None:
         """And the binding is real: a value that would be SQL if interpolated
         selects nothing rather than executing."""
-        assert await _sql_visible(corpus_db, {"org_id": "org-a' OR '1'='1"}) == {
-            "global-unowned"
-        }
+        assert await _sql_visible(corpus_db, {"org_id": "org-a' OR '1'='1"}) == {"global-unowned"}
 
     async def test_the_placeholders_are_drawn_in_parameter_order(self) -> None:
         """The numeric markers asyncpg needs are positional, so a predicate that

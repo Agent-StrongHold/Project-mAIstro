@@ -42,6 +42,38 @@ if TYPE_CHECKING:
 
 _SELECT = f"SELECT {', '.join(COLUMNS)} FROM episodic_memories"
 
+#: The upsert, written out rather than assembled from `COLUMNS`.
+#:
+#: Bandit's B608 fires on any SQL built by string formatting and this repo runs
+#: it at a strict zero baseline, so the choice is a literal statement or a
+#: `# nosec` on an injection warning. A literal is the better answer: it is
+#: greppable, and `test_the_insert_matches_the_column_list` fails if it ever
+#: drifts from `COLUMNS`, which is the only property the assembled version
+#: actually bought.
+_UPSERT = """INSERT INTO episodic_memories (
+    memory_id, tier, content, weight, org_id, team_id, agent_id, user_id,
+    scope, project_id, source, context, reinforcement_count,
+    contradiction_count, created_at, last_accessed_at, deleted, decay_rate,
+    shared, flagged_for_review
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+    $17, $18, $19, $20
+) ON CONFLICT (memory_id) DO UPDATE SET
+    tier = EXCLUDED.tier, content = EXCLUDED.content,
+    weight = EXCLUDED.weight, org_id = EXCLUDED.org_id,
+    team_id = EXCLUDED.team_id, agent_id = EXCLUDED.agent_id,
+    user_id = EXCLUDED.user_id, scope = EXCLUDED.scope,
+    project_id = EXCLUDED.project_id, source = EXCLUDED.source,
+    context = EXCLUDED.context,
+    reinforcement_count = EXCLUDED.reinforcement_count,
+    contradiction_count = EXCLUDED.contradiction_count,
+    created_at = EXCLUDED.created_at,
+    last_accessed_at = EXCLUDED.last_accessed_at,
+    deleted = EXCLUDED.deleted, decay_rate = EXCLUDED.decay_rate,
+    shared = EXCLUDED.shared,
+    flagged_for_review = EXCLUDED.flagged_for_review
+"""
+
 
 def _placeholders(start: int) -> Any:
     """`$n` markers from `start` upward, for `scope_predicate`."""
@@ -83,14 +115,8 @@ class PgEpisodicStore:
         appends and would hold two; one row per id is the durable answer, and
         the id is the record's identity in every other method here.
         """
-        assignments = ", ".join(f"{name} = EXCLUDED.{name}" for name in COLUMNS[1:])
-        markers = ", ".join(f"${index}" for index in range(1, len(COLUMNS) + 1))
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                f"INSERT INTO episodic_memories ({', '.join(COLUMNS)}) VALUES ({markers})"
-                f" ON CONFLICT (memory_id) DO UPDATE SET {assignments}",
-                *to_row(memory, text_encoded=False),
-            )
+            await conn.execute(_UPSERT, *to_row(memory, text_encoded=False))
         return memory.memory_id
 
     async def retrieve(
