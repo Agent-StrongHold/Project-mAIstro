@@ -129,6 +129,11 @@ async def test_get_history_empty_returns_empty_list(
     assert await store.get_history("s1") == []
 
 
+def _purged_table(query: str) -> str:
+    """The table a `DELETE FROM <table> WHERE ...` names."""
+    return query.split("DELETE FROM ", 1)[1].split()[0]
+
+
 @pytest.mark.asyncio
 async def test_append_messages_locks_and_inserts_one_atomic_batch(
     store: PgSessionStore, conn: FakeConnection
@@ -149,7 +154,10 @@ async def test_append_messages_locks_and_inserts_one_atomic_batch(
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
     assert len(lock_calls) == 1
     assert lock_calls[0].args == ("s1",)
-    assert len(purge_calls) == 1
+    # Two DELETEs, not one: the retention sweep expires a turn's marker with
+    # the messages it admitted, or a purged turn could never be appended again
+    # (SPEC-083026-5fab AC-5).
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert len(insert_calls) == 2
     assert insert_calls[0].args == ("s1", 3, "user", "hi")
     assert insert_calls[1].args == ("s1", 4, "assistant", "hello")
@@ -172,7 +180,7 @@ async def test_append_messages_drops_non_user_assistant_roles_without_consuming_
     )
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert len(insert_calls) == 1
     assert insert_calls[0].args == ("s1", 0, "user", "kept")
 
@@ -185,7 +193,7 @@ async def test_append_messages_defaults_missing_role_and_content_to_empty(
     await store.append_messages("s1", [{}])
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert insert_calls == []
 
 
@@ -197,7 +205,7 @@ async def test_append_messages_no_existing_rows_starts_seq_at_default(
     await store.append_messages("s1", [{"role": "user", "content": "hi"}])
     insert_calls = [c for c in conn.calls if c.method == "execute" and "INSERT" in c.query]
     purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
-    assert len(purge_calls) == 1
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert insert_calls[0].args == ("s1", 0, "user", "hi")
 
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING
+
+from maistro.sessions.turns import reject_blank_turn_id
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -16,6 +19,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     content TEXT NOT NULL,
     timestamp REAL NOT NULL,
     PRIMARY KEY (session_id, seq)
+)
+"""
+
+#: The twin of migration 023's `session_turns` (#327, ADR-083026-5fab). The
+#: primary key is the guarantee: at-most-once holds for a writer that reaches
+#: this table without the append path's lock.
+_TURNS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_turns (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    PRIMARY KEY (session_id, turn_id)
 )
 """
 
@@ -32,15 +47,23 @@ class SqliteSessionStore:
         self._conn = conn
         self._max_messages = max_messages
         self._ttl_seconds = ttl_seconds
+        # One connection, so `BEGIN IMMEDIATE` below is a database-level write
+        # lock that two coroutines on this connection would deadlock against
+        # rather than queue behind. The asyncio lock is what makes them queue.
+        self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         """Create the sessions table if it doesn't exist."""
         await self._conn.execute(_SCHEMA)
+        await self._conn.execute(_TURNS_SCHEMA)
         # Without this, the TTL purge is a full table scan on every append —
         # which is how a retention sweep turns into a reason to disable the
         # retention sweep.
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_timestamp ON sessions (timestamp)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_turns_timestamp ON session_turns (timestamp)"
         )
         await self._conn.commit()
 
@@ -69,26 +92,59 @@ class SqliteSessionStore:
         self,
         session_id: str,
         messages: list[dict[str, str]],
+        turn_id: str | None = None,
     ) -> None:
-        """Append messages to session history."""
-        cursor = await self._conn.execute(
-            "SELECT COALESCE(MAX(seq), -1) + 1 FROM sessions WHERE session_id = ?",
-            (session_id,),
-        )
-        row = await cursor.fetchone()
-        next_seq: int = row[0] if row else 0
+        """Append one complete message batch atomically, at most once.
 
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role in ("user", "assistant"):
-                await self._conn.execute(
-                    """INSERT INTO sessions (session_id, seq, role, content, timestamp)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (session_id, next_seq, role, content, time.time()),
+        The twin of `PgSessionStore.append_messages`, holding the same two
+        properties by the means SQLite offers. `BEGIN IMMEDIATE` takes the
+        write lock before the sequence read rather than on the first write, so
+        the read-then-write is serialized and a failed message rolls back the
+        whole batch instead of leaving a prefix committed. `turn_id` has
+        exactly the meaning it has there (ADR-083026-5fab).
+        """
+        reject_blank_turn_id(turn_id)
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if turn_id is not None:
+                    cursor = await self._conn.execute(
+                        "SELECT 1 FROM session_turns WHERE session_id = ? AND turn_id = ?",
+                        (session_id, turn_id),
+                    )
+                    if await cursor.fetchone() is not None:
+                        await self._conn.rollback()
+                        return
+
+                cursor = await self._conn.execute(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM sessions WHERE session_id = ?",
+                    (session_id,),
                 )
-                next_seq += 1
-        await self._conn.commit()
+                row = await cursor.fetchone()
+                next_seq: int = row[0] if row else 0
+
+                now = time.time()
+                for msg in messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role in ("user", "assistant"):
+                        await self._conn.execute(
+                            """INSERT INTO sessions (session_id, seq, role, content, timestamp)
+                               VALUES (?, ?, ?, ?, ?)""",
+                            (session_id, next_seq, role, content, now),
+                        )
+                        next_seq += 1
+
+                if turn_id is not None:
+                    await self._conn.execute(
+                        "INSERT INTO session_turns (session_id, turn_id, timestamp) "
+                        "VALUES (?, ?, ?)",
+                        (session_id, turn_id, now),
+                    )
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
 
         # Purge as part of normal operation rather than relying on a scheduled
         # sweeper — there isn't one, which is exactly why the TTL never deleted
@@ -100,6 +156,12 @@ class SqliteSessionStore:
         """Delete a session."""
         await self._conn.execute(
             "DELETE FROM sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        # A session recreated under a reused id must not have its first turn
+        # silently swallowed by the deleted one's marker.
+        await self._conn.execute(
+            "DELETE FROM session_turns WHERE session_id = ?",
             (session_id,),
         )
         await self._conn.commit()
@@ -127,6 +189,14 @@ class SqliteSessionStore:
         cutoff = time.time() - ttl
         cursor = await self._conn.execute(
             "DELETE FROM sessions WHERE timestamp <= ?",
+            (cutoff,),
+        )
+        # Both, always: a marker outliving its messages would suppress a retry
+        # of a turn that no longer exists, and messages outliving their marker
+        # would let one duplicate. The count stays the message count, because
+        # that is how much conversation was removed.
+        await self._conn.execute(
+            "DELETE FROM session_turns WHERE timestamp <= ?",
             (cutoff,),
         )
         await self._conn.commit()

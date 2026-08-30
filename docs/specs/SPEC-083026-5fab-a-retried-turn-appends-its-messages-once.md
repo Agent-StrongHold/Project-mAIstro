@@ -27,10 +27,14 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/persistence/test_session_turn_idempotence.py
+  - packages/maistro-core/tests/agents/test_base.py
+  - packages/maistro-core/tests/runs/test_chat_execution.py
 source:
   - packages/maistro-core/src/maistro/persistence/pg_sessions.py
   - packages/maistro-core/src/maistro/persistence/sqlite_sessions.py
   - packages/maistro-core/src/maistro/sessions/store.py
+  - packages/maistro-core/src/maistro/sessions/turns.py
+  - packages/maistro-core/src/maistro/container.py
 ac-modules:
   AC-1: maistro.persistence.pg_sessions
   AC-2: maistro.persistence.pg_sessions
@@ -40,7 +44,7 @@ ac-modules:
   AC-6: maistro.persistence.pg_sessions
   AC-7: maistro.persistence.pg_sessions
   AC-8: maistro.persistence.sqlite_sessions
-  AC-9: maistro.runs.chat_execution
+  AC-9: maistro.container
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'

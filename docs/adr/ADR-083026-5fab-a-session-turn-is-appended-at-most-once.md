@@ -21,7 +21,8 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/persistence/test_session_turn_idempotence.py
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -64,13 +65,22 @@ opaque `turn_id`. The store treats it as a name, not as data: it never parses
 it, and it never derives one when none is given. With no `turn_id` the append
 behaves exactly as it does today, so no existing caller changes meaning.
 
-**The identity is the NodeRun, because that is already what "the same turn"
-means.** `ChatAttemptExecutor` decides which Attempts belong to one logical
-turn, and it answers with the NodeRun. Choosing anything else would let two
-components disagree about turn identity while both being right about their own.
-A fresh identity per Attempt would be no identity at all; the Run's id would be
-wrong in the other direction, since a client that re-requests after a timeout
-is admitted a *new* Run and is a new turn as far as the spine is concerned.
+**The identity is the Run, because a chat turn *is* its Run.** A chat Run
+admits exactly one Graph node — `ChatAttemptExecutor._node_id` refuses any
+other shape — so the Run, its node and its NodeRun name the same turn with the
+same precision. Of those, only the Run id exists before the dispatch is bound,
+which is what lets `ChatDispatch` stay the thunk it was designed to be: the
+identity is put into the closure by the caller that already holds the Run,
+rather than threaded back out of the executor that creates the NodeRun. A
+fresh identity per Attempt would be no identity at all.
+
+**What this identity does not cover, and cannot.** A client whose request times
+out and re-sends is admitted a *new* Run, and is a new turn as far as the spine
+is concerned — correctly, because nothing the server can see distinguishes that
+from a user asking again. Recognizing it needs a key the client supplies and
+the HTTP boundary honours, which is a separate surface and a separate decision.
+The mechanism here is what such a key would be enforced by; this decision wires
+the one retry the runtime performs on its own.
 
 **At most once, not exactly once.** The guarantee is that a `turn_id` already
 recorded for a session appends nothing and raises nothing. It is deliberately
@@ -115,13 +125,14 @@ silently swallowed by the deleted one's marker.
 ### Negative / Trade-offs
 - One more table, and one more row written per identified turn. The row is two
   short strings and a timestamp; the alternative shapes were rejected above.
-- The identity has to travel from the executor that knows it to the agent that
-  writes the session, crossing the Conduit. That widens `ChatDispatch` from a
-  thunk to a one-argument call — the dispatch stops being a value the pipeline
-  fully binds in advance, because one part of it is only known deeper in.
+- The identity has to travel from the container that holds the Run to the agent
+  that writes the session, crossing the Conduit — one more keyword on two
+  signatures that were already carrying `session_id` for the same reason.
 - A caller that supplies no `turn_id` gets no guarantee, and nothing forces one
   to. That is the honest position: the store cannot manufacture an identity for
-  a turn it did not observe being retried.
+  a turn it did not observe being retried. A container with no chat admitter
+  wired has no Run, and so has none to give.
+- Client-level retries stay outside the guarantee, as set out above.
 
 ### Neutral
 - No change to sequence allocation, ordering, the advisory lock, or the shape

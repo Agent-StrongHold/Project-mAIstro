@@ -386,6 +386,13 @@ class Container:
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                # The Run names this turn for the session store, so a second
+                # Attempt under the same Run appends nothing rather than
+                # writing the user's message again (#327, ADR-083026-5fab).
+                # `None` when no Run was admitted: a container with no chat
+                # admitter has no identity to give, and an append with none is
+                # the unchanged one.
+                turn_id=run.run_id if run is not None else None,
             )
             return dispatched
 
@@ -1442,6 +1449,11 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
+    # for the same reason as `prompt_labels`: without it a database migrated
+    # only as far as 022 passes this preflight and then fails on the first
+    # identified append.
+    "session_turns",
     "prompts",
     # A prompt label is a row of its own since 022 (#328). Listed beside
     # `prompts` for the same reason the four above are listed at all: without
