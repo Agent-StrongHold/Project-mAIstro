@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Coordinate AC-state review and merge-time regression checks (#620).
 
-The implementation module owns measurement, branch-note exactness, and the
-per-change mandate. This stable entry point adds the one question a synthetic
-merge has that a reviewed branch does not: did the combination preserve the
-*actual measured state* of the base it is about to replace?
+The implementation module owns measurement, branch-note validation, and the
+per-change mandate. This stable entry point separates two questions that used
+to be conflated:
 
-Pull requests still use the branch-note fold exactly as before. Merge groups and
-protected-branch pushes additionally measure their immutable base revision in a
-detached worktree and compare the candidate against that measurement. This is
-what makes an improvement that emerges only from combining two independently
-reviewed PRs durable without asking either author to pre-bank a number that did
-not exist when their branch was reviewed.
+* review time asks whether the candidate regresses from the trusted bound;
+  an improvement is useful evidence, but it is not a reason to rewrite branch
+  bookkeeping; and
+* merge time asks whether the exact candidate preserves the *actual measured
+  state* of the immutable base it is about to replace.
+
+Merge groups and protected-branch pushes measure that base revision in a
+detached worktree and compare the candidate against it. That comparison is the
+serialization point that makes improvements durable. Requiring every open PR
+to bank the same improvement as develop moves only recreates the synchronization
+lock the per-branch note scheme was meant to remove.
 """
 
 from __future__ import annotations
@@ -43,6 +47,55 @@ _PROTECTED_PUSH_REFS = {
     "refs/heads/main",
 }
 _BASE_MEASUREMENT = "AC_STATE_BASE_MEASUREMENT"
+
+# Review-time exactness used to make every improvement a required bookkeeping
+# edit. The merge-group guard below now measures the actual immutable base, so
+# it is the stronger oracle: a later PR cannot spend an improvement because the
+# next merge group re-measures develop itself. Keep the implementation's policy
+# available for merge-group diagnostics, but make review-time slack
+# informational rather than a branch mutation requirement.
+_ORIGINAL_SLACK_POLICY = _impl._slack_this_run_enforces
+
+
+def _review_slack_policy(improvements: list[str]) -> list[str]:
+    """Do not serialize contributors merely because the measurement improved.
+
+    A pull request still fails on regressions. Improvements are made durable at
+    the merge serialization point by `_guard_actual_base`, which measures the
+    actual base tree rather than trusting a candidate-authored note. Requiring a
+    note here adds no safety and is exactly the rebase/re-bank tax this project
+    is removing.
+    """
+    if not improvements:
+        return []
+    if os.environ.get("GITHUB_EVENT_NAME") == "merge_group":
+        return _ORIGINAL_SLACK_POLICY(improvements)
+    print(
+        "review-time AC-state improvement observed; no bank is required.\n"
+        "The merge-group actual-base guard re-measures the immutable develop base "
+        "and owns monotonicity, so branch notes are not a synchronization requirement.\n  "
+        + "\n  ".join(improvements)
+    )
+    return []
+
+
+def _with_review_slack(callable_: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run an implementation entry point with review-time slack informational."""
+    previous = _impl._slack_this_run_enforces
+    _impl._slack_this_run_enforces = _review_slack_policy
+    try:
+        return callable_(*args, **kwargs)
+    finally:
+        _impl._slack_this_run_enforces = previous
+
+
+def _run_impl(argv: list[str]) -> int:
+    return int(_with_review_slack(_impl.main, argv))
+
+
+def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
+    """Public ratchet surface with the same no-rebank review policy as the CLI."""
+    return int(_with_review_slack(_impl.ratchet, totals, measured, bank))
 
 
 def _protected_push() -> bool:
@@ -302,7 +355,7 @@ def main(argv: list[str]) -> int:
     # The detached base invokes the same public path. Do not recursively measure
     # another base from inside that measurement.
     if os.environ.get(_BASE_MEASUREMENT) == "1" or not _needs_actual_base():
-        return _impl.main(argv)
+        return _run_impl(argv)
 
     try:
         base_rev = _actual_base_revision()
@@ -320,11 +373,11 @@ def main(argv: list[str]) -> int:
         # A protected-branch push has no author-side review question left to
         # answer. Its invariant is simply no regression from the actual parent.
         # Merge groups still run the ordinary ratchet/mandate as well, which
-        # preserves the reviewed branch's exact target and touched-criterion
-        # contract while the actual-base guard preserves emergent combination
-        # improvements for the next PR.
+        # preserves the reviewed branch's regression and touched-criterion
+        # contracts while the actual-base guard makes every improvement part of
+        # the next base without requiring an author-side bank commit.
         delegated = _without_ratchet(argv) if _protected_push() else argv
-        code = _impl.main(delegated)
+        code = _run_impl(delegated)
         if code:
             return code
         candidate_report = _out_path(delegated)
