@@ -336,7 +336,7 @@ async def test_a_migrated_pool_gets_the_durable_continuation_store(
         continuations = await _pg_continuation_store(_PoolAtRevision021())
 
     assert isinstance(continuations, PgGraphContinuationStore)
-    assert "alembic upgrade head" not in caplog.text
+    assert "alembic" not in caplog.text
 
 
 def test_the_spine_preflight_does_not_demand_the_continuations_table() -> None:
