@@ -616,6 +616,15 @@
       "root": "a workflow step calling scripts/ci_merge_group_scope.py, added by #655"
     },
     {
+      "id": "branch-independence-contract-helper",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "Inventories which `quality/**/*.json` state surfaces serialize otherwise-independent PRs (freezing the legacy set rather than migrating any of them) and is exercised only by loading the script itself with importlib.util.spec_from_file_location -- the same shape as ratchet-provenance-helper above: no static import edge exists for this gate to follow, because tests/test_branch_independence.py and tests/test_branch_independence_repository.py load the script by file path rather than importing it by name. Not yet run as a standalone CI step; the contract is enforced today entirely through those two pytest suites.",
+      "modules": [
+        "@tool/check-branch-independence"
+      ]
+    },
+    {
       "id": "shell-invoked-build-evidence",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",

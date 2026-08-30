@@ -1,0 +1,255 @@
+{
+  "version": 1,
+  "goal": "An unrelated develop move must not require a PR to rewrite repository bookkeeping. Legacy shared aggregates are frozen and may only shrink.",
+  "quality_roots": [
+    "quality"
+  ],
+  "frozen_legacy_paths": [
+    "quality/citation-baseline.json",
+    "quality/contract-markers-baseline.json",
+    "quality/direct-effect-call-sites.json",
+    "quality/enumeration-baseline.json",
+    "quality/execution-lifecycles.json",
+    "quality/image-inventory.json",
+    "quality/lifecycle-baseline.json",
+    "quality/model-egress.json",
+    "quality/mutation-baseline.json",
+    "quality/mutation-history.json",
+    "quality/promotion-surface-baseline.json",
+    "quality/public-routes.json",
+    "quality/radon-baseline.json",
+    "quality/reachability-baseline.json",
+    "quality/reachability-dispositions.json",
+    "quality/shell-execution.json",
+    "quality/vulture-baseline.json",
+    "quality/wiring-reads-baseline.json"
+  ],
+  "surfaces": [
+    {
+      "id": "ac-state-notes",
+      "kind": "folded_notes",
+      "paths": [
+        "quality/ac-state-notes/*.json"
+      ],
+      "reason": "Each branch writes an independent note and the trusted bound is a monotonic fold, so concurrent branches do not rewrite one aggregate."
+    },
+    {
+      "id": "branch-independence-contract",
+      "kind": "specification",
+      "paths": [
+        "quality/branch-independence.json"
+      ],
+      "reason": "This registry is the explicit policy that classifies collaboration-state representations."
+    },
+    {
+      "id": "direct-dependency-exceptions",
+      "kind": "specification",
+      "paths": [
+        "quality/direct-dependency-exceptions.json"
+      ],
+      "reason": "Reviewed dependency exception specification; changing the exception is the intentional policy change."
+    },
+    {
+      "id": "m1-convergence-freeze",
+      "kind": "specification",
+      "paths": [
+        "quality/m1-convergence-freeze.json"
+      ],
+      "reason": "Reviewed M1 convergence freeze specification, not a generated measurement."
+    },
+    {
+      "id": "ratchet-authorizations",
+      "kind": "specification",
+      "paths": [
+        "quality/ratchet-authorizations.json"
+      ],
+      "reason": "Explicit governance grants read from the trusted base; authorization is intentionally policy state."
+    },
+    {
+      "id": "retired-guidance",
+      "kind": "specification",
+      "paths": [
+        "quality/retired-guidance.json"
+      ],
+      "reason": "Reviewed retirement specification; changing retirement intent is the substantive change."
+    },
+    {
+      "id": "security-resource-floors",
+      "kind": "specification",
+      "paths": [
+        "quality/security-resource-floors.json"
+      ],
+      "reason": "Security resource floors are explicit policy values, not repository measurements."
+    },
+    {
+      "id": "shared-interop-ontology",
+      "kind": "specification",
+      "paths": [
+        "quality/shared-interop-ontology-v1.json"
+      ],
+      "reason": "Versioned interoperability ontology is a reviewed specification."
+    },
+    {
+      "id": "citation-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/citation-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records repository-wide citation measurement and can require unrelated branches to rewrite it."
+    },
+    {
+      "id": "contract-markers-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/contract-markers-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records repository-wide contract-marker measurement."
+    },
+    {
+      "id": "direct-effect-call-sites",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/direct-effect-call-sites.json"
+      ],
+      "target_kind": "per_identity_policy",
+      "reason": "One tracked aggregate mixes discovered call-site metadata with durable per-site disposition, owner, and rationale policy."
+    },
+    {
+      "id": "enumeration-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/enumeration-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records tolerated enumeration findings."
+    },
+    {
+      "id": "execution-lifecycles",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/execution-lifecycles.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records lifecycle debt identities."
+    },
+    {
+      "id": "image-inventory",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/image-inventory.json"
+      ],
+      "target_kind": "generated",
+      "reason": "Repository-wide generated image inventory is stored as one tracked aggregate."
+    },
+    {
+      "id": "lifecycle-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/lifecycle-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records lifecycle measurement state."
+    },
+    {
+      "id": "model-egress",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/model-egress.json"
+      ],
+      "target_kind": "per_identity_policy",
+      "reason": "Security-sensitive egress authorization is held in one shared file instead of independent authorization records."
+    },
+    {
+      "id": "mutation-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/mutation-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate stores mutation quality baseline state."
+    },
+    {
+      "id": "mutation-history",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/mutation-history.json"
+      ],
+      "target_kind": "generated",
+      "reason": "Operational mutation history is generated evidence stored in source control."
+    },
+    {
+      "id": "promotion-surface-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/promotion-surface-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records promotion-surface measurement state."
+    },
+    {
+      "id": "public-routes",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/public-routes.json"
+      ],
+      "target_kind": "per_identity_policy",
+      "reason": "Security-sensitive public-route authorization is held in one shared file instead of independent authorization records."
+    },
+    {
+      "id": "radon-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/radon-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate stores repository complexity observations and ceilings."
+    },
+    {
+      "id": "reachability-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/reachability-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate stores the repository-wide unreachable-module measurement."
+    },
+    {
+      "id": "reachability-dispositions",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/reachability-dispositions.json"
+      ],
+      "target_kind": "per_identity_policy",
+      "reason": "Independent module dispositions are grouped into one shared array, creating a convergence-work synchronization point."
+    },
+    {
+      "id": "shell-execution",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/shell-execution.json"
+      ],
+      "target_kind": "per_identity_policy",
+      "reason": "Security-sensitive shell-execution policy entries share one aggregate file."
+    },
+    {
+      "id": "vulture-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/vulture-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One large tracked aggregate mixes generated findings with durable classification policy."
+    },
+    {
+      "id": "wiring-reads-baseline",
+      "kind": "legacy_shared_aggregate",
+      "paths": [
+        "quality/wiring-reads-baseline.json"
+      ],
+      "target_kind": "base_derived",
+      "reason": "One tracked aggregate records repository-wide wiring-read debt."
+    }
+  ]
+}
