@@ -1,0 +1,78 @@
+name: temporary-640-sync-latest
+
+on:
+  push:
+    paths:
+      - .github/workflows/tmp-640-sync-latest.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: 0.12.5
+      - name: Merge current develop and resolve execution seam
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin develop
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git merge --no-commit --no-ff origin/develop || true
+          for path in $(git diff --name-only --diff-filter=U); do
+            test "$path" = "packages/maistro-core/src/maistro/runs/execution.py" || exit 1
+          done
+          git checkout origin/develop -- packages/maistro-core/src/maistro/runs/execution.py
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnAgPSBQYXRoKCJwYWNrYWdlcy9tYWlzdHJvLWNvcmUvc3JjL21haXN0cm8vcnVucy9leGVjdXRpb24ucHkiKQpzID0gcC5yZWFkX3RleHQoKQpzdGFydCA9IHMuaW5kZXgoIiAgICAgICAgcnVudGltZV9uYW1lID0gcnVudGltZV9pZCBvciB0eXBlKHNlbGYuX3J1bnRpbWUpLl9fbmFtZV9fXG4iLCBzLmluZGV4KCIgICAgYXN5bmMgZGVmIF9leGVjdXRlX2F0dGVtcHQoIikpCmVuZCA9IHMuaW5kZXgoIiAgICBhc3luYyBkZWYgYWNjZXB0X291dGNvbWUoIiwgc3RhcnQpCnJlcGxhY2VtZW50ID0gIiIiICAgICAgICBydW50aW1lX25hbWUgPSBydW50aW1lX2lkIG9yIHR5cGUoc2VsZi5fcnVudGltZSkuX19uYW1lX18KICAgICAgICBhdHRlbXB0ID0gYXdhaXQgc2VsZi5fc3RvcmUuY3JlYXRlX2F0dGVtcHQoCiAgICAgICAgICAgIG5vZGVfcnVuX2lkLAogICAgICAgICAgICBydW50aW1lX2lkPXJ1bnRpbWVfbmFtZSwKICAgICAgICAgICAgZXhlY3V0b3JfaWQ9ZXhlY3V0b3JfaWQsCiAgICAgICAgICAgIGRlYWRsaW5lX2F0PWRlYWRsaW5lX2F0LAogICAgICAgICAgICByZXN1bWVfY2hlY2twb2ludF9pZD1yZXN1bWVfY2hlY2twb2ludF9pZCwKICAgICAgICAgICAgbGVhc2VfaG9sZGVyPWV4ZWN1dG9yX2lkIG9yIHJ1bnRpbWVfbmFtZSwKICAgICAgICAgICAgbGVhc2VfdHRsPXNlbGYuX2xlYXNlX3R0bCwKICAgICAgICApCiAgICAgICAgaWYgYXR0ZW1wdC5leGVjdXRpb25fbGVhc2UgaXMgTm9uZToKICAgICAgICAgICAgcmFpc2UgUnVuSW50ZWdyaXR5RXJyb3IoInN0b3JlLWNyZWF0ZWQgQXR0ZW1wdCBpcyBtaXNzaW5nIGl0cyBleGVjdXRpb24gbGVhc2UiKQoKICAgICAgICAjIFBlcnNpc3QgcGh5c2ljYWwgcmVjb3ZlcnkgZXZpZGVuY2UgYmVmb3JlIGxvZ2ljYWwgc3RhdGUgY2xhaW1zIHRoYXQKICAgICAgICAjIGV4ZWN1dGlvbiBpcyBhY3RpdmUgKCM1NDQpLiBJZiB0aGUgcHJvY2VzcyBkaWVzIGFmdGVyIHRoaXMgcG9pbnQsIHRoZQogICAgICAgICMgb3JkaW5hcnkgbGVhc2Ugc3dlZXAgaGFzIGFuIEF0dGVtcHQgdG8gcmVjbGFpbS4KICAgICAgICBhd2FpdCBzZWxmLl9saWZlY3ljbGUucHJlcGFyZV9leGVjdXRpb24obm9kZV9ydW5faWQpCiAgICAgICAgcmV0dXJuIGF3YWl0IHNlbGYuZXhlY3V0ZV9jbGFpbWVkKAogICAgICAgICAgICBhdHRlbXB0LAogICAgICAgICAgICB3b3JrX2l0ZW0sCiAgICAgICAgICAgIGV4ZWN1dGlvbl9jb250ZXh0LAogICAgICAgICAgICBleGVjdXRvcj1leGVjdXRvciwKICAgICAgICAgICAgdGltZW91dF9zPXRpbWVvdXRfcywKICAgICAgICAgICAgcmVjb25jaWxlX2xvZ2ljYWw9cmVjb25jaWxlX2xvZ2ljYWwsCiAgICAgICAgICAgIGNvbnRleHRfZmFjdG9yeT1jb250ZXh0X2ZhY3RvcnksCiAgICAgICAgKQoKICAgIGFzeW5jIGRlZiBleGVjdXRlX2NsYWltZWQoCiAgICAgICAgc2VsZiwKICAgICAgICBhdHRlbXB0OiBBdHRlbXB0LAogICAgICAgIHdvcmtfaXRlbTogQW55LAogICAgICAgIGV4ZWN1dGlvbl9jb250ZXh0OiBBbnksCiAgICAgICAgKiwKICAgICAgICBleGVjdXRvcjogRXhlY3V0aW9uQ2FsbGFibGUsCiAgICAgICAgdGltZW91dF9zOiBmbG9hdCB8IE5vbmUgPSBOb25lLAogICAgICAgIHJlY29uY2lsZV9sb2dpY2FsOiBib29sID0gVHJ1ZSwKICAgICAgICBjb250ZXh0X2ZhY3Rvcnk6IEF0dGVtcHRDb250ZXh0RmFjdG9yeSB8IE5vbmUgPSBOb25lLAogICAgKSAtPiBBdHRlbXB0OgogICAgICAgIGxlYXNlID0gYXR0ZW1wdC5leGVjdXRpb25fbGVhc2UKICAgICAgICBpZiBsZWFzZSBpcyBOb25lOgogICAgICAgICAgICByYWlzZSBSdW5JbnRlZ3JpdHlFcnJvcigiY2xhaW1lZCBBdHRlbXB0IGlzIG1pc3NpbmcgaXRzIGV4ZWN1dGlvbiBsZWFzZSIpCiAgICAgICAgdG9rZW4gPSBsZWFzZS5mZW5jaW5nX3Rva2VuCiAgICAgICAgaWYgYXR0ZW1wdC5zdGF0dXMgaXMgQXR0ZW1wdFN0YXR1cy5DUkVBVEVEOgogICAgICAgICAgICBhdHRlbXB0ID0gYXdhaXQgc2VsZi5fc3RvcmUudHJhbnNpdGlvbl9hdHRlbXB0KAogICAgICAgICAgICAgICAgYXR0ZW1wdC5hdHRlbXB0X2lkLAogICAgICAgICAgICAgICAgQXR0ZW1wdFN0YXR1cy5SVU5OSU5HLAogICAgICAgICAgICAgICAgZmVuY2luZ190b2tlbj10b2tlbiwKICAgICAgICAgICAgKQogICAgICAgIGVsaWYgYXR0ZW1wdC5zdGF0dXMgaXMgbm90IEF0dGVtcHRTdGF0dXMuUlVOTklORzoKICAgICAgICAgICAgcmFpc2UgUnVuSW50ZWdyaXR5RXJyb3IoImV4ZWN1dGVfY2xhaW1lZCByZXF1aXJlcyBhbiBhY3RpdmUgQXR0ZW1wdCIpCgogICAgICAgIHdpdGggY29udGV4dGxpYi5FeGl0U3RhY2soKSBhcyBjb3JyZWxhdGlvbjoKICAgICAgICAgICAgY29ycmVsYXRpb24uZW50ZXJfY29udGV4dChiaW5kX2V4ZWN1dGlvbl9jb250ZXh0KG5vZGVfcnVuX2lkPWF0dGVtcHQubm9kZV9ydW5faWQpKQogICAgICAgICAgICBjb3JyZWxhdGlvbi5lbnRlcl9jb250ZXh0KGJpbmRfZXhlY3V0aW9uX2NvbnRleHQoYXR0ZW1wdF9pZD1hdHRlbXB0LmF0dGVtcHRfaWQpKQogICAgICAgICAgICBydW50aW1lX2NvbnRleHQgPSBfbWF0ZXJpYWxpemVfZXhlY3V0aW9uX2NvbnRleHQoCiAgICAgICAgICAgICAgICBhdHRlbXB0LAogICAgICAgICAgICAgICAgZXhlY3V0aW9uX2NvbnRleHQsCiAgICAgICAgICAgICAgICBjb250ZXh0X2ZhY3RvcnksCiAgICAgICAgICAgICkKICAgICAgICAgICAgaGVhcnRiZWF0ID0gc2VsZi5fc3RhcnRfaGVhcnRiZWF0KGF0dGVtcHQuYXR0ZW1wdF9pZCwgdG9rZW4pCiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgICAgICByZXN1bHQgPSBhd2FpdCBzZWxmLl9ydW50aW1lLmV4ZWN1dGUoCiAgICAgICAgICAgICAgICAgICAgICAgIHdvcmtfaXRlbSwKICAgICAgICAgICAgICAgICAgICAgICAgcnVudGltZV9jb250ZXh0LAogICAgICAgICAgICAgICAgICAgICAgICBleGVjdXRpb25faWQ9YXR0ZW1wdC5hdHRlbXB0X2lkLAogICAgICAgICAgICAgICAgICAgICAgICBleGVjdXRvcj1leGVjdXRvciwKICAgICAgICAgICAgICAgICAgICAgICAgdGltZW91dF9zPXRpbWVvdXRfcywKICAgICAgICAgICAgICAgICAgICApCiAgICAgICAgICAgICAgICBmaW5hbGx5OgogICAgICAgICAgICAgICAgICAgIGF3YWl0IHNlbGYuX3N0b3BfaGVhcnRiZWF0KGhlYXJ0YmVhdCkKICAgICAgICAgICAgZXhjZXB0IEV4ZWN1dGlvbllpZWxkZWQgYXMgZXhjOgogICAgICAgICAgICAgICAgdGVybWluYWwgPSBhd2FpdCBzZWxmLl90ZXJtaW5hbGl6ZSgKICAgICAgICAgICAgICAgICAgICBhdHRlbXB0LmF0dGVtcHRfaWQsCiAgICAgICAgICAgICAgICAgICAgQXR0ZW1wdFN0YXR1cy5ZSUVMREVELAogICAgICAgICAgICAgICAgICAgIGZlbmNpbmdfdG9rZW49dG9rZW4sCiAgICAgICAgICAgICAgICAgICAgcmVzdWx0PWV4Yy5hc19yZXN1bHQoKSwKICAgICAgICAgICAgICAgICkKICAgICAgICAgICAgICAgIGF3YWl0IHNlbGYuX3JlY29uY2lsZSh0ZXJtaW5hbCkKICAgICAgICAgICAgICAgIHJldHVybiB0ZXJtaW5hbAogICAgICAgICAgICBleGNlcHQgKGFzeW5jaW8uQ2FuY2VsbGVkRXJyb3IsIFJ1bnRpbWVEZWFkbGluZUV4Y2VlZGVkLCBFeGNlcHRpb24pIGFzIGV4YzoKICAgICAgICAgICAgICAgIHN0YXR1cywgY2F1c2UsIGVycm9yID0gX2ZhaWx1cmVfZGlzcG9zaXRpb24oZXhjKQogICAgICAgICAgICAgICAgdGVybWluYWwgPSBhd2FpdCBzZWxmLl90ZXJtaW5hbGl6ZSgKICAgICAgICAgICAgICAgICAgICBhdHRlbXB0LmF0dGVtcHRfaWQsCiAgICAgICAgICAgICAgICAgICAgc3RhdHVzLAogICAgICAgICAgICAgICAgICAgIGZlbmNpbmdfdG9rZW49dG9rZW4sCiAgICAgICAgICAgICAgICAgICAgcmVzdWx0PWF0dGVtcHRfZXZpZGVuY2Vfb2YoZXhjKSwKICAgICAgICAgICAgICAgICAgICBlcnJvcj1lcnJvciwKICAgICAgICAgICAgICAgICkKICAgICAgICAgICAgICAgIGF3YWl0IHNlbGYuX3JlY29uY2lsZSh0ZXJtaW5hbCwgY2FuY2VsbGF0aW9uPWNhdXNlKQogICAgICAgICAgICAgICAgcmFpc2UKICAgICAgICAgICAgdGVybWluYWwgPSBhd2FpdCBzZWxmLl90ZXJtaW5hbGl6ZSgKICAgICAgICAgICAgICAgIGF0dGVtcHQuYXR0ZW1wdF9pZCwKICAgICAgICAgICAgICAgIEF0dGVtcHRTdGF0dXMuQ09NUExFVEVELAogICAgICAgICAgICAgICAgZmVuY2luZ190b2tlbj10b2tlbiwKICAgICAgICAgICAgICAgIHJlc3VsdD1yZXN1bHQsCiAgICAgICAgICAgICkKICAgICAgICAgICAgaWYgcmVjb25jaWxlX2xvZ2ljYWw6CiAgICAgICAgICAgICAgICBhd2FpdCBzZWxmLl9yZWNvbmNpbGUodGVybWluYWwpCiAgICAgICAgICAgIHJldHVybiB0ZXJtaW5hbAoKIiIiCnAud3JpdGVfdGV4dChzWzpzdGFydF0gKyByZXBsYWNlbWVudCArIHNbZW5kOl0pCg==' | base64 -d > /tmp/patch640.py
+          python /tmp/patch640.py
+          git add packages/maistro-core/src/maistro/runs/execution.py
+      - name: Verify combined semantics
+        shell: bash
+        run: |
+          uv sync --locked --extra dev
+          uv run alembic upgrade head
+          uv run ruff format packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/consumption.py packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution_is_correlated.py
+          uv run ruff check packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/consumption.py packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution_is_correlated.py
+          uv run pytest packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution_is_correlated.py -q
+      - name: Commit synchronized tree
+        shell: bash
+        run: |
+          git rm .github/workflows/tmp-640-sync-latest.yml
+          git add -A
+          git commit -m 'merge: refresh #640 onto latest develop'
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
