@@ -52,6 +52,12 @@ The canonical governed effect chain is:
 9. Historical records remain interpretable after ontology evolution. Breaking semantic changes require a new ontology version and an explicit compatibility/migration rule.
 10. RSI is not an M1 product-convergence blocker, but when it converges in M5 it must consume this contract rather than establish a separate shared model.
 
+## Executable enforcement
+
+`packages/maistro-core/tests/fitness/test_shared_interop_ontology.py` is the blocking conformance surface for ontology v1. It validates the machine contract's semantic version, canonical owners and identities, parent/scope relationships, exact required lineage, M1/M5 consumer assignments, and agreement with this document's shared-identity table and two canonical chains.
+
+The conformance suite also contains planted regressions. A conflicting owner or identity, an unknown or duplicate lineage edge, a lineage relationship that disagrees with concept metadata, a missing required consumer, or documentation drift must make the fitness suite fail. This enforcement protects the contract itself; #460 owns prevention of newly introduced product-local universal owners, and #459 owns live cross-product behavioral parity through real product/store boundaries.
+
 ## M1 interoperability proof
 
 M1 product convergence is not complete merely because each product can execute independently against pieces of the spine. At minimum, the parity suite owned by #459 must prove that a Builders-created Graph/Run can be listed and interpreted by Conductor using the same canonical identities and semantics, without product-specific semantic reconstruction.
@@ -60,6 +66,6 @@ Schedules, Conductor chat/voice, and Evolve must ultimately enter the same Run u
 
 ## Evolution policy
 
-The machine-readable contract carries a semantic version. Compatible additive changes increment the minor version. Any change that alters an existing concept's identity, owner, lifecycle meaning, or required lineage is breaking and requires a new major version plus the compatibility policy owned by #461.
+The machine-readable contract carries a semantic version. Compatible additive changes increment the minor version. Any change that alters an existing concept's identity, owner, lifecycle meaning, or required lineage is breaking and requires a new ontology version and an explicit compatibility/migration rule owned by #461.
 
 During M1, #460 prevents new universal owners or side runtimes from being introduced as an implicit way around this ontology.
