@@ -13,11 +13,6 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from adapters import task_backend as task_backend_module  # noqa: E402
-from adapters.task_backend import MaistroServerTaskBackend  # noqa: E402
-from maistro.tasks.http_contract import WORKSPACE_ID_HEADER  # noqa: E402
-from maistro.tasks.models import TaskCreate  # noqa: E402
-
 
 def _task_body() -> dict[str, Any]:
     return {
@@ -36,10 +31,21 @@ def _task_body() -> dict[str, Any]:
 
 
 async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch) -> None:
+    from adapters import task_backend as task_backend_module
+    from adapters.task_backend import MaistroServerTaskBackend
+    from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
+    from maistro.tasks.models import TaskCreate
+
     seen_headers: dict[str, str] = {}
 
     class _Client:
-        async def post(self, url: str, *, headers: dict[str, str], json: object) -> httpx.Response:
+        async def post(
+            self,
+            url: str,
+            *,
+            headers: dict[str, str],
+            json: object,
+        ) -> httpx.Response:
             del json
             seen_headers.update(headers)
             return httpx.Response(
@@ -68,10 +74,21 @@ async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch)
 
 
 async def test_unscoped_submission_does_not_fabricate_a_workspace_header(monkeypatch) -> None:
+    from adapters import task_backend as task_backend_module
+    from adapters.task_backend import MaistroServerTaskBackend
+    from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
+    from maistro.tasks.models import TaskCreate
+
     seen_headers: dict[str, str] = {}
 
     class _Client:
-        async def post(self, url: str, *, headers: dict[str, str], json: object) -> httpx.Response:
+        async def post(
+            self,
+            url: str,
+            *,
+            headers: dict[str, str],
+            json: object,
+        ) -> httpx.Response:
             del json
             seen_headers.update(headers)
             return httpx.Response(
