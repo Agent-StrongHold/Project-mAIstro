@@ -407,6 +407,17 @@ def _utc_text(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat()
 
 
+def _text(row: dict[str, Any], name: str) -> str:
+    """A nullable text column as the empty string the dataclass field expects.
+
+    Eight fields spelled `r.get(name, "") or ""` inline; adding the three
+    provenance columns to that made nine and carried `_row_to_outcome` past the
+    complexity ceiling. One named rule instead — which is what the ceiling was
+    asking for (#709).
+    """
+    return str(row.get(name) or "")
+
+
 def _row_to_outcome(r: dict[str, Any]) -> Outcome:
     """Map a row to an `Outcome`, including every column the table now has.
 
@@ -425,7 +436,7 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         success=bool(r["success"]),
         error_type=r.get("error_type", ""),
         response_time_ms=r.get("response_time_ms", 0),
-        org_id=r.get("org_id", "") or "",
+        org_id=_text(r, "org_id"),
         team_id=r.get("team_id", ""),
         user_id=r.get("user_id", ""),
         agent_id=r.get("agent_id") or None,
@@ -434,14 +445,14 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         charged_microchips=r.get("charged_microchips", 0),
         pricing_version=r.get("pricing_version", ""),
         created_at=datetime.fromisoformat(r["created_at"]),
-        project_id=r.get("project_id", "") or "",
-        dag_id=r.get("dag_id", "") or "",
-        dag_run_id=r.get("dag_run_id", "") or "",
-        node_id=r.get("node_id", "") or "",
-        thumb=r.get("thumb", "") or "",
-        thumb_comment=r.get("thumb_comment", "") or "",
+        project_id=_text(r, "project_id"),
+        dag_id=_text(r, "dag_id"),
+        dag_run_id=_text(r, "dag_run_id"),
+        node_id=_text(r, "node_id"),
+        thumb=_text(r, "thumb"),
+        thumb_comment=_text(r, "thumb_comment"),
         eval_judge_score=r.get("eval_judge_score"),
-        run_id=r.get("run_id") or "",
-        node_run_id=r.get("node_run_id") or "",
-        attempt_id=r.get("attempt_id") or "",
+        run_id=_text(r, "run_id"),
+        node_run_id=_text(r, "node_run_id"),
+        attempt_id=_text(r, "attempt_id"),
     )
