@@ -16,6 +16,7 @@ from maistro.graph.definitions import Edge, Graph, Node
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
+    Attempt,
     AttemptStatus,
     CancellationCause,
     RunStatus,
@@ -89,9 +90,8 @@ class CanvasCanonicalExecution:
             runtime=runtime or PythonExecutionRuntime(),
         )
         # Canvas's own worker lease is deliberately separate from the canonical
-        # Attempt lease. If that worker disappears after exhausting the Canvas
-        # retry budget, the adapter still has to settle the stranded physical
-        # Attempt before the Run can honestly become terminal.
+        # Attempt lease. If that worker disappears, the adapter must still fence
+        # the physical Attempt before a replacement try or terminal receipt.
         self._reconciler = AttemptLifecycleReconciler(run_store)
 
     async def admit(
@@ -205,11 +205,17 @@ class CanvasCanonicalExecution:
                 None,
             )
             if active is not None:
-                # A Canvas lease was reclaimed, so this physical try is no longer
-                # the try allowed to publish. Runtime cancellation may have no
-                # live task after a worker loss; terminal settlement for the
-                # exhausted-retry case is handled explicitly in fail().
-                await self._service.cancel_attempt(active.attempt_id)
+                # The Canvas lease was reclaimed but the physical Attempt can
+                # still say RUNNING after a dead worker. Settle/fence it first;
+                # then re-enter from persisted truth. If the old worker actually
+                # completed in the race, the recursive read returns that result
+                # instead of issuing a duplicate provider effect.
+                await self._settle_abandoned_attempt(
+                    active,
+                    error="Canvas worker lease was reclaimed before retry",
+                    cancellation=CancellationCause.RECOVERED,
+                )
+                return await self.execute_stage(run_id, stage, operation)
             attempt = await self._service.retry_node(
                 node_run.node_run_id,
                 None,
@@ -226,7 +232,7 @@ class CanvasCanonicalExecution:
         )
 
     async def cancel(self, run_id: str) -> None:
-        """Cancel any live physical try and terminalize the canonical Run."""
+        """Cancel live physical work and terminalize the canonical Run."""
 
         run = await self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
@@ -238,7 +244,11 @@ class CanvasCanonicalExecution:
                 None,
             )
             if active is not None:
-                await self._service.cancel_attempt(active.attempt_id)
+                await self._settle_abandoned_attempt(
+                    active,
+                    error="Canvas generation cancelled",
+                    cancellation=CancellationCause.REQUESTED,
+                )
         refreshed = await self._require_run(run_id)
         if refreshed.status not in TERMINAL_RUN_STATUSES:
             await self._runs.transition_run(run_id, RunStatus.CANCELLED)
@@ -273,23 +283,53 @@ class CanvasCanonicalExecution:
                 (attempt for attempt in reversed(attempts) if attempt.status not in TERMINAL_ATTEMPT_STATUSES),
                 None,
             )
-            if active is None:
-                continue
-            lease = active.execution_lease
-            if lease is None:
-                raise RunIntegrityError(
-                    f"active Canvas Attempt {active.attempt_id!r} has no execution lease"
+            if active is not None:
+                await self._settle_abandoned_attempt(
+                    active,
+                    error=error,
+                    cancellation=CancellationCause.RECOVERED,
                 )
+
+    async def _settle_abandoned_attempt(
+        self,
+        attempt: Attempt,
+        *,
+        error: str,
+        cancellation: CancellationCause,
+    ) -> None:
+        """Best-effort stop, then durably fence one stale physical Attempt."""
+
+        with contextlib.suppress(Exception):
+            await self._service.cancel_attempt(attempt.attempt_id)
+
+        persisted = await self._runs.get_attempt(attempt.attempt_id)
+        if persisted is None:
+            raise RunIntegrityError(f"Canvas Attempt {attempt.attempt_id!r} disappeared")
+        if persisted.status in TERMINAL_ATTEMPT_STATUSES:
+            await self._reconciler.reconcile(persisted, cancellation=cancellation)
+            return
+
+        lease = persisted.execution_lease
+        if lease is None:
+            raise RunIntegrityError(
+                f"active Canvas Attempt {persisted.attempt_id!r} has no execution lease"
+            )
+        try:
             terminal = await self._runs.transition_attempt(
-                active.attempt_id,
+                persisted.attempt_id,
                 AttemptStatus.CANCELLED,
                 error=error,
                 fencing_token=lease.fencing_token,
             )
-            await self._reconciler.reconcile(
-                terminal,
-                cancellation=CancellationCause.RECOVERED,
-            )
+        except Exception:
+            # The old worker may have won the terminal write after our read. Do
+            # not turn that benign race into a second effect; accept only a
+            # persisted terminal answer and re-raise every other failure.
+            raced = await self._runs.get_attempt(persisted.attempt_id)
+            if raced is None or raced.status not in TERMINAL_ATTEMPT_STATUSES:
+                raise
+            terminal = raced
+        await self._reconciler.reconcile(terminal, cancellation=cancellation)
 
     async def _require_run(self, run_id: str):
         run = await self._runs.get_run(run_id)
