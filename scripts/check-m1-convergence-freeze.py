@@ -392,6 +392,33 @@ def shared_owner_failures(
     return failures
 
 
+def _exception_plan_from_environment() -> str:
+    """Read the reviewed exception plan from explicit env or the PR event body.
+
+    The required Formal Conformance step invokes this script directly and only
+    passes ``--exception`` from the PR label. GitHub still exposes the event
+    payload to every step as ``GITHUB_EVENT_PATH``; reading the body here keeps
+    that existing entry point compatible without duplicating policy in YAML.
+    Missing or malformed evidence returns an empty plan, which fails closed when
+    an exception is actually needed.
+    """
+    explicit = os.environ.get("M1_CONVERGENCE_EXCEPTION_PLAN", "")
+    if explicit.strip():
+        return explicit
+
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return ""
+    try:
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    pull_request = event.get("pull_request")
+    if not isinstance(pull_request, dict):
+        return ""
+    return str(pull_request.get("body") or "")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="git ref for the PR base")
@@ -412,7 +439,7 @@ def main() -> int:
             current,
             base,
             exception=args.exception,
-            exception_plan=os.environ.get("M1_CONVERGENCE_EXCEPTION_PLAN", ""),
+            exception_plan=_exception_plan_from_environment(),
             policy=policy,
         )
     )
