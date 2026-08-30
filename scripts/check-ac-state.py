@@ -61,17 +61,26 @@ _CANONICAL_REVIEW_BASE = "develop"
 _ORIGINAL_SLACK_POLICY = _impl._slack_this_run_enforces
 
 
+def _direct_front_door() -> bool:
+    """Whether this module is the invoked script rather than an imported test shim."""
+    try:
+        return Path(sys.argv[0]).resolve() == Path(__file__).resolve()
+    except OSError:
+        return False
+
+
 def _canonical_develop_pr_ci() -> bool:
     """Whether this is the proven queued review path, not merely a PR-shaped run.
 
     The live repository ruleset is the deployment proof: ``develop`` has strict
     required-status freshness and an active SQUASH merge queue. These environment
     facts scope the relaxed review policy to that exact deployment. Local tests,
-    forks, synthetic invocations, and other branches retain the implementation's
+    forks, synthetic invocations, and imported callers retain the implementation's
     conservative exact-banking rule.
     """
     return (
-        os.environ.get("GITHUB_ACTIONS") == "true"
+        _direct_front_door()
+        and os.environ.get("GITHUB_ACTIONS") == "true"
         and os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
         and os.environ.get("GITHUB_REPOSITORY") == _CANONICAL_REPOSITORY
         and os.environ.get("GITHUB_BASE_REF") == _CANONICAL_REVIEW_BASE
