@@ -246,7 +246,12 @@ class LLMJudgeComparator:
 
 @runtime_checkable
 class CheckpointStore(Protocol):
-    """Append-only store of ADR-056 task checkpoints."""
+    """Append-only store of ADR-056 task checkpoints, keyed by `task_id`.
+
+    The reached one. `maistro.events.checkpoints.CheckpointStore` shares this
+    name and no methods -- `append`/`get`/`latest`/`list_run` over Run-keyed
+    snapshots -- and is superseded and unconstructed (ADR-083026-ebcb).
+    """
 
     async def save(self, checkpoint: TaskCheckpoint) -> None: ...
 

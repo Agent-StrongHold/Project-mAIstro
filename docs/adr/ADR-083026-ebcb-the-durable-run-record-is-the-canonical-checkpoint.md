@@ -21,7 +21,8 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/events/test_checkpoint_contract_states_its_reach.py
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'

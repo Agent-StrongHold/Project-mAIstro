@@ -97,6 +97,7 @@
     "maistro.delivery.protocols",
     "maistro.delivery.registry",
     "maistro.delivery.types",
+    "maistro.events.checkpoints",
     "maistro.events.handlers",
     "maistro.events.recipes",
     "maistro.governance",

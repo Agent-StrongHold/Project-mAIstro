@@ -1,4 +1,14 @@
-"""Canonical events, legacy event bus, durable log, and trigger processing."""
+"""Canonical events, legacy event bus, durable log, and trigger processing.
+
+`maistro.events.checkpoints` is deliberately not re-exported here. Nothing
+imported those names from this package -- the module's only direct importer is
+its own test -- so the re-export published a public surface for a contract with
+no consumer, and it was what made the reachability walker count that module as
+reached (`_imports` treats an `ImportFrom` in a package `__init__` as an edge
+like any other). Dropping it lets the module be classified in the ledger with
+every other unwired module, and retires the tuple of method references that used
+to sit here keeping its store's methods looking used (ADR-083026-ebcb, #729).
+"""
 
 from maistro.events.bus import (
     ActionHandler,
@@ -8,20 +18,6 @@ from maistro.events.bus import (
     Trigger,
     TriggerCondition,
     get_event_bus,
-)
-from maistro.events.checkpoints import (
-    CHECKPOINT_SCHEMA_VERSION,
-    SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS,
-    Checkpoint,
-    CheckpointError,
-    CheckpointNotFoundError,
-    CheckpointRef,
-    CheckpointStore,
-    CheckpointVersionError,
-    InMemoryCheckpointStore,
-    SqliteCheckpointStore,
-    checkpoint_created_event,
-    resolve_checkpoint,
 )
 from maistro.events.durable_log import (
     EventLogStore,
@@ -68,20 +64,6 @@ _EVENT_STORE_STREAM_READS = (
     InMemoryEventStore.list_stream,
     SqliteEventStore.list_stream,
 )
-_CHECKPOINT_STORE_OPERATIONS = (
-    CheckpointStore.append,
-    CheckpointStore.get,
-    CheckpointStore.latest,
-    CheckpointStore.list_run,
-    InMemoryCheckpointStore.append,
-    InMemoryCheckpointStore.get,
-    InMemoryCheckpointStore.latest,
-    InMemoryCheckpointStore.list_run,
-    SqliteCheckpointStore.append,
-    SqliteCheckpointStore.get,
-    SqliteCheckpointStore.latest,
-    SqliteCheckpointStore.list_run,
-)
 _OUTBOX_OPERATIONS = (
     SqliteEventOutbox.ensure_schema,
     SqliteEventOutbox.stage,
@@ -90,17 +72,9 @@ _OUTBOX_OPERATIONS = (
 )
 
 __all__ = [
-    "CHECKPOINT_SCHEMA_VERSION",
     "HANDLER_FAILED_EVENT",
     "MAX_ATTEMPTS",
-    "SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS",
     "ActionHandler",
-    "Checkpoint",
-    "CheckpointError",
-    "CheckpointNotFoundError",
-    "CheckpointRef",
-    "CheckpointStore",
-    "CheckpointVersionError",
     "Event",
     "EventBus",
     "EventCategory",
@@ -111,7 +85,6 @@ __all__ = [
     "HandlerCallError",
     "HandlerCaller",
     "HandlerInvocation",
-    "InMemoryCheckpointStore",
     "InMemoryEventLog",
     "InMemoryEventStore",
     "InMemoryInvocationStore",
@@ -119,7 +92,6 @@ __all__ = [
     "InvocationStatus",
     "InvocationStore",
     "LoggedEvent",
-    "SqliteCheckpointStore",
     "SqliteEventLog",
     "SqliteEventOutbox",
     "SqliteEventStore",
@@ -130,9 +102,7 @@ __all__ = [
     "TriggerDefinition",
     "TriggerStore",
     "append_from_bus_event",
-    "checkpoint_created_event",
     "get_event_bus",
     "pattern_matches",
     "process_events",
-    "resolve_checkpoint",
 ]

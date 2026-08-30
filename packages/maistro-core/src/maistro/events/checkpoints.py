@@ -1,8 +1,31 @@
-"""Canonical checkpoint contract and durable persistence.
+"""Canonical checkpoint contract and durable persistence. **Superseded.**
 
-Checkpoints are immutable execution snapshots scoped to one canonical Run. They
-carry opaque resumable state plus compatibility metadata and the canonical IDs
-needed to create a replacement Attempt after recovery.
+Checkpoints here are immutable execution snapshots scoped to one canonical Run.
+They carry opaque resumable state plus compatibility metadata and the canonical
+IDs needed to create a replacement Attempt after recovery.
+
+**Nothing in this repository constructs one.** No production module imports this
+module, the container wires none of these stores, and `canonical_checkpoints`
+appears in no revision under `alembic/versions`, so that table exists in no
+PostgreSQL deployment and has no twin. The store is SQLite-only and creates its
+own schema.
+
+**`DurableRunRecord` is the canonical checkpoint of a graph execution**, not this
+`Checkpoint` (ADR-083026-ebcb). That is the record `resume_durable_graph` reads,
+`CanonicalDurableRunStore` binds to canonical Run identity, and
+`GraphContinuationStore` persists with a real PostgreSQL twin. `container.py`
+already says so where it wires them: "a `DurableRunRecord` is a checkpoint of one
+graph execution and a `Run` is the execution's canonical identity".
+
+Kept rather than deleted because the schema-versioning and content-hash rules
+below are what a later consolidation would want to reuse, and discarding a
+specified contract is a larger decision than the one that superseded it. Read
+this as a design that lost, not as a description of what runs: no checkpoint row
+here exists anywhere, and nothing recovers from one.
+
+A third vocabulary exists and is genuinely reached: ADR-056's `TaskCheckpoint`
+in `maistro.tasks.checkpoint`, keyed by `task_id` and versioned by recipe rather
+than by canonical id, used from `orchestrator/waves/ensemble.py`.
 """
 
 from __future__ import annotations
@@ -161,7 +184,14 @@ def checkpoint_created_event(checkpoint: Checkpoint) -> EventEnvelope:
 
 @runtime_checkable
 class CheckpointStore(Protocol):
-    """Append-only persistence for canonical Checkpoint snapshots."""
+    """Append-only persistence for canonical Checkpoint snapshots.
+
+    Not `maistro.orchestrator.waves.ensemble.CheckpointStore`, which shares this
+    name and no methods: that one is `save`/`load`/`next_sequence` over ADR-056
+    `TaskCheckpoint`s keyed by `task_id`, and it is the one that actually runs.
+    This one is `append`/`get`/`latest`/`list_run` over Run-keyed snapshots, and
+    nothing constructs it (#729).
+    """
 
     async def append(self, checkpoint: Checkpoint) -> Checkpoint:
         """Persist a checkpoint idempotently and assign its Run sequence."""

@@ -633,6 +633,16 @@
       "modules": [
         "@tool/build-evidence"
       ]
+    },
+    {
+      "id": "superseded-canonical-checkpoint",
+      "subsystem": "Events and checkpoints",
+      "disposition": "RETIRE",
+      "rationale": "The canonical checkpoint contract that lost. ADR-083026-ebcb records that `DurableRunRecord` is the canonical checkpoint of a graph execution -- it is what `resume_durable_graph` reads and what `GraphContinuationStore` persists, with a real PostgreSQL twin -- so this module's `Checkpoint`, its stores and its `canonical_checkpoints` table are superseded. It was counted reachable until #729 only because `maistro.events.__init__` re-exported it; nothing imported those names. Kept rather than deleted because its schema-versioning and content-hash rules are what a later consolidation would reuse; retire it when that consolidation happens or when #62's checkpoint convergence closes.",
+      "modules": [
+        "maistro.events.checkpoints"
+      ],
+      "replaced_by": "maistro.graph.durable_runs DurableRunRecord + GraphContinuationStore (ADR-083026-ebcb)"
     }
   ]
 }
