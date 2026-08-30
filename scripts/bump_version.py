@@ -74,11 +74,31 @@ class Site:
             )
         return matches[0]
 
+    @staticmethod
+    def _replace_capture(new_version: str):
+        """Rewrite the capture group's span, and nothing else in the match.
+
+        This used to be `m.group(0).replace(m.group(1), new_version)`, which
+        replaces *every* occurrence of the old version inside the match. That
+        was safe only while no pattern could match more than the version
+        itself. An inter-package row now spans an optional upper bound too, so
+        a cap that happens to contain the version text moved with it:
+        `">=0.9.0,<10.9.0"` bumped to 1.0.0 became `">=1.0.0,<11.0.0"`,
+        silently widening a compatibility cap this script promises to leave
+        alone. Splicing by `span(1)` makes the capture the only thing that can
+        move (#660).
+        """
+
+        def _splice(match: re.Match[str]) -> str:
+            start, end = match.span(1)
+            whole, offset = match.group(0), match.start()
+            return whole[: start - offset] + new_version + whole[end - offset :]
+
+        return _splice
+
     def rewrite(self, new_version: str) -> None:
         text = self.path.read_text(encoding="utf-8")
-        new_text, count = self.pattern.subn(
-            lambda m: m.group(0).replace(m.group(1), new_version), text
-        )
+        new_text, count = self.pattern.subn(self._replace_capture(new_version), text)
         if count != 1:
             raise SystemExit(
                 f"{self.label}: expected exactly 1 match in {self.path}, found {count}"

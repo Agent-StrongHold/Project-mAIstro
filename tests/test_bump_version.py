@@ -110,6 +110,32 @@ class TestRewritingACappedBound:
 
         assert path.read_text(encoding="utf-8") == '    "maistro-core[bcrypt]>=1.0.0,<2",\n'
 
+    @pytest.mark.parametrize(
+        "declaration,expected",
+        [
+            ('"maistro-core>=0.9.0,<10.9.0"', '"maistro-core>=1.0.0,<10.9.0"'),
+            ('"maistro-core>=0.9.0,<0.9.05"', '"maistro-core>=1.0.0,<0.9.05"'),
+            ('"maistro-core>=0.9.0,<0.9.0"', '"maistro-core>=1.0.0,<0.9.0"'),
+        ],
+    )
+    def test_a_cap_containing_the_version_text_is_left_alone(
+        self, bump, tmp_path: Path, declaration, expected
+    ) -> None:
+        """The case the `<2` above cannot see, and the reason it is not enough.
+
+        Rewriting used to substitute the old version everywhere in the match,
+        which was safe only while a match could not span more than the version.
+        Once the row admits an upper bound, a cap that contains the same digits
+        moves with it: `<10.9.0` became `<11.0.0` (Codex, #660). A cap is a
+        compatibility statement, not a version site."""
+        path = tmp_path / "pyproject.toml"
+        path.write_text(declaration, encoding="utf-8")
+        site = bump.Site(path, bump._interpkg_pattern("maistro-core"), "inter-package dep")
+
+        site.rewrite("1.0.0")
+
+        assert path.read_text(encoding="utf-8") == expected
+
 
 class TestTheRegisteredCorpus:
     """Against the real tree, because registration is the claim #660 is about."""

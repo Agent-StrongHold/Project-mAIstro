@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +15
+  tests/: +18
 ---
 # claude-issue-660-conductor-version-bound-708b
 
@@ -10,7 +10,15 @@ covered only by `quality.yml` running `--check` against the real tree, which
 can say the 32 registered sites agree and cannot say anything about the 3 that
 were never registered (#660).
 
-Eight of the fifteen are negative cases. That ratio is the point rather than
+Three of the eighteen came from a Codex finding on the first push, and they
+are the ones worth reading: widening the row to admit a cap made the
+*rewrite* unsafe, because it substituted the old version everywhere in the
+match and a match could now span a cap. `>=0.9.0,<10.9.0` bumped to 1.0.0
+became `<11.0.0`. The original rewrite case used `<2`, which does not
+contain the version text and so could not see it — the same shape of hole
+this change exists to close, one level along.
+
+Eight of the remaining fifteen are negative cases. That ratio is the point rather than
 padding: the change widens an inter-package row to accept a version cap, and
 the way that goes wrong is "accepts a cap" quietly becoming "accepts anything",
 which only a declaration that must *not* match can detect. The rest cover the
