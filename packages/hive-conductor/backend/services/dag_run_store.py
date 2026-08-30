@@ -10,8 +10,16 @@ in v0.5; for now we group by the program_pulse session). Each run has
 ordered node events; the frontend reconstructs the live DAG state from
 them.
 
-v0.5 persists to postgres; v0 in-memory is sufficient for the live
-demo loop.
+Run records are durable: the store mirrors every mutation into
+`stores.dag_runs`, the same `JsonStore` registry that already backs
+missions, DAG definitions and dashboard layouts, so a run survives a
+restart and is readable from another replica (#697).
+
+SSE subscribers are not, and cannot be. A subscriber is an
+`asyncio.Queue` belonging to one open HTTP connection in one process;
+there is nothing to persist and nothing another replica could do with
+it. Only the record and its events are durable, which is what the
+"Recent runs" list reads.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ import contextlib
 import time
 import uuid
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 MAX_RUNS = 100
@@ -46,6 +54,51 @@ class DagRun:
     user_id: str = ""
     events: list[DagRunEvent] = field(default_factory=list)
     finished_at: float | None = None
+    dag_id: str = ""
+    #: "running" until the run reports otherwise. Declared, because the run
+    #: route used to assign `run.status` and `run.result` to a dataclass that
+    #: had neither -- Python attached both silently and `to_summary` read
+    #: neither, so a completed run never reported completion to the list
+    #: endpoint (#697).
+    status: str = "running"
+    result: dict[str, Any] | None = None
+    #: The canonical `Run` this execution is, when the caller has one.
+    #:
+    #: `POST /v1/dags/{id}/run` does not: it calls `execute_dag`, which mints
+    #: no canonical Run at all, so the id here stays empty on that path. That
+    #: convergence is #53's, not this change's -- the field exists so the run
+    #: record has somewhere to carry the identity the moment the execution
+    #: path produces one, rather than needing a schema change then.
+    canonical_run_id: str = ""
+
+    @classmethod
+    def from_record(cls, raw: dict[str, Any]) -> DagRun:
+        """Rebuild a run from its stored form."""
+        return cls(
+            id=raw["id"],
+            started_at=raw["started_at"],
+            user_id=raw.get("user_id", ""),
+            events=[DagRunEvent(**ev) for ev in raw.get("events", [])],
+            finished_at=raw.get("finished_at"),
+            dag_id=raw.get("dag_id", ""),
+            status=raw.get("status", "running"),
+            result=raw.get("result"),
+            canonical_run_id=raw.get("canonical_run_id", ""),
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        """The stored form: everything `from_record` needs, and nothing else."""
+        return {
+            "id": self.id,
+            "started_at": self.started_at,
+            "user_id": self.user_id,
+            "finished_at": self.finished_at,
+            "dag_id": self.dag_id,
+            "status": self.status,
+            "result": self.result,
+            "canonical_run_id": self.canonical_run_id,
+            "events": [asdict(ev) for ev in self.events],
+        }
 
     def to_summary(self) -> dict[str, Any]:
         nodes_seen: dict[str, str] = {}
@@ -60,6 +113,9 @@ class DagRun:
         return {
             "id": self.id,
             "user_id": self.user_id,
+            "dag_id": self.dag_id,
+            "status": self.status,
+            "canonical_run_id": self.canonical_run_id,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "event_count": len(self.events),
@@ -83,15 +139,64 @@ class DagRun:
 
 
 class DagRunStore:
-    """In-memory store of DAG runs + per-run SSE subscribers."""
+    """DAG runs, durable when given a records store, plus per-run SSE subscribers.
 
-    def __init__(self, *, max_runs: int = MAX_RUNS) -> None:
+    `records` is the `JsonStore` the run history is written to. Passing `None`
+    keeps the pre-#697 behaviour -- history lives only in this process and is
+    lost on restart -- which is what the tests and a Conductor started without
+    persistence get. `load()` is what brings a restarted process back.
+    """
+
+    def __init__(self, *, max_runs: int = MAX_RUNS, records: Any | None = None) -> None:
         self._runs: dict[str, DagRun] = {}
         self._order: deque[str] = deque(maxlen=max_runs)
         self._subscribers: dict[str, list[asyncio.Queue]] = defaultdict(list)
         self._lock = asyncio.Lock()
+        self._records = records
+        if records is not None:
+            self.load()
 
-    async def start_run(self, *, user_id: str = "", run_id: str | None = None) -> DagRun:
+    @property
+    def is_durable(self) -> bool:
+        """Whether history written here outlives the process.
+
+        Read by the list endpoint so the API can say which it is, rather than
+        presenting a volatile buffer and a durable history identically (#333).
+        """
+        return self._records is not None
+
+    def load(self) -> None:
+        """Rehydrate the working set from the records store, newest last.
+
+        Ordering is restored from `started_at` rather than from whatever order
+        the store iterates in: `_order` is a bounded deque and the eviction it
+        drives has to drop the *oldest* run, which a dict's insertion order
+        would not reliably give back after a reload.
+        """
+        if self._records is None:
+            return
+        runs = [DagRun.from_record(raw) for raw in self._records.values()]
+        runs.sort(key=lambda r: r.started_at)
+        keep = runs[-self._order.maxlen :] if self._order.maxlen else runs
+        self._runs = {run.id: run for run in keep}
+        self._order = deque((run.id for run in keep), maxlen=self._order.maxlen)
+
+    def _persist(self, run: DagRun) -> None:
+        if self._records is not None:
+            self._records[run.id] = run.to_record()
+
+    def _forget(self, run_id: str) -> None:
+        if self._records is not None:
+            self._records.pop(run_id, None)
+
+    async def start_run(
+        self,
+        *,
+        user_id: str = "",
+        run_id: str | None = None,
+        dag_id: str = "",
+        canonical_run_id: str = "",
+    ) -> DagRun:
         """Begin a new run (correlation key). Returns the DagRun object.
 
         Evicts the oldest run from `_runs` dict + `_subscribers` map when the
@@ -100,7 +205,13 @@ class DagRunStore:
         BEFORE the deque autoshifts so subscribers + run records stay in sync.
         """
         rid = run_id or uuid.uuid4().hex[:12]
-        run = DagRun(id=rid, started_at=time.time(), user_id=user_id)
+        run = DagRun(
+            id=rid,
+            started_at=time.time(),
+            user_id=user_id,
+            dag_id=dag_id,
+            canonical_run_id=canonical_run_id,
+        )
         async with self._lock:
             # If we're at capacity, manually evict before append (otherwise
             # the deque drops eldest silently and our dict grows unbounded).
@@ -108,8 +219,13 @@ class DagRunStore:
                 stale = self._order.popleft()
                 self._runs.pop(stale, None)
                 self._subscribers.pop(stale, None)
+                # The record goes with it. A row outliving the working set
+                # would come back on the next `load()` and re-expand history
+                # past the bound the deque exists to hold.
+                self._forget(stale)
             self._runs[rid] = run
             self._order.append(rid)
+        self._persist(run)
         return run
 
     async def append_event(
@@ -133,16 +249,35 @@ class DagRunStore:
             run.events.append(ev)
             if len(run.events) > MAX_EVENTS_PER_RUN:
                 run.events = run.events[-MAX_EVENTS_PER_RUN:]
+            self._persist(run)
         # Fan out to SSE subscribers.
         for q in self._subscribers.get(run_id, []):
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(ev)
         return ev
 
-    async def finish_run(self, run_id: str) -> None:
+    async def finish_run(
+        self,
+        run_id: str,
+        *,
+        status: str = "completed",
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        """Mark a run finished, with the outcome it finished with.
+
+        `status` and `result` are parameters rather than attributes the caller
+        assigns, which is the defect this closes: the run route set
+        `run.status` and `run.result` on a dataclass declaring neither, so
+        Python attached them, `to_summary` never read them, and a completed run
+        reported nothing to the list endpoint (#697).
+        """
         run = self._runs.get(run_id)
         if run and run.finished_at is None:
             run.finished_at = time.time()
+            run.status = status
+            if result is not None:
+                run.result = result
+            self._persist(run)
 
     def list_runs(self, *, limit: int = 25) -> list[dict[str, Any]]:
         recent = list(self._order)[-limit:]
@@ -180,6 +315,19 @@ def get_dag_run_store() -> DagRunStore:
     global _global_store
     if _global_store is None:
         _global_store = DagRunStore()
+    return _global_store
+
+
+def configure_dag_run_store(records: Any) -> DagRunStore:
+    """Rebuild the process store on a durable records store, and load it.
+
+    Called from Conductor startup once `stores.configure_persistence` has run.
+    This store had no setter at all before -- not even the unused kind the
+    other families carry -- so there was no seam through which durability
+    could arrive (#697).
+    """
+    global _global_store
+    _global_store = DagRunStore(records=records)
     return _global_store
 
 

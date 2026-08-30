@@ -92,6 +92,15 @@ class Foundation:
             stores.configure_persistence(persisted)
             stores.initialize_stores()
             configure_settings(PersistedSettingsRecordStore(persisted, self.state.flush))
+
+            # After `initialize_stores()`, which is what fills `stores.dag_runs`
+            # from SQLite. Building the run store before that would rehydrate
+            # from an empty registry and then never look again, so a restart
+            # would still show no history -- durable rows, invisible (#697).
+            from services.dag_run_store import configure_dag_run_store
+
+            configure_dag_run_store(stores.dag_runs)
+
             self.state.flush()
             logger.info("Stores wired to SQLite persistence")
         except Exception as exc:

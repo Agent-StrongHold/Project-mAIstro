@@ -266,12 +266,10 @@ async def run_dag(dag_id: str) -> dict:
 
         _start = _time.monotonic()
         store = get_dag_run_store()
-        run = await store.start_run(run_id=exec_id)
+        await store.start_run(run_id=exec_id, dag_id=dag_id)
         # Human-initiated run from the UI — interactive isolation floor (ADR-093)
         result = await execute_dag(dag_data, execution_mode="interactive")
         _elapsed_ms = int((_time.monotonic() - _start) * 1000)
-        run.status = "completed"
-        run.result = result
         # Store node results as events for eval-judge and UI
         for nid, nr in result.get("node_results", {}).items():
             await store.append_event(
@@ -305,11 +303,27 @@ async def run_dag(dag_id: str) -> dict:
                 )
         except Exception:
             pass
+        # After the events, so a reader that sees `completed` sees the events
+        # that justify it. This used to assign `run.status` and `run.result`
+        # to a dataclass that declared neither, so the run stayed `running`
+        # with no `finished_at` forever (#697).
+        await store.finish_run(exec_id, status="completed", result=result)
         return {"status": "completed", "execution_id": exec_id, "result": result}
     except Exception as exc:
+        import contextlib
         import logging
 
         logging.getLogger("hive.dags").warning("Graph execution failed: %s", exc)
+        # The failure branch left the run `running` with no `finished_at` for
+        # the life of the process -- the same defect as the success branch,
+        # and the one a reader is more likely to go looking for. Suppressed
+        # because the response the caller gets must not depend on whether the
+        # history write succeeded; the execution already failed and that is
+        # what is being reported.
+        with contextlib.suppress(Exception):
+            from services.dag_run_store import get_dag_run_store
+
+            await get_dag_run_store().finish_run(exec_id, status="failed")
         return {"status": "failed", "execution_id": exec_id, "error": str(exc)}
 
 
