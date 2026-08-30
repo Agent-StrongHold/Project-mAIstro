@@ -1,0 +1,41 @@
+name: temporary #640 normalize cursor carrier
+
+on:
+  push:
+    paths:
+      - .github/workflows/tmp-640-fix-cursor-carrier.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+      - name: Make the merge proof use the durable JSON cursor representation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('.github/workflows/tmp-640-sync-develop-v2.yml')
+          s = p.read_text()
+          old = '''s = s.replace(marker, marker + 'RunCursor = tuple[datetime, str]\\n\\n\\ndef run_cursor_key(run: Run) -> RunCursor:\\n    """Stable oldest-first key for keyset scans over mutable Run queues."""\\n    return (run.created_at, run.run_id)\\n\\n\\n', 1)'''
+          new = '''s = s.replace(marker, marker + 'RunCursor = tuple[str, str]\\n\\n\\ndef run_cursor_key(run: Run) -> RunCursor:\\n    """Stable oldest-first key using the exact durable JSON timestamp."""\\n    created_at = run.model_dump(mode="json")["created_at"]\\n    if not isinstance(created_at, str):\\n        raise RunIntegrityError("Run.created_at did not serialize as JSON text")\\n    return (created_at, run.run_id)\\n\\n\\n', 1)'''
+          if old not in s:
+              raise SystemExit('cursor helper patch anchor missing')
+          s = s.replace(old, new, 1)
+          s = s.replace('after: tuple[datetime, str] | None = None,\\n', 'after: tuple[str, str] | None = None,\\n')
+          old_rm = 'git rm .github/workflows/tmp-640-sync-develop.yml .github/workflows/tmp-640-sync-develop-v2.yml'
+          new_rm = old_rm + ' .github/workflows/tmp-640-fix-cursor-carrier.yml'
+          if old_rm not in s:
+              raise SystemExit('carrier cleanup anchor missing')
+          p.write_text(s.replace(old_rm, new_rm, 1))
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/tmp-640-sync-develop-v2.yml
+          git commit -m 'chore: use durable JSON key for #640 cursor proof'
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
