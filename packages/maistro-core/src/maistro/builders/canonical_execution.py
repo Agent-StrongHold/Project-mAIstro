@@ -114,6 +114,80 @@ def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateD
     return _GateDecision(route="revise")
 
 
+def _skip_output(
+    node: PipelineNode,
+    run: Any,
+    dispatcher: PipelineDispatcher,
+) -> _StageOutput | None:
+    should_skip = node.skip_if is not None and node.skip_if(run.context)
+    if not should_skip and dispatcher.supports(node.agent_name, node.name):
+        return None
+    _mark_skipped(run, node.name)
+    return _StageOutput(stage_name=node.name, skipped=True)
+
+
+def _reserve_iteration(run: Any, budget: IterationBudget) -> None:
+    if budget.consume():
+        return
+    error = "iteration budget exhausted"
+    run.failed_stage_error = error
+    raise RuntimeError(error)
+
+
+async def _dispatch_stage(
+    node: PipelineNode,
+    run: Any,
+    dispatcher: PipelineDispatcher,
+    ctx: NodeContext,
+) -> Any:
+    prompt = _build_prompt(node.prompt_template, run.context)
+    try:
+        async with asyncio.timeout(node.timeout_seconds):
+            result = await dispatcher.run(
+                run_id=ctx.run_id,
+                node_name=node.name,
+                agent_name=node.agent_name,
+                prompt=prompt,
+                context=run.context,
+            )
+    except TimeoutError as exc:
+        error = f"Stage timed out after {node.timeout_seconds:.0f}s"
+        run.failed_stage_error = error
+        raise RuntimeError(error) from exc
+
+    if not result.ok:
+        run.failed_stage_error = result.error
+        raise RuntimeError(result.error or f"{node.name} failed")
+    return result
+
+
+async def _commit_stage_result(node: PipelineNode, run: Any, result: Any) -> None:
+    run.context[node.name] = result.output
+    if node.on_complete is not None:
+        await node.on_complete(run, result.output)
+    if str(run.status).startswith("failed at "):
+        raise RuntimeError(run.failed_stage_error or f"{node.name} failed")
+
+
+def _route_stage_result(
+    graph: PipelineGraph,
+    node: PipelineNode,
+    run: Any,
+    result: Any,
+) -> _StageOutput:
+    if node.gate is None or node.gate(run.context):
+        return _StageOutput(stage_name=node.name, text=result.output)
+
+    decision = _gate_decision(graph, node, run)
+    if decision.halt_error is not None:
+        raise RuntimeError(decision.halt_error)
+    return _StageOutput(
+        stage_name=node.name,
+        text=result.output,
+        route=decision.route,
+    )
+
+
 class _StageNode(BaseNode[_StageInput, _StageOutput]):
     kind: ClassVar[str] = _STAGE_KIND
     input_schema: ClassVar[type[BaseModel]] = _StageInput
@@ -139,64 +213,36 @@ class _StageNode(BaseNode[_StageInput, _StageOutput]):
         self._budget = budget
 
     async def _execute(self, inputs: _StageInput, ctx: NodeContext) -> _StageOutput:
-        node = self._node
-        run = self._run
+        skipped = _skip_output(self._node, self._run, self._dispatcher)
+        if skipped is not None:
+            return skipped
 
-        if node.skip_if is not None and node.skip_if(run.context):
-            _mark_skipped(run, node.name)
-            return _StageOutput(stage_name=node.name, skipped=True)
-
-        if not self._dispatcher.supports(node.agent_name, node.name):
-            _mark_skipped(run, node.name)
-            return _StageOutput(stage_name=node.name, skipped=True)
-
-        if not self._budget.consume():
-            error = "iteration budget exhausted"
-            run.failed_stage_error = error
-            raise RuntimeError(error)
-
-        prompt = _build_prompt(node.prompt_template, run.context)
-        try:
-            async with asyncio.timeout(node.timeout_seconds):
-                result = await self._dispatcher.run(
-                    run_id=ctx.run_id,
-                    node_name=node.name,
-                    agent_name=node.agent_name,
-                    prompt=prompt,
-                    context=run.context,
-                )
-        except TimeoutError as exc:
-            error = f"Stage timed out after {node.timeout_seconds:.0f}s"
-            run.failed_stage_error = error
-            raise RuntimeError(error) from exc
-
-        if not result.ok:
-            run.failed_stage_error = result.error
-            raise RuntimeError(result.error or f"{node.name} failed")
-
-        run.context[node.name] = result.output
-
-        if node.on_complete is not None:
-            await node.on_complete(run, result.output)
-
-        if str(run.status).startswith("failed at "):
-            raise RuntimeError(run.failed_stage_error or f"{node.name} failed")
-
-        if node.gate is not None and not node.gate(run.context):
-            decision = _gate_decision(self._graph, node, run)
-            if decision.halt_error is not None:
-                raise RuntimeError(decision.halt_error)
-            return _StageOutput(
-                stage_name=node.name,
-                text=result.output,
-                route=decision.route,
-            )
-
-        return _StageOutput(stage_name=node.name, text=result.output)
+        _reserve_iteration(self._run, self._budget)
+        result = await _dispatch_stage(self._node, self._run, self._dispatcher, ctx)
+        await _commit_stage_result(self._node, self._run, result)
+        return _route_stage_result(self._graph, self._node, self._run, result)
 
 
 def _roots(graph: PipelineGraph) -> list[PipelineNode]:
     return [node for node in graph if not node.depends_on]
+
+
+def _fanout_edges(
+    source: str,
+    targets: list[str],
+    *,
+    condition: str | None = None,
+) -> list[Edge]:
+    """Encode one canonical ready wave as one sequential edge plus parallel siblings."""
+    return [
+        Edge(
+            from_node=source,
+            to_node=target,
+            condition=condition,
+            metadata={"parallel": True} if index else {},
+        )
+        for index, target in enumerate(targets)
+    ]
 
 
 def _canonical_graph(
@@ -218,18 +264,23 @@ def _canonical_graph(
     ]
     edges: list[Edge] = []
     by_name = {node.name: node for node in graph}
+    successors: dict[str, list[str]] = {node.name: [] for node in graph}
 
     for node in graph:
         for dependency in node.depends_on:
-            predecessor = by_name[dependency]
-            edges.append(
-                Edge(
-                    from_node=_stage_node_id(dependency),
-                    to_node=_stage_node_id(node.name),
-                    condition="route == 'proceed'" if predecessor.gate is not None else None,
-                )
-            )
+            successors[dependency].append(node.name)
 
+    for predecessor_name, successor_names in successors.items():
+        predecessor = by_name[predecessor_name]
+        edges.extend(
+            _fanout_edges(
+                _stage_node_id(predecessor_name),
+                [_stage_node_id(name) for name in successor_names],
+                condition="route == 'proceed'" if predecessor.gate is not None else None,
+            )
+        )
+
+    for node in graph:
         if node.gate is not None and node.revise_target is not None:
             edges.append(
                 Edge(
@@ -254,8 +305,12 @@ def _canonical_graph(
                 metadata={"builders_control": True},
             ),
         )
-        for root in roots:
-            edges.append(Edge(from_node=_START_NODE_ID, to_node=_stage_node_id(root.name)))
+        edges.extend(
+            _fanout_edges(
+                _START_NODE_ID,
+                [_stage_node_id(root.name) for root in roots],
+            )
+        )
         entry = _START_NODE_ID
 
     return Graph(
