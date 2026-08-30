@@ -178,7 +178,7 @@ class CanvasCanonicalExecution:
                 raise RunIntegrityError(
                     f"completed Canvas NodeRun {node_run.node_run_id!r} has no completed Attempt"
                 )
-            return cast(T, completed.result)
+            return await self._project_stage_result(run_id, stage, cast(T, completed.result))
 
         await self._resume_for_execution(run_id)
         captured: list[T] = []
@@ -224,9 +224,9 @@ class CanvasCanonicalExecution:
                 executor_id=_CANVAS_EXECUTOR_ID,
             )
         if captured:
-            return captured[0]
+            return await self._project_stage_result(run_id, stage, captured[0])
         if attempt.status is AttemptStatus.COMPLETED:
-            return cast(T, attempt.result)
+            return await self._project_stage_result(run_id, stage, cast(T, attempt.result))
         raise RunIntegrityError(
             f"Canvas stage {stage!r} returned without a completed Attempt result"
         )
@@ -273,6 +273,28 @@ class CanvasCanonicalExecution:
         if run.status is not RunStatus.RUNNING:
             await self._resume_for_execution(run_id)
         await self._runs.transition_run(run_id, RunStatus.FAILED, error=error)
+
+    async def _project_stage_result(self, run_id: str, stage: str, result: T) -> T:
+        """Apply Canvas-only completion policy after physical evidence is durable.
+
+        Reference generation intentionally stops after the hero call when the
+        provider returns no URL. That is existing Canvas behavior and a completed
+        job receipt, not a request to execute three impossible refine stages.
+        Generic Run reconciliation cannot infer that conditional short-circuit
+        from the Graph alone, so Canvas closes the Run explicitly while leaving
+        the unexecuted stages absent rather than fabricating NodeRuns/Attempts.
+        """
+
+        if stage != "reference.hero" or result != []:
+            return result
+        run = await self._require_run(run_id)
+        if run.status is RunStatus.RUNNING:
+            await self._runs.transition_run(run_id, RunStatus.COMPLETED, result=[])
+        elif run.status is not RunStatus.COMPLETED:
+            raise RunIntegrityError(
+                f"Canvas reference short-circuit cannot complete Run from {run.status.value!r}"
+            )
+        return result
 
     async def _abandon_active_attempts(self, run_id: str, error: str) -> None:
         """Fence Canvas-worker-loss Attempts before terminal receipt failure."""
