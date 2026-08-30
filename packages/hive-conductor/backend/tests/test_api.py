@@ -252,9 +252,11 @@ def test_chat_complete_with_mock_llm_port() -> None:
     assert body["choices"][0]["message"]["content"] == "mock response"
     mock_llm.complete.assert_called_once()
     sent = mock_llm.complete.call_args.args[0]
-    # M0 containment keeps the public chat boundary conversational-only and
-    # forwards caller messages without re-entering the agent/tool prompt path.
-    assert sent.messages == expected_messages
+    # M0 containment adds safe system context at the public chat boundary while
+    # preserving caller messages and avoiding the agent/tool prompt path.
+    assert sent.messages[0]["role"] == "system"
+    assert "conversational-only" in sent.messages[0]["content"]
+    assert sent.messages[1:] == expected_messages
     # And containment's other half, asserted here because this is the test that
     # holds the request object: no tool surface travels with a chat completion.
     assert sent.tools is None

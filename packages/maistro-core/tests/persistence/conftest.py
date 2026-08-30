@@ -25,10 +25,12 @@ import pytest
 _SCRATCH_TABLES = (
     "quota_usage",
     "sessions",
+    "session_turns",
     "audit_log",
     "learnings",
     "outcomes",
     "prompts",
+    "prompt_labels",
     "agents",
 )
 

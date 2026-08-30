@@ -130,8 +130,16 @@ class RunExecutionService:
         timeout_s: float | None = None,
         resume_checkpoint_id: str | None = None,
         reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
     ) -> Attempt:
-        """Execute a new physical Attempt under an existing logical NodeRun."""
+        """Execute a new physical Attempt under an existing logical NodeRun.
+
+        ``context_factory`` is forwarded for the same reason `execute_node`
+        forwards it: a caller that builds its context before the call cannot
+        name the `attempt_id` it is about to be given. A retry needed it as
+        much as a first try -- work the node files on the second Attempt was
+        losing its ancestry, and a resume is a retry (#641).
+        """
 
         return await self._attempts.execute(
             node_run_id,
@@ -143,6 +151,7 @@ class RunExecutionService:
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
             reconcile_logical=reconcile_logical,
+            context_factory=context_factory,
         )
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:

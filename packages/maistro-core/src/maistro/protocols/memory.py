@@ -246,8 +246,16 @@ class SessionStore(Protocol):
         self,
         session_id: str,
         messages: list[dict[str, str]],
+        turn_id: str | None = None,
     ) -> None:
-        """Append messages to session history."""
+        """Append messages to session history, at most once per turn identity.
+
+        `turn_id` names the turn the batch belongs to (ADR-083026-5fab). It is
+        opaque to the store, and a batch appended under an identity already
+        recorded for the session is a retry: nothing is written, nothing is
+        raised. Omitting it leaves the append unchanged, which is what every
+        caller that does not know it is retrying should do.
+        """
         ...
 
     async def delete_session(self, session_id: str) -> None:

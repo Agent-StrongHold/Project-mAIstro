@@ -7,7 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from maistro.agents.base import Agent, _build_tool_schema, _extract_user_text
+from maistro.sessions.store import InMemorySessionStore
 from maistro.types.agent import AgentIdentity, AgentResponse, ReasoningResult
 
 
@@ -70,12 +73,16 @@ class _FakeSessionStore:
     def __init__(self, history: list[dict[str, str]] | None = None) -> None:
         self._history = history or []
         self.appended: list[tuple[str, list[dict[str, str]]]] = []
+        self.turn_ids: list[str | None] = []
 
     async def get_history(self, _session_id: str) -> list[dict[str, str]]:
         return self._history
 
-    async def append_messages(self, session_id: str, messages: list[dict[str, str]]) -> None:
+    async def append_messages(
+        self, session_id: str, messages: list[dict[str, str]], turn_id: str | None = None
+    ) -> None:
         self.appended.append((session_id, messages))
+        self.turn_ids.append(turn_id)
 
 
 class _FakeOutcomeStore:
@@ -861,6 +868,78 @@ class TestHandlePersistence:
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "assistant reply"},
         ]
+
+    async def test_a_turn_identity_reaches_the_store(self) -> None:
+        session_store = _FakeSessionStore()
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="assistant reply")),
+            session_store=session_store,
+        )
+
+        await agent.handle(
+            messages=[{"role": "user", "content": "hello"}],
+            auth=_Auth(),
+            session_id="s1",
+            turn_id="run-1",
+        )
+
+        assert session_store.turn_ids == ["run-1"]
+
+    async def test_no_turn_identity_is_passed_as_none(self) -> None:
+        session_store = _FakeSessionStore()
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="assistant reply")),
+            session_store=session_store,
+        )
+
+        await agent.handle(
+            messages=[{"role": "user", "content": "hello"}], auth=_Auth(), session_id="s1"
+        )
+
+        assert session_store.turn_ids == [None]
+
+    @pytest.mark.ac("SPEC-083026-5fab/AC-9")
+    async def test_a_retried_turn_appends_its_messages_once(self) -> None:
+        """The agent half of AC-9, against a store that actually enforces the
+        identity. A fake that records `turn_id` proves it was passed and not
+        that passing it changes anything, which is the claim."""
+        session_store = InMemorySessionStore()
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="assistant reply")),
+            session_store=session_store,
+        )
+
+        for _ in range(2):
+            await agent.handle(
+                messages=[{"role": "user", "content": "hello"}],
+                auth=_Auth(),
+                session_id="s1",
+                turn_id="run-1",
+            )
+
+        assert await session_store.get_history("s1") == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "assistant reply"},
+        ]
+
+    async def test_two_turns_of_one_session_both_land(self) -> None:
+        """The mutation guard on the test above: a store that dropped every
+        append after the first would satisfy it. Two identities, two turns."""
+        session_store = InMemorySessionStore()
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="assistant reply")),
+            session_store=session_store,
+        )
+
+        for turn in ("run-1", "run-2"):
+            await agent.handle(
+                messages=[{"role": "user", "content": "hello"}],
+                auth=_Auth(),
+                session_id="s1",
+                turn_id=turn,
+            )
+
+        assert len(await session_store.get_history("s1")) == 4
 
     async def test_no_response_skips_session_persistence(self) -> None:
         session_store = _FakeSessionStore()

@@ -1,101 +1,136 @@
-"""`maistro repair` subcommand — restore node outputs an old contract emptied.
+"""`maistro repair` — operator commands for durable records that need correcting.
 
-The door for SPEC-082926-2844's recovery. `NodeResult.output` was declared with
-a bare `BaseModel` union member, whose schema has no fields, so a node returning
-a typed model persisted its Attempt as `output: {}` (#566). The contract is
-fixed; rows already written are not, and a repair nobody can invoke does not
-repair anything.
+One subcommand today: `attempt-outputs`, for Attempts emptied by the pre-#566
+serialization (ADR-083026-14c3).
 
-Two commands, deliberately separate. `survey` reads and reports and writes
-nothing, so an operator can see the damage before deciding. `apply` writes the
-restorable ones back. Nothing here runs on its own: rewriting stored execution
-history is the operator's call, not a startup side effect.
+The store is resolved the way the running system resolves it — through
+`resolve_database_url` and `wire_execution_spine` — rather than from a path the
+operator types. That is the correction this command exists to be: its withdrawn
+predecessor took a filesystem `Path`, which meant it could not address a
+PostgreSQL deployment at all and, against a SQLite one, opened a table nothing
+writes and reported it clean.
+
+Survey by default. `--apply` is the only thing that writes.
 """
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated, Any
 
 from rich.console import Console
 from rich.table import Table
-from typer import Argument, Option, Typer
+from typer import Option, Typer
 
-from maistro.graph.durable_runs.repair import (
-    OutputRecoveryReport,
-    recover_typed_attempt_outputs,
-)
-from maistro.graph.durable_runs.stores import SqliteDurableRunStore
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from maistro.graph.durable_runs.types import DurableRunRecord
+from maistro.config.database import resolve_database_url
+from maistro.runs.repair import DEFAULT_SWEEP_LIMIT, Survey, repair, survey
 
 console = Console()
-app = Typer(help="Restore Attempt outputs emptied by the superseded serialization contract.")
-
-DbPath = Annotated[Path, Argument(help="Path to a durable-run database.")]
-ProjectId = Annotated[str, Argument(help="Project whose runs to examine.")]
-Limit = Annotated[int, Option("--limit", help="Most recent runs to examine.")]
+app = Typer(help="Correct durable records that a shipped defect wrote wrongly.")
 
 
-async def _load(db_path: Path, project_id: str, limit: int) -> list[DurableRunRecord]:
-    store = SqliteDurableRunStore(db_path)
-    return await store.list_for_project(project_id, limit=limit)
+@app.command("attempt-outputs")
+def attempt_outputs(
+    apply: Annotated[
+        bool, Option("--apply", help="Write the repairs. Without this, nothing is written.")
+    ] = False,
+    workspace_id: Annotated[str, Option(help="Workspace whose spine to open.")] = "default",
+    limit: Annotated[
+        int, Option(help="Runs to examine per status in one sweep.")
+    ] = DEFAULT_SWEEP_LIMIT,
+) -> None:
+    """Report — and with --apply, correct — Attempts whose output was emptied."""
+    asyncio.run(_run(apply=apply, workspace_id=workspace_id, limit=limit))
 
 
-def _report_table(reports: list[tuple[str, OutputRecoveryReport]]) -> Table:
-    table = Table("run_id", "recoverable", "unrecoverable", "why not")
-    for run_id, report in reports:
-        reasons = sorted({entry.reason for entry in report.unrecoverable if entry.reason})
-        table.add_row(
-            run_id,
-            str(len(report.recovered)),
-            str(len(report.unrecoverable)),
-            "; ".join(reasons) or "—",
+async def _run(*, apply: bool, workspace_id: str, limit: int) -> None:
+    database_url = resolve_database_url()
+    store, closer = await _open_store(database_url, workspace_id)
+    try:
+        found = await survey(store, limit=limit, workspace_id=workspace_id)
+        _report(found)
+        if not apply:
+            if found.repairable:
+                console.print(
+                    f"\n{len(found.repairable)} repairable. "
+                    "Re-run with --apply to write the corrections."
+                )
+            return
+        applied = await repair(store, found.findings)
+        console.print(f"\nRepaired {len(applied)} Attempt(s).")
+    finally:
+        await closer()
+
+
+async def _open_store(database_url: str, workspace_id: str) -> tuple[Any, Any]:
+    """The configured canonical Run store, and how to close what it opened.
+
+    `wire_execution_spine` picks the backend the deployment actually uses, so
+    this command reaches PostgreSQL and SQLite by the same route the runtime
+    does rather than by a second opinion about which store is live.
+
+    `prime=False`, because repair never creates work -- it rewrites records
+    that already exist. Priming builds the Root Project, so without this even a
+    survey wrote to the database it was only asked to read (Codex, #690).
+
+    The PostgreSQL closer releases the pool rather than closing it. `get_pool`
+    hands back a registry-shared pool and counts its users, so closing it
+    outright would shut the connections under any other user in the process and
+    leave a dead pool registered for the next caller to be handed.
+    """
+    from maistro.runs.wiring import wire_execution_spine
+
+    if database_url.startswith("sqlite:"):
+        import aiosqlite
+
+        conn = await aiosqlite.connect(database_url.removeprefix("sqlite:///"))
+        _projects, store, *_rest = await wire_execution_spine(
+            conn, workspace_id=workspace_id, prime=False
         )
-    return table
+        return store, conn.close
+
+    from maistro.config.database import to_asyncpg_dsn
+    from maistro.persistence import get_pool, release_pool
+
+    pool = await get_pool(to_asyncpg_dsn(database_url))
+    _projects, store, *_rest = await wire_execution_spine(
+        None, workspace_id=workspace_id, pg_pool=pool, prime=False
+    )
+
+    async def _release() -> None:
+        await release_pool(pool)
+
+    return store, _release
 
 
-def _examine(
-    db_path: Path, project_id: str, limit: int
-) -> list[tuple[DurableRunRecord, OutputRecoveryReport]]:
-    records = asyncio.run(_load(db_path, project_id, limit))
-    examined = [recover_typed_attempt_outputs(record) for record in records]
-    return [
-        (repaired, report)
-        for repaired, report in examined
-        if report.recovered or report.unrecoverable
-    ]
-
-
-@app.command("survey")
-def repair_survey(db_path: DbPath, project_id: ProjectId, limit: Limit = 25) -> None:
-    """Report which Attempt outputs can be restored. Writes nothing."""
-    affected = _examine(db_path, project_id, limit)
-    if not affected:
-        console.print("No emptied Attempt outputs.")
-        return
-    console.print(_report_table([(record.run_id, report) for record, report in affected]))
-    console.print("[dim]Read-only. Run `maistro repair apply` to write these back.[/dim]")
-
-
-@app.command("apply")
-def repair_apply(db_path: DbPath, project_id: ProjectId, limit: Limit = 25) -> None:
-    """Write back every Attempt output that can be restored exactly."""
-    affected = _examine(db_path, project_id, limit)
-    writable = [(record, report) for record, report in affected if report.changed]
-    if not writable:
-        console.print("Nothing to restore.")
+def _report(found: Survey) -> None:
+    """Print what the sweep saw, including what it could not see."""
+    scope = f" in workspace {found.workspace_id!r}" if found.workspace_id is not None else ""
+    console.print(f"Examined {found.runs_examined} run(s){scope}.")
+    # Two bounds, both stated. The limit below is the one a re-run can lift;
+    # this one no `--limit` reaches, because an archived Run's payload is
+    # offloaded and the store's listing reads live rows only (Codex, #690).
+    # Saying so is the point: a clean report over records the sweep could not
+    # read is the false clean bill of health this command exists to refuse.
+    console.print(
+        "[dim]Archived runs are not examined — their payloads are offloaded, "
+        "and this sweep reads live rows only.[/dim]"
+    )
+    if not found.findings:
+        console.print("No Attempt holds an emptied output.")
     else:
-        store = SqliteDurableRunStore(db_path)
-        for record, report in writable:
-            asyncio.run(store.update(record))
-            console.print(f"{record.run_id}: restored {len(report.recovered)} Attempt output(s)")
-
-    stranded = sum(len(report.unrecoverable) for _record, report in affected)
-    if stranded:
+        table = Table("run_id", "attempt_id", "disposition")
+        for finding in found.findings:
+            table.add_row(finding.run_id, finding.attempt_id, finding.disposition.value)
+        console.print(table)
+    if not found.complete:
+        # Stated, never omitted. A partial sweep read as a complete one is the
+        # same defect as the survey that opened the wrong table.
+        statuses = ", ".join(status.value for status in found.truncated_statuses)
         console.print(
-            f"[yellow]{stranded} Attempt output(s) stay empty: nothing in the record "
-            "holds what they produced.[/yellow]"
+            f"[yellow]This sweep stopped at its limit for: {statuses}. "
+            "There may be more; re-run with a higher --limit.[/yellow]"
         )
+
+
+__all__ = ["app"]

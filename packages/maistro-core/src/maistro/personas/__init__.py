@@ -23,6 +23,7 @@ from maistro.personas.schema import (
     CriterionSpec,
     EvalSpec,
     PersonaTemplate,
+    PersonaTemplateSource,
     SpawnSpec,
     VoiceSpec,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "PersonaStore",
     "PersonaSurface",
     "PersonaTemplate",
+    "PersonaTemplateSource",
     "RubricEval",
     "RubricScorer",
     "SourceEvidence",

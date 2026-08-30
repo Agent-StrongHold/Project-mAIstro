@@ -298,7 +298,7 @@ ignore_missing_imports = true
 # type-only dependency on a package the base install deliberately omits would
 # undo the point of making it optional.
 [[tool.mypy.overrides]]
-module = ["yaml", "asyncpg", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
+module = ["yaml", "asyncpg", "asyncpg.pool", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
 ignore_missing_imports = true
 
 # bip-utils is a declared runtime dep, but publishes no py.typed marker and has no

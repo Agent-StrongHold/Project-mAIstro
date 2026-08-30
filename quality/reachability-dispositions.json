@@ -534,16 +534,6 @@
       ]
     },
     {
-      "id": "scheduling-run-admission",
-      "subsystem": "Recurrence / schedules",
-      "disposition": "CONNECT",
-      "rationale": "The ScheduleRunAdmitter (#145): evaluate, resolve the template, create the Run with schedule provenance, then advance the cursor. It has no production caller yet because the live fire path is hive-conductor's `services/scheduler.py` loop, whose `/v1/schedules` row has no workspace, project, timezone or max_runs column and names a `mission_template_id` rather than a `graph_template_id`. Migrating that model is a product-surface change with its own API compatibility questions, which #145 puts explicitly out of scope; this makes the seam exist in core.",
-      "root": "hive-conductor's schedule loop migrated onto ScheduleRunAdmitter (#46, #145)",
-      "modules": [
-        "maistro.scheduling.admission"
-      ]
-    },
-    {
       "id": "mutation-testing-tooling",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
@@ -614,6 +604,35 @@
         "@tool/check-autonomous-merge"
       ],
       "root": ".github/workflows/autonomous-merge.yml, restored once #562 decides whether a generated quality/ ledger is part of the trusted surface and the check can pass for an ordinary change"
+    },
+    {
+      "id": "unwired-merge-group-scope-classifier",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Classifies which expensive CI legs a merge-group candidate can affect, written ahead of the workflow step that will call it. No `.github/workflows/*.yml` invokes it yet, so no import or shell-frame edge reaches it. Temporary rather than a standing LIBRARY entry: the module is meant to be reachable, not import-only, and this disposition is to be pruned once #655 wires it into a workflow step and the reachability graph can see the call site on its own.",
+      "modules": [
+        "@tool/ci_merge_group_scope"
+      ],
+      "root": "a workflow step calling scripts/ci_merge_group_scope.py, added by #655"
+    },
+    {
+      "id": "branch-independence-contract-helper",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "Inventories which `quality/**/*.json` state surfaces serialize otherwise-independent PRs (freezing the legacy set rather than migrating any of them) and is exercised only by loading the script itself with importlib.util.spec_from_file_location -- the same shape as ratchet-provenance-helper above: no static import edge exists for this gate to follow, because tests/test_branch_independence.py and tests/test_branch_independence_repository.py load the script by file path rather than importing it by name. Not yet run as a standalone CI step; the contract is enforced today entirely through those two pytest suites.",
+      "modules": [
+        "@tool/check-branch-independence"
+      ]
+    },
+    {
+      "id": "shell-invoked-build-evidence",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Reached from a `run:` shell step in the `setup-uv` composite action (`.github/actions/setup-uv/action.yml`), not from a workflow step's `uses:` or a Python import -- the same blind spot `installer-shell-invoked-tooling` above documents: a script invoked through a shell command inside a workflow or composite action is not seen by the import-graph scan, which errs toward reporting it unreachable rather than toward silence. The code does execute on every job that pulls in `setup-uv`, one shell frame below what the rooting scan can follow. Covered directly by tests/test_build_evidence.py.",
+      "root": ".github/actions/setup-uv/action.yml's \"Record content-addressed setup evidence\" step; becomes visible to the graph if tooling rooting ever follows shell invocations inside composite actions",
+      "modules": [
+        "@tool/build-evidence"
+      ]
     }
   ]
 }

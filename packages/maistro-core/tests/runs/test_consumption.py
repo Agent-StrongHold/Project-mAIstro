@@ -221,6 +221,39 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
         await store.list_by_status(status, limit=0)
 
 
+@pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.CREATED])
+async def test_list_by_status_offset_walks_past_the_first_page(
+    spine: Any, status: RunStatus
+) -> None:
+    """`offset` is how the resume tick (#641) sees rows a standing prefix would
+    otherwise hide behind forever, since its eligibility filter runs after the
+    query rather than in it."""
+    store, workspace_id, project_id = spine
+    graph = Graph(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
+    )
+    older = await store.create_run(graph, initial_status=status)
+    newer = await store.create_run(graph, initial_status=status)
+
+    first_page = await store.list_by_status(status, limit=1, offset=0)
+    second_page = await store.list_by_status(status, limit=1, offset=1)
+    past_the_end = await store.list_by_status(status, limit=1, offset=2)
+
+    assert [run.run_id for run in first_page] == [older.run_id]
+    assert [run.run_id for run in second_page] == [newer.run_id]
+    assert past_the_end == []
+    # Matched on the message, not just the type: `limit` raises `ValueError`
+    # here too, so a bare catch passes whichever guard fired. Refused rather
+    # than clamped because SQLite reads a negative OFFSET as no offset at all
+    # while PostgreSQL raises -- and the caller is a cursor, where silently
+    # starting from the beginning again is the bug the offset exists to stop.
+    with pytest.raises(ValueError, match="offset must not be negative"):
+        await store.list_by_status(status, limit=10, offset=-1)
+
+
 @pytest.mark.ac("ADR-082826-b601/AC-6")
 async def test_list_by_status_conformance_on_the_reference_store(memory_spine: Any) -> None:
     """The AC evidence pin for the discovery surface; `spine` covers the durable
