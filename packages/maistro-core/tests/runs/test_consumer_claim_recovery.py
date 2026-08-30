@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from maistro.container import Container, create_container
@@ -16,6 +17,7 @@ from maistro.runs.consumer_claim import ConsumerClaimLost, ConsumerClaimStore
 from maistro.runs.consumption import SCHEDULE_EXECUTOR_ID
 from maistro.runs.model import Attempt, AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_SOURCE
+from maistro.runs.store import RunIntegrityError, run_cursor_key
 from maistro.types.config import AgentConfig
 
 
@@ -148,6 +150,26 @@ async def test_claim_is_run_node_and_leased_attempt_together() -> None:
     assert attempt.execution_lease is not None
 
 
+async def test_claim_rejects_node_outside_snapshot_without_physical_evidence() -> None:
+    container = await _container()
+    run_id = await _admit(container, workspace="claim-missing-node")
+    store = container.run_store
+    assert isinstance(store, ConsumerClaimStore)
+
+    with pytest.raises(RunIntegrityError, match="not present in the Run Graph snapshot"):
+        await store.claim_consumer_run(
+            run_id,
+            node_id="does-not-exist",
+            runtime_id="test-runtime",
+            executor_id=SCHEDULE_EXECUTOR_ID,
+            lease_ttl=timedelta(seconds=30),
+        )
+
+    run = await store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.QUEUED
+    assert await store.list_node_runs(run_id) == []
+
+
 async def test_hard_death_after_claim_recovers_through_ordinary_tick() -> None:
     container = await _container()
     run_id = await _admit(container, workspace="claim-death")
@@ -260,6 +282,15 @@ async def test_sqlite_claim_is_atomic_running_evidence_and_uses_ordinary_recover
     store = ClaimingSqliteRunStore(conn, project_store=projects)
     await store.ensure_schema()
     try:
+        with pytest.raises(RunIntegrityError, match="does not exist"):
+            await store.claim_consumer_run(
+                "missing-run",
+                node_id="n0",
+                runtime_id="sqlite-test",
+                executor_id=SCHEDULE_EXECUTOR_ID,
+                lease_ttl=timedelta(seconds=5),
+            )
+
         graph = Graph(
             workspace_id=workspace,
             project_id=project.project_id,
@@ -317,8 +348,6 @@ async def test_sqlite_claim_is_atomic_running_evidence_and_uses_ordinary_recover
 
 async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> None:
     if pg_pool is None:
-        import pytest
-
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
 
     from maistro.projects.pg_scope_store import PgProjectScopeStore
@@ -333,6 +362,16 @@ async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> Non
         name="claim",
     )
     store = ClaimingPgRunStore(pg_pool, project_store=projects)
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await store.claim_consumer_run(
+            "missing-run",
+            node_id="n0",
+            runtime_id="postgres-test",
+            executor_id=SCHEDULE_EXECUTOR_ID,
+            lease_ttl=timedelta(seconds=5),
+        )
+
     graph = Graph(
         workspace_id=workspace,
         project_id=project.project_id,
@@ -359,3 +398,14 @@ async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> Non
     assert persisted_node is not None and persisted_node.status is RunStatus.RUNNING
     assert persisted_attempt is not None and persisted_attempt.status is AttemptStatus.RUNNING
     assert persisted_attempt.execution_lease is not None
+
+
+def test_run_cursor_key_rejects_non_text_json_timestamp() -> None:
+    class _BadSerializedRun:
+        def model_dump(self, *, mode: str) -> dict[str, Any]:
+            assert mode == "json"
+            return {"created_at": 123}
+
+    bad_run: Any = _BadSerializedRun()
+    with pytest.raises(RunIntegrityError, match="did not serialize as JSON text"):
+        run_cursor_key(bad_run)
