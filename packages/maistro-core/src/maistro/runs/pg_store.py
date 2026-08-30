@@ -466,6 +466,7 @@ class PgRunStore:
         status: RunStatus,
         *,
         limit: int = 100,
+        offset: int = 0,
         project_id: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -474,9 +475,16 @@ class PgRunStore:
         diverging on query surface; oldest-first so a bounded consumer tick
         drains a backlog fairly. Non-terminal payloads are never offloaded to
         the archive, so the rows read back whole.
+
+        A caller that needs to see *every* row eventually, rather than only the
+        oldest page, passes ``offset`` and walks it: the resume tick does, because
+        its filter is applied after the query and a standing prefix of ineligible
+        rows would otherwise hide everything behind it forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
         sql = "SELECT payload FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
         params: list[object] = [status.value]
         if project_id is not None:
@@ -484,6 +492,8 @@ class PgRunStore:
             params.append(project_id)
         sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
         params.append(limit)
+        sql += f" OFFSET ${len(params) + 1}"
+        params.append(offset)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [Run.model_validate(decode_payload(row["payload"])) for row in rows]

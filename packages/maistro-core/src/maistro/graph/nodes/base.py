@@ -274,6 +274,66 @@ HUMAN_PAUSE_REASONS = frozenset(
     reason for reason, owner in PAUSE_REASON_OWNERS.items() if owner == "human"
 )
 
+#: The two things that can make a pause resumable, named rather than inferred.
+#:
+#: ANSWER: the node dispatched something and is waiting to be told the outcome.
+#: Re-entering it without that answer takes the *dispatch* branch again, so an
+#: elapsed timer would repeat whatever the node already did -- for
+#: `agent.delegate_remote`, a second delegation.
+#:
+#: ELAPSED: the node polls. Re-entering it re-reads the world, which is the
+#: intended behaviour and is idempotent by construction.
+RESUME_ON_ANSWER = "answer"
+RESUME_ON_ELAPSED = "elapsed"
+
+#: What each pause is waiting *for*, which is a different question from
+#: `PAUSE_REASON_OWNERS`' "who owes the next action" and cannot be derived from
+#: it: `awaiting_remote_delegation` is owed by the system and is still
+#: answer-gated, because the system that owes it is another agent session.
+#:
+#: One table, beside the owners, for the same reason that one exists: a reader
+#: that decides "may I run this node again?" from the reason string is making a
+#: safety judgement, and a judgement spelled out per reason is one a reviewer
+#: sees. A reason absent here is unclassified, not resumable -- the pause stays
+#: parked and visible, which is the honest answer for a condition nobody stated.
+PAUSE_RESUME_CONDITIONS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_HUMAN_APPROVAL: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
+    PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
+}
+
+#: The reasons a timer alone may re-enter, derived so the two cannot disagree.
+TIMER_RESUMABLE_PAUSE_REASONS = frozenset(
+    reason
+    for reason, condition in PAUSE_RESUME_CONDITIONS.items()
+    if condition == RESUME_ON_ELAPSED
+)
+
+#: Where a resumed execution finds what its own previous pause recorded.
+#:
+#: A node that pauses to poll needs its first-reach timestamp back, or its
+#: overall timeout can never expire and the poll runs forever -- which is the
+#: unbounded loop a resume tick would otherwise create. Carrying the pause
+#: metadata verbatim keeps the transport generic: the consumer copies a dict it
+#: does not read, and each node reads the keys it wrote.
+RESUMED_PAUSE_KEY = "resumed_pause"
+
+
+def resumed_pause(ctx: NodeContext) -> dict[str, Any]:
+    """What this node's previous pause recorded, or ``{}`` on a first reach.
+
+    Read through here rather than off `ctx.metadata` directly so that a node
+    asking "have I been here before?" and the consumer answering it name the
+    same key -- the failure mode being a key written by one and read by
+    neither, which is what `wait_first_seen:` was.
+    """
+    carried = (ctx.metadata or {}).get(RESUMED_PAUSE_KEY)
+    return dict(carried) if isinstance(carried, dict) else {}
+
 
 def pause_until(
     reason: str,
