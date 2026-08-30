@@ -1,32 +1,35 @@
-"""CanvasJobRunner — background worker that claims, executes, and reaps canvas generation jobs.
+"""Canvas background worker over canonical generation execution (#735).
 
-Poll loop: claim_next_pending → _execute_claimed → mark done/failed/requeue.
-Reaper: periodic sweep of expired leases (dead workers).
+The Canvas receipt still owns worker-claim coordination and user-facing domain
+state. Once claimed, provider execution and retry lifecycle belong to the
+canonical Run/NodeRun/Attempt adapter; the receipt is refreshed from that
+evidence rather than independently deciding success/failure.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro_canvas.canvas.executor import _sanitise_error
+from maistro_canvas.canvas.canonical_execution import canonical_run_id
 
 if TYPE_CHECKING:
+    from maistro_canvas.canvas.canonical_execution import CanvasCanonicalExecution
     from maistro_canvas.canvas.executor import CanvasExecutor
 
 logger = logging.getLogger("maistro.canvas.runner")
 
 
 class CanvasJobRunner:
-    """Background job runner with atomic claim, lease reaping, and bounded retries."""
+    """Claim Canvas work, execute it canonically, and persist the domain receipt."""
 
     def __init__(
         self,
         *,
         store: Any,
         executor: CanvasExecutor,
+        canonical_execution: CanvasCanonicalExecution,
         worker_id: str = "canvas-worker-1",
         lease_seconds: int = 300,
         poll_interval: float = 1.0,
@@ -34,6 +37,7 @@ class CanvasJobRunner:
     ) -> None:
         self._store = store
         self._executor = executor
+        self._canonical_execution = canonical_execution
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         self._poll_interval = poll_interval
@@ -63,7 +67,7 @@ class CanvasJobRunner:
         self._running = False
 
     async def tick_once(self) -> bool:
-        """Claim and execute one job. Returns True if work was done."""
+        """Claim one receipt and let canonical execution own provider retries."""
         from maistro_canvas.types import JobStatus
 
         job = await self._store.claim_next_pending(self._worker_id, self._lease_seconds)
@@ -71,29 +75,35 @@ class CanvasJobRunner:
             return False
 
         logger.info(
-            "canvas_job_claimed job=%s worker=%s attempt=%d", job.id, self._worker_id, job.attempts
+            "canvas_job_claimed job=%s worker=%s receipt_attempt=%d",
+            job.id,
+            self._worker_id,
+            job.attempts,
         )
 
+        newly_admitted = canonical_run_id(job) is None
         try:
-            await self._executor._execute_claimed(job)
-            job.status = JobStatus.DONE
-            job.completed_at = datetime.now(UTC)
+            if newly_admitted:
+                await self._canonical_execution.admit(job)
+                # Persist the Run correlation before physical work starts. If
+                # this write fails, compensate the still-QUEUED Run below.
+                await self._store.update_job(job)
+
+            await self._canonical_execution.execute(job, executor=self._executor)
+        except Exception:
+            if newly_admitted:
+                await self._canonical_execution.abandon_admission(job)
+            # A control-plane/integrity failure is not provider evidence. Leave
+            # the receipt retryable so the next worker can recover the Run.
+            job.status = JobStatus.PENDING
             job.leased_by = None
             job.lease_expires_at = None
-        except Exception as exc:
-            logger.warning("canvas_job_failed job=%s error=%s", job.id, str(exc)[:200])
-            if job.attempts < job.max_attempts:
-                # Retryable — requeue
-                job.status = JobStatus.PENDING
-                job.leased_by = None
-                job.lease_expires_at = None
-            else:
-                # Terminal failure
-                job.status = JobStatus.FAILED
-                job.error_message = _sanitise_error(exc)
-                job.completed_at = datetime.now(UTC)
-                job.leased_by = None
-                job.lease_expires_at = None
+            await self._store.update_job(job)
+            raise
 
+        # The adapter projected terminal status/result/error/Attempt count from
+        # canonical evidence. The runner owns only its worker lease now.
+        job.leased_by = None
+        job.lease_expires_at = None
         await self._store.update_job(job)
         return True
