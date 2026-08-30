@@ -38,7 +38,9 @@ def _task_body() -> dict[str, Any]:
     }
 
 
-async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch) -> None:
+async def test_named_workspace_crosses_the_production_http_boundary(
+    monkeypatch,
+) -> None:
     task_backend_module = _backend_module()
     backend_type = task_backend_module.MaistroServerTaskBackend
     seen_headers: dict[str, str] = {}
@@ -78,7 +80,9 @@ async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch)
     assert seen_headers["Authorization"] == "Bearer secret"
 
 
-async def test_unscoped_submission_does_not_fabricate_a_workspace_header(monkeypatch) -> None:
+async def test_unscoped_submission_does_not_fabricate_a_workspace_header(
+    monkeypatch,
+) -> None:
     task_backend_module = _backend_module()
     backend_type = task_backend_module.MaistroServerTaskBackend
     seen_headers: dict[str, str] = {}
