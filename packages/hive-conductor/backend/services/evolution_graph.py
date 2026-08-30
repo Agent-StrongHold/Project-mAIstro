@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import random
+from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
 
@@ -87,35 +88,41 @@ async def _evaluate_one(
     genome_id: str,
     ctx: NodeContext,
 ) -> _EvaluateOutput:
-    """Run the existing Evolve evaluation semantics for exactly one genome."""
+    """Evaluate one genome and publish domain changes only after the Attempt succeeds."""
     from datetime import UTC, datetime
 
     genome = population.get(genome_id)
     if genome is None:
         raise ValueError(f"evolution genome {genome_id!r} disappeared before evaluation")
 
-    results = await cycle.harness.evaluate_genome(genome, config.target_benchmarks, llm_call)
+    # Evaluation is physical work beneath one Attempt. Stage every score/cost
+    # mutation on a private copy so an exception anywhere in the Attempt leaves
+    # the population unchanged. A later retry therefore gets a new Attempt and
+    # re-evaluates the last committed genome rather than folding over a partial
+    # failed score.
+    working = deepcopy(genome)
+    results = await cycle.harness.evaluate_genome(working, config.target_benchmarks, llm_call)
     for result in results:
         cycle._fold_score(
-            genome,
+            working,
             result.benchmark,
             result.score,
             bool(result.metadata.get("stub")),
             config.eval_ema_alpha,
         )
-        genome.harness_params["total_cost_usd"] = (
-            genome.harness_params.get("total_cost_usd", 0.0) + result.cost_usd
+        working.harness_params["total_cost_usd"] = (
+            working.harness_params.get("total_cost_usd", 0.0) + result.cost_usd
         )
-        genome.harness_params["avg_latency_seconds"] = (
-            genome.harness_params.get("avg_latency_seconds", 0.0) + result.duration_seconds
-        ) / max(len(genome.eval_scores), 1)
+        working.harness_params["avg_latency_seconds"] = (
+            working.harness_params.get("avg_latency_seconds", 0.0) + result.duration_seconds
+        ) / max(len(working.eval_scores), 1)
 
-    _append_execution_ref(genome, ctx)
-    genome.updated_at = datetime.now(UTC).isoformat()
-    population.add(genome)
+    _append_execution_ref(working, ctx)
+    working.updated_at = datetime.now(UTC).isoformat()
+    population.add(working)
     return _EvaluateOutput(
-        genome_id=genome.id,
-        benchmarks=dict(genome.eval_scores),
+        genome_id=working.id,
+        benchmarks=dict(working.eval_scores),
         evaluation_run_id=ctx.run_id,
         evaluation_node_run_id=ctx.node_run_id,
         evaluation_attempt_id=ctx.attempt_id,
@@ -189,24 +196,12 @@ class _BattlePlan:
                 score_b=genome_b.eval_scores[benchmark],
             )
 
-        has_more = self._cursor < len(self._pairs)
-        if not has_more:
-            self._update_elos()
         return _BattleOutput(
             genome_a_id=genome_a.id,
             genome_b_id=genome_b.id,
             benchmarks=common,
-            has_more=has_more,
+            has_more=self._cursor < len(self._pairs),
         )
-
-    def _update_elos(self) -> None:
-        for genome in self._population.list_all():
-            if not genome.eval_scores:
-                continue
-            avg_elo = self._cycle.tournament.get_avg_elo(genome.id)
-            if avg_elo > 0:
-                genome.harness_params["avg_elo"] = avg_elo
-                self._population.add(genome)
 
 
 class _PairPlanNode(BaseNode[_IgnoreInput, _PairPlanOutput]):
@@ -263,11 +258,23 @@ def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]
     return refs
 
 
+def _publish_tournament_elos(cycle: Any, population: Any) -> None:
+    """Fold completed battle-domain ratings into genomes before fitness is computed."""
+    for genome in population.list_all():
+        if not genome.eval_scores:
+            continue
+        avg_elo = cycle.tournament.get_avg_elo(genome.id)
+        if avg_elo > 0:
+            genome.harness_params["avg_elo"] = avg_elo
+            population.add(genome)
+
+
 async def _finalize_cycle(cycle: Any, population: Any, config: Any, llm_call: Any) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle."""
     from maistro_evolve.population import IslandPopulation, migrate_islands
 
     before = {genome.id for genome in population.list_all()}
+    _publish_tournament_elos(cycle, population)
     cycle._compute_all_fitness(population)
     population.cull_bottom(config.cull_pct)
 
