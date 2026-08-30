@@ -119,7 +119,9 @@ def main() -> int:
 
     added = sorted(found - trusted)
     unauthorized = [module for module in added if module not in authorized]
-    unbanked_authorized = [module for module in added if module in authorized and module not in candidate]
+    unbanked_authorized = [
+        module for module in added if module in authorized and module not in candidate
+    ]
     candidate_new = sorted(found - candidate)
     candidate_stale = sorted(candidate - found)
 
