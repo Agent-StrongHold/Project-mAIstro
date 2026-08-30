@@ -154,6 +154,135 @@ def test_plaintext_invitation_is_never_persisted(isolated_registration_state, ad
     assert token not in serialized
 
 
+class TestInvitationRecordEdgeCases:
+    """Direct unit coverage of the service module's own defensive branches.
+
+    The route/middleware layer only ever sees well-formed records this
+    process wrote, so these malformed and naive-timestamp shapes -- and the
+    two functions (``invitation_is_valid``, ``registration_allowed``) that no
+    current caller reaches -- need their own tests rather than riding along
+    on an HTTP round trip that never produces them.
+    """
+
+    def test_set_policy_rejects_unsupported_mode(self) -> None:
+        from services.registration_policy import set_policy
+
+        with pytest.raises(ValueError):
+            set_policy("surprise")  # type: ignore[arg-type]
+
+    def test_create_invitation_rejects_ttl_out_of_bounds(self) -> None:
+        from services.registration_policy import create_invitation
+
+        with pytest.raises(ValueError):
+            create_invitation(ttl_seconds=1)
+        with pytest.raises(ValueError):
+            create_invitation(ttl_seconds=8 * 24 * 60 * 60)
+
+    def test_claim_invitation_rejects_a_non_string_expiry(
+        self, isolated_registration_state
+    ) -> None:
+        import stores
+        from services.registration_policy import _token_key, claim_invitation
+
+        stores.sessions[_token_key("bad-token")] = {"expires_at": 12345}
+        assert claim_invitation("bad-token") is None
+
+    def test_claim_invitation_rejects_an_unparsable_expiry(
+        self, isolated_registration_state
+    ) -> None:
+        import stores
+        from services.registration_policy import _token_key, claim_invitation
+
+        stores.sessions[_token_key("bad-token")] = {"expires_at": "not-a-timestamp"}
+        assert claim_invitation("bad-token") is None
+
+    def test_claim_invitation_accepts_a_naive_but_unexpired_timestamp(
+        self, isolated_registration_state
+    ) -> None:
+        from datetime import datetime, timedelta
+
+        import stores
+        from services.registration_policy import _token_key, claim_invitation
+
+        future_naive = (datetime.now() + timedelta(hours=1)).isoformat()
+        stores.sessions[_token_key("naive-token")] = {"expires_at": future_naive}
+        assert claim_invitation("naive-token") is not None
+
+    def test_claim_invitation_rejects_an_expired_timestamp(
+        self, isolated_registration_state
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        import stores
+        from services.registration_policy import _token_key, claim_invitation
+
+        past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        stores.sessions[_token_key("expired-token")] = {"expires_at": past}
+        assert claim_invitation("expired-token") is None
+
+    def test_invitation_is_valid_mirrors_claim_without_consuming(
+        self, isolated_registration_state
+    ) -> None:
+        from services.registration_policy import (
+            claim_invitation,
+            create_invitation,
+            invitation_is_valid,
+        )
+
+        issued = create_invitation(ttl_seconds=600)
+        assert invitation_is_valid(issued["token"]) is True
+        assert invitation_is_valid("nonexistent") is False
+        # Checking validity does not consume it -- it is still claimable after.
+        assert claim_invitation(issued["token"]) is not None
+
+    def test_restore_invitation_ignores_a_record_with_no_string_expiry(
+        self, isolated_registration_state
+    ) -> None:
+        import stores
+        from services.registration_policy import _token_key, restore_invitation
+
+        restore_invitation("some-token", {"expires_at": 999})
+        assert stores.sessions.get(_token_key("some-token")) is None
+
+    def test_restore_invitation_ignores_an_unparsable_expiry(
+        self, isolated_registration_state
+    ) -> None:
+        import stores
+        from services.registration_policy import _token_key, restore_invitation
+
+        restore_invitation("some-token", {"expires_at": "garbage"})
+        assert stores.sessions.get(_token_key("some-token")) is None
+
+    def test_restore_invitation_restores_a_naive_but_unexpired_record(
+        self, isolated_registration_state
+    ) -> None:
+        from datetime import datetime, timedelta
+
+        import stores
+        from services.registration_policy import _token_key, restore_invitation
+
+        future_naive = (datetime.now() + timedelta(hours=1)).isoformat()
+        restore_invitation("some-token", {"expires_at": future_naive, "created_at": future_naive})
+        assert stores.sessions.get(_token_key("some-token")) is not None
+
+    def test_registration_allowed_checks_policy_and_invitation(
+        self, isolated_registration_state
+    ) -> None:
+        from services.registration_policy import (
+            create_invitation,
+            registration_allowed,
+            set_policy,
+        )
+
+        assert registration_allowed() is False
+        set_policy("open")
+        assert registration_allowed() is True
+        set_policy("closed")
+        issued = create_invitation(ttl_seconds=600)
+        assert registration_allowed(issued["token"]) is True
+        assert registration_allowed("bogus") is False
+
+
 def test_policy_survives_store_rehydrate(monkeypatch: pytest.MonkeyPatch) -> None:
     import stores
     from services.model_store import JsonStore
