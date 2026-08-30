@@ -83,10 +83,10 @@ class TestAProjectMustNameItsScope:
         session.execute.assert_not_awaited()
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
-    async def test_update_refuses_a_scope_less_project(self) -> None:
+    async def test_update_refuses_a_blank_caller_scope(self) -> None:
         make, session = _factory()
         with pytest.raises(DesignScopeError):
-            await PgDesignProjectStore(session_factory=make).update(_project(org_id=""))
+            await PgDesignProjectStore(session_factory=make).update(_project(), org_id="")
         session.execute.assert_not_awaited()
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
@@ -127,15 +127,41 @@ class TestAWriteOutsideTheScopeIsRefused:
     async def test_an_update_that_matched_nothing_raises(self) -> None:
         make, session = _factory(rowcount=0)
         with pytest.raises(DesignProjectNotFoundError):
-            await PgDesignProjectStore(session_factory=make).update(_project())
+            await PgDesignProjectStore(session_factory=make).update(_project(), org_id="org-1")
         session.commit.assert_not_awaited()
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-4")
-    async def test_an_update_carries_the_scope_into_its_where_clause(self) -> None:
+    async def test_an_update_carries_the_callers_scope_into_its_where_clause(self) -> None:
+        """The caller's, not the payload's. A predicate built from the object
+        the caller supplies is satisfied by any caller who supplies it."""
         make, session = _factory(rowcount=1)
-        await PgDesignProjectStore(session_factory=make).update(_project(org_id="org-7"))
+        await PgDesignProjectStore(session_factory=make).update(
+            _project(org_id="org-7"), org_id="org-7"
+        )
         statement, params = session.execute.await_args.args
         assert "WHERE id = :id AND org_id = :org_id" in str(statement)
+        assert params["org_id"] == "org-7"
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-4")
+    async def test_an_update_whose_payload_names_another_scope_is_refused(self) -> None:
+        """The attack the payload-derived predicate allowed: a caller in one
+        scope submitting a victim's project id together with the victim's org
+        id. The two scopes are compared now, and disagreeing is refused rather
+        than silently rescoping the row."""
+        make, session = _factory(rowcount=1)
+        with pytest.raises(DesignScopeError, match="cannot move it"):
+            await PgDesignProjectStore(session_factory=make).update(
+                _project(org_id="victim-org"), org_id="attacker-org"
+            )
+        session.execute.assert_not_awaited()
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-4")
+    async def test_an_update_of_a_payload_naming_no_scope_uses_the_callers(self) -> None:
+        """A payload that names no scope is not asserting a different one, so
+        it is not a conflict — the caller's scope decides, as it always does."""
+        make, session = _factory(rowcount=1)
+        await PgDesignProjectStore(session_factory=make).update(_project(org_id=""), org_id="org-7")
+        _statement, params = session.execute.await_args.args
         assert params["org_id"] == "org-7"
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-4")
@@ -165,7 +191,12 @@ class TestEverySingleProjectOperationTakesAScope:
 
     #: Operations addressing one project by id. The list methods already took
     #: `org_id` positionally before #326 and keep doing so.
-    BY_ID = ("get", "delete")
+    #:
+    #: `update` is here, and was not at first. It took the scope off the
+    #: `DesignProject` it was handed, which makes the predicate `id = <what
+    #: they sent> AND org_id = <what they sent>` — a check any caller who knows
+    #: both values passes (Codex, #326).
+    BY_ID = ("get", "update", "delete")
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-5")
     @pytest.mark.parametrize("name", BY_ID)
@@ -232,6 +263,18 @@ class TestTheHttpSurfacePassesTheScopeDown:
         assert calls, "no store.get calls found; this check would prove nothing"
         for call in calls:
             assert "org_id" in {kw.arg for kw in call.keywords}
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    def test_an_explicitly_blank_request_scope_is_refused_not_defaulted(self) -> None:
+        """`or CONDUCTOR_ORG_ID` treated present-but-empty like absent, so a
+        middleware setting `org_id = ""` to mean "unresolved" got the
+        deployment's default scope and could read and write in it (Codex,
+        #326). The fallback applies only when the attribute is missing."""
+        source = self.SOURCE.read_text()
+        resolver = source[source.index("def _get_org_id") : source.index("@router.post")]
+        assert "_ABSENT" in resolver, "absent and empty have to be distinguishable"
+        assert "if not org_id:" in resolver
+        assert "HTTPException" in resolver
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     def test_the_deployment_scope_still_wins_over_the_conductor_default(self) -> None:

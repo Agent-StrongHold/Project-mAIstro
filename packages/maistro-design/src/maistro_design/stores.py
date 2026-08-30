@@ -246,16 +246,31 @@ class PgDesignProjectStore:
 
             return projects
 
-    async def update(self, project: DesignProject) -> DesignProject:
-        """Update a design project, within the scope the project itself names.
+    async def update(self, project: DesignProject, *, org_id: str) -> DesignProject:
+        """Update a design project within `org_id`, the **caller's** scope.
 
-        Raises `DesignProjectNotFoundError` when nothing matched: the row is in
+        `org_id` is a separate argument and not `project.org_id`, which is the
+        whole point: `project` is a mutable object the caller supplies, so
+        taking the scope from it means the predicate is `id = <what they sent>
+        AND org_id = <what they sent>` — a caller who knows a victim's project
+        id and org id passes it, and the check enforces nothing (Codex, #326).
+        `get` and `delete` already took the scope separately; this did not.
+
+        A payload whose own `org_id` disagrees is refused rather than silently
+        rescoped: moving a project between scopes is not an edit.
+
+        Raises `DesignProjectNotFoundError` when nothing matched — the row is in
         another scope, or gone. Both are "not yours to edit", and reporting a
         silent success for either is what let a scoped surface behave as an
         unscoped one.
         """
-        if not project.org_id:
-            raise DesignScopeError("a design project must name the scope it belongs to")
+        if not org_id:
+            raise DesignScopeError("a design project is updated within a scope")
+        if project.org_id and project.org_id != org_id:
+            raise DesignScopeError(
+                f"design project {project.id} carries scope {project.org_id!r}; "
+                "an update cannot move it to another"
+            )
         now = datetime.now(UTC)
 
         discovery_json: str | None = None
@@ -281,7 +296,7 @@ class PgDesignProjectStore:
                 """),
                 {
                     "id": project.id,
-                    "org_id": project.org_id,
+                    "org_id": org_id,
                     "name": project.name,
                     "trust_tier": project.trust_tier.value,
                     "canvas_id": project.canvas_id,
@@ -291,7 +306,7 @@ class PgDesignProjectStore:
             )
             if result.rowcount == 0:
                 raise DesignProjectNotFoundError(
-                    f"design project {project.id} is not in scope {project.org_id!r}"
+                    f"design project {project.id} is not in scope {org_id!r}"
                 )
             await session.commit()
 

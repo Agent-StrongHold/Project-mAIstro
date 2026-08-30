@@ -295,6 +295,40 @@ class TestADesignProjectIsWritableOnACleanDatabase:
         assert {"orgs", "teams"} & _tables() == set()
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
+    def test_the_round_trip_survives_a_project_with_an_empty_team(self, empty_database) -> None:
+        """`team_id` is nullable and unchecked, so `''` and `NULL` both meant
+        "no team" — two spellings of one fact. The downgrade has to give every
+        non-null `team_id` an anchor row before it can restore the foreign key,
+        and `''` is a value no sensible anchor can carry, so one such project
+        aborted the rollback (Codex, #326). 024 normalizes it to `NULL`.
+        """
+        _alembic("upgrade", "head")
+        self._insert(self.CONDUCTOR_ORG_ID)
+        _execute("update design_projects set team_id = ''")
+
+        assert _alembic("downgrade", "023").returncode == 0
+        assert _query("select id from teams") == [], "an empty team is no team"
+        assert _alembic("upgrade", "head").returncode == 0
+        assert _query("select team_id from design_projects") == [(None,)]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
+    def test_an_empty_team_is_normalised_on_upgrade(self, empty_database) -> None:
+        """Normalized where the rows are written, not only where they are read
+        back: a later migration reading `team_id` should not have to know that
+        two values mean the same thing."""
+        _alembic("upgrade", "023")
+        # Before 024 the FK is still in place, so the anchor rows have to exist.
+        _execute("insert into orgs (id, name) values (%s, %s)", ("o", "o"))
+        _execute("insert into teams (id, org_id, name) values (%s, %s, %s)", ("", "o", ""))
+        _execute(
+            "insert into design_projects (name, skill_slug, design_system_slug, org_id, team_id) "
+            "values (%s, %s, %s, %s, %s)",
+            ("probe", "s", "ds", "o", ""),
+        )
+        assert _alembic("upgrade", "head").returncode == 0
+        assert _query("select team_id from design_projects") == [(None,)]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-1")
     def test_the_round_trip_survives_a_row_whose_scope_names_nothing(self, empty_database) -> None:
         """Re-adding a foreign key over such a row aborts, and after 024 every
         row is such a row — so the downgrade has to backfill the anchors before

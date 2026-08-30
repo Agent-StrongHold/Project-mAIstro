@@ -51,6 +51,14 @@ def upgrade() -> None:
         "ADD CONSTRAINT design_projects_org_id_not_blank CHECK (org_id <> '')"
     )
 
+    # One spelling for "no team". `team_id` is nullable, so `NULL` already means
+    # it; `''` meant the same thing and nothing rejected it, which left two
+    # spellings of one fact. That is not cosmetic: the downgrade below has to
+    # give every non-null `team_id` an anchor row before it can restore the
+    # foreign key, and `''` is a value no sensible anchor row can carry — so a
+    # single such project made the rollback abort (Codex, #326).
+    op.execute("UPDATE design_projects SET team_id = NULL WHERE team_id = ''")
+
     # The placeholder anchors. Any row in them was written by hand to get past
     # the original failure -- no production path ever inserted one -- and
     # dropping them loses nothing a design project holds: `org_id` is a text
@@ -79,6 +87,11 @@ def downgrade() -> None:
         "org_id TEXT REFERENCES orgs(id) ON DELETE CASCADE, "
         "name TEXT NOT NULL DEFAULT '')"
     )
+
+    # Rows written between 024 and this rollback can carry `''` again -- the
+    # column has no constraint against it, only the upgrade's one-time
+    # normalization. Same reason, same fix, before the backfill reads it.
+    op.execute("UPDATE design_projects SET team_id = NULL WHERE team_id = ''")
 
     op.execute(
         "INSERT INTO orgs (id, name) "

@@ -70,9 +70,24 @@ def _require_ready() -> Any:
 CONDUCTOR_ORG_ID = "default-org"
 
 
+_ABSENT = object()
+
+
 def _get_org_id(request: Request) -> str:
-    """The scope this request's design projects belong to."""
-    org_id = getattr(getattr(request, "state", None), "org_id", "") or CONDUCTOR_ORG_ID
+    """The scope this request's design projects belong to.
+
+    The fallback applies only when the deployment set *no* scope at all. A
+    middleware that sets `request.state.org_id` to `""` or `None` is saying the
+    scope is unresolved or unauthorized, and `or CONDUCTOR_ORG_ID` would have
+    turned that into the deployment's default scope — a request that could then
+    read, render and create projects there (Codex, #326). Present-but-empty is
+    refused instead.
+    """
+    org_id = getattr(getattr(request, "state", None), "org_id", _ABSENT)
+    if org_id is _ABSENT:
+        return CONDUCTOR_ORG_ID
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No design scope resolved for this request")
     return str(org_id)
 
 
@@ -94,9 +109,14 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
        output_count, created_at, updated_at}
     """
     _require_ready()
+    # Before the `try`, for the reason `_require_ready`'s own docstring gives:
+    # each route ends in a blanket `except Exception` that turns whatever it
+    # catches into a 500. A refused scope resolved inside it came back as
+    # "Generation failed: 403: No design scope resolved", which is a 500 for an
+    # authorization decision.
+    org_id = _get_org_id(request)
     try:
         engine = get_design_engine()
-        org_id = _get_org_id(request)
         project = await engine.generate(discovery, org_id=org_id, team_id=None)
         return project.to_dict()
     except SkillNotFoundError as e:
@@ -123,6 +143,7 @@ async def get_design_project(project_id: str, request: Request) -> dict[str, Any
        outputs: [{format, content, url, trust_tier, metadata}], discovery: {...}, ...}
     """
     _require_ready()
+    org_id = _get_org_id(request)
     try:
         store = get_design_store()
         if store is None:
@@ -130,7 +151,7 @@ async def get_design_project(project_id: str, request: Request) -> dict[str, Any
                 status_code=503,
                 detail="Design persistence not configured (DATABASE_URL not set)",
             )
-        project = await store.get(project_id, org_id=_get_org_id(request))
+        project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
         # Include outputs in response
@@ -156,12 +177,12 @@ async def list_design_projects(
       [{id, name, skill_slug, design_system_slug, org_id, output_count, created_at, ...}]
     """
     _require_ready()
+    # Before the `try`, for the same reason as the create route above.
+    org_id = _get_org_id(request)
     try:
         store = get_design_store()
         if store is None:
             return []  # Graceful degradation: return empty list if persistence disabled
-
-        org_id = _get_org_id(request)
 
         if skill_slug:
             projects = await store.list_by_skill(skill_slug, org_id)
@@ -293,6 +314,7 @@ async def create_render_job(
       {job_id, status, created_at}
     """
     _require_ready()
+    org_id = _get_org_id(request)
     try:
         from services.design_preview import get_design_preview_service
 
@@ -304,7 +326,7 @@ async def create_render_job(
         # Fetch project, within the caller's scope: rendering another org's
         # project would return its content through a route that never asked
         # whose it was.
-        project = await store.get(project_id, org_id=_get_org_id(request))
+        project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 

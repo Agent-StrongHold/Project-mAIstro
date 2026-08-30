@@ -203,7 +203,7 @@ async def test_update_modifies_project(sample_project):
     # `update` refuses a statement that matched nothing, so the double has to
     # report a row (#326); AsyncMock's default `rowcount` is a Mock, not 0.
     session.execute.return_value.rowcount = 1
-    result = await store.update(sample_project)
+    result = await store.update(sample_project, org_id="org-123")
 
     execute_call = session.execute.await_args
     assert "UPDATE design_projects" in str(execute_call.args[0])
