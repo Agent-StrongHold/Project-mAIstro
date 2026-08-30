@@ -22,7 +22,7 @@ def check():
 
 def test_pull_request_keeps_specialized_execution_evidence(check) -> None:
     names = set(check.required_check_names(base_branch="develop", event_name="pull_request"))
-    assert check.MERGE_GROUP_SPECIALIZED_CHECKS <= names
+    assert names >= check.MERGE_GROUP_SPECIALIZED_CHECKS
     assert check.INTEGRATION_SCOPE_CHECK not in names
 
 
