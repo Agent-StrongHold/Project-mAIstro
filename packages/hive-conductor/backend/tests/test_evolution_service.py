@@ -224,8 +224,9 @@ def test_run_one_cycle_dispatches_canonical_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.evolution_graph as evolution_graph
-    from maistro.runs.model import RunStatus
     from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
 
     captured: dict[str, Any] = {}
 
@@ -263,8 +264,9 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.evolution_graph as evolution_graph
-    from maistro.runs.model import RunStatus
     from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
 
     class _StubPop:
         def list_all(self) -> list[Any]:
@@ -285,7 +287,7 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
     s._population = _StubPop()
     s._tournament = _StubTour()
 
-    with pytest.raises(RuntimeError, match="failed-evolve-run.*evaluation failed"):
+    with pytest.raises(RuntimeError, match=r"failed-evolve-run.*evaluation failed"):
         asyncio.run(s._run_one_cycle())
 
     assert s.cycle_count == 0
