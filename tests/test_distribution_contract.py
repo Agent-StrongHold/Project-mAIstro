@@ -75,7 +75,7 @@ def test_image_pins_supported_python_and_installs_identity() -> None:
 
 def test_docker_build_job_boots_the_image_it_built() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    build = workflow.index("docker build -t maistro-engine:test .")
+    build = workflow.index("tags: maistro-engine:test")
     boot = workflow.index("maistro-engine:test", build + 1)
     live = workflow.index("/health/live", boot)
     ready = workflow.index("/health/ready", live)
