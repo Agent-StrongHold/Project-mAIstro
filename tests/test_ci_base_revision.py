@@ -4,7 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
-from scripts.ci_base_revision import BaseRevisionError, load_event_payload, main, resolve_base_revision, resolve_base_revision_from_env
+from scripts.ci_base_revision import (
+    BaseRevisionError,
+    load_event_payload,
+    main,
+    resolve_base_revision,
+    resolve_base_revision_from_env,
+)
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
