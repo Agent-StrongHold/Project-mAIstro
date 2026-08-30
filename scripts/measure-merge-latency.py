@@ -16,9 +16,12 @@ What it measures, and what it does not
 --------------------------------------
 Three figures over a window of recent merge-group activity on one base branch:
 
-- **Queue residency** per merged PR: first merge-group run start -> the PR's
-  `merged_at`. This is what a contributor whose PR is already approved and
-  green actually waits, including every requeue.
+- **Queue residency** per merged PR: the PR's earliest `added_to_merge_queue`
+  timeline event -> its `merged_at`. This is what a contributor whose PR is
+  already approved and green actually waits, including every requeue and the
+  wait for a queue build slot. Where the timeline is unreadable the figure
+  falls back to the first merge-group run start (a lower bound) and the
+  report discloses how many rows did.
 - **Candidate wall-clock**: first run start -> last run's `updated_at` for one
   synthetic queue candidate whose runs all completed. The floor under residency.
 - **Requeue rate**: merged PRs that needed more than one queue candidate. Each
@@ -158,17 +161,23 @@ def drop_boundary_cohort(
 
 
 def summarize(
-    cands: dict[tuple[int, str], dict[str, Any]], merged_at: dict[int, dt.datetime]
+    cands: dict[tuple[int, str], dict[str, Any]],
+    merged_at: dict[int, dt.datetime],
+    admitted_at: dict[int, dt.datetime] | None = None,
 ) -> list[dict[str, Any]]:
     """Fold candidates into one row per PR the queue worked on.
 
-    `residency_min` exists only for PRs that actually merged and whose first
-    candidate start is known; an ejected-and-abandoned PR has attempts but no
-    residency, and counting it as zero would flatter the queue. It runs from
-    the first *observed workflow start*, which trails queue admission by
-    scheduling delay and any wait for a free queue slot — a lower bound on
-    ready-to-merge latency, and labelled as such in the report.
+    `residency_min` exists only for PRs that actually merged; an
+    ejected-and-abandoned PR has attempts but no residency, and counting it as
+    zero would flatter the queue. It runs from the PR's earliest
+    `added_to_merge_queue` timeline event when `admitted_at` carries one —
+    true ready-to-merge latency, including the wait for a queue build slot.
+    A PR without an admission timestamp (timeline unreadable, or event older
+    than the pages fetched) falls back to the first observed workflow start,
+    which trails admission and so understates; the row says which was used
+    and the report discloses the fallback count.
     """
+    admitted_at = admitted_at or {}
     per_pr: dict[int, list[dict[str, Any]]] = {}
     for (pr, _sha), row in cands.items():
         per_pr.setdefault(pr, []).append(row)
@@ -177,7 +186,10 @@ def summarize(
         starts = [row["started"] for row in rows if row["started"]]
         first = min(starts) if starts else None
         merged = merged_at.get(pr)
-        residency = (merged - first).total_seconds() / 60 if merged and first else None
+        admitted = admitted_at.get(pr)
+        from_admission = bool(admitted and (first is None or admitted <= first))
+        origin = admitted if from_admission else first
+        residency = (merged - origin).total_seconds() / 60 if merged and origin else None
         walls = [
             (row["finished"] - row["started"]).total_seconds() / 60
             for row in rows
@@ -189,6 +201,7 @@ def summarize(
                 "attempts": len(rows),
                 "merged": merged is not None,
                 "residency_min": residency,
+                "residency_from_admission": from_admission,
                 "candidate_wall_min": walls,
             }
         )
@@ -227,7 +240,12 @@ def figures(prs: list[dict[str, Any]]) -> dict[str, float]:
     requeued = [p for p in merged if p["attempts"] > 1]
     candidates_run = sum(p["attempts"] for p in prs)
     dequeued = candidates_run - len(merged)
+    fallbacks = [
+        p for p in merged if p["residency_min"] is not None and not p["residency_from_admission"]
+    ]
     return {
+        "residency_fallbacks": float(len(fallbacks)),
+        "residencies": float(len(residencies)),
         "prs_seen": float(len(prs)),
         "prs_merged": float(len(merged)),
         "candidates": float(candidates_run),
@@ -264,8 +282,9 @@ def render(prs: list[dict[str, Any]], figs: dict[str, float], base: str) -> str:
         f"dequeued candidates       : {figs['dequeued_candidates']:.0f} of "
         f"{figs['candidates']:.0f} ({figs['dequeue_rate']:.0%} landed no merge)",
         f"residency, median / p90   : {figs['median_residency']:.1f} / "
-        f"{figs['p90_residency']:.1f} min (first queue run -> merged; "
-        f"lower bound, excludes pre-run queue wait)",
+        f"{figs['p90_residency']:.1f} min (queue admission -> merged; "
+        f"{figs['residency_fallbacks']:.0f} of {figs['residencies']:.0f} "
+        f"from run-start fallback, a lower bound)",
         f"clean candidate, med / p90: {figs['median_candidate_wall']:.1f} / "
         f"{figs['p90_candidate_wall']:.1f} min (all-success gate-set passes only)",
     ]
@@ -325,6 +344,38 @@ def collect(
     return runs, merged_at, truncated
 
 
+def collect_admissions(prs: list[int], pages: int, token: str | None) -> dict[int, dt.datetime]:
+    """Earliest `added_to_merge_queue` timeline event per PR, where readable.
+
+    This is what upgrades residency from a run-start lower bound to real
+    ready-to-merge latency: admission happens when the PR enters the queue,
+    before Actions schedules anything and before a build slot frees up. A PR
+    whose timeline cannot be read, or whose admission event sits beyond the
+    fetched pages, is simply absent — `summarize` falls back to run start for
+    it and the report discloses the count, because a partial upgrade must not
+    fail the whole measurement.
+    """
+    out: dict[int, dt.datetime] = {}
+    for pr in prs:
+        admissions: list[dt.datetime] = []
+        try:
+            for page in range(1, pages + 1):
+                events = _get(f"/repos/{REPO}/issues/{pr}/timeline?per_page=100&page={page}", token)
+                if not events:
+                    break
+                for event in events:
+                    if event.get("event") != "added_to_merge_queue":
+                        continue
+                    when = _when(event.get("created_at"))
+                    if when:
+                        admissions.append(when)
+        except (urllib.error.URLError, TimeoutError):
+            continue
+        if admissions:
+            out[pr] = min(admissions)
+    return out
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", default="develop", help="queue base branch (default: develop)")
@@ -338,10 +389,13 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: could not read the GitHub API: {exc}")
         return 1
 
-    prs = summarize(drop_boundary_cohort(candidates(runs, args.base), truncated), merged_at)
-    if not prs:
+    cands = drop_boundary_cohort(candidates(runs, args.base), truncated)
+    if not cands:
         print(f"FAIL: no merge-group runs found for base {args.base}; nothing to measure")
         return 1
+
+    admitted_at = collect_admissions(sorted({pr for pr, _sha in cands}), args.pages, token)
+    prs = summarize(cands, merged_at, admitted_at)
 
     spans = [_when(r.get("run_started_at")) for r in runs if r.get("run_started_at")]
     if spans:

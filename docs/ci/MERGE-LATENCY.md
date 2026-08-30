@@ -25,12 +25,15 @@ queue re-spends the whole gate set on one merge.
 
 ## Definitions
 
-- **Queue residency** — first observed merge-group run start for the PR →
-  `merged_at`, including every requeue. A **lower bound** on ready-to-merge
-  latency: workflow start trails queue admission by Actions scheduling delay
-  and any wait for one of the queue's build slots, and neither appears in the
-  Actions run listing. (The upgrade path is the PR timeline's
-  `added_to_merge_queue` event, at one extra API call per PR.)
+- **Queue residency** — the PR's earliest `added_to_merge_queue` timeline
+  event → `merged_at`, including every requeue and the wait for one of the
+  queue's build slots. Where a PR's timeline cannot be read (or its admission
+  event lies beyond the fetched pages) the figure falls back to the first
+  observed merge-group run start — a **lower bound**, since workflow start
+  trails admission by scheduling delay and slot wait — and the report
+  discloses how many rows fell back. The 2026-08-29 baseline below predates
+  the admission upgrade: all of its residencies are the run-start lower
+  bound.
 - **Clean candidate wall-clock** — one synthetic queue candidate, earliest run
   start → latest run update, counted only when every observed run concluded
   `success`. An ejected candidate is cancelled mid-run, so its short
