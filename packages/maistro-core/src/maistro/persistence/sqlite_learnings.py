@@ -133,9 +133,7 @@ class SqliteLearningStore:
                 learning.rca_prevention,
                 learning.success_after_use,
                 learning.failure_after_use,
-                provenance.run_id or None,
-                provenance.node_run_id or None,
-                provenance.attempt_id or None,
+                *provenance.as_columns(),
             ),
         )
         await self._conn.commit()
@@ -298,6 +296,16 @@ class SqliteLearningStore:
         return [_row_to_learning(dict(zip(columns, r, strict=True))) for r in rows]
 
 
+def _text(row: dict[str, Any], name: str) -> str:
+    """Read a nullable text column as the empty string the dataclass expects.
+
+    A nullable column and a non-optional field: a row with no producer reads
+    back as a `Learning` naming none, which is the same fact in the shape the
+    caller expects (#709).
+    """
+    return str(row.get(name) or "")
+
+
 def _row_to_learning(row: dict[str, Any]) -> Learning:
     return Learning(
         id=row["id"],
@@ -313,9 +321,9 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         status=row.get("status") or "active",
         rca_category=row.get("rca_category"),
         rca_prevention=row.get("rca_prevention") or "",
-        run_id=row.get("run_id") or "",
-        node_run_id=row.get("node_run_id") or "",
-        attempt_id=row.get("attempt_id") or "",
+        run_id=_text(row, "run_id"),
+        node_run_id=_text(row, "node_run_id"),
+        attempt_id=_text(row, "attempt_id"),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
     )

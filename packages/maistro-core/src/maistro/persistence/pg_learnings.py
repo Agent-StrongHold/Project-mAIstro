@@ -136,13 +136,9 @@ class PgLearningStore:
                 learning.rca_prevention,
                 learning.success_after_use,
                 learning.failure_after_use,
-                # `or None`, three times: an empty string in a provenance column
-                # reads as "produced by a Run whose id is empty", which is a
-                # claim. NULL reads as "no execution was in scope", which is
-                # what happened (#709).
-                provenance.run_id or None,
-                provenance.node_run_id or None,
-                provenance.attempt_id or None,
+                # `as_columns` owns the "blank means absent" rule for every
+                # store that writes it (#709).
+                *provenance.as_columns(),
             )
             return int(row["id"]) if row else 0
 

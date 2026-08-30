@@ -162,6 +162,20 @@ class ExecutionProvenance:
         """True when any id is set — a record produced outside any execution."""
         return bool(self.run_id or self.node_run_id or self.attempt_id)
 
+    def as_columns(self) -> tuple[str | None, str | None, str | None]:
+        """The three ids as a database row holds them: absent, not empty.
+
+        `None` and not `""` because a provenance column holding an empty string
+        reads as "produced by a Run whose id is empty", which is a claim, where
+        NULL reads as "no execution was in scope" — what actually happened.
+
+        Here rather than at each call site: six stores were each spelling the
+        same `or None` three times, which is the same rule written in eighteen
+        places and three extra branches per store for the complexity gate to
+        notice. It noticed (#709).
+        """
+        return (self.run_id or None, self.node_run_id or None, self.attempt_id or None)
+
 
 def observed_provenance(
     *,
