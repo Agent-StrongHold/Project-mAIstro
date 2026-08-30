@@ -148,6 +148,18 @@ def production_sources() -> list[str]:
     )
 
 
+def _script_source_for_test(path: Path) -> str | None:
+    """Return the exact gate script whose canonical root test is ``path``."""
+    if path.parent != ROOT_TESTS or path.suffix != ".py":
+        return None
+
+    for candidate in (REPO / SCRIPTS).glob("*.py"):
+        source = candidate.relative_to(REPO).as_posix()
+        if resolve_script_tests(source) == path:
+            return source
+    return None
+
+
 def sources_for_test(test_path: str) -> list[str]:
     """Map a changed TEST path back to the source files it covers.
 
@@ -159,6 +171,11 @@ def sources_for_test(test_path: str) -> list[str]:
     no changed production sources at all.
     """
     path = Path(test_path)
+
+    script_source = _script_source_for_test(path)
+    if script_source is not None:
+        return [script_source]
+
     try:
         rel = path.relative_to(CORE_TESTS)
     except ValueError:
@@ -245,7 +262,18 @@ def _resolve_targets(files: list[str]) -> tuple[list[tuple[str, Path]], list[str
             continue
         # Gate scripts first: they live outside `packages/`, so
         # `resolve_package_tests` returns None for every one of them (#419).
-        tests = resolve_script_tests(src) or resolve_package_tests(src)
+        script_tests = resolve_script_tests(src)
+        if script_tests is not None:
+            # Keep the two directions one contract. This makes a test-only
+            # mutation-fix PR observable by the same mapping that targets the
+            # script when production changes, and makes drift fail closed.
+            if sources_for_test(str(script_tests)) != [src]:
+                unresolved.append(src)
+                continue
+            tests = script_tests
+        else:
+            tests = resolve_package_tests(src)
+
         if tests is None:
             unresolved.append(src)
         else:
