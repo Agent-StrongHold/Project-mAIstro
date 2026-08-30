@@ -25,11 +25,9 @@ CHECK_NAMES: dict[str, tuple[str, ...]] = {
     "wheel_imports": ("wheel-imports",),
     "docker_build": ("docker-build",),
 }
-ALL_CHECK_NAMES = {
-    check_name
-    for check_names in CHECK_NAMES.values()
-    for check_name in check_names
-}
+ALL_CHECK_NAMES: set[str] = set()
+for _check_names in CHECK_NAMES.values():
+    ALL_CHECK_NAMES.update(_check_names)
 
 
 def _fail_closed_scope(raw: str | None) -> dict[str, bool]:
@@ -70,9 +68,8 @@ def evaluate(
     for check_name in sorted(required_checks(event_name, scope_json)):
         result = results.get(check_name)
         if result != "success":
-            findings.append(
-                f"{check_name}: required but result was {result or '<missing>'}"
-            )
+            finding = f"{check_name}: required but result was {result or '<missing>'}"
+            findings.append(finding)
     return findings
 
 
