@@ -223,6 +223,35 @@ def test_stream_emits_single_done_event_from_conversational_llm(
     assert '"type": "delta"' not in body and '"type":"delta"' not in body
 
 
+def test_stream_preserves_caller_provided_system_message(authed_client: Any, monkeypatch) -> None:
+    captured: list[Any] = []
+
+    class FakeLLM:
+        async def complete(self, req):
+            captured.append(req)
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
+
+    with authed_client.stream(
+        "POST",
+        "/v1/chat/stream",
+        json={
+            "messages": [
+                {"role": "system", "content": "caller context"},
+                {"role": "user", "content": "hello"},
+            ],
+            "model": "test-model",
+        },
+    ) as r:
+        assert r.status_code == 200
+        "".join(r.iter_text())
+
+    req = captured[0]
+    assert [message["role"] for message in req.messages] == ["system", "user"]
+    assert req.messages[0]["content"] == "caller context"
+
+
 def test_stream_swallows_llm_exception_as_done_event(authed_client: Any, monkeypatch) -> None:
     class FailingLLM:
         async def complete(self, req):
