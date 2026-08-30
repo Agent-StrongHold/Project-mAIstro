@@ -259,17 +259,15 @@ async def run_dag(dag_id: str) -> dict:
     log_audit("dag_run", "system", target=dag_id)
     exec_id = str(uuid4())
     try:
-        import time as _time
+        import logging
 
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        _start = _time.monotonic()
         store = get_dag_run_store()
         run = await store.start_run(run_id=exec_id)
         # Human-initiated run from the UI — interactive isolation floor (ADR-093)
         result = await execute_dag(dag_data, execution_mode="interactive")
-        _elapsed_ms = int((_time.monotonic() - _start) * 1000)
         run.status = "completed"
         run.result = result
         # Store node results as events for eval-judge and UI
@@ -281,7 +279,20 @@ async def run_dag(dag_id: str) -> dict:
                 capability=nid,
                 payload={"source": "llm", "response": nr.get("response", "")[:2000]},
             )
-        # Record node metrics (Signal #5)
+        # Record node metrics (Signal #5).
+        #
+        # Only what this path measured. It knows each node's outcome and
+        # nothing about any individual node's latency, tokens, cost, or
+        # model. Those used to be filled in with the whole-DAG elapsed time
+        # divided by the cycle count, zeroes, and the first node's model
+        # behind a hardcoded fallback -- so the optimizer, which weights cost
+        # at 0.15, scored every variant as free and every node as equally
+        # fast (#698). The DAG-level timer went with them: it existed only to
+        # be divided.
+        #
+        # `project_id` is likewise absent rather than `""`: this route carries
+        # no project scope, and an empty string is a value the project filter
+        # matches against.
         try:
             from services.node_metrics_store import NodeObservation
             from services.node_metrics_store import get_store as get_metrics
@@ -296,19 +307,20 @@ async def run_dag(dag_id: str) -> dict:
                         project_id="",
                         dag_id=dag_id,
                         phase="COMPLETED" if nr.get("success") else "FAILED",
-                        latency_ms=_elapsed_ms // max(result.get("cycles", 1), 1),
-                        tokens_in=0,
-                        tokens_out=0,
-                        cost_usd=0.0,
-                        model_used=dag_data.get("nodes", [{}])[0].get("model", "gemini-3.5-flash"),
                     )
                 )
         except Exception:
-            pass
+            # Named rather than bare: a metrics write must not fail a DAG run
+            # that already produced a result, but an operator has to be able
+            # to find out that the observations were dropped.
+            logging.getLogger("hive.dags").warning(
+                "node_metrics_not_recorded execution_id=%s dag_id=%s",
+                exec_id,
+                dag_id,
+                exc_info=True,
+            )
         return {"status": "completed", "execution_id": exec_id, "result": result}
     except Exception as exc:
-        import logging
-
         logging.getLogger("hive.dags").warning("Graph execution failed: %s", exc)
         return {"status": "failed", "execution_id": exec_id, "error": str(exc)}
 

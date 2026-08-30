@@ -30,9 +30,6 @@ from services.node_metrics_store import (
     NodeObservation,
 )
 from services.node_metrics_store import (
-    _aggregate as _ms_aggregate,
-)
-from services.node_metrics_store import (
     get_store as _metrics_store,
 )
 
@@ -72,7 +69,9 @@ class VariantBucket:
     def p95_latency(self) -> int:
         if not self.observations:
             return 0
-        agg = _ms_aggregate(self.observations)
+        # Through the store's own summarizer rather than the module-private
+        # `_aggregate` this used to import (#698).
+        agg = _metrics_store().summarize(self.observations)
         return int(agg["latency_ms_p95"])
 
     @property
@@ -190,7 +189,7 @@ def compare_variants(
     if group_by not in ALLOWED_GROUP_FIELDS:
         raise ValueError(f"group_by must be one of {ALLOWED_GROUP_FIELDS!r}, got {group_by!r}")
 
-    obs = _metrics_store()._filter(
+    obs = _metrics_store().observations(
         dag_id=dag_id,
         window_seconds=window_seconds,
         now=now,

@@ -12,6 +12,7 @@ work producer to say "run this DAG".
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -26,6 +27,9 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.seeds import daily_status_seed
 from maistro.graph.template_adapter import descriptor_to_template
+from services.node_metrics_store import record_run_completion
+
+logger = logging.getLogger(__name__)
 
 # Module-level registry so a per-process boot registers the seeds once.
 _registry: DagRegistry | None = None
@@ -187,4 +191,18 @@ async def run_registered_dag(
         parent_node_run_id=parent_node_run_id,
         provenance=provenance,
     )
+    # The metrics ingest's production caller. `record_run_completion` reads
+    # the finished NodeRuns and the Run's own graph snapshot, and had no path
+    # into it at all -- so the only observations the optimizer ever saw were
+    # the ones the UI route hand-built (#698).
+    #
+    # Named, not bare: a metrics write must not fail a run that already
+    # succeeded, but "the observations for this run were not recorded" is a
+    # thing an operator needs to be able to find.
+    try:
+        record_run_completion(record)
+    except Exception:
+        logger.warning(
+            "node_metrics_not_recorded run_id=%s dag_id=%s", admitted_run_id, dag_id, exc_info=True
+        )
     return graph, record

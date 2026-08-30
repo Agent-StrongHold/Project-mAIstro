@@ -1,10 +1,21 @@
-"""Per-node latency and token metrics aggregation for durable graph runs.
+"""Per-node latency and token metrics, aggregated over a ring buffer.
 
-Canonical durable execution persists Run + NodeRun state. This adapter records
-one observation per NodeRun and derives node type from the immutable Graph
-snapshot on the Run. Attempt-level token, model, and cost metrics are not yet
-part of this durable slice, so those fields remain zero/empty until Attempt is
-routed through ExecutionRuntime.
+The buffer is in-memory and bounded, and this module says so rather than
+calling itself durable: three docstrings here used to, while the destination
+was a `deque` (#698). Making the observations themselves durable needs the
+Conductor's UI run path to mint a canonical Run, which it does not — that is
+#53.
+
+**An unmeasured field is absent, not zero.** `tokens_in`, `tokens_out`,
+`cost_usd` and `model_used` are optional, and the aggregate reports what it has
+rather than averaging invented zeros in. The route that runs a DAG from the UI
+used to hand-build an observation with `cost_usd=0.0`, zero tokens and a
+hardcoded model name, so the optimizer -- which weights cost at 0.15 -- scored
+every variant as free. A number nobody measured is worse than no number,
+because only one of them is visibly missing.
+
+Attempt-level tokens, model and cost are not part of the durable slice yet, so
+`record_run_completion` leaves them absent too, for the same reason.
 """
 
 from __future__ import annotations
@@ -29,11 +40,13 @@ class NodeObservation:
     project_id: str
     dag_id: str
     phase: str
-    latency_ms: int
-    tokens_in: int
-    tokens_out: int
-    cost_usd: float
-    model_used: str
+    #: `None` where nothing measured it. Every one of these was a required
+    #: field whose only non-durable writer supplied a zero or a guess.
+    latency_ms: int | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cost_usd: float | None = None
+    model_used: str = ""
     recorded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -99,6 +112,37 @@ class NodeMetricsStore:
         )
         return _aggregate(obs)
 
+    def observations(
+        self,
+        *,
+        node_kind: str = "",
+        project_id: str = "",
+        node_id: str = "",
+        dag_id: str = "",
+        window_seconds: int = 3600,
+        now: datetime | None = None,
+    ) -> list[NodeObservation]:
+        """The filtered observations themselves.
+
+        Public because two production readers reached for `store._filter` and
+        `_aggregate` instead -- private names that only this implementation
+        has, which is what makes swapping the store a silent change rather
+        than a compile error (#698).
+        """
+        return self._filter(
+            node_kind=node_kind,
+            project_id=project_id,
+            node_id=node_id,
+            dag_id=dag_id,
+            window_seconds=window_seconds,
+            now=now,
+        )
+
+    @staticmethod
+    def summarize(observations: Iterable[NodeObservation]) -> dict[str, Any]:
+        """Aggregate a set the caller already holds, by the store's own rules."""
+        return _aggregate(observations)
+
     def list_observations(
         self,
         *,
@@ -141,36 +185,46 @@ def _aggregate(obs: Iterable[NodeObservation]) -> dict[str, Any]:
             "succeeded": 0,
             "failed": 0,
             "success_rate": 0.0,
+            "latency_ms_measured": 0,
             "latency_ms_p50": 0,
             "latency_ms_p95": 0,
             "latency_ms_p99": 0,
-            "latency_ms_mean": 0.0,
-            "tokens_in_total": 0,
-            "tokens_in_mean": 0.0,
-            "tokens_out_total": 0,
-            "tokens_out_mean": 0.0,
-            "cost_usd_total": 0.0,
+            "latency_ms_mean": None,
+            "tokens_measured": 0,
+            "tokens_in_total": None,
+            "tokens_in_mean": None,
+            "tokens_out_total": None,
+            "tokens_out_mean": None,
+            "cost_measured": 0,
+            "cost_usd_total": None,
         }
-    latencies = sorted(o.latency_ms for o in items)
+    # Each measure is averaged over the observations that *carry* it, and
+    # reports how many that was. Dividing by `n` would fold every unmeasured
+    # node in as a zero, which is how a DAG whose cost nobody recorded came
+    # out as costing nothing rather than as unknown (#698).
+    latencies = sorted(o.latency_ms for o in items if o.latency_ms is not None)
     succeeded = sum(1 for o in items if o.phase == "COMPLETED")
     failed = sum(1 for o in items if o.phase == "FAILED")
-    tokens_in = sum(o.tokens_in for o in items)
-    tokens_out = sum(o.tokens_out for o in items)
-    cost = sum(o.cost_usd for o in items)
+    tokens_in = [o.tokens_in for o in items if o.tokens_in is not None]
+    tokens_out = [o.tokens_out for o in items if o.tokens_out is not None]
+    costs = [o.cost_usd for o in items if o.cost_usd is not None]
     return {
         "count": n,
         "succeeded": succeeded,
         "failed": failed,
         "success_rate": round(succeeded / n, 4),
+        "latency_ms_measured": len(latencies),
         "latency_ms_p50": _percentile(latencies, 50),
         "latency_ms_p95": _percentile(latencies, 95),
         "latency_ms_p99": _percentile(latencies, 99),
-        "latency_ms_mean": round(sum(latencies) / n, 1),
-        "tokens_in_total": tokens_in,
-        "tokens_in_mean": round(tokens_in / n, 1),
-        "tokens_out_total": tokens_out,
-        "tokens_out_mean": round(tokens_out / n, 1),
-        "cost_usd_total": round(cost, 4),
+        "latency_ms_mean": round(sum(latencies) / len(latencies), 1) if latencies else None,
+        "tokens_measured": len(tokens_in),
+        "tokens_in_total": sum(tokens_in) if tokens_in else None,
+        "tokens_in_mean": round(sum(tokens_in) / len(tokens_in), 1) if tokens_in else None,
+        "tokens_out_total": sum(tokens_out) if tokens_out else None,
+        "tokens_out_mean": round(sum(tokens_out) / len(tokens_out), 1) if tokens_out else None,
+        "cost_measured": len(costs),
+        "cost_usd_total": round(sum(costs), 4) if costs else None,
     }
 
 
@@ -199,20 +253,48 @@ def get_store() -> NodeMetricsStore:
 
 
 def set_store(store: NodeMetricsStore) -> None:
+    """Replace the process store. Tests use this; so does `reset_store`."""
     global _store
     _store = store
 
 
-def _latency_ms(node_run: Any) -> int:
+def reset_store() -> NodeMetricsStore:
+    """Install a fresh store, and return it.
+
+    The Conductor's startup caller. `set_store` had no production caller
+    either, which is the same wired-but-unread shape #236 gates -- and a
+    store carried across an engine restart would mix one run's observations
+    into the next process's window (#698).
+    """
+    set_store(NodeMetricsStore())
+    return _store
+
+
+def _latency_ms(node_run: Any) -> int | None:
+    """Elapsed milliseconds, or `None` when the record does not say.
+
+    `None` rather than `0`: a NodeRun missing a timestamp has an unknown
+    latency, and returning zero put it into the percentiles as the fastest
+    node in the window.
+    """
     started = getattr(node_run, "started_at", None)
     finished = getattr(node_run, "finished_at", None)
     if not isinstance(started, datetime) or not isinstance(finished, datetime):
-        return 0
+        return None
     return max(0, int((finished - started).total_seconds() * 1000))
 
 
 def record_run_completion(run_record: Any) -> int:
-    """Ingest canonical NodeRuns from a finished durable run record."""
+    """Ingest canonical NodeRuns from a finished durable run record.
+
+    Called from `dag_agents.run_registered_dag`, which is the Conductor's
+    canonical execution path. It had no production caller at all before --
+    a function that read real Run/NodeRun state, materialized the graph
+    snapshot to get node types, and was reachable only from its own tests
+    (#698). The observations it produces are the measured ones; the UI's
+    `/v1/dags/{id}/run` path does not reach here because it mints no
+    canonical Run, which is #53.
+    """
     if run_record is None:
         return 0
 
@@ -241,10 +323,9 @@ def record_run_completion(run_record: Any) -> int:
             dag_id=dag_id,
             phase=phase,
             latency_ms=_latency_ms(node_run),
-            tokens_in=0,
-            tokens_out=0,
-            cost_usd=0.0,
-            model_used="",
+            # Absent, not zero. Attempt-level tokens, model and cost are not
+            # in the durable slice yet; recording them as zeroes would make
+            # every canonical run look free next to a measured one.
         )
         _store.append(obs)
         appended += 1
