@@ -201,6 +201,12 @@ async def wire_execution_spine(
     requires. `SqliteRunStore` does not take it: the homelab twin has no
     archive columns, and `ColdRunArchiver` is a capability protocol precisely so
     a store may decline the tier instead of stubbing it.
+
+    The concrete RunStore variants wired here also implement the atomic
+    `ConsumerClaimStore` extension (#544). That extension is deliberately not
+    part of the universal RunStore protocol: ordinary task/chat/Graph callers
+    do not claim admitted work, while the canonical consumer must persist its
+    leased physical evidence in the same transaction that moves the Run.
     """
     project_scope_store: ProjectScopeStore
     run_store: RunStore
@@ -208,16 +214,12 @@ async def wire_execution_spine(
     schedule_store: ScheduleStore
     continuation_store: GraphContinuationStore
     if pg_pool is not None and await _spine_is_migrated(pg_pool):
-        # No ensure_schema: these tables come from `alembic/versions/012` and
-        # `014`. A store that quietly created its own tables would be a second
-        # schema owner and a second thing to keep in step — which is why the
-        # check above *probes* rather than creates.
         from maistro.graph.pg_templates import PgGraphTemplateStore
         from maistro.projects.pg_scope_store import PgProjectScopeStore
-        from maistro.runs.pg_store import PgRunStore
+        from maistro.runs.consumer_claim import ClaimingPgRunStore
 
         project_scope_store = PgProjectScopeStore(pg_pool)
-        run_store = PgRunStore(
+        run_store = ClaimingPgRunStore(
             pg_pool, project_store=project_scope_store, archive_store=archive_store
         )
         template_store = PgGraphTemplateStore(pg_pool)
@@ -227,12 +229,12 @@ async def wire_execution_spine(
         from maistro.graph.durable_runs.continuation import SqliteGraphContinuationStore
         from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
-        from maistro.runs.sqlite_store import SqliteRunStore
+        from maistro.runs.consumer_claim import ClaimingSqliteRunStore
         from maistro.scheduling.store import SqliteScheduleStore
 
         sqlite_scope_store = SqliteProjectScopeStore(conn)
         await sqlite_scope_store.ensure_schema()
-        sqlite_run_store = SqliteRunStore(conn, project_store=sqlite_scope_store)
+        sqlite_run_store = ClaimingSqliteRunStore(conn, project_store=sqlite_scope_store)
         await sqlite_run_store.ensure_schema()
         sqlite_template_store = SqliteGraphTemplateStore(conn)
         await sqlite_template_store.ensure_schema()
@@ -249,37 +251,27 @@ async def wire_execution_spine(
         from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
         from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
-        from maistro.runs.store import InMemoryRunStore
+        from maistro.runs.consumer_claim import ClaimingInMemoryRunStore
         from maistro.scheduling.store import InMemoryScheduleStore
 
         project_scope_store = InMemoryProjectScopeStore()
-        run_store = InMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)
+        run_store = ClaimingInMemoryRunStore(
+            project_store=project_scope_store, archive_store=archive_store
+        )
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()
         continuation_store = InMemoryGraphContinuationStore()
 
-    # The Project store refuses to delete a Project that owns Runs, and only
-    # the Run store can answer that. PostgreSQL has a foreign key for it; this
-    # is how the in-memory and SQLite stores learn the same rule.
     register = getattr(project_scope_store, "set_run_owner", None)
     if register is not None:
         register(run_store.has_runs_in_project)
 
-    # The caller's registry, not a fresh default. `IntentRegistry()` builds the
-    # engineering table unconditionally, so a PM-mode deployment admitted
-    # `delivery`, `risk` and `reporting` to the engineering fallback agent while
-    # the rest of the container routed them correctly — the canonical Graph then
-    # recorded a target agent nothing else agreed with.
     admitter = WorkspaceRoutingAdmitter(
         run_store,
         project_scope_store,
         default_workspace_id=workspace_id,
         intents=intents,
     )
-    # Priming the default Workspace is what keeps the eager-Root guarantee in
-    # the docstring above true for the case every deployment has. Workspaces a
-    # submission names later (#158) are built on first use, because they do not
-    # exist yet at startup.
     await admitter.admitter_for(workspace_id)
     return (
         project_scope_store,
