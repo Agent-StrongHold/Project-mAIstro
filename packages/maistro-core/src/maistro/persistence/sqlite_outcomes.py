@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     eval_judge_score REAL,
     run_id TEXT,
     node_run_id TEXT,
-    attempt_id TEXT
+    attempt_id TEXT,
+    usage_reported_calls INTEGER
 )
 """
 
@@ -65,6 +66,10 @@ _ADDED_COLUMNS = (
     ("run_id", "TEXT"),
     ("node_run_id", "TEXT"),
     ("attempt_id", "TEXT"),
+    # Nullable with no default, unlike every NOT NULL column above: a row
+    # written before migration 027 did not count, and `0` would say it counted
+    # and found none (#717).
+    ("usage_reported_calls", "INTEGER"),
 )
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
@@ -114,8 +119,8 @@ class SqliteOutcomeStore:
                 input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
                 org_id, project_id, dag_id, dag_run_id, node_id,
                 thumb, thumb_comment, eval_judge_score,
-                run_id, node_run_id, attempt_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                run_id, node_run_id, attempt_id, usage_reported_calls)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -153,6 +158,10 @@ class SqliteOutcomeStore:
                 # recorded outside any execution names no Run rather than one
                 # whose id is empty (#709).
                 *provenance.as_columns(),
+                # NULL, not 0, when the writer did not count: `0` would claim
+                # it counted and found none, which is the conflation the
+                # column exists to end (#717).
+                outcome.usage_reported_calls,
             ),
         )
         await self._conn.commit()
@@ -455,4 +464,5 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         run_id=_text(r, "run_id"),
         node_run_id=_text(r, "node_run_id"),
         attempt_id=_text(r, "attempt_id"),
+        usage_reported_calls=r.get("usage_reported_calls"),
     )

@@ -18,11 +18,14 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "prepull-base-images.sh"
+COMPOSE_FILE = ROOT / "packages" / "hive-conductor" / "docker-compose.test.yml"
 
 #: The Dockerfiles `docker-build` actually builds, and so the ones the pre-pull
 #: step is given. Kept beside the assertion that they are covered, rather than
@@ -61,7 +64,51 @@ JOB_DOCKERFILES = {
     ),
 }
 
+#: The compose service each job's `--exit-code-from` targets. Kept beside the
+#: assertion that ties it back to `ci.yml`'s literal text (below), so this map
+#: cannot silently name a service the job no longer runs.
+JOB_TARGET_SERVICE = {
+    "hive-conductor-e2e": "api-tests",
+    "hive-conductor-e2e-ui": "e2e-tests",
+}
+
 _FROM_RE = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
+
+
+def _compose_services() -> dict[str, Any]:
+    document: dict[str, Any] = yaml.safe_load(COMPOSE_FILE.read_text())
+    services: dict[str, Any] = document["services"]
+    return services
+
+
+def _compose_dockerfiles_for(service: str) -> set[str]:
+    """The repo-relative Dockerfiles `service` and its `depends_on` closure build.
+
+    Derived from `docker-compose.test.yml` itself, not hand-copied, so a
+    service later gaining a dependency (e.g. `e2e-tests` depending on
+    `api-tests`) changes what this returns automatically -- closing the gap
+    Codex flagged on #715: `JOB_DOCKERFILES` compared only against itself,
+    so a drift between it and the compose file's real dependency graph would
+    have passed silently, reopening exactly the registry-failure exposure
+    this whole pre-pull step exists to close.
+    """
+    services = _compose_services()
+    seen: set[str] = set()
+    queue = [service]
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        queue.extend(services[name].get("depends_on", {}))
+
+    dockerfiles: set[str] = set()
+    for name in seen:
+        build = services[name]["build"]
+        context = (COMPOSE_FILE.parent / build["context"]).resolve()
+        dockerfile = (context / build["dockerfile"]).resolve()
+        dockerfiles.add(dockerfile.relative_to(ROOT).as_posix())
+    return dockerfiles
 
 
 def _list(*dockerfiles: Path | str) -> list[str]:
@@ -180,6 +227,40 @@ def test_each_e2e_job_pre_pulls_exactly_what_it_builds(job: str) -> None:
             assert not _pulls(name), (
                 f"{job} pre-pulls {name}, which it never builds — see JOB_DOCKERFILES"
             )
+
+
+@pytest.mark.parametrize("job", sorted(JOB_TARGET_SERVICE))
+def test_the_job_targets_the_service_job_target_service_names(job: str) -> None:
+    """`JOB_TARGET_SERVICE[job]` must match the `--exit-code-from` `ci.yml` runs.
+
+    Without this, `JOB_TARGET_SERVICE` could name a service the job stopped
+    running and `test_job_dockerfiles_match_the_compose_dependency_closure`
+    below would keep validating against the wrong target, silently.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    body = workflow.split(f"\n  {job}:", 1)[1]
+    body = re.split(r"\n  \S", body, maxsplit=1)[0]
+
+    assert f"--exit-code-from {JOB_TARGET_SERVICE[job]}" in body, (
+        f"{job} does not run `--exit-code-from {JOB_TARGET_SERVICE[job]}`"
+    )
+
+
+@pytest.mark.parametrize("job", sorted(JOB_DOCKERFILES))
+def test_job_dockerfiles_match_the_compose_dependency_closure(job: str) -> None:
+    """`JOB_DOCKERFILES[job]` must equal what the compose file's own graph builds.
+
+    `test_each_e2e_job_pre_pulls_exactly_what_it_builds` only checks
+    `JOB_DOCKERFILES` against `ci.yml`'s text -- both sides written by hand,
+    so a hand-copied mistake in one could match a hand-copied mistake in the
+    other and this suite would never notice (Codex, #715). This checks the
+    map against the one thing neither side is free to get wrong: what
+    `docker-compose.test.yml` actually builds for the target service and its
+    `depends_on` closure. If that service later gains a new dependency, this
+    fails until `JOB_DOCKERFILES` is updated to match -- rather than the job
+    quietly missing a pre-pull for an image it has started building.
+    """
+    assert _compose_dockerfiles_for(JOB_TARGET_SERVICE[job]) == set(JOB_DOCKERFILES[job])
 
 
 # --- the forms a Dockerfile may legally use --------------------------------
