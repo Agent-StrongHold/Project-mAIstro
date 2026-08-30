@@ -1,8 +1,22 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +8
+  packages/hive-conductor/backend/tests: +19
 ---
 # chatgpt-m0-registration-policy-313-v2-e1d2
+
+## Update: +11 more (8 -> 19)
+
+CI's diff-coverage gate flagged `services/registration_policy.py` at 83.1%
+(need 90%): the malformed/expired/naive-timestamp branches in
+`_valid_record` and `_valid_record_from_value`, plus two functions with no
+current production caller (`invitation_is_valid`, `registration_allowed`),
+had no direct test -- the route/middleware tests only ever produce
+well-formed records. Added `TestInvitationRecordEdgeCases`, 11 new node IDs
+unit-testing the service module's own defensive branches directly: an
+invalid `set_policy` mode, an out-of-bounds invitation ttl, and
+non-string / unparsable / naive / expired expiry timestamps exercised on
+both the claim and restore paths, plus both currently-unwired functions.
+100% line coverage on the file; no existing node ID moved or was removed.
 
 `tests/test_registration_policy.py` is a new file: 8 node IDs covering the
 fail-closed registration policy (#313) -- default-closed and corrupt-state
