@@ -24,7 +24,7 @@ from maistro.persistence.episodic_rows import (
     from_row,
     to_row,
 )
-from maistro.types.memory import DecaySweep, EpisodicMemory
+from maistro.types.memory import REINFORCE_DELTA, DecaySweep, EpisodicMemory
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -132,7 +132,7 @@ class SqliteEpisodicStore:
 
     async def store(self, memory: EpisodicMemory) -> str:
         """Store a memory. Returns its `memory_id`. Upsert, as in PostgreSQL."""
-        await self._conn.execute(_UPSERT, to_row(memory, text_encoded=True))
+        await self._conn.execute(_UPSERT, to_row(memory, text_timestamps=True))
         await self._conn.commit()
         return memory.memory_id
 
@@ -163,32 +163,56 @@ class SqliteEpisodicStore:
         )
         return rank(query, candidates, k=limit)
 
-    async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
-        """Raise a memory's weight, clamped to its tier ceiling."""
-        found = await self._fetch(f"{_SELECT} WHERE memory_id = ?", (memory_id,))
-        if not found:
-            return
-        updated = _reinforce(found[0], delta)
-        await self._conn.execute(
-            "UPDATE episodic_memories SET weight = ?, reinforcement_count = ? WHERE memory_id = ?",
-            (updated.weight, updated.reinforcement_count, memory_id),
-        )
+    async def reinforce(self, memory_id: str, delta: float = REINFORCE_DELTA) -> None:
+        """Raise a memory's weight, clamped to its tier ceiling.
+
+        `BEGIN IMMEDIATE` before the read. SQLite serializes writers, but a
+        deferred transaction takes its write lock at the first *write*, so two
+        connections can both read the old count and both write `count + 1` —
+        the lost feedback event `PgEpisodicStore.reinforce` locks against
+        (Codex, #710). Taking the lock up front makes the second connection
+        wait instead of reading a snapshot it is about to invalidate.
+        """
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            found = await self._fetch(f"{_SELECT} WHERE memory_id = ?", (memory_id,))
+            if found:
+                updated = _reinforce(found[0], delta)
+                await self._conn.execute(
+                    "UPDATE episodic_memories SET weight = ?, reinforcement_count = ?"
+                    " WHERE memory_id = ?",
+                    (updated.weight, updated.reinforcement_count, memory_id),
+                )
+        except BaseException:
+            await self._conn.rollback()
+            raise
         await self._conn.commit()
 
     async def apply_decay(self, *, now: datetime | None = None) -> DecaySweep:
         """Decay every live memory once, reporting what the sweep touched."""
         moment = now or datetime.now(UTC)
         scanned = decayed = at_floor = 0
-        for memory in await self._fetch(f"{_SELECT} WHERE deleted = 0", ()):
-            floor = clamp_weight(memory.tier, float("-inf"))
-            swept = _tick_decay(memory, now=moment)
-            await self._conn.execute(
-                "UPDATE episodic_memories SET weight = ?, last_accessed_at = ? WHERE memory_id = ?",
-                (swept.weight, swept.last_accessed_at.isoformat(), memory.memory_id),
-            )
-            scanned += 1
-            decayed += swept.weight != memory.weight
-            at_floor += swept.weight <= floor
+        # The whole sweep under one write lock, taken before the read: reading
+        # the live set and writing it back afterwards would discard every
+        # reinforcement made in between. The PostgreSQL store takes the same
+        # lock per row; one lock for the sweep here, because SQLite has no row
+        # locks and a single writer is its model anyway (Codex, #710).
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            for memory in await self._fetch(f"{_SELECT} WHERE deleted = 0", ()):
+                floor = clamp_weight(memory.tier, float("-inf"))
+                swept = _tick_decay(memory, now=moment)
+                await self._conn.execute(
+                    "UPDATE episodic_memories SET weight = ?, last_accessed_at = ?"
+                    " WHERE memory_id = ?",
+                    (swept.weight, swept.last_accessed_at.isoformat(), memory.memory_id),
+                )
+                scanned += 1
+                decayed += swept.weight != memory.weight
+                at_floor += swept.weight <= floor
+        except BaseException:
+            await self._conn.rollback()
+            raise
         await self._conn.commit()
         return DecaySweep(scanned=scanned, decayed=decayed, at_floor=at_floor)
 

@@ -58,20 +58,28 @@ COLUMNS: tuple[str, ...] = (
 )
 
 
-def to_row(memory: EpisodicMemory, *, text_encoded: bool) -> tuple[Any, ...]:
+def to_row(memory: EpisodicMemory, *, text_timestamps: bool) -> tuple[Any, ...]:
     """The record as bound parameters, in `COLUMNS` order.
 
-    `text_encoded` names what separates the two drivers: PostgreSQL has a JSON
-    type and a timestamp type and asyncpg binds the Python objects to them,
-    while SQLite has neither and takes both as text. Passing a `datetime` to
-    sqlite3 works only through an adapter deprecated in 3.12, so the conversion
-    is done here where both stores can see it rather than left to the driver.
+    **`context` is always JSON text**, on both drivers. Handing asyncpg a `dict`
+    works only when the connection carries the codecs
+    `maistro.persistence.get_pool` registers, and `create_container` accepts a
+    caller-supplied pool that need not — on which every episodic write raised
+    `DataError: expected str, got dict` (Codex, #710). The PostgreSQL statement
+    casts the parameter `::text::jsonb`, which stores a real JSON object on
+    either kind of pool; passing the text *without* that cast is worse than the
+    dict, because a registered codec then `json.dumps` the string again and the
+    column holds a JSON string that `->>` cannot read into.
+
+    `text_timestamps` is the one thing that still differs: PostgreSQL has a
+    timestamp type and asyncpg binds `datetime` to it, while SQLite takes text —
+    and passing a `datetime` to sqlite3 works only through an adapter deprecated
+    in 3.12.
     """
-    context: Any = dict(memory.context)
+    context = json.dumps(dict(memory.context), sort_keys=True)
     created: Any = memory.created_at
     accessed: Any = memory.last_accessed_at
-    if text_encoded:
-        context = json.dumps(context, sort_keys=True)
+    if text_timestamps:
         created = memory.created_at.isoformat()
         accessed = memory.last_accessed_at.isoformat()
     return (
@@ -114,12 +122,23 @@ def _moment(value: Any) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
-def _context(value: Any) -> dict[str, str]:
+def _context(value: Any) -> dict[str, Any]:
+    """A stored context as the mapping that was written, values intact.
+
+    Not `{k: str(v)}`: `EpisodicMemory.context` is `dict[str, Any]` and the
+    in-memory store keeps what it was handed, so coercing here would make a
+    number come back as `"2"` from a durable store and `2` from the volatile
+    one — a difference the conformance suite exists to rule out (Codex, #710).
+
+    Both driver shapes are accepted because both occur: asyncpg hands back a
+    `dict` when the JSON codecs are registered and the raw text when they are
+    not.
+    """
     if isinstance(value, dict):
-        return {str(k): str(v) for k, v in value.items()}
+        return {str(key): item for key, item in value.items()}
     if isinstance(value, str) and value:
         loaded = json.loads(value)
-        return {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
+        return {str(key): item for key, item in loaded.items()} if isinstance(loaded, dict) else {}
     return {}
 
 

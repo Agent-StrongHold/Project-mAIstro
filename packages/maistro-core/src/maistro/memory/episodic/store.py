@@ -9,7 +9,7 @@ from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
 from maistro.memory.scopes import build_scope_filter, matches_scope
-from maistro.memory.types import DecaySweep, EpisodicMemory
+from maistro.memory.types import REINFORCE_DELTA, DecaySweep, EpisodicMemory
 
 
 def _selected(
@@ -76,7 +76,7 @@ class InMemoryEpisodicStore:
         # differently from the other three (#622).
         return rank(query, scoped, k=limit)
 
-    async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
+    async def reinforce(self, memory_id: str, delta: float = REINFORCE_DELTA) -> None:
         for i, mem in enumerate(self._memories):
             if mem.memory_id == memory_id:
                 self._memories[i] = _reinforce(mem, delta)
@@ -136,5 +136,10 @@ class InMemoryEpisodicStore:
                 project_id=project_id,
             )
         ]
-        matched.sort(key=lambda m: m.weight, reverse=True)
+        # `memory_id` breaks the tie, because `limit` cuts through equal
+        # weights constantly -- every new memory defaults to 0.3. A stable sort
+        # on weight alone returns insertion order, which no durable store can
+        # reproduce, so the three stores would answer differently and, past the
+        # limit, with different memories (Codex, #710).
+        matched.sort(key=lambda m: (-m.weight, m.memory_id))
         return matched[:limit]

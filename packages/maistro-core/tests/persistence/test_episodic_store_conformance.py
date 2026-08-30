@@ -17,10 +17,11 @@ object would prove only that the object remembers.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -28,7 +29,7 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.episodic.tiers import clamp_weight
 from maistro.persistence.episodic_rows import COLUMNS
 from maistro.persistence.pg_episodic import PgEpisodicStore
-from maistro.types.memory import EpisodicMemory, MemoryScope, MemoryTier
+from maistro.types.memory import REINFORCE_DELTA, EpisodicMemory, MemoryScope, MemoryTier
 
 from .conftest import postgres_dsn
 
@@ -381,3 +382,190 @@ class TestTheLiteralUpsertsMatchTheColumnList:
                 name for name in COLUMNS[1:] if f"{name} = {keyword}.{name}" in updated
             ] == list(COLUMNS[1:])
             assert f"memory_id = {keyword}.memory_id" not in updated
+
+
+class TestAMemoryHasAnIdentityOfItsOwn:
+    """`EpisodicMemory.memory_id` used to default to `""`.
+
+    `TuringMemoryBridge.store_episode` constructs one without an id, so every
+    episode shared that default. The in-memory store appended them all and only
+    the ids were wrong; `ON CONFLICT (memory_id)` turned the same gap into each
+    episode overwriting the last (Codex, #710).
+    """
+
+    async def test_two_memories_stored_without_an_id_are_two_memories(
+        self, durable_store: Any
+    ) -> None:
+        first = EpisodicMemory(content="first", org_id="org-a", scope=MemoryScope.ORGANIZATION)
+        second = EpisodicMemory(content="second", org_id="org-a", scope=MemoryScope.ORGANIZATION)
+
+        await durable_store.store(first)
+        await durable_store.store(second)
+
+        found = await durable_store.list_by_scope(org_id="org-a")
+        assert sorted(m.content for m in found) == ["first", "second"]
+        assert first.memory_id != second.memory_id
+
+    async def test_the_store_returns_the_id_it_filed_the_memory_under(
+        self, durable_store: Any
+    ) -> None:
+        memory = EpisodicMemory(content="x", org_id="org-a", scope=MemoryScope.ORGANIZATION)
+
+        memory_id = await durable_store.store(memory)
+
+        await durable_store.reinforce(memory_id)
+        [found] = await durable_store.list_by_scope(org_id="org-a")
+        assert found.reinforcement_count == 1
+
+
+class TestTwoWorkersReinforcingTheSameMemory:
+    @pytest.mark.ac("SPEC-083026-ba26/AC-1")
+    async def test_neither_feedback_event_is_lost(self, pg_pool: Any) -> None:
+        """The read-modify-write is under a row lock. Without it both workers
+        compute `count + 1` from one snapshot and one event disappears — and a
+        durable store is exactly where two workers share a memory (Codex, #710).
+        """
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        asyncpg = pytest.importorskip("asyncpg")
+        store = PgEpisodicStore(pg_pool)
+        await store.ensure_schema()
+        memory_id = await store.store(_memory("shared", tier=MemoryTier.OPINION, weight=0.3))
+
+        other = await asyncpg.create_pool(postgres_dsn(), min_size=2, max_size=4)
+        try:
+            await asyncio.gather(
+                store.reinforce(memory_id, delta=0.1),
+                PgEpisodicStore(other).reinforce(memory_id, delta=0.1),
+            )
+        finally:
+            await other.close()
+
+        [found] = await store.list_by_scope(org_id="org-a")
+        assert found.reinforcement_count == 2
+        assert found.weight == pytest.approx(0.5)
+
+    async def test_a_reinforcement_default_is_the_shared_constant(self, durable_store: Any) -> None:
+        """ADR-013: `REINFORCE_DELTA` is defined once and store implementations
+        import it rather than re-spelling `0.05` (Codex, #710)."""
+        memory_id = await durable_store.store(_memory("m1", tier=MemoryTier.OPINION, weight=0.4))
+
+        await durable_store.reinforce(memory_id)
+
+        [found] = await durable_store.list_by_scope(org_id="org-a")
+        assert found.weight == pytest.approx(0.4 + REINFORCE_DELTA)
+
+
+class TestEqualWeightsOrderTheSameEverywhere:
+    @pytest.mark.ac("SPEC-083026-ba26/AC-6")
+    async def test_the_three_stores_break_ties_the_same_way(self, durable_store: Any) -> None:
+        """Every new memory defaults to weight 0.3, so `limit` cuts through an
+        equal-weight group constantly. A stable sort on weight alone returns
+        insertion order, which no SQL query reproduces (Codex, #710)."""
+        volatile = InMemoryEpisodicStore()
+        for memory_id in ("gamma", "alpha", "beta"):
+            memory = _memory(memory_id, weight=0.3)
+            await volatile.store(memory)
+            await durable_store.store(memory)
+
+        mine = [m.memory_id for m in await durable_store.list_by_scope(org_id="org-a")]
+        theirs = [m.memory_id for m in await volatile.list_by_scope(org_id="org-a")]
+        assert mine == theirs == ["alpha", "beta", "gamma"]
+
+    async def test_a_limit_through_a_tie_keeps_the_same_memories(self, durable_store: Any) -> None:
+        volatile = InMemoryEpisodicStore()
+        for memory_id in ("gamma", "alpha", "beta"):
+            memory = _memory(memory_id, weight=0.3)
+            await volatile.store(memory)
+            await durable_store.store(memory)
+
+        mine = await durable_store.list_by_scope(org_id="org-a", limit=2)
+        theirs = await volatile.list_by_scope(org_id="org-a", limit=2)
+        assert [m.memory_id for m in mine] == [m.memory_id for m in theirs]
+
+
+class TestTheContextSurvivesAsItselfOnAnyPool:
+    _RICH: ClassVar[dict[str, Any]] = {
+        "attempt": 2,
+        "ok": True,
+        "nested": {"a": [1, 2]},
+        "note": "text",
+    }
+
+    @pytest.mark.ac("SPEC-083026-ba26/AC-2")
+    async def test_values_keep_their_types(self, durable_store: Any) -> None:
+        """`EpisodicMemory.context` is `dict[str, Any]` and the in-memory store
+        keeps what it was handed, so a durable store that coerced to `str` would
+        answer differently (Codex, #710)."""
+        volatile = InMemoryEpisodicStore()
+        memory = _memory("m1", context=dict(self._RICH))
+        await volatile.store(memory)
+        await durable_store.store(memory)
+
+        [mine] = await durable_store.list_by_scope(org_id="org-a")
+        [theirs] = await volatile.list_by_scope(org_id="org-a")
+        assert mine.context == self._RICH
+        assert mine.context == theirs.context
+
+    @pytest.mark.ac("SPEC-083026-ba26/AC-2")
+    async def test_a_pool_without_the_json_codecs_can_still_write(self) -> None:
+        """`create_container` accepts a caller-supplied pool, which need not
+        carry the codecs `get_pool` registers. Handing asyncpg a `dict` there
+        raises `DataError: expected str, got dict`; the statement binds text and
+        casts server-side instead (Codex, #710).
+
+        The stored value must be a JSON *object*, not a JSON string: passing the
+        text uncast to a pool that *does* have the codecs would `json.dumps` it
+        again, and `->>` would read nothing.
+        """
+        if not postgres_dsn():
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        asyncpg = pytest.importorskip("asyncpg")
+
+        raw = await asyncpg.create_pool(postgres_dsn(), min_size=1, max_size=2)
+        try:
+            store = PgEpisodicStore(raw)
+            await store.ensure_schema()
+            async with raw.acquire() as conn:
+                await conn.execute("TRUNCATE episodic_memories")
+            await store.store(_memory("m1", context=dict(self._RICH)))
+
+            [found] = await store.list_by_scope(org_id="org-a")
+            async with raw.acquire() as conn:
+                kind = await conn.fetchval("SELECT jsonb_typeof(context) FROM episodic_memories")
+                attempt = await conn.fetchval("SELECT context->>'attempt' FROM episodic_memories")
+        finally:
+            await raw.close()
+
+        assert found.context == self._RICH
+        assert kind == "object"
+        assert attempt == "2"
+
+    @pytest.mark.ac("SPEC-083026-ba26/AC-2")
+    async def test_a_pool_with_the_json_codecs_stores_an_object_not_a_string(
+        self, pg_pool: Any
+    ) -> None:
+        """The other half, and the reason the parameter is cast rather than
+        merely serialized: `get_pool` registers `encoder=json.dumps`, so text
+        bound straight to a `jsonb` parameter is encoded a second time and the
+        column holds a JSON *string* that `->>` reads nothing out of.
+
+        `jsonb_typeof` is the assertion because a tolerant reader hides this:
+        `json.loads` of the double-encoded value returns the original text, and
+        this module's `_context` then parses that back into the right mapping.
+        The record looks correct and the column is wrong.
+        """
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        store = PgEpisodicStore(pg_pool)
+        await store.ensure_schema()
+        await store.store(_memory("m1", context=dict(self._RICH)))
+
+        async with pg_pool.acquire() as conn:
+            kind = await conn.fetchval("SELECT jsonb_typeof(context) FROM episodic_memories")
+            attempt = await conn.fetchval("SELECT context->>'attempt' FROM episodic_memories")
+
+        [found] = await store.list_by_scope(org_id="org-a")
+        assert found.context == self._RICH
+        assert kind == "object"
+        assert attempt == "2"

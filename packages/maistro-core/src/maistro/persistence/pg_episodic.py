@@ -35,7 +35,7 @@ from maistro.persistence.episodic_rows import (
     from_row,
     to_row,
 )
-from maistro.types.memory import DecaySweep, EpisodicMemory
+from maistro.types.memory import REINFORCE_DELTA, DecaySweep, EpisodicMemory
 
 if TYPE_CHECKING:
     import asyncpg
@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 _SELECT = f"SELECT {', '.join(COLUMNS)} FROM episodic_memories"
 
 #: The upsert, written out rather than assembled from `COLUMNS`.
+#:
+#: `$12::text::jsonb` is `context`: bound as text and cast by the server, so
+#: the write does not depend on the connection carrying the JSON codecs
+#: `get_pool` registers -- a caller-supplied pool need not (Codex, #710).
+#: See `episodic_rows.to_row` for why the text is not passed uncast.
 #:
 #: Bandit's B608 fires on any SQL built by string formatting and this repo runs
 #: it at a strict zero baseline, so the choice is a literal statement or a
@@ -56,8 +61,8 @@ _UPSERT = """INSERT INTO episodic_memories (
     contradiction_count, created_at, last_accessed_at, deleted, decay_rate,
     shared, flagged_for_review
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13,
+    $14, $15, $16, $17, $18, $19, $20
 ) ON CONFLICT (memory_id) DO UPDATE SET
     tier = EXCLUDED.tier, content = EXCLUDED.content,
     weight = EXCLUDED.weight, org_id = EXCLUDED.org_id,
@@ -116,7 +121,7 @@ class PgEpisodicStore:
         the id is the record's identity in every other method here.
         """
         async with self._pool.acquire() as conn:
-            await conn.execute(_UPSERT, *to_row(memory, text_encoded=False))
+            await conn.execute(_UPSERT, *to_row(memory, text_timestamps=False))
         return memory.memory_id
 
     async def retrieve(
@@ -146,10 +151,19 @@ class PgEpisodicStore:
         # would be the fifth.
         return rank(query, [from_row(row) for row in rows], k=limit)
 
-    async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
-        """Raise a memory's weight, clamped to its tier ceiling."""
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(f"{_SELECT} WHERE memory_id = $1", memory_id)
+    async def reinforce(self, memory_id: str, delta: float = REINFORCE_DELTA) -> None:
+        """Raise a memory's weight, clamped to its tier ceiling.
+
+        Read and write in one transaction, over a row it has locked. The point
+        of a durable store is that replicas share it, so two workers
+        reinforcing the same memory is the ordinary case — and an unlocked
+        read-modify-write there has both compute `count + 1` from one snapshot
+        and one feedback event disappear (Codex, #710). A concurrent decay
+        sweep would overwrite the new weight the same way; it takes the same
+        lock.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(f"{_SELECT} WHERE memory_id = $1 FOR UPDATE", memory_id)
             if row is None:
                 return
             updated = _reinforce(from_row(row), delta)
@@ -166,18 +180,36 @@ class PgEpisodicStore:
         moment = now or datetime.now(UTC)
         scanned = decayed = at_floor = 0
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(f"{_SELECT} WHERE deleted = FALSE")
-            for row in rows:
-                memory = from_row(row)
-                floor = clamp_weight(memory.tier, float("-inf"))
-                swept = _tick_decay(memory, now=moment)
-                await conn.execute(
-                    "UPDATE episodic_memories SET weight = $1, last_accessed_at = $2"
-                    " WHERE memory_id = $3",
-                    swept.weight,
-                    swept.last_accessed_at,
-                    memory.memory_id,
+            ids = [
+                record["memory_id"]
+                for record in await conn.fetch(
+                    "SELECT memory_id FROM episodic_memories WHERE deleted = FALSE"
                 )
+            ]
+            for memory_id in ids:
+                # One transaction per memory, over a row this one has locked —
+                # `reinforce`'s lock from the other side. A sweep that read
+                # every row up front and wrote them all back would discard
+                # every reinforcement made in between. Per row rather than one
+                # long transaction, so a sweep does not hold the whole live set
+                # locked (Codex, #710).
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        f"{_SELECT} WHERE memory_id = $1 AND deleted = FALSE FOR UPDATE",
+                        memory_id,
+                    )
+                    if row is None:
+                        continue
+                    memory = from_row(row)
+                    floor = clamp_weight(memory.tier, float("-inf"))
+                    swept = _tick_decay(memory, now=moment)
+                    await conn.execute(
+                        "UPDATE episodic_memories SET weight = $1, last_accessed_at = $2"
+                        " WHERE memory_id = $3",
+                        swept.weight,
+                        swept.last_accessed_at,
+                        memory.memory_id,
+                    )
                 scanned += 1
                 decayed += swept.weight != memory.weight
                 at_floor += swept.weight <= floor
