@@ -35,6 +35,22 @@ class RuntimeDeadlineExceeded(TimeoutError):
         self.execution_id = execution_id
 
 
+class ExecutionPaused(Exception):
+    """The work stopped on purpose, having neither finished nor failed.
+
+    A pause is a physical disposition, in the same family as cancellation and
+    deadline expiry: mechanics the Runtime counts without interpreting. Why the
+    work paused, what it waits on and when it resumes are domain facts, and the
+    domain carries them on a subclass -- `maistro.runs.ExecutionYielded` does.
+    Runtime keeps knowing nothing about wait or HITL semantics (R1).
+
+    It exists here rather than being imported from the domain because the
+    dependency runs the other way: `maistro.runs` imports `maistro.runtime`, and
+    a Runtime that reached back for the domain's exception would invert that and
+    fail AC-10. It is the same seam `RuntimeDeadlineExceeded` already uses.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeEventEnvelope:
     """Runtime-assigned sequence metadata around an opaque domain event."""
@@ -51,6 +67,7 @@ class RuntimeMetrics:
     executions_started: int
     executions_completed: int
     executions_failed: int
+    executions_yielded: int
     executions_cancelled: int
     executions_timed_out: int
     active_executions: int
@@ -155,6 +172,7 @@ class PythonExecutionRuntime:
         self._executions_started = 0
         self._executions_completed = 0
         self._executions_failed = 0
+        self._executions_yielded = 0
         self._executions_cancelled = 0
         self._executions_timed_out = 0
         self._peak_concurrency = 0
@@ -219,6 +237,15 @@ class PythonExecutionRuntime:
                 raise RuntimeDeadlineExceeded(execution_id) from exc
             self._executions_failed += 1
             raise
+        except ExecutionPaused:
+            # Ahead of the broad clause, and it has to stay there: a pause is an
+            # `Exception`, so the clause below would catch it first and count a
+            # deliberate stop as a failed execution. `RuntimeMetrics` is the
+            # migration-trigger measurement, and a HITL-heavy workload pauses
+            # constantly and legitimately; read as failures those pauses say the
+            # runtime is falling over when it is doing its job.
+            self._executions_yielded += 1
+            raise
         except Exception:
             self._executions_failed += 1
             raise
@@ -277,6 +304,7 @@ class PythonExecutionRuntime:
             executions_started=self._executions_started,
             executions_completed=self._executions_completed,
             executions_failed=self._executions_failed,
+            executions_yielded=self._executions_yielded,
             executions_cancelled=self._executions_cancelled,
             executions_timed_out=self._executions_timed_out,
             active_executions=len(self._active),
@@ -335,6 +363,7 @@ def _max_rss_bytes() -> int | None:
 __all__ = [
     "EventSink",
     "ExecutionCallable",
+    "ExecutionPaused",
     "ExecutionRuntime",
     "PythonExecutionRuntime",
     "RuntimeDeadlineExceeded",

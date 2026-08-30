@@ -18,6 +18,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-ac-state.py"
+IMPL = ROOT / "scripts" / "check_ac_state_impl.py"
 
 TOTALS = {
     "completion_claims_contradicted": 9,
@@ -53,7 +54,16 @@ def test_the_fixture_covers_every_ratcheted_counter(gate):
 
 @pytest.fixture(scope="module")
 def gate():
-    spec = importlib.util.spec_from_file_location("check_ac_state", SCRIPT)
+    # The impl, not the `check-ac-state.py` front door. #621 split the gate in
+    # two: the front door adds the merge-group actual-base guard and bulk
+    # re-exports everything else from the impl. Re-exported names read fine,
+    # but `monkeypatch.setattr(gate, "SPEC_DIR", ...)` rebinds the *copy* on
+    # the front door while `_spec_files()` keeps reading the impl's own
+    # `SPEC_DIR` — so the patch silently does nothing and the test walks the
+    # real `docs/specs`. These suites exercise impl internals, so they take
+    # the module that owns them; the front door's own guard is covered by
+    # `tests/test_ac_state_merge_guard.py`.
+    spec = importlib.util.spec_from_file_location("check_ac_state_impl", IMPL)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -392,11 +402,14 @@ def test_a_notes_module_that_fails_to_load_leaves_nothing_behind(
     """
     broken = tmp_path / "ac_state_notes.py"
     broken.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-    monkeypatch.setattr(gate, "_NOTES_SOURCE", broken)
+    # `gate` is the entry point, which re-exports by copying; the loader reads
+    # the implementation's own `_NOTES_SOURCE`, so that is what has to move.
+    impl = sys.modules["check_ac_state_impl"]
+    monkeypatch.setattr(impl, "_NOTES_SOURCE", broken)
     monkeypatch.delitem(sys.modules, "_ac_state_notes", raising=False)
 
     with pytest.raises(RuntimeError, match="boom"):
-        gate._load_notes_module()
+        impl._load_notes_module()
 
     assert "_ac_state_notes" not in sys.modules
 
@@ -595,3 +608,90 @@ def test_a_malformed_worktree_note_is_a_diagnostic_not_a_traceback(gate, stacked
 
     assert gate.ratchet({**TOTALS, "design_coverage": 22.0}, measured=True, bank=False) == 1
     assert "the banked AC-state fold could not be read" in capsys.readouterr().out
+
+
+# --- the merge group judges the combination, not the author (#620) ------------
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_merge_group_does_not_demand_a_number_that_did_not_exist(
+    gate, ceilings, capsys, monkeypatch
+) -> None:
+    """The defect that dequeued honest PRs.
+
+    `quality.yml` runs on `merge_group`, so the ratchet measures the *merged*
+    result. Once another PR merges, that result carries its criteria and
+    measures above every note in the tree — including the candidate's own,
+    banked before the other PR existed. Every PR behind the first in a batch was
+    therefore dequeued with CI_FAILURE for something its author could not have
+    prevented (#620): #608, twice, on 2026-08-29.
+    """
+    ceilings(design_coverage=20.0)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 0
+    out = capsys.readouterr().out
+    assert "merge group" in out
+    # Stated, not silent: a reader of the log must not mistake this for the
+    # full gate having passed.
+    assert "not enforcing the unbanked-improvement half" in out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_pull_request_still_has_to_bank_what_it_measured(gate, ceilings, capsys) -> None:
+    """The other side. Without it, a carve-out that applied everywhere would
+    satisfy the test above while removing the rule entirely."""
+    ceilings(design_coverage=20.0)
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 23.0}, measured=True, bank=False) == 1
+    assert "unbanked improvement" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_merge_group_still_refuses_a_regression(gate, ceilings, capsys, monkeypatch) -> None:
+    """The half the queue exists to enforce, and the one that protects develop.
+
+    Judged against the base-resolved fold, which nothing in the worktree can
+    reach — so the carve-out above cannot be used to merge a combination that
+    lowers design coverage.
+    """
+    ceilings(design_coverage=20.0)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+
+    assert gate.ratchet({**TOTALS, "design_coverage": 19.0}, measured=True, bank=False) == 1
+    assert "moved away from its recorded state" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_a_merge_group_still_refuses_a_debt_counter_that_rose(
+    gate, ceilings, capsys, monkeypatch
+) -> None:
+    """Design coverage is one counter of eleven; the ten debt ceilings are
+    ratcheted in the opposite direction and must hold in the queue too."""
+    ceilings(design_coverage=20.0)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+
+    assert (
+        gate.ratchet(
+            {**TOTALS, "design_coverage": 20.0, "specs_awaiting_retrofit": 140},
+            measured=True,
+            bank=False,
+        )
+        == 1
+    )
+    assert "moved away from its recorded state" in capsys.readouterr().out
+
+
+@pytest.mark.ac("SPEC-082926-25a2/AC-7")
+def test_the_event_name_decides_not_the_ref(gate, monkeypatch) -> None:
+    """`gh-readonly-queue/...` is a convention GitHub could change; the event
+    name is the fact the workflow was triggered by."""
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    assert gate.in_merge_group() is False
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/gh-readonly-queue/develop/pr-608")
+    assert gate.in_merge_group() is False
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+    assert gate.in_merge_group() is True

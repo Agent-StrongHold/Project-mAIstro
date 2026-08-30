@@ -1,4 +1,17 @@
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  // Aliased: the un-prefixed name would shadow the DOM `KeyboardEvent` this
+  // file already uses for a window-level listener.
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 
 export function PageHeader({ title, subtitle, actions, helpHref }: { title: string; subtitle?: string; actions?: ReactNode; helpHref?: string }) {
   return (
@@ -268,6 +281,218 @@ export function SearchInput({ value, onChange, placeholder }: { value: string; o
         placeholder={placeholder || "Search..."}
         style={{ background: "transparent", border: "none", outline: "none", fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)", width: "100%" }}
       />
+    </div>
+  );
+}
+
+/* ── Credential fields (#375) ────────────────────────────────── */
+
+/**
+ * A labelled field, with the label associated rather than adjacent.
+ *
+ * Every credential surface in this app named its inputs with placeholder text.
+ * A placeholder is not an accessible name: it disappears the moment there is a
+ * value, so a screen-reader user who tabs back to a half-filled form is told
+ * nothing, and it can change with state — the LLM key field said "API key" or
+ * "key stored — replace?" depending on the server's answer, so the field's
+ * *name* changed under the user. The setup wizard had two fields whose whole
+ * name was "password", one for the admin account and one for the daily user,
+ * indistinguishable to anything that cannot see the layout.
+ *
+ * So the name comes from a real `<label htmlFor>` that stays on screen, and
+ * everything else a user needs — the hint, the error, whether a secret is
+ * already stored — is associated through `aria-describedby` instead of being
+ * squeezed into the name.
+ */
+export type FieldProps = {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  /** Standing help. Announced with the field, not instead of its name. */
+  hint?: string;
+  /** Set when this field is why the form failed; sets `aria-invalid` too. */
+  error?: string;
+  required?: boolean;
+  autoComplete?: string;
+  autoFocus?: boolean;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  style?: CSSProperties;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+};
+
+const FIELD_LABEL: CSSProperties = {
+  display: "block",
+  fontFamily: "var(--mono)",
+  fontSize: 9,
+  color: "var(--pencil)",
+  marginBottom: 3,
+};
+
+const FIELD_NOTE: CSSProperties = {
+  fontFamily: "var(--mono)",
+  fontSize: 9,
+  color: "var(--pencil)",
+  marginTop: 3,
+};
+
+function useFieldIds(hint?: string, error?: string) {
+  const id = useId();
+  const hintId = hint ? `${id}-hint` : undefined;
+  const errorId = error ? `${id}-error` : undefined;
+  const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+  return { id, hintId, errorId, describedBy };
+}
+
+function FieldNotes({
+  hintId,
+  hint,
+  errorId,
+  error,
+}: {
+  hintId?: string;
+  hint?: string;
+  errorId?: string;
+  error?: string;
+}) {
+  return (
+    <>
+      {hint ? <div id={hintId} style={FIELD_NOTE}>{hint}</div> : null}
+      {error ? (
+        // `role="alert"` so a failure that appears after submit is announced.
+        // Without it the message is on screen and silent, which is the state a
+        // sighted user never experiences and every other user always does.
+        <div id={errorId} role="alert" style={{ ...FIELD_NOTE, color: "var(--danger)" }}>
+          {error}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+export function TextField({
+  label,
+  value,
+  onChange,
+  hint,
+  error,
+  required,
+  autoComplete,
+  autoFocus,
+  placeholder,
+  disabled,
+  className = "input-field",
+  style,
+  onKeyDown,
+}: FieldProps) {
+  const { id, hintId, errorId, describedBy } = useFieldIds(hint, error);
+  return (
+    <div style={style}>
+      <label htmlFor={id} style={FIELD_LABEL}>{label}</label>
+      <input
+        id={id}
+        className={className}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        aria-describedby={describedBy}
+        aria-invalid={error ? true : undefined}
+        required={required}
+        autoComplete={autoComplete}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        disabled={disabled}
+      />
+      <FieldNotes hintId={hintId} hint={hint} errorId={errorId} error={error} />
+    </div>
+  );
+}
+
+export type SecretFieldProps = FieldProps & {
+  /**
+   * Whether the server already holds a secret for this field. Announced as a
+   * description — never folded into the label, and never showing any part of
+   * the stored value, which the client does not have and must not display.
+   */
+  stored?: boolean;
+  storedNote?: string;
+};
+
+export function SecretField({
+  label,
+  value,
+  onChange,
+  hint,
+  error,
+  required,
+  autoComplete = "off",
+  autoFocus,
+  placeholder,
+  disabled,
+  className = "input-field",
+  style,
+  onKeyDown,
+  stored,
+  storedNote = "A secret is already stored. Entering a new one replaces it.",
+}: SecretFieldProps) {
+  const [revealed, setRevealed] = useState(false);
+  const { id, hintId, errorId } = useFieldIds(hint, error);
+  const storedId = stored ? `${id}-stored` : undefined;
+  const describedBy = [storedId, hintId, errorId].filter(Boolean).join(" ") || undefined;
+
+  return (
+    <div style={style}>
+      <label htmlFor={id} style={FIELD_LABEL}>{label}</label>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input
+          id={id}
+          className={className}
+          // Revealing changes the input's `type`, which is what actually shows
+          // the characters. `autoComplete` is passed through unchanged either
+          // way: a password manager keys off it, and a field that silently
+          // stopped being a password field would stop being offered a
+          // credential.
+          type={revealed ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          aria-describedby={describedBy}
+          aria-invalid={error ? true : undefined}
+          required={required}
+          autoComplete={autoComplete}
+          autoFocus={autoFocus}
+          placeholder={placeholder}
+          disabled={disabled}
+          style={{ flex: 1, minWidth: 0 }}
+        />
+        <button
+          type="button"
+          onClick={() => setRevealed((shown) => !shown)}
+          // Named for the field, because a page with several secret fields
+          // otherwise has several buttons all called "Show".
+          //
+          // A changing action name and no `aria-pressed`, which is one of the
+          // two coherent choices (raised in review of #375). The first version
+          // had both: the name went "Show Password" -> "Hide Password" *and*
+          // `aria-pressed` flipped, which announces as "Hide Password,
+          // pressed" and leaves the listener to work out which half is the
+          // state. The other choice -- a fixed name plus `aria-pressed` --
+          // would make the accessible name disagree with the visible "hide",
+          // which is its own failure (WCAG 2.5.3, label in name).
+          aria-label={`${revealed ? "Hide" : "Show"} ${label}`}
+          disabled={disabled}
+          style={{
+            background: "none", border: "1.3px solid var(--rule)", borderRadius: 4,
+            padding: "3px 8px", cursor: "pointer", color: "var(--pencil)",
+            fontFamily: "var(--mono)", fontSize: 9, flexShrink: 0,
+          }}
+        >
+          {revealed ? "hide" : "show"}
+        </button>
+      </div>
+      {stored ? <div id={storedId} style={FIELD_NOTE}>{storedNote}</div> : null}
+      <FieldNotes hintId={hintId} hint={hint} errorId={errorId} error={error} />
     </div>
   );
 }

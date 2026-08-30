@@ -1,9 +1,18 @@
-"""Scored episodic retrieval with embedding reranking.
+"""Scored episodic retrieval with embedding reranking (ADR-080 part D / SPEC-243).
 
-Hybrid lexical (keyword overlap) + vector (embedding cosine) ranking, scaled
-by the memory's confidence weight (ADR-080 part D / SPEC-243).
+Two-stage: the store recalls the scoped candidate pool, this reranks it by the
+hybrid score. That split is why this can no longer read `store._memories`, which
+is what it did — a private list that exists on `InMemoryEpisodicStore` and on no
+other implementation, so the ranking ADR-080 mandates worked against the test
+double and would have raised `AttributeError` against anything durable (#622).
+The pool now comes from `EpisodicStore.list_by_scope`, which every
+implementation of the protocol has to answer.
 
-Ported from Stronghold.
+The pool is the store's judgement and the order is this class's: a store that
+can rank better than a Python loop — one with a `pg_trgm` index and a pgvector
+column — reranks nothing and implements `retrieve` itself. What it must not do
+is invent a fourth spelling of the formula, which is why the formula lives in
+`ranking` and this file supplies only the embedding half.
 """
 
 from __future__ import annotations
@@ -11,27 +20,36 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from maistro.memory.episodic.ranking import VectorFn, keyword_overlap, rank
 from maistro.memory.learnings.embeddings import cosine_similarity
-from maistro.memory.scopes import build_scope_filter, matches_scope
 
 if TYPE_CHECKING:
-    from maistro.memory.episodic.store import InMemoryEpisodicStore
     from maistro.protocols.embeddings import EmbeddingClient
+    from maistro.protocols.memory import EpisodicStore
     from maistro.types.memory import EpisodicMemory
 
 logger = logging.getLogger(__name__)
 
+#: How many scoped memories to recall per requested result before reranking.
+#:
+#: Reranking cannot promote a memory the recall stage never returned, so the
+#: pool has to be wider than the answer; it also cannot be unbounded, because
+#: the vector half embeds every candidate. Ten is a recall/cost trade-off, not a
+#: measured optimum — a store that ranks in the database does not pay it at all.
+_POOL_FACTOR = 10
+
 
 class ScoredEpisodicRetrieval:
-    """Retrieves episodic memories with scope filtering and hybrid similarity scoring.
+    """Reranks an `EpisodicStore`'s scoped recall by the hybrid score.
 
-    Score = (lexical_relevance + vector_similarity) * memory_weight (ADR-080 part D).
-    Higher weight memories (LESSON, REGRET, WISDOM) rank above lower ones.
+    Score = (lexical relevance + vector similarity) * memory weight
+    (ADR-080 part D). Higher-weight memories (LESSON, REGRET, WISDOM) rank above
+    lower ones at equal relevance.
     """
 
     def __init__(
         self,
-        store: InMemoryEpisodicStore,
+        store: EpisodicStore,
         embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self._store = store
@@ -45,58 +63,63 @@ class ScoredEpisodicRetrieval:
         team_id: str | None = None,
         user_id: str | None = None,
         agent_id: str | None = None,
+        project_id: str | None = None,
+        min_weight: float = 0.0,
         limit: int = 5,
     ) -> list[EpisodicMemory]:
         """Retrieve relevant memories, scope-filtered and scored."""
-        scope_filters = build_scope_filter(
+        candidates = await self._store.list_by_scope(
             agent_id=agent_id,
             user_id=user_id,
             team_id=team_id,
             org_id=org_id,
+            project_id=project_id,
+            min_weight=min_weight,
+            limit=max(limit, 1) * _POOL_FACTOR,
         )
-
-        all_memories = [m for m in self._store._memories if not m.deleted]
-        scoped = [m for m in all_memories if matches_scope(m, scope_filters)]
-
-        if not scoped:
+        if not candidates:
             return []
 
-        scored: list[tuple[float, EpisodicMemory]] = []
+        vector_fn = await self._vector_term(query, candidates)
+        return rank(query, candidates, k=limit, lexical_fn=keyword_overlap, vector_fn=vector_fn)
 
-        query_vec: list[float] | None = None
-        if self._embeddings:
-            try:
-                query_vec = await self._embeddings.embed(query)
-                if all(v == 0.0 for v in query_vec):
-                    query_vec = None
-            except Exception:
-                logger.warning("Embedding query failed, falling back to keyword retrieval")
-                query_vec = None
+    async def _vector_term(self, query: str, candidates: list[EpisodicMemory]) -> VectorFn:
+        """The vector half of the score, resolved to a plain lookup.
 
-        query_words = set(query.lower().split())
+        Embedding is async and the formula is not, so every similarity is
+        computed here and the returned function only reads the result. Any
+        failure — no client, an unembeddable query, one memory the client
+        chokes on — degrades to zero for that term rather than failing the
+        recall: a memory ranked on keywords alone is worse than one ranked on
+        both, and both are better than a prompt with no memory in it.
+        """
+        similarities: dict[str, float] = {}
+        query_vec = await self._embed(query)
+        if query_vec is not None:
+            for memory in candidates:
+                memory_vec = await self._embed(memory.content)
+                if memory_vec is not None:
+                    similarities[memory.memory_id] = cosine_similarity(query_vec, memory_vec)
 
-        for mem in scoped:
-            lexical = self._keyword_similarity(query_words, mem.content)
-            vector = 0.0
-            if query_vec:
-                try:
-                    mem_vec = await self._embeddings.embed(mem.content)  # type: ignore[union-attr]
-                    vector = cosine_similarity(query_vec, mem_vec)
-                except Exception:
-                    vector = 0.0
+        def vector_fn(_query: str, memory: EpisodicMemory) -> float:
+            return similarities.get(memory.memory_id, 0.0)
 
-            score = (lexical + vector) * mem.weight
-            if score > 0:
-                scored.append((score, mem))
+        return vector_fn
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [m for _, m in scored[:limit]]
+    async def _embed(self, text: str) -> list[float] | None:
+        """The embedding, or None when there is not a usable one.
 
-    @staticmethod
-    def _keyword_similarity(query_words: set[str], content: str) -> float:
-        """Simple word overlap ratio."""
-        content_words = set(content.lower().split())
-        if not query_words or not content_words:
-            return 0.0
-        overlap = len(query_words & content_words)
-        return overlap / len(query_words)
+        An all-zero vector is treated as absent, not as a vector: cosine
+        similarity against it is 0.0 for everything, which is a term that adds
+        nothing while looking like it was computed.
+        """
+        if self._embeddings is None:
+            return None
+        try:
+            vector = await self._embeddings.embed(text)
+        except Exception:
+            logger.warning("Embedding failed; falling back to keyword-only ranking")
+            return None
+        if not vector or all(value == 0.0 for value in vector):
+            return None
+        return vector

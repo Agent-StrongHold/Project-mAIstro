@@ -43,6 +43,20 @@ def _completed_attempt_result(record: DurableRunRecord, node_run_id: str) -> Att
     return AttemptResult.from_attempt(attempt)
 
 
+def _accept_exhausted_failure(record: DurableRunRecord, item: traversal._FrontierItem) -> bool:
+    """Return whether node policy accepts an exhausted failure as domain output.
+
+    Retry authority stays in the canonical traversal rule from #573. This policy
+    applies only once that rule says no visit remains. The physical AttemptResult
+    stays failed evidence; only the accepted logical NodeRun disposition becomes
+    COMPLETED so a domain such as MasterOrchestrator can project FAILED without
+    aborting unrelated Graph work.
+    """
+    return item.spec.policies.get(
+        "continue_on_failure"
+    ) is True and not traversal._may_revisit_after(record.graph_state, item)
+
+
 def _logical_outcome(
     record: DurableRunRecord,
     item: traversal._FrontierItem,
@@ -54,7 +68,7 @@ def _logical_outcome(
         )
         result = None
         error = None
-    elif item.result.success:
+    elif item.result.success or _accept_exhausted_failure(record, item):
         logical_status = RunStatus.COMPLETED
         result = traversal._result_output(item.result)
         error = None
@@ -212,25 +226,14 @@ async def _checkpoint_advancement(
 
 async def _fold_failures(
     record: DurableRunRecord,
+    graph: Graph,
+    completed: tuple[traversal._FrontierItem, ...],
     failures: tuple[traversal._FrontierItem, ...],
     *,
     prior_state: GraphExecutionState,
     store: DurableRunStore,
 ) -> DurableRunRecord:
-    """Fail the Run, or send back the nodes whose own policy says try again.
-
-    A failure with a visit left is not the Run's failure yet (#548). The retry
-    is the node's next visit -- a new NodeRun with its own Attempt -- because
-    the Attempt firewall rightly refuses to redispatch a completed Attempt:
-    completion means the physical work ran, side effects and all.
-
-    `prior_state` rather than `record.graph_state` because the accept above
-    already counted this visit; asking the pre-fold state keeps the budget
-    meaning "tries" rather than "tries minus the one being decided".
-
-    Which failures are out of budget is `traversal.first_exhausted_failure`,
-    the same rule the other fold asks -- not a second copy of it.
-    """
+    """Retry failed visits without discarding completed sibling advancement."""
     exhausted = traversal.first_exhausted_failure(prior_state, failures)
     if exhausted is not None:
         return await traversal._mark_failed(
@@ -239,12 +242,24 @@ async def _fold_failures(
             error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
             store=store,
         )
+
+    next_ids, decisions = traversal._route_completed_items(record, graph, completed)
+    retry_ids = tuple(item.node_id for item in failures)
+    candidates = traversal._dedupe((*retry_ids, *next_ids))
+    ready, blocked_fanins = traversal._partition_ready_targets(
+        record,
+        graph,
+        candidates,
+        decisions,
+        failures,
+    )
+    record = traversal._with_deferred_fanins(record, blocked_fanins)
     return await _checkpoint_advancement(
         record,
         prior_state,
-        (),
-        tuple(item.node_id for item in failures),
-        (),
+        completed,
+        ready,
+        decisions,
         store=store,
     )
 
@@ -266,6 +281,8 @@ async def fold_authoritative_frontier(
     if failures:
         return await _fold_failures(
             record,
+            graph,
+            completed,
             failures,
             prior_state=prior_state,
             store=store,

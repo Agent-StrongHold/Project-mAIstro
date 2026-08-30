@@ -112,6 +112,7 @@ _PG_SCRATCH_TABLES = (
     "learnings",
     "outcomes",
     "prompts",
+    "prompt_labels",
     "canonical_attempts",
     "canonical_node_runs",
     "canonical_runs",

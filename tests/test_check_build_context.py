@@ -404,7 +404,7 @@ class TestARuleHereCanBreakABuildOverThere:
     def test_it_looks_at_more_than_the_runner(self, gate) -> None:
         seen = gate._dockerfiles()
 
-        assert "packages/hive-conductor/backend/Dockerfile" in seen
+        assert "packages/hive-conductor/Dockerfile" in seen
         assert "Dockerfile.rsi-runner" in seen
         assert not any(name.endswith(".dockerignore") for name in seen)
 

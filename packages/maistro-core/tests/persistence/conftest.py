@@ -29,6 +29,7 @@ _SCRATCH_TABLES = (
     "learnings",
     "outcomes",
     "prompts",
+    "prompt_labels",
     "agents",
 )
 

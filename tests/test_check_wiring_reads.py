@@ -29,10 +29,16 @@ _SOURCE = "packages/demo/src/demo/container.py"
 def _git_rc(*args: str) -> int:
     """This checkout's answer to a git question, as a return code.
 
-    The three-state test below has to ask the same questions the resolver asks
+    The four-state test below has to ask the same questions the resolver asks
     without reimplementing its answers, so it asks git directly.
     """
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True).returncode
+
+
+def _git_out(*args: str) -> str:
+    """The same, as text. Empty when git could not answer, which never matches."""
+    done = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 @pytest.fixture(scope="module")
@@ -562,9 +568,7 @@ class TestTheSeamsTheOtherTestsSubstitute:
 
         assert check._entries_from(loaded) == {"demo.Root": {"f": "why"}}
 
-    def test_trusted_baseline_follows_the_checkout_into_one_of_its_three_states(
-        self, check
-    ) -> None:
+    def test_trusted_baseline_follows_the_checkout_into_one_of_its_four_states(self, check) -> None:
         """The unsubstituted path, run against whatever checkout we are in.
 
         Which state happens is a property of the checkout, not of the code, and
@@ -574,27 +578,53 @@ class TestTheSeamsTheOtherTestsSubstitute:
           `ci.yml`'s `test` job gives this suite. There is no trusted reference
           to name, so the resolver reads the worktree and *says so*; a run that
           labels itself `worktree` is not claiming to have checked monotonicity.
-        * It resolves and shares history -- `quality.yml` sets `fetch-depth: 0`,
-          so this is the state the gate is actually judged in.
+        * It resolves *to HEAD itself*. Then the ledger would be read out of
+          the very commit under judgement, and the resolver refuses with
+          `SelfReferentialBaseline` -- the case its own docstring names, and the
+          one this suite is in on a push to `develop`.
+        * It resolves, differs from HEAD, and shares history -- `quality.yml`
+          sets `fetch-depth: 0`, so this is the state the gate is actually
+          judged in for a pull request.
         * It resolves and shares no history. Then a baseline was available in
           principle and could not be reached, and the resolver must refuse and
           say why rather than fall back to the candidate's own ledger. That
           refusal is the invariant this whole change exists to protect.
 
-        An earlier version asserted only the middle case and failed in the
+        An earlier version asserted only the third case and failed in the
         shallow job; the version after it asserted the first case *as* the
-        third, which is the confusion worth naming: an absent ref and an
+        fourth, which is the confusion worth naming: an absent ref and an
         unreachable base are not the same non-passing state, and only one of
         them is non-passing at all.
+
+        The self-referential case was missing entirely, and it is the one that
+        happens on every push to `develop` -- so this test failed on the
+        default branch for eight consecutive merges while the gate it covers
+        was behaving exactly as designed. A case analysis that omits the state
+        its own subject was written for is not a narrower test, it is a test
+        that reports on a world the code does not live in.
         """
         prov = check._provenance()
         resolves = _git_rc("rev-parse", "--verify", "origin/develop^{commit}") == 0
+        # Both halves of the guard's own condition, mirrored rather than
+        # guessed: it refuses when the base ref *is* HEAD **and** no tracked
+        # file is modified. Asserting on the first half alone passes in a dirty
+        # checkout and fails in CI's clean one -- which is how a test comes to
+        # describe the developer's tree instead of the runner's.
+        self_referential = (
+            resolves
+            and _git_out("rev-parse", "origin/develop^{commit}")
+            == _git_out("rev-parse", "HEAD^{commit}")
+            and not _git_out("status", "--porcelain", "--untracked-files=no")
+        )
 
         if not resolves:
             trusted, baseline, _version = check._trusted_baseline()
             assert isinstance(trusted, dict)
             assert baseline.origin == "worktree"
             assert baseline.base_sha is None
+        elif self_referential:
+            with pytest.raises(prov.SelfReferentialBaseline, match="resolves to HEAD itself"):
+                check._trusted_baseline()
         elif _git_rc("merge-base", "origin/develop", "HEAD") == 0:
             trusted, baseline, _version = check._trusted_baseline()
             assert isinstance(trusted, dict)

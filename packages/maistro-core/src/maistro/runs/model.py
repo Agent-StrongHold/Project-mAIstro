@@ -152,6 +152,12 @@ class AttemptStatus(StrEnum):
     YIELDED = "yielded"
 
 
+#: Key under which a YIELDED Attempt records whether a person is what it waits
+#: for. It lives on the model because both the service that writes it and the
+#: reconciler that reads it back need it, and the reconciler cannot import the
+#: service -- the dependency runs the other way.
+PAUSE_AWAITS_HUMAN = "awaits_human"
+
 TERMINAL_RUN_STATUSES = frozenset(
     {
         RunStatus.COMPLETED,
@@ -484,6 +490,7 @@ class Attempt(BaseModel):
 
 __all__ = [
     "ACCEPTED_NODE_OUTCOME_STATUSES",
+    "PAUSE_AWAITS_HUMAN",
     "TERMINAL_ATTEMPT_STATUSES",
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",

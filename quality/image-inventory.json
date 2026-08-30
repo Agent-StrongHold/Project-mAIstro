@@ -7,6 +7,7 @@
       "disposition": "PUBLISHED",
       "rationale": "The maistro-engine API image. Chainguard/Wolfi runtime, browser surface deliberately split out into Dockerfile.research so this one can go near-zero-CVE.",
       "built_by": [
+        ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers",
         ".github/workflows/release.yml:images"
       ],
@@ -38,6 +39,7 @@
       "disposition": "DISTRIBUTED",
       "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign.",
       "built_by": [
+        ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers"
       ],
       "scanned_by": [
@@ -51,6 +53,7 @@
       "disposition": "DISTRIBUTED",
       "rationale": "Full-isolation RSI runner: the entire self-improvement loop executes inside it and agent-authored code only ever runs there, so its contents are a containment boundary rather than a convenience. Built by tools/run_rsi_isolated.sh and tools/run_rsi_evolve_isolated.sh on an operator's machine; never pushed.",
       "built_by": [
+        ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers"
       ],
       "scanned_by": [
@@ -100,17 +103,6 @@
       "dockerfile": "packages/hive-conductor/tests/Dockerfile.playwright",
       "disposition": "INTERNAL",
       "rationale": "The browser half of the same e2e harness, built only by docker-compose.test.yml's playwright service. Same reasoning as hive-conductor-e2e-api.",
-      "built_by": [],
-      "scanned_by": [],
-      "published_by": null
-    },
-    {
-      "id": "hive-conductor-backend-legacy",
-      "dockerfile": "packages/hive-conductor/backend/Dockerfile",
-      "disposition": "RETIRED",
-      "replaced_by": "packages/hive-conductor/Dockerfile",
-      "removal_owner": "#351",
-      "rationale": "Orphaned: no workflow, compose file, script or document references it. It also carries exactly the anti-pattern #351 exists to remove -- `pip install -r requirements.txt 2>/dev/null || pip install fastapi uvicorn httpx pydantic bcrypt`, which swallows the failure and silently installs five unpinned packages instead. It is inventoried rather than deleted here because removal is #351's scope; being listed is what keeps it visible until then.",
       "built_by": [],
       "scanned_by": [],
       "published_by": null

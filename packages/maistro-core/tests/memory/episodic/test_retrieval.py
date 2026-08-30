@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.memory.episodic.ranking import keyword_overlap
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.types.memory import EpisodicMemory, MemoryScope, MemoryTier
@@ -145,12 +146,20 @@ class TestVectorScoring:
 
 
 class TestKeywordSimilarityHelper:
+    """The lexical term moved to `ranking.keyword_overlap` (#622).
+
+    It was a private static method here while `InMemoryEpisodicStore.retrieve`
+    computed a different lexical term inline, so "the" ranking was two rankings.
+    Same three cases, asked of the one implementation.
+    """
+
     def test_empty_query_words_returns_zero(self) -> None:
-        assert ScoredEpisodicRetrieval._keyword_similarity(set(), "some content") == 0.0
+        assert keyword_overlap("", make_memory(content="some content")) == 0.0
 
     def test_empty_content_returns_zero(self) -> None:
-        assert ScoredEpisodicRetrieval._keyword_similarity({"cat"}, "") == 0.0
+        assert keyword_overlap("cat", make_memory(content="")) == 0.0
 
     def test_partial_overlap_ratio(self) -> None:
-        result = ScoredEpisodicRetrieval._keyword_similarity({"cat", "dog", "bird"}, "the cat ran")
-        assert result == pytest.approx(1 / 3)
+        assert keyword_overlap("cat dog bird", make_memory(content="the cat ran")) == pytest.approx(
+            1 / 3
+        )

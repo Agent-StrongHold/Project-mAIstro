@@ -86,6 +86,14 @@ jobs:
       # to the tree (#81).
       - name: Deployment docs name only components that exist
         run: python3 scripts/check-deployment-claims.py
+      # One seam further in: a control the user can reach but not name. Every
+      # password and API-key field in the Conductor took its accessible name
+      # from placeholder text, which disappears once the field has a value and
+      # changed with server state on two of those surfaces (#375). This refuses
+      # a raw `type="password"` outside the shared components, and refuses a
+      # control on a credential surface that has no way to carry a label.
+      - name: Credential fields are not named by their placeholders
+        run: python3 scripts/check-secret-field-labels.py
       # An accepted decision can retire a rule that is written down somewhere
       # else, and the retired phrasing then outlives it. `maistro-core`'s own
       # CLAUDE.md told agents "No `org_id` in core" long after ADR-068
@@ -119,6 +127,17 @@ jobs:
       # on that path fails the build rather than waiting to be noticed.
       - name: Every module the promotion path reaches escalates
         run: python3 scripts/check-promotion-surface.py
+      # The same rule, in the two file types the Compose gate cannot read.
+      # `maistro-canvas/frontend` carried
+      # `postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders` twice -- once
+      # as an `os.environ.get` fallback, once as `alembic.ini`'s
+      # `sqlalchemy.url` -- for a database whose port that package's Compose
+      # profile publishes to the host (#432). Position, not value, is what is
+      # checked: a URL in a docstring or an error message is text about a URL,
+      # and only a connection *default* can be picked up by a process nobody
+      # configured.
+      - name: No connection default carries a literal credential
+        run: python3 scripts/check-connection-credentials.py
       # Four chat handlers read `stores.chat_sessions` as a global dictionary,
       # so any authenticated user could list, read, append to or delete any
       # other user's chat by id (#312). Nothing about the text of those
@@ -136,6 +155,14 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # `LocalRsiLoop._run_tests` carried the comment "the test command is
+      # operator-supplied config, not agent input" while POST /v1/rsi/runs
+      # accepted that command over HTTP (#305). The comment was true when it
+      # was written and false by the time it mattered, because nothing checks
+      # a comment against its callers. quality/shell-execution.json does.
+      - name: Every shell=True is declared with a caller someone vouches for
+        run: python3 scripts/check-shell-execution.py
+
       # `Dockerfile.rsi-runner` copied the repository root into an image that
       # then runs agent-authored code, and nothing denied `.env` (#308). The
       # per-Dockerfile ignore is BuildKit-only, so two files have to agree or
@@ -573,6 +600,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # buildx + the GitHub Actions cache backend, so an unchanged Dockerfile
+      # reuses layers across runs instead of re-pulling and re-installing from
+      # nothing every time. `docker-build` is the longest job in the suite --
+      # the wall-clock floor under how fast any candidate can go green -- and
+      # every build below ran with zero cache before this. Scopes are per
+      # image (`engine`, `hive-conductor`, `engine-research`, `rsi-runner`) so
+      # one Dockerfile's cache cannot evict another's, and security.yml's
+      # `containers` job uses the SAME scope names so a main-targeted PR can
+      # warm-start from whatever a develop-targeted run already built.
+      - uses: docker/setup-buildx-action@v3
+
       # Fetch the base images first, retrying (#204). This job used to fail on a
       # registry reset before touching a line of repository content — a red
       # required check that nobody could re-run, because the GitHub App gets
@@ -585,7 +623,16 @@ jobs:
       - name: Pre-pull base images (retry transient registry faults)
         run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
 
-      - run: docker build -t maistro-engine:test .
+      - name: Build maistro-engine (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          tags: maistro-engine:test
+          push: false
+          load: true
+          cache-from: type=gha,scope=engine
+          cache-to: type=gha,scope=engine,mode=max
       - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
         shell: bash
         run: |
@@ -668,7 +715,16 @@ jobs:
           done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
-      - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
+      - name: Build hive-conductor (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/hive-conductor/Dockerfile
+          tags: hive-conductor:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=hive-conductor
+          cache-to: type=gha,scope=hive-conductor,mode=max
       # The static gate above reads the ignore files. This one builds the
       # actual RSI runner from a context carrying canary secrets and proves
       # none is in any layer -- because the question is what Docker did, not
@@ -798,6 +854,43 @@ jobs:
           done
           echo "ok: the canary reached neither filesystem, layers nor history, under either builder"
 
+      # The other three real images, built here rather than only in
+      # security.yml's `containers` job -- which runs on main-targeted PRs,
+      # merge groups into main, and the nightly schedule, and therefore never
+      # on a develop PR. That gap is how `Dockerfile.research` reached a state
+      # where it could not be built at all and nothing said so for as long as
+      # it took someone to try (#346).
+      #
+      # Build only: scanning stays in security.yml, because a Trivy database
+      # download on every PR is a cost this job should not carry. What this
+      # buys is the cheap half -- "does it still build" -- on the branch where
+      # the change is actually made.
+      # `maistro-engine:ci` is `-f Dockerfile .` on the same context this job
+      # already built as `maistro-engine:test` above -- byte-for-byte the same
+      # build under a second tag. A tag alias proves exactly as much as a
+      # second `docker build` would and costs nothing.
+      - run: docker tag maistro-engine:test maistro-engine:ci
+      - name: Build maistro-engine-research (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.research
+          tags: maistro-engine-research:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=engine-research
+          cache-to: type=gha,scope=engine-research,mode=max
+      - name: Build maistro-rsi-runner (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.rsi-runner
+          tags: maistro-rsi-runner:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=rsi-runner
+          cache-to: type=gha,scope=rsi-runner,mode=max
+
   workflow-lint:
     runs-on: ubuntu-latest
     env:
@@ -825,6 +918,18 @@ jobs:
           install -m0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /tmp/shellcheck-bin
       - name: "actionlint (with shellcheck over run: blocks)"
         run: /tmp/actionlint -no-color -oneline -shellcheck /tmp/shellcheck-bin
+      # actionlint above shellchecks the `run:` blocks inside workflows. The
+      # standalone scripts under tools/ are not workflows and were linted by
+      # nobody, which is how `run_rsi_isolated.sh` came to interpolate a
+      # network-derived roster into a `bash -lc` payload (#309). All three are
+      # clean at this severity today, so the gate starts with no backlog.
+      #
+      # scripts/*.sh is deliberately not in scope: one of them carries a
+      # pre-existing SC2155 that is nothing to do with this, and a gate that
+      # arrives red teaches people to ignore it. Widening the glob is a
+      # one-line change once that warning is fixed.
+      - name: shellcheck the standalone scripts under tools/
+        run: /tmp/shellcheck-bin --severity=warning tools/*.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

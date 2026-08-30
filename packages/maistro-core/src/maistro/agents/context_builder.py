@@ -3,6 +3,12 @@
 Order matters: soul -> tool prompts -> promoted learnings -> matched learnings -> episodic memories.
 Token budget enforcement prevents context overflow -- learnings are dropped (lowest priority first)
 before soul prompt, which is never truncated.
+
+The episodic half of that sentence was aspirational until #622: this module
+named episodic memory in its own docstring and contained no code that read any.
+It now calls the `ContextAssemblyPolicy` the container has always built and
+nothing has ever read, which is what made that policy's ADR-091 layer rules
+reachable at all.
 """
 
 from __future__ import annotations
@@ -12,7 +18,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from maistro.protocols.memory import LearningStore
+    from maistro.protocols.memory import ContextAssemblyPolicy, LearningStore
     from maistro.protocols.prompts import PromptManager
     from maistro.types.agent import AgentIdentity
 
@@ -110,10 +116,14 @@ class ContextBuilder:
         *,
         prompt_manager: PromptManager,
         learning_store: LearningStore | None = None,
+        context_assembly_policy: ContextAssemblyPolicy | None = None,
         agent_id: str = "",
         user_id: str = "",
         org_id: str = "",
         team_id: str = "",
+        project_id: str = "",
+        run_id: str = "",
+        session_id: str = "",
         system_token_budget: int = _DEFAULT_SYSTEM_TOKEN_BUDGET,
         enable_cache_breakpoints: bool = False,
     ) -> tuple[list[dict[str, Any]], list[int]]:
@@ -171,10 +181,70 @@ class ContextBuilder:
                 kept_ids=kept_ids,
             )
 
+        budget_chars = await _apply_memory(
+            context_assembly_policy,
+            project_id=project_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            query=user_text,
+            budget_chars=budget_chars,
+            system_parts=system_parts,
+        )
+
         result_messages = _assemble_messages(
             messages, system_parts, enable_cache_breakpoints=enable_cache_breakpoints
         )
         return result_messages, kept_ids
+
+
+async def _apply_memory(
+    policy: ContextAssemblyPolicy | None,
+    *,
+    project_id: str,
+    run_id: str,
+    agent_id: str,
+    session_id: str,
+    query: str,
+    budget_chars: int,
+    system_parts: list[str],
+) -> int:
+    """Append the assembled memory block and return the remaining budget.
+
+    The content is sanitized for the same reason learnings are, and the reason
+    is not weaker here: episodic memories are model-authored, they persist, and
+    they are re-injected into the *system* prompt on later turns. A memory
+    carrying `</maistro:corrections>` would close a block it does not own and
+    promote everything after it to top-level instruction -- a stored prompt
+    injection that survives the session that planted it. The delimiter is the
+    trust boundary, and every model-authored string crossing it is neutralized.
+
+    The block is rendered whole or not at all: `assemble` has already spent its
+    own budget on whole memories, so slicing the result here would reintroduce
+    the fragment that packing exists to prevent.
+
+    "No policy wired" and "no budget left" are answered here rather than at the
+    call site so `build`, which is already at the complexity ceiling, gains a
+    call and not a branch.
+    """
+    if policy is None or budget_chars <= 0:
+        return budget_chars
+    assembled = await policy.assemble(
+        project_id=project_id,
+        run_id=run_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        budget_tokens=budget_chars // _CHARS_PER_TOKEN,
+        query=query,
+    )
+    if not assembled:
+        return budget_chars
+    block = f"<maistro:memory>\n{_neutralize_delimiters(assembled)}\n</maistro:memory>"
+    if len(block) > budget_chars:
+        logger.debug("Context budget: dropped the memory block (%d chars)", len(block))
+        return budget_chars
+    system_parts.append(block)
+    return budget_chars - len(block)
 
 
 def _apply_learnings(

@@ -70,6 +70,23 @@ RUN pip install --no-cache-dir \
 COPY packages/hive-conductor/backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt && \
     pip install --no-cache-dir "setuptools>=78.1.1"
+# Tracing is opt-in at build time, and this is the door (#668).
+#
+# `backend/adapters/telemetry_langfuse.py` speaks OTLP using the OpenTelemetry
+# API, SDK and HTTP exporter. Those are `maistro-core[observability]`, and the
+# image deliberately does not carry an exporter it will not use -- the adapter
+# is inert unless OTEL_EXPORTER_OTLP_ENDPOINT is set. But #514 left no way to
+# opt *in* either: setting the endpoint on a container built from this file
+# could not work, and the adapter reported that as tracing being switched off.
+#
+# Default 0, so the ordinary image is unchanged in size and contents. A build
+# that wants tracing says so:
+#
+#     docker build --build-arg INSTALL_OBSERVABILITY=1 ...
+ARG INSTALL_OBSERVABILITY=0
+RUN if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
+        pip install --no-cache-dir "/packages/maistro-core[observability]"; \
+    fi
 # Seed dir for conductor state (SQLite/vault/state). Created under the writable
 # /app workdir because the -dev base runs as nonroot and cannot write to /. The
 # runtime stage COPY --chown's it to /data so a mounted named volume inherits

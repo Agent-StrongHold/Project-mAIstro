@@ -53,6 +53,7 @@ from maistro.runs.wiring import (
     wire_execution_spine,
     wire_node_template_store,
 )
+from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
@@ -190,6 +191,13 @@ class Container:
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
     schedule_store: ScheduleStore = None  # type: ignore[assignment]
+    #: The seam that turns a due schedule into canonical Runs (#231). Built
+    #: here rather than by each caller for the reason `task_admitter` and
+    #: `chat_admitter` are: a producer that constructs its own admitter is a
+    #: producer with its own idea of what admission means, which is what the
+    #: canonical spine exists to stop. `None` when there is no template store,
+    #: because an admitter that cannot resolve a template cannot admit.
+    schedule_admitter: ScheduleRunAdmitter | None = None
     #: Delegation dependencies (#147). Read by `build_node_resolver`, which is
     #: what makes them admissible under ADR-082426-6201 — that ADR retired
     #: `a2a_broker` for having no reader, and check-wiring-reads.py enforces the
@@ -206,6 +214,18 @@ class Container:
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
     pg_pool: Any = None
+    #: Whether this container took `pg_pool` from the shared registry. False for
+    #: a pool the caller supplied: `aclose()` releases what it took and leaves
+    #: the rest, and closing a caller's pool out from under it is the
+    #: mirror-image bug of leaking one (#335, ADR-082926-730d).
+    #:
+    #: Named `holds`, not `owns`, because the registry owns the pool. Two
+    #: containers built from one DSN get the same object, so "the one that
+    #: opened it closes it" would take the pool out from under the other; the
+    #: pool closes when the last holder releases it (Codex, #335).
+    holds_pg_pool: bool = False
+    #: Set by `aclose()`, so a second call does not close a pool twice.
+    closed: bool = False
     # Agent-harness DAG node adapters (dispatch/poll/cancel), keyed by
     # harness_type (e.g. "rsi_cycle"). Empty by default -- see
     # _wire_harness_adapters for why this container never auto-populates
@@ -264,6 +284,41 @@ class Container:
             from maistro.capabilities.bootstrap import default_capability_registry
 
             self.capabilities = default_capability_registry()
+
+    async def aclose(self) -> None:
+        """Release what this container took. Idempotent.
+
+        Only what it took: a pool the caller supplied stays open, because the
+        caller still holds it and closing it here would turn a shutdown into a
+        broken caller (#335, ADR-082926-730d). Until this existed nothing
+        released a pool at all, which is why a leak had no symptom short of the
+        server running out of connection slots.
+
+        Releasing rather than closing: the pool belongs to the registry and may
+        be shared with another container built from the same DSN, so it closes
+        when the last holder lets go (Codex, #335).
+        """
+        if self.closed:
+            return
+        # Marked closed before the await, so a release that raises does not
+        # leave the container looking open and invite a second attempt at a pool
+        # that is already going down.
+        self.closed = True
+        if self.holds_pg_pool and self.pg_pool is not None:
+            from maistro.persistence import forget_pool, release_pool
+
+            try:
+                await release_pool(self.pg_pool)
+            except Exception:
+                logger.exception("container: the PostgreSQL pool did not close cleanly")
+                # The registry must not keep handing out a pool whose close
+                # failed half way: a later `get_pool` for that DSN would return
+                # something unusable, and the failure would surface as a query
+                # error far from here.
+                forget_pool(self.pg_pool)
+            finally:
+                self.pg_pool = None
+                self.holds_pg_pool = False
 
     async def route_request(
         self,
@@ -640,7 +695,22 @@ class Container:
         )
 
         queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
-        executor = ScheduleAttemptExecutor(self.run_store)
+        # The wired resolver, not the bare registry. `agent.delegate_remote`,
+        # `agent.spawn_harness` and `rsi.quota_pace_trigger` are all registered,
+        # so they pass eligibility either way; constructed bare they then fail,
+        # or compute against empty state, inside a Run that looks properly
+        # admitted. Building it per tick rather than per Run keeps the cost off
+        # the loop while still reading whatever this Container was wired with.
+        executor = ScheduleAttemptExecutor(
+            self.run_store,
+            node_resolver=build_node_resolver(
+                harness_adapters=self.harness_adapters,
+                usage_log=self.usage_log,
+                a2a_delegator=self.a2a_delegator,
+                guest_peers=self.guest_peers,
+                run_store=self.run_store,
+            ),
+        )
         executed = 0
         for run in queued:
             if not consumer_owns(run):
@@ -838,6 +908,27 @@ class Container:
         )
 
 
+def _wire_schedule_admission(
+    run_store: RunStore,
+    template_store: GraphTemplateStore | None,
+    schedule_store: ScheduleStore,
+) -> ScheduleRunAdmitter | None:
+    """The third admitter, from the three stores the spine already wired.
+
+    Until now `ScheduleRunAdmitter` had no production caller at all — #251
+    found it admitting Runs nothing executed, and the other half of that gap
+    is that nothing constructed it either, so the live scheduler grew its own
+    create-and-advance logic instead (#231).
+
+    A function rather than an inline conditional because `create_container` is
+    already at the complexity ceiling: one more branch in it is one more thing
+    that has to be read to answer any other question about the wiring.
+    """
+    if template_store is None:
+        return None
+    return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -910,6 +1001,7 @@ async def create_container(
     # exists to have fixed, reintroduced by the change that generalised it.
     supplied_pg_pool = pg_pool
     pg_pool = None
+    holds_pg_pool = False
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -925,7 +1017,10 @@ async def create_container(
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_postgres_backend(config.database_url, embeddings)
+        ) = await _wire_postgres_backend(
+            config.database_url, embeddings, supplied_pool=supplied_pg_pool
+        )
+        holds_pg_pool = supplied_pg_pool is None
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
@@ -974,6 +1069,7 @@ async def create_container(
         pg_pool=pg_pool,
     )
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
+    schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -984,6 +1080,9 @@ async def create_container(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
         project_store=project_store,
+        # The same client #188 wires for durable memory similarity. Absent, the
+        # hybrid score is its lexical term alone rather than a second formula.
+        embedding_client=embeddings,
     )
 
     router = RouterEngine(quota_tracker)
@@ -1177,11 +1276,13 @@ async def create_container(
         node_template_store=node_template_store,
         graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
+        schedule_admitter=schedule_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
         pg_pool=pg_pool,
+        holds_pg_pool=holds_pg_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
@@ -1342,6 +1443,12 @@ _REQUIRED_PG_TABLES: Final = (
     "quota_usage",
     "sessions",
     "prompts",
+    # A prompt label is a row of its own since 022 (#328). Listed beside
+    # `prompts` for the same reason the four above are listed at all: without
+    # it, a database migrated only as far as 021 passes this preflight and then
+    # fails on the first `upsert`, which is the report this list exists to
+    # replace.
+    "prompt_labels",
     # The canonical execution spine (#132). Listed here for the same reason as
     # the four above: a `postgresql://` deployment that skipped `alembic upgrade
     # head` should be told once, at startup, naming every table it is missing —
@@ -1423,14 +1530,13 @@ def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
     """Which asyncpg pool the PostgreSQL-backed subsystems should use.
 
     A supplied pool wins over whatever the URL produced. The caller naming a
-    concrete pool is more specific than a string naming a server, and opening a
-    second pool against the same database while the given one sits unused is
-    how "PostgreSQL is configured and nothing is durable" happens.
+    concrete pool is more specific than a string naming a server.
 
-    It replaces the pool only. The learnings, outcome, session and quota stores
-    are already built by the time this is called and keep whatever the URL
-    selected — that split is #122's contract, and #135's is that a caller
-    holding a pool can reach the durable-event stores with it.
+    Since #335 the two can no longer differ when a URL is configured:
+    `_wire_postgres_backend` is handed the supplied pool and builds its stores
+    against it, so `from_url` *is* `supplied` in that case. This stays because
+    the URL branch is not the only way `from_url` can be set, and because a
+    preference expressed once is cheaper to read than the absence of one.
     """
     return supplied if supplied is not None else from_url
 
@@ -1438,6 +1544,8 @@ def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
 async def _wire_postgres_backend(
     database_url: str,
     embeddings: EmbeddingClient | None = None,
+    *,
+    supplied_pool: Any = None,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -1465,8 +1573,12 @@ async def _wire_postgres_backend(
     from maistro.persistence.pg_quota import PgQuotaTracker
     from maistro.persistence.pg_sessions import PgSessionStore
 
+    dsn = _asyncpg_dsn(database_url)
     try:
-        pool = await get_pool(_asyncpg_dsn(database_url))
+        # A supplied pool is the pool. Opening a second one against the same
+        # database and then preferring the caller's left the stores below bound
+        # to a pool nothing owned or closed (#335, ADR-082926-730d).
+        pool = supplied_pool if supplied_pool is not None else await get_pool(dsn)
     except (OSError, asyncpg.PostgresError) as exc:
         # Redacted, and raised as a config error rather than propagated. A
         # PostgreSQL DSN carries `user:password@` as a matter of course, and
@@ -1485,12 +1597,15 @@ async def _wire_postgres_backend(
             await _require_supported_postgres(conn)
             await _require_postgres_schema(conn)
     except BaseException:
-        # A failed preflight means no container, so the pool it opened has no
-        # owner. Leaving it holding connections to a database the operator is
-        # about to fix is how a retry finds the server still busy.
-        from maistro.persistence import close_pool
+        # A failed preflight means no container, so a pool *this function*
+        # opened has no owner. Leaving it holding connections to a database the
+        # operator is about to fix is how a retry finds the server still busy.
+        # A supplied pool is not ours to close: the caller still holds it, and
+        # closing it here would turn a configuration error into a broken caller.
+        if supplied_pool is None:
+            from maistro.persistence import close_pool
 
-        await close_pool()
+            await close_pool(dsn)
         raise
 
     pg_learning_store = PgLearningStore(pool)
