@@ -10,6 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-ratchet-provenance.py"
+VULTURE_WORKFLOW = ROOT / ".github" / "workflows" / "vulture-ratchet.yml"
 
 
 @pytest.fixture(scope="module")
@@ -213,6 +214,19 @@ def test_inventory_only_does_not_execute_delegated_adapters(
 
     monkeypatch.setattr(checker, "run_delegated", _must_not_run)
     assert checker.main(["--inventory-only"]) == 0
+
+
+def test_required_workflow_executes_delegated_gates_against_event_base() -> None:
+    workflow = VULTURE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "fetch-depth: 0" in workflow
+    assert "RATCHET_BASE_REV:" in workflow
+    assert "github.event.pull_request.base.sha" in workflow
+    assert "github.event.merge_group.base_sha" in workflow
+    assert "github.event.before" in workflow
+    assert "uv sync --locked --all-extras" in workflow
+    assert "uv run python scripts/check-ratchet-provenance.py\n" in workflow
+    assert "check-ratchet-provenance.py --inventory-only" not in workflow
 
 
 def test_unparseable_checker_fails_closed(checker, tmp_path: Path) -> None:
