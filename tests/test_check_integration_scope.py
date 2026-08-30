@@ -129,3 +129,67 @@ def test_selected_hive_scope_requires_both_results(check) -> None:
     assert check.evaluate("merge_group", _scope(hive_e2e=True), results) == [
         "hive-conductor-e2e-ui: required but result was skipped"
     ]
+
+
+def test_required_json_prints_selected_checks(check, capsys) -> None:
+    assert (
+        check.main(
+            [
+                "--event-name",
+                "merge_group",
+                "--scope-json",
+                _scope(postgres=True),
+                "--required-json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == ["postgres (pg17)", "postgres (pg18)"]
+
+
+def test_main_rejects_malformed_result(check, capsys) -> None:
+    assert check.main(["--event-name", "merge_group", "--result", "postgres (pg17)"]) == 1
+    assert "malformed --result" in capsys.readouterr().out
+
+
+def test_main_rejects_unknown_check(check, capsys) -> None:
+    assert check.main(["--event-name", "merge_group", "--result", "unknown=success"]) == 1
+    assert "unknown specialized check name 'unknown'" in capsys.readouterr().out
+
+
+def test_main_reports_incomplete_required_evidence(check, capsys) -> None:
+    assert (
+        check.main(
+            [
+                "--event-name",
+                "merge_group",
+                "--scope-json",
+                _scope(postgres=True),
+                "--result",
+                "postgres (pg17)=success",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "FAIL: integration-scope evidence is incomplete or unsuccessful:" in output
+    assert "postgres (pg18): required but result was <missing>" in output
+
+
+def test_main_accepts_complete_required_evidence(check, capsys) -> None:
+    assert (
+        check.main(
+            [
+                "--event-name",
+                "merge_group",
+                "--scope-json",
+                _scope(postgres=True),
+                "--result",
+                "postgres (pg17)=success",
+                "--result",
+                "postgres (pg18)=success",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out == "ok: integration scope satisfied for merge_group\n"
