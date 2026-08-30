@@ -38,6 +38,8 @@ ac-modules:
   AC-6: '@tool/check_ac_state_impl'
   AC-7: '@tool/check_ac_state_impl'
   AC-8: '@tool/check_ac_state_impl'
+  AC-10: '@tool/check_ac_state_impl'
+  AC-11: '@tool/check-ac-state'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -125,6 +127,39 @@ What the exact comparison still enforces is that the measurement **is** the
 authorized value: below it is a regression the grant does not cover, above it
 is slack that must be banked. A grant is not a floor a branch may sit anywhere
 under.
+
+### Both revisions read the file by the same rule (#685)
+
+Permission is a base question and staleness a candidate one, but *validity* is
+neither: it is a property of the file. The candidate side read it more loosely
+— keys only, with the `ValueError` suppressed — so the two revisions could
+reach opposite conclusions about one file. A change could keep a binding key,
+replace its record with `{}` or a scalar, and pass: the retention check saw the
+key, the value parsed, and nothing looked inside. After the merge the base
+*does* look, and every subsequent run failed on a file only another grant could
+repair. The same loop dropped an entry whose key did not parse, in silence.
+
+So the candidate is validated by the rule the base already applies: each record
+a mapping naming an owner, an issue and a reason; each key a floored counter
+and a value that parses. A grant a run accepts must be one the next run can
+read.
+
+### Retention is checked on the protected-push path too (#685)
+
+`check-ac-state.py` strips `--ratchet` on a push to a protected branch, because
+that path has no author-side review question left to answer — its invariant is
+simply no regression from the actual parent. But stripping it also skipped the
+retention bookkeeping, while the actual-base guard went on applying the base
+grant. So a commit could spend an authorized fall and delete the grant that
+permitted it, on the one path with no review in front of it.
+
+The guard now refuses that, and only that: a grant counts as spent when
+dropping it turns this comparison into a regression. A push that prunes a grant
+the base has already overtaken regresses nothing without it, so it still
+passes — otherwise a spent grant would become unprunable, which is the state
+#673 exists to prevent. A merge group is not asked, because it keeps
+`--ratchet` and `_removed_binding_grants` answers there; enforcing the same
+rule in two places would make either look optional.
 
 ### The alternative considered, and why not
 
@@ -216,4 +251,18 @@ Feature: A corrected measurement can lower an AC-state floor
     Given a landed grant that is lowering the floor for this change
     When the change also removes it from the authorization file
     Then the run fails and says the grant has to stay
+
+  @AC-10
+  Scenario: A candidate grants file is read by the rule the base reads it by
+    Given a change that keeps a binding grant key
+    When it replaces that key's record with an empty object or a scalar
+    Then the run fails and names the entry
+    And a key naming an unfloored counter or an unparseable value fails the same way
+
+  @AC-11
+  Scenario: A protected push cannot spend an authorized floor and remove it
+    Given a push to a protected branch whose fall the base grant permits
+    When the same commit removes that grant
+    Then the run fails and names the grant it spent
+    But a push that regresses nothing may still prune the grant
 ```

@@ -190,7 +190,56 @@ def _actual_base_regressions(
     return regressions
 
 
-def _guard_actual_base(base_report: Path, candidate_report: Path, base_rev: str) -> int:
+def _spent_grants_removed(
+    base: dict[str, Any],
+    candidate: dict[str, Any],
+    floors: dict[str, float],
+) -> list[str] | None:
+    """Grants this push relies on and no longer ships, or None if unreadable.
+
+    "Relies on" is measured, not assumed: a grant counts only when dropping it
+    turns this comparison into a regression. That keeps the honest cases
+    passing -- a push that prunes a grant the base has already overtaken
+    regresses nothing without it, so it has nothing to answer for, and a push
+    that neither spends nor touches one is unaffected.
+    """
+    if not floors:
+        return []
+    load_bearing = {
+        counter
+        for counter in floors
+        if _actual_base_regressions(base, candidate, {counter: floors[counter]})
+        != _actual_base_regressions(base, candidate, {})
+    }
+    if not load_bearing:
+        return []
+    try:
+        present = _impl.candidate_grants()
+    except _impl.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}")
+        return None
+    return sorted(
+        f"{counter}@{floors[counter]}"
+        for counter in load_bearing
+        if present.get(counter) != floors[counter]
+    )
+
+
+def _guard_actual_base(
+    base_report: Path,
+    candidate_report: Path,
+    base_rev: str,
+    *,
+    check_retention: bool = False,
+) -> int:
+    """Compare the candidate against the actual measured base.
+
+    `check_retention` is the protected-push path and only that path. A merge
+    group keeps `--ratchet`, so `ratchet()` runs there and its
+    `_removed_binding_grants` already answers the retention question; asking it
+    twice would enforce the same rule in two places and make either one look
+    optional. A protected push strips `--ratchet`, and that is the gap (#685).
+    """
     try:
         base = _report_totals(base_report)
         candidate = _report_totals(candidate_report)
@@ -202,6 +251,26 @@ def _guard_actual_base(base_report: Path, candidate_report: Path, base_rev: str)
     except _impl.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}")
         return 1
+    # A protected push strips `--ratchet`, so `ratchet()` never runs and neither
+    # does its retention bookkeeping: on this path a commit could spend an
+    # authorized fall and delete the grant that permitted it, and the guard
+    # below -- which applies that grant to the base -- would pass (#685). This
+    # is the hole #672 finding 2 closed for the PR path, still open on the one
+    # path with no review in front of it.
+    spent = _spent_grants_removed(base, candidate, floors) if check_retention else []
+    if spent is None:
+        return 1
+    if spent:
+        print(f"FAIL: this push spends an authorized floor and removes it: {', '.join(spent)}\n")
+        print(
+            "  Without the grant the comparison against the actual base "
+            f"{base_rev} reports a regression, so the fall is only permitted "
+            "because the grant is there -- and this commit takes it away in the "
+            "same breath. Spend it or prune it, not both: a grant nothing can "
+            "read is not a record of why the number moved."
+        )
+        return 1
+
     regressions = _actual_base_regressions(base, candidate, floors)
     if regressions:
         print(f"FAIL: AC-state regressed from the actual measured base {base_rev}\n")
@@ -254,7 +323,12 @@ def main(argv: list[str]) -> int:
         if code:
             return code
         candidate_report = _out_path(delegated)
-        return _guard_actual_base(base_report, candidate_report, base_rev)
+        return _guard_actual_base(
+            base_report,
+            candidate_report,
+            base_rev,
+            check_retention=_protected_push(),
+        )
 
 
 if __name__ == "__main__":
