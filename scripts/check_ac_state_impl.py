@@ -1303,7 +1303,9 @@ def _report_removed_grants(removed: list[str]) -> None:
     )
 
 
-def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | None]:
+def _exact_target(
+    bound: Any, measured: bool, floors: dict[str, float]
+) -> tuple[dict[str, float], str | None]:
     """The counters the exact comparison is read against, or why it cannot be.
 
     Extracted from `ratchet` rather than inlined: the fold has two ways to
@@ -1326,7 +1328,32 @@ def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | N
     mismatch = _worktree_mode_mismatch(banked, measured)
     if mismatch is not None:
         return {}, mismatch
-    return (banked.counters if banked.counters else bound.counters), None
+    # The worktree fold as the grants correct it, then raised by the notes this
+    # change writes. The `min` alone was the cap (#691): the fold carries the
+    # merged notes a grant exists to disown, so it re-asserts the number the
+    # grant just declared wrong and the `min` pulls the target back there
+    # however the candidate banks. Raising by the fresh notes is what lets
+    # banking move it again.
+    #
+    # The fold stays in, rather than being replaced by the base bound, because
+    # it is the only thing that sees an inherited note this change *weakened*
+    # (Codex, #692). Rewriting the bound-holding note from 20 to 15 while still
+    # measuring 20 leaves the base comparison happy -- it reads the measurement,
+    # not the notes -- and would silently lower the floor for everyone after the
+    # merge. Against the fold the target drops to 15 and the run says so.
+    #
+    # With no grant `_lowered` is the identity and the fresh notes are a subset
+    # of the fold, so this is exactly develop's behaviour.
+    target = _lowered(banked.counters if banked.counters else bound.counters, floors)
+    for counter, value in _fresh_note_bound().items():
+        target[counter] = (
+            value
+            if counter not in target
+            else max(target[counter], value)
+            if ac_state_notes.direction_of(counter) == "max"
+            else min(target[counter], value)
+        )
+    return target, None
 
 
 def _worktree_mode_mismatch(banked: Any, run_tests: bool) -> str | None:
@@ -1616,6 +1643,32 @@ def _lowered(counters: dict[str, float], floors: dict[str, float]) -> dict[str, 
     return lowered
 
 
+def _fresh_note_bound() -> dict[str, float]:
+    """The bound the notes this change *adds or rewrites* jointly support.
+
+    The worktree fold cannot be used whole (#691). It carries the merged notes
+    a grant exists to disown, so it re-asserts the very number the grant just
+    declared wrong, and `max` then pins the exact target there however the
+    candidate banks. Splitting the fold puts each half under the rule that
+    belongs to it: the inherited notes are what a grant corrects, and the notes
+    this change writes are what "did you bank it?" asks about.
+
+    A note counts as fresh when the base has none by that name, or has one
+    saying something different. That keeps #609's stacking rule intact -- a
+    parent's note is new relative to the base too, so a stacked branch is still
+    judged against it and cannot regress below what its parent banked.
+    """
+    inherited, _, _ = ac_state_notes.load_notes()
+    at_base = {note.name: note.counters for note in inherited}
+    fresh = [
+        note for note in ac_state_notes.worktree_notes() if at_base.get(note.name) != note.counters
+    ]
+    # Annotated because `ac_state_notes` is loaded by path at runtime, so every
+    # attribute of it is `Any` and the declared return would be unchecked.
+    folded: dict[str, float] = ac_state_notes.fold(fresh)
+    return folded
+
+
 def _stale_grants(counters: dict[str, float], floors: dict[str, float]) -> list[str]:
     """Grants the fold has overtaken, which must be pruned.
 
@@ -1812,11 +1865,7 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     #
     # A branch with no notes at all falls back to the base fold, which is the
     # old exact-equality behaviour, along with the message telling it to bank.
-    target, refusal = _exact_target(bound, measured)
-    if refusal is not None:
-        print(refusal)
-        return 1
-
+    #
     # A landed grant may lower a floor the fold cannot (#662). Read at the
     # base, like the fold itself, so the change being judged did not write its
     # own permission.
@@ -1836,6 +1885,13 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     stale = _stale_grants(bound.counters, present)
     removed = _removed_binding_grants(bound.counters, floors, present)
 
+    # The grants have to be in hand before the exact target can be composed:
+    # the target *is* the inherited bound as they correct it (#691).
+    target, refusal = _exact_target(bound, measured, floors)
+    if refusal is not None:
+        print(refusal)
+        return 1
+
     # Both comparisons, because both fold with `max`. The worktree fold carries
     # every note in the candidate tree -- including the merged branch's note
     # that holds the floor -- so a branch cannot *record* a lower value either:
@@ -1848,7 +1904,11 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     # still enforces is that the measurement *is* the authorized value: below it
     # is a regression the grant does not cover, above it is slack to bank.
     regressions, _ = _compare(_lowered(bound.counters, floors), totals)
-    exact_regressions, improvements = _compare(_lowered(target, floors), totals)
+    # `target` already carries the grants and this tree's banked values (#691),
+    # so it is compared as it stands. Lowering it again here is what turned a
+    # grant into a cap: the exact target was pulled back to the granted value
+    # every run, and banking -- the remedy the gate printed -- could not move it.
+    exact_regressions, improvements = _compare(target, totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
     improvements = _slack_this_run_enforces(improvements)
     if regressions or improvements or stale or removed:
