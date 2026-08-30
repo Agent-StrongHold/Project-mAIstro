@@ -59,7 +59,7 @@ _ADDED_COLUMNS = (
     ("thumb", "TEXT NOT NULL DEFAULT ''"),
     ("thumb_comment", "TEXT NOT NULL DEFAULT ''"),
     ("eval_judge_score", "REAL"),
-    # Nullable for the same reason migration 025 makes them nullable in
+    # Nullable for the same reason migration 026 makes them nullable in
     # PostgreSQL: an outcome recorded with no execution in scope names none,
     # and `''` would name a Run whose id is empty (#709).
     ("run_id", "TEXT"),

@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS learnings (
 )
 """
 
-#: The producer columns, nullable for the same reason migration 025 makes them
+#: The producer columns, nullable for the same reason migration 026 makes them
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")

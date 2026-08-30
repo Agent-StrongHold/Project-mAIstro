@@ -27,8 +27,8 @@ such row claim a Run whose id is the empty string, which is the over-claim
 table and its only store implementation holds a dict, so columns here would be a
 durability claim with nothing behind it (#710).
 
-Revision ID: 025
-Revises: 024
+Revision ID: 026
+Revises: 025
 Create Date: 2026-08-30
 """
 
@@ -37,8 +37,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "025"
-down_revision = "024"
+revision = "026"
+down_revision = "025"
 branch_labels = None
 depends_on = None
 

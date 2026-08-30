@@ -171,7 +171,7 @@ class TestTheProducerSurvivesTheReadBack:
         assert (output.run_id, output.node_run_id, output.attempt_id) == ("", "", "")
 
     def test_a_row_predating_the_columns_still_maps(self) -> None:
-        """A read from a database migrated before 025 has no such keys at all."""
+        """A read from a database migrated before 026 has no such keys at all."""
         from maistro_design.stores import _coerce_design_output
 
         output = _coerce_design_output(
