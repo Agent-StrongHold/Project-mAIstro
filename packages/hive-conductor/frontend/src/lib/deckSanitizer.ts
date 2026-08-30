@@ -59,7 +59,6 @@ const SVG_TAGS = new Set([
 const HTML_ATTRIBUTES = new Set([
   "aria-hidden",
   "aria-label",
-  "class",
   "dir",
   "role",
   "style",
@@ -69,7 +68,6 @@ const HTML_ATTRIBUTES = new Set([
 const SVG_ATTRIBUTES = new Set([
   "aria-hidden",
   "aria-label",
-  "class",
   "cx",
   "cy",
   "d",
@@ -241,7 +239,8 @@ function attributeAllowed(element: Element, attribute: Attr): boolean {
 
   // SVG paint/transform attributes are the only non-style attributes in the
   // allowlist that can be interpreted beyond plain text/numbers. Do not allow
-  // any remote/data URL or executable scheme through them.
+  // any remote/data URL or executable scheme through them. `class` is not in
+  // either allowlist: model output cannot activate unrelated global app CSS.
   if (NETWORK_OR_CODE_ATTRIBUTE.test(attribute.value)) return false;
   return true;
 }
