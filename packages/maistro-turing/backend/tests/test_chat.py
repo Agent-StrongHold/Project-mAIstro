@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -106,3 +107,40 @@ def test_each_turn_gets_a_new_run_without_minting_a_new_workspace(authed_client,
     assert first_run.workspace_id == second_run.workspace_id
     assert first_run.project_id == second_run.project_id
     assert len(_await(plane.workspace_store.list_for_user("user"))) == 1
+
+
+def test_reply_projection_rejects_missing_canonical_node_results():
+    from ..routes.chat import _reply_from_record
+
+    empty_record: Any = SimpleNamespace(node_runs=[])
+    with pytest.raises(RuntimeError, match="produced no NodeRun"):
+        _reply_from_record(empty_record)
+
+    missing_reply_record: Any = SimpleNamespace(
+        node_runs=[SimpleNamespace(result={"unexpected": "value"})]
+    )
+    with pytest.raises(RuntimeError, match="produced no reply"):
+        _reply_from_record(missing_reply_record)
+
+
+def test_turing_execution_plane_rejects_unknown_node_resolution(monkeypatch):
+    from .. import execution as execution_module
+
+    async def reject_unknown_node(graph: Any, **kwargs: Any) -> Any:
+        resolver = kwargs["node_resolver"]
+        resolver("unexpected-node", graph)
+        raise AssertionError("unknown node resolution should fail closed")
+
+    monkeypatch.setattr(execution_module, "run_durable_graph", reject_unknown_node)
+    session: Any = object()
+    plane = execution_module.TuringExecutionPlane()
+
+    with pytest.raises(KeyError, match="unknown Turing canonical node 'unexpected-node'"):
+        _await(
+            plane.run_chat(
+                session=session,
+                user_id="user",
+                session_id="session",
+                message="hello",
+            )
+        )
