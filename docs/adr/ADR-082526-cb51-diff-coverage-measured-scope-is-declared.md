@@ -17,11 +17,11 @@ contracts:
 tests:
   - tests/test_check_diff_coverage.py
 ac-modules:
-  AC-1: scripts/check-diff-coverage.py
-  AC-2: scripts/check-diff-coverage.py
-  AC-3: scripts/check-diff-coverage.py
-  AC-4: scripts/check-diff-coverage.py
-  AC-5: scripts/check-diff-coverage.py
+  AC-1: '@tool/check-diff-coverage'
+  AC-2: '@tool/check-diff-coverage'
+  AC-3: '@tool/check-diff-coverage'
+  AC-4: '@tool/check-diff-coverage'
+  AC-5: '@tool/check-diff-coverage'
 history:
   - status: Proposed
     date: 2026-08-25

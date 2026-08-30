@@ -33,6 +33,9 @@ ac-modules:
   AC-1: '@tool/check_ac_state_impl'
   AC-2: '@tool/check_ac_state_impl'
   AC-3: '@tool/check_ac_state_impl'
+  AC-4: '@tool/check_ac_state_impl'
+  AC-5: '@tool/check_ac_state_impl'
+  AC-6: '@tool/check_ac_state_impl'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -102,6 +105,29 @@ be wrong tomorrow: before it, nothing distinguished the 32 anchors that happened
 to point at reachable code from an anchor pointing at nothing at all, and the
 floor would have absorbed either.
 
+## Both document kinds, not just specs (#653)
+
+The first version of this gate walked `specs` alone. ADRs carry `ac-modules`
+too, and `design_coverage` folds an ADR's **own** criteria in beside its specs'
+— `rungs = [c["rung"] for c in adr["own_detail"]]` runs before any spec tier is
+considered. So an ADR anchor was graded on the same ladder, raised the same
+floor, and was read by nothing: **49 of 279 (18%)** named no module, in the same
+four spellings the specs had.
+
+The walk now covers both, through `_criteria_of`, because the two kinds hold
+their criteria under different keys — `criteria` for a spec, `own_detail` for an
+ADR. Every place that has to remember which key a document uses is a place one
+of them gets forgotten, which is exactly how half the corpus went unchecked.
+
+`_report_unresolvable_anchors` takes the ADRs as a **required** parameter. A
+default would let the next caller reintroduce the omission silently, and the
+omission is the whole defect.
+
+Correcting all 49 moved `design_coverage` by zero, for the same reason the
+original 32 did: every one named a module that is in fact reachable. Stated
+plainly rather than implying a recovered number — what changes is that a rename
+orphaning an ADR anchor now fails instead of raising the floor.
+
 ## Consequences
 
 ### Positive
@@ -156,4 +182,35 @@ Feature: An ac-modules anchor must name a module the reachability graph knows
     When the anchors are checked
     Then it is not reported as unresolvable
     And the rung still declines to call it reachable
+
+  @AC-4
+  Scenario: An ADR anchor naming nothing is reported
+    Given an ADR criterion anchored to a name no module has
+    When the anchors are checked
+    Then that criterion is reported as unresolvable
+    And the report names the document kind, the file, the criterion and the string
+
+  @AC-4
+  Scenario: The gate cannot be called for specs alone
+    Given the report is asked to walk a corpus
+    When it is called
+    Then it requires the ADRs as well as the specs
+
+  @AC-5
+  Scenario: Every anchor in the corpus resolves, of either kind
+    Given the specs and the ADRs as they stand
+    When their anchors are checked
+    Then nothing is reported
+
+  @AC-6
+  Scenario: Widening the walk leaves spec verdicts unchanged
+    Given a spec anchored to a name no module has and an ADR corpus that is clean
+    When the anchors are checked
+    Then the spec is reported exactly as it was before ADRs were walked
+
+  @AC-6
+  Scenario: A real but unwired module in an ADR is not an unresolvable anchor
+    Given an ADR criterion anchored to a module the graph knows and nothing imports
+    When the anchors are checked
+    Then it is not reported as unresolvable
 ```

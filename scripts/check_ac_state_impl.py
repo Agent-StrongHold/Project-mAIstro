@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import contextlib
 import importlib.util
 import json
 import os
@@ -286,14 +285,23 @@ def _completion_claims(
     )
 
 
-def _report_unresolvable_anchors(specs: list[dict[str, Any]]) -> bool:
-    """Print every anchor that resolves to nothing. True when the gate must fail."""
-    unresolvable = unresolvable_anchors(specs, load_module_universe())
+def _report_unresolvable_anchors(specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> bool:
+    """Print every anchor that resolves to nothing. True when the gate must fail.
+
+    Both document kinds, and `adrs` has no default on purpose. #631 built this
+    gate and walked specs alone, which left 49 of 279 ADR anchors unchecked --
+    graded on the same ladder, folded into the same floor, and read by nothing.
+    A parameter that can be omitted is a parameter the next caller omits, which
+    is the shape of the defect this closes (#653).
+    """
+    universe = load_module_universe()
+    unresolvable = [("spec", *row) for row in unresolvable_anchors(specs, universe)]
+    unresolvable += [("adr", *row) for row in unresolvable_anchors(adrs, universe)]
     if not unresolvable:
         return False
     print("FAIL: ac-modules anchors that name no module the reachability graph knows\n")
-    for file, ac_id, module in unresolvable:
-        print(f"  {file}\n      {ac_id}: {module!r}")
+    for kind, file, ac_id, module in unresolvable:
+        print(f"  {kind} {file}\n      {ac_id}: {module!r}")
     print(
         "\nAn anchor is a claim that something runs this criterion's code. A name the "
         "graph\nhas never heard of cannot support that claim, and used to clear the top "
@@ -305,9 +313,14 @@ def _report_unresolvable_anchors(specs: list[dict[str, Any]]) -> bool:
 
 
 def unresolvable_anchors(
-    specs: list[dict[str, Any]], universe: set[str]
+    documents: list[dict[str, Any]], universe: set[str]
 ) -> list[tuple[str, str, str]]:
     """Every `ac-modules` anchor that names no module the graph knows.
+
+    Takes documents of either kind. Specs hold their criteria under `criteria`
+    and ADRs under `own_detail`, so the walk goes through `_criteria_of` rather
+    than naming one key -- the same divergence that cost the mandate three
+    review findings, and here it cost the gate half its corpus (#653).
 
     An empty universe means the graph could not be loaded; reporting every
     anchor as unresolvable then would be a gate failing for its own reason
@@ -316,8 +329,8 @@ def unresolvable_anchors(
     if not universe:
         return []
     found: list[tuple[str, str, str]] = []
-    for spec in specs:
-        for criterion in spec["criteria"]:
+    for document in documents:
+        for criterion in _criteria_of(document):
             module = criterion.get("module")
             # `None` is *unannotated*, which the rung already handles by
             # stopping at `passing`. An empty string is not that: it is an
@@ -328,7 +341,7 @@ def unresolvable_anchors(
             if module is None:
                 continue
             if module not in universe:
-                found.append((spec["file"], criterion["id"], module))
+                found.append((document["file"], criterion["id"], module))
     return found
 
 
@@ -1520,6 +1533,17 @@ def authorized_floors(base: str | None) -> tuple[dict[str, float], dict[str, str
             "object mapping `<counter>@<value>` to a record with an owner, an "
             f"issue and a reason ({type(exc).__name__}: {exc})"
         ) from exc
+    return _grant_floors(granted)
+
+
+def _grant_floors(granted: dict[str, str]) -> tuple[dict[str, float], dict[str, str]]:
+    """The floor each validated entry names, and why.
+
+    Shared by both revisions (#685). The candidate side used to read the same
+    file with a different, looser rule -- keys only, and a `ValueError`
+    suppressed -- so the two could reach opposite conclusions about one file:
+    the candidate passed and the base, reading it next run, refused.
+    """
     floors: dict[str, float] = {}
     reasons: dict[str, str] = {}
     for entry, reason in granted.items():
@@ -1540,6 +1564,42 @@ def authorized_floors(base: str | None) -> tuple[dict[str, float], dict[str, str
             ) from exc
         reasons[counter] = reason
     return floors, reasons
+
+
+def _validated_grant_records(section: object) -> dict[str, str]:
+    """Every record in a grants section, checked the way the base checks them.
+
+    `load_authorizations` does this for a *revision*; the candidate's file is
+    already in hand, and there is no revision to resolve it from. The rule has
+    to be the same rule, though, which is why the message is the same one: a
+    record the candidate accepts and the base refuses is a file that passes its
+    own run and breaks every run after it (#685).
+    """
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise RatchetProvenanceError(
+            f"ratchet-authorizations.json: the {AUTHORIZATION_RATCHET!r} section in the "
+            f"working tree is a {type(section).__name__}, not an object of grants"
+        )
+    granted: dict[str, str] = {}
+    for entry, record in section.items():
+        if not isinstance(record, dict):
+            raise RatchetProvenanceError(
+                f"ratchet-authorizations.json: authorization for "
+                f"{AUTHORIZATION_RATCHET}:{entry} is a {type(record).__name__}, not a "
+                "record with an owner, an issue and a reason. Keeping the key while "
+                "emptying the record is not keeping the grant."
+            )
+        missing = [k for k in ("owner", "issue", "reason") if not str(record.get(k, "")).strip()]
+        if missing:
+            raise RatchetProvenanceError(
+                f"ratchet-authorizations.json: authorization for "
+                f"{AUTHORIZATION_RATCHET}:{entry} is missing {', '.join(missing)}. "
+                "An unexplained floor-raise is not an authorization."
+            )
+        granted[str(entry)] = f"{record['issue']} -- {record['owner']}: {record['reason']}"
+    return granted
 
 
 def _require_grant_section(payload: object) -> None:
@@ -1595,11 +1655,14 @@ def candidate_grants() -> dict[str, float]:
     # come to different conclusions about the same file.
     _require_grant_section(payload)
 
-    floors: dict[str, float] = {}
-    for entry in section or {}:
-        counter, _, raw = str(entry).partition("@")
-        with contextlib.suppress(ValueError):
-            floors[counter] = float(raw)
+    # The same per-entry rule the base applies, not a looser one (#685). Reading
+    # keys and suppressing the `ValueError` let a change keep a binding key,
+    # replace its record with `{}` or a scalar, and pass: `_removed_binding_grants`
+    # saw the key, the value parsed, and nothing looked inside. After the merge
+    # the base *does* look, so every later run failed on a file only another
+    # grant could repair. A malformed key was dropped in silence by the same
+    # loop -- written, expected to be enforced, ignored without a word.
+    floors, _reasons = _grant_floors(_validated_grant_records(section))
     return floors
 
 
@@ -1994,7 +2057,7 @@ def main(argv: list[str]) -> int:
     # the old rung read it as `reachable` because it checked membership in the
     # *unreachable* set. Failing here rather than scoring it keeps the number
     # the ratchet floors on made of criteria something actually resolves (#631).
-    if _report_unresolvable_anchors(specs):
+    if _report_unresolvable_anchors(specs, adrs):
         return 1
 
     # Criteria live in specs AND in the ADRs that carry their own scenarios;
