@@ -7,10 +7,12 @@ from typing import Any
 
 import pytest
 
+import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs.model import RunStatus
+from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
+from services.evolution_graph import run_canonical_evolution_cycle
 
 pytestmark = pytest.mark.contract("behavioral")
 
@@ -123,31 +125,31 @@ async def _container() -> Any:
     )
 
 
+def _config(*, population_size: int, eval_batch_size: int, benchmarks: list[str] | None = None):
+    return SimpleNamespace(
+        eval_batch_size=eval_batch_size,
+        target_benchmarks=benchmarks or ["proxy"],
+        eval_ema_alpha=0.5,
+        cull_pct=0.0,
+        island_count=1,
+        population_size=population_size,
+        migration_interval=100,
+    )
+
+
 @pytest.mark.asyncio
 async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import maistro_evolve.cycle as cycle_module
-    from services.evolution_graph import run_canonical_evolution_cycle
-
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _Tournament()
     owner = await _container()
-    config = SimpleNamespace(
-        eval_batch_size=2,
-        target_benchmarks=["proxy"],
-        eval_ema_alpha=0.5,
-        cull_pct=0.0,
-        island_count=1,
-        population_size=3,
-        migration_interval=100,
-    )
 
     record = await run_canonical_evolution_cycle(
         population=population,
         tournament=tournament,
-        config=config,
+        config=_config(population_size=3, eval_batch_size=2),
         harness=_Harness(),
         cycle_number=1,
         container=owner,
@@ -192,12 +194,41 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
 
 
 @pytest.mark.asyncio
+async def test_multiple_battle_nodes_finish_before_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    tournament = _Tournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=5, eval_batch_size=4),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.COMPLETED
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert [item.node_id for item in node_runs] == [
+        "evolve-evaluate-1",
+        "evolve-evaluate-2",
+        "evolve-evaluate-3",
+        "evolve-evaluate-4",
+        "evolve-plan-pairs",
+        "evolve-battle-1",
+        "evolve-battle-2",
+        "evolve-finalize",
+    ]
+    assert len(tournament.battles) == 2
+
+
+@pytest.mark.asyncio
 async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import maistro_evolve.cycle as cycle_module
-    from services.evolution_graph import run_canonical_evolution_cycle
-
     class _NoResultHarness(_Harness):
         async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
             return []
@@ -205,20 +236,11 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
     population = _Population([_Genome("g1"), _Genome("g2")])
     owner = await _container()
-    config = SimpleNamespace(
-        eval_batch_size=2,
-        target_benchmarks=["proxy"],
-        eval_ema_alpha=0.5,
-        cull_pct=0.0,
-        island_count=1,
-        population_size=2,
-        migration_interval=100,
-    )
 
     record = await run_canonical_evolution_cycle(
         population=population,
         tournament=_Tournament(),
-        config=config,
+        config=_config(population_size=2, eval_batch_size=2),
         harness=_NoResultHarness(),
         container=owner,
     )
@@ -228,3 +250,68 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
     plan_runs = [item for item in node_runs if item.node_id == "evolve-plan-pairs"]
     assert len(plan_runs) == 1
     assert plan_runs[0].result["pair_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TwoResultHarness(_Harness):
+        async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
+            return [
+                SimpleNamespace(
+                    benchmark="first",
+                    score=0.4,
+                    cost_usd=0.01,
+                    duration_seconds=0.1,
+                    metadata={},
+                ),
+                SimpleNamespace(
+                    benchmark="second",
+                    score=0.6,
+                    cost_usd=0.01,
+                    duration_seconds=0.1,
+                    metadata={},
+                ),
+            ]
+
+    class _FailingCycle(_Cycle):
+        @staticmethod
+        def _fold_score(
+            genome: _Genome,
+            benchmark: str,
+            score: float,
+            stub: bool,
+            alpha: float,
+        ) -> None:
+            if benchmark == "second":
+                raise RuntimeError("synthetic fold failure")
+            genome.eval_scores[benchmark] = score
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _FailingCycle)
+    population = _Population([_Genome("g1")])
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=_Tournament(),
+        config=_config(
+            population_size=1,
+            eval_batch_size=1,
+            benchmarks=["first", "second"],
+        ),
+        harness=_TwoResultHarness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    genome = population.get("g1")
+    assert genome is not None
+    assert genome.eval_scores == {}
+    assert "evaluation_runs" not in genome.harness_params
+
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert len(node_runs) == 1
+    attempts = await owner.run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.FAILED
