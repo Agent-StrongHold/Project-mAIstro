@@ -17,16 +17,15 @@ from maistro.interop import (
 
 ROOT = Path(__file__).resolve().parents[4]
 PUBLISHED_ONTOLOGY = ROOT / "quality" / "shared-interop-ontology-v1.json"
+pytestmark = [pytest.mark.contract("behavioral")]
 
 
-@pytest.mark.behavioral
 def test_executable_contract_exactly_matches_published_v1_schema() -> None:
     published = json.loads(PUBLISHED_ONTOLOGY.read_text(encoding="utf-8"))
 
     assert INTEROP_ONTOLOGY_V1.as_dict() == published
 
 
-@pytest.mark.behavioral
 def test_projection_requires_the_canonical_identity_field() -> None:
     with pytest.raises(
         InteropContractError,
@@ -50,7 +49,6 @@ def test_projection_requires_the_canonical_identity_field() -> None:
     )
 
 
-@pytest.mark.behavioral
 def test_unknown_concept_is_rejected_instead_of_becoming_product_local_authority() -> None:
     with pytest.raises(InteropContractError, match="unknown interoperability concept"):
         INTEROP_ONTOLOGY_V1.validate_projection(
@@ -59,7 +57,6 @@ def test_unknown_concept_is_rejected_instead_of_becoming_product_local_authority
         )
 
 
-@pytest.mark.behavioral
 def test_reference_set_requires_execution_parent_and_scope_lineage() -> None:
     with pytest.raises(
         InteropContractError,
@@ -82,7 +79,6 @@ def test_reference_set_requires_execution_parent_and_scope_lineage() -> None:
     )
 
 
-@pytest.mark.behavioral
 def test_reference_set_requires_effect_lineage() -> None:
     with pytest.raises(
         InteropContractError,
@@ -102,7 +98,6 @@ def test_reference_set_requires_effect_lineage() -> None:
     )
 
 
-@pytest.mark.behavioral
 def test_major_version_drift_fails_loudly() -> None:
     INTEROP_ONTOLOGY_V1.require_compatible("1.9.0")
 
@@ -113,7 +108,6 @@ def test_major_version_drift_fails_loudly() -> None:
         INTEROP_ONTOLOGY_V1.require_compatible("v1")
 
 
-@pytest.mark.behavioral
 def test_contract_rejects_broken_required_lineage_at_construction() -> None:
     with pytest.raises(
         InteropContractError,
@@ -129,7 +123,6 @@ def test_contract_rejects_broken_required_lineage_at_construction() -> None:
         )
 
 
-@pytest.mark.behavioral
 def test_contract_rejects_unknown_parent_or_scope_concepts() -> None:
     concepts = dict(INTEROP_ONTOLOGY_V1.concepts)
     concepts["Run"] = ConceptSpec(
@@ -143,7 +136,6 @@ def test_contract_rejects_unknown_parent_or_scope_concepts() -> None:
         replace(INTEROP_ONTOLOGY_V1, concepts=concepts)
 
 
-@pytest.mark.behavioral
 def test_contract_registry_is_immutable() -> None:
     with pytest.raises(TypeError):
         INTEROP_ONTOLOGY_V1.concepts["Run"] = ConceptSpec(  # type: ignore[index]
