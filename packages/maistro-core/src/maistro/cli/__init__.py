@@ -9,7 +9,6 @@ Subcommands:
     maistro approvals        Manage the HITL approval inbox
     maistro security         Rotate the credential master key, revoke sessions
     maistro archive          Read durable graph runs from before the convergence
-    maistro repair           Restore Attempt outputs an old contract emptied
     maistro sandbox          Report the isolation this host can provide
 
 Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),
@@ -44,8 +43,8 @@ app.add_typer(_builders_app, name="builders")
 app.add_typer(_approvals_app, name="approvals")
 app.add_typer(_security_app, name="security")
 app.add_typer(_archive_app, name="archive")
-app.add_typer(_repair_app, name="repair")
 app.add_typer(_sandbox_app, name="sandbox")
+app.add_typer(_repair_app, name="repair")
 
 
 def main() -> None:

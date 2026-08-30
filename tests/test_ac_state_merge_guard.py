@@ -8,6 +8,13 @@ from pathlib import Path
 
 import pytest
 
+#: This guard is about movement against the actual base, not about grants, so
+#: every case here states that there are none. Spelled rather than defaulted:
+#: the authorized floors are an argument the caller must decide about, and a
+#: default of "no grants" is exactly the silent answer that would let the
+#: merge-group comparison forget them again (#662).
+NO_GRANTS: dict[str, float] = {}
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-ac-state.py"
 
@@ -39,7 +46,7 @@ def test_actual_base_floor_preserves_merge_group_only_improvement(gate) -> None:
     base = _totals(gate, coverage=22.0)
     candidate = _totals(gate, coverage=21.5)
 
-    regressions = gate._actual_base_regressions(base, candidate)
+    regressions = gate._actual_base_regressions(base, candidate, NO_GRANTS)
 
     assert any("21.5 falls below the floor of 22.0" in line for line in regressions)
 
@@ -49,7 +56,7 @@ def test_actual_base_guard_preserves_debt_improvement_too(gate) -> None:
     base = _totals(gate, debt=90)
     candidate = _totals(gate, debt=95)
 
-    regressions = gate._actual_base_regressions(base, candidate)
+    regressions = gate._actual_base_regressions(base, candidate, NO_GRANTS)
 
     assert any("95 exceeds the ceiling of 90" in line for line in regressions)
 
@@ -59,7 +66,7 @@ def test_actual_base_guard_allows_improvement_to_become_next_base(gate) -> None:
     base = _totals(gate, coverage=22.0, debt=90)
     candidate = _totals(gate, coverage=22.5, debt=85)
 
-    assert gate._actual_base_regressions(base, candidate) == []
+    assert gate._actual_base_regressions(base, candidate, NO_GRANTS) == []
 
 
 @pytest.mark.ac("SPEC-082926-25a2/AC-7")

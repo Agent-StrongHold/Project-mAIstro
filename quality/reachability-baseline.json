@@ -141,7 +141,6 @@
     "maistro.resilience.context_probe",
     "maistro.resilience.rate_coordination",
     "maistro.resilience.retry_policy",
-    "maistro.scheduling.admission",
     "maistro.security.auth_composite",
     "maistro.security.auth_cookie",
     "maistro.security.auth_demo_cookie",

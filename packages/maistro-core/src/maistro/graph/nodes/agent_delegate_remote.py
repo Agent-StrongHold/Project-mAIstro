@@ -31,7 +31,13 @@ from maistro.a2a.delegate import A2ADelegator, DelegationMode
 from maistro.a2a.guest_peers import GuestPeerManager
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_AWAITING_REMOTE_DELEGATION,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+)
 
 if TYPE_CHECKING:
     from maistro.graph.definitions import Graph
@@ -493,7 +499,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         """Checkpoint the DAG until the delegated task completes or times out."""
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(
-            "awaiting_remote_delegation",
+            PAUSE_AWAITING_REMOTE_DELEGATION,
             resume_at=resume_at,
             metadata={
                 "task_id": task_id,

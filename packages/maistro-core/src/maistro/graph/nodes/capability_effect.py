@@ -13,7 +13,10 @@ from typing import TypeVar
 
 from maistro.capabilities.governed_invocation import InvocationApprovalPending
 
-from .base import pause_until
+from .base import (
+    PAUSE_AWAITING_HUMAN_APPROVAL,
+    pause_until,
+)
 
 T = TypeVar("T")
 
@@ -29,7 +32,7 @@ async def invoke_capability_effect(
         return await operation()
     except InvocationApprovalPending as exc:
         pause_until(
-            "awaiting_human_approval",
+            PAUSE_AWAITING_HUMAN_APPROVAL,
             metadata={
                 "approval_request_id": exc.request_id,
                 "effect_key": effect_key,

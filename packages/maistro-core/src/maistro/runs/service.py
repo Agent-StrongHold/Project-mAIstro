@@ -6,7 +6,11 @@ from datetime import timedelta
 from typing import Any
 
 from maistro.graph.definitions import Graph
-from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
+from maistro.runs.execution import (
+    AttemptContextFactory,
+    AttemptExecutionService,
+    AttemptReconciler,
+)
 from maistro.runs.model import AcceptedNodeOutcome, Attempt, NodeRun, Run
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionCallable, ExecutionRuntime
@@ -85,8 +89,16 @@ class RunExecutionService:
         timeout_s: float | None = None,
         resume_checkpoint_id: str | None = None,
         reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
     ) -> tuple[NodeRun, Attempt]:
-        """Create a logical NodeRun and execute its first physical Attempt."""
+        """Create a logical NodeRun and execute its first physical Attempt.
+
+        ``context_factory`` is forwarded to the Attempt execution, which runs it
+        once the Attempt is persisted. A caller that builds its execution
+        context *before* this call cannot name the `node_run_id` or `attempt_id`
+        it is about to be given -- both are still empty -- so work the node files
+        loses its ancestry and audit cannot attribute it to a physical Attempt.
+        """
 
         node_run = await self._store.create_node_run(run_id, node_id=node_id)
         attempt = await self._attempts.execute(
@@ -99,6 +111,7 @@ class RunExecutionService:
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
             reconcile_logical=reconcile_logical,
+            context_factory=context_factory,
         )
         reconciled = await self._store.get_node_run(node_run.node_run_id)
         if reconciled is None:
@@ -117,8 +130,16 @@ class RunExecutionService:
         timeout_s: float | None = None,
         resume_checkpoint_id: str | None = None,
         reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
     ) -> Attempt:
-        """Execute a new physical Attempt under an existing logical NodeRun."""
+        """Execute a new physical Attempt under an existing logical NodeRun.
+
+        ``context_factory`` is forwarded for the same reason `execute_node`
+        forwards it: a caller that builds its context before the call cannot
+        name the `attempt_id` it is about to be given. A retry needed it as
+        much as a first try -- work the node files on the second Attempt was
+        losing its ancestry, and a resume is a retry (#641).
+        """
 
         return await self._attempts.execute(
             node_run_id,
@@ -130,6 +151,7 @@ class RunExecutionService:
             timeout_s=timeout_s,
             resume_checkpoint_id=resume_checkpoint_id,
             reconcile_logical=reconcile_logical,
+            context_factory=context_factory,
         )
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:

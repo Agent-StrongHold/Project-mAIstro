@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import importlib.util
 import json
 import os
@@ -222,9 +223,113 @@ class Criterion:
 
 
 def _is_reachable(module: str, unreachable: set[str]) -> bool:
-    """A module is reachable unless it, or an ancestor package, is baselined."""
+    """A module is reachable unless it, or an ancestor package, is baselined.
+
+    Membership in the *unreachable* set is the whole test, which is why an
+    anchor naming nothing at all used to clear this rung: a typo, a bare name,
+    a script filename and an invented string are all absent from that set, and
+    absence reads as reachable. `unresolvable_anchors` closes that separately,
+    because "this anchor is wrong" and "this module is unwired" are different
+    findings and only the second belongs here (#631).
+    """
     parts = module.split(".")
     return not any(".".join(parts[: i + 1]) in unreachable for i in range(len(parts)))
+
+
+def load_module_universe() -> set[str]:
+    """Every module identity the reachability graph knows, or empty if it cannot.
+
+    Loaded from `check-reachability.py` rather than re-derived, so the names an
+    anchor is checked against are the same names the rung is judged on. A
+    second walk of the tree would be a second definition of "module", and the
+    two would drift exactly where it mattered.
+    """
+    script = ROOT / "scripts" / "check-reachability.py"
+    if not script.is_file():  # pragma: no cover - the tree always has it
+        return set()
+    spec = importlib.util.spec_from_file_location("_reachability_for_anchors", script)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        return set()
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return set(module._collect_modules())
+
+
+def _completion_claims(
+    specs: list[dict[str, Any]], adrs: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Documents their own artefacts refute, and those that cannot yet say.
+
+    Two different things, and merging them would be the same error this script
+    exists to catch. A document at tier `none`/`unmeasured` has no criteria to
+    measure yet -- its `Implemented` is unverified, not refuted. One that *has*
+    measurable criteria and still falls short of `reachable` is contradicted.
+    """
+
+    def row(d: dict[str, Any], kind: str) -> dict[str, Any]:
+        return {
+            "id": d["id"],
+            "kind": kind,
+            "declared_status": d["declared_status"],
+            "measured_tier": d["tier"],
+            "file": d.get("file"),
+        }
+
+    claiming = [d for d in specs if d["declared_status"] in COMPLETION_CLAIMS]
+    claiming += [d for d in adrs if d["declared_status"] in COMPLETION_CLAIMS]
+    kinds = {id(d): "spec" for d in specs}
+    kinds.update({id(d): "adr" for d in adrs})
+    return (
+        [row(d, kinds[id(d)]) for d in claiming if d["tier"] in RUNGS[:-1]],
+        [row(d, kinds[id(d)]) for d in claiming if d["tier"] in ("none", "unmeasured")],
+    )
+
+
+def _report_unresolvable_anchors(specs: list[dict[str, Any]]) -> bool:
+    """Print every anchor that resolves to nothing. True when the gate must fail."""
+    unresolvable = unresolvable_anchors(specs, load_module_universe())
+    if not unresolvable:
+        return False
+    print("FAIL: ac-modules anchors that name no module the reachability graph knows\n")
+    for file, ac_id, module in unresolvable:
+        print(f"  {file}\n      {ac_id}: {module!r}")
+    print(
+        "\nAn anchor is a claim that something runs this criterion's code. A name the "
+        "graph\nhas never heard of cannot support that claim, and used to clear the top "
+        "rung anyway.\nUse the identity `scripts/check-reachability.py` reports -- dotted "
+        "for packages\n(`maistro_rsi.local_loop`), scoped for apps and tooling "
+        "(`@flat/hive-conductor/routes.settings`,\n`@tool/ac_state_notes`)."
+    )
+    return True
+
+
+def unresolvable_anchors(
+    specs: list[dict[str, Any]], universe: set[str]
+) -> list[tuple[str, str, str]]:
+    """Every `ac-modules` anchor that names no module the graph knows.
+
+    An empty universe means the graph could not be loaded; reporting every
+    anchor as unresolvable then would be a gate failing for its own reason
+    rather than the corpus's, so it reports nothing instead.
+    """
+    if not universe:
+        return []
+    found: list[tuple[str, str, str]] = []
+    for spec in specs:
+        for criterion in spec["criteria"]:
+            module = criterion.get("module")
+            # `None` is *unannotated*, which the rung already handles by
+            # stopping at `passing`. An empty string is not that: it is an
+            # anchor someone wrote and left blank, and the rung scores it
+            # `reachable` like any other name absent from the unreachable set.
+            # Testing truthiness instead of `is None` would let exactly that
+            # one through -- the narrowest version of this whole defect.
+            if module is None:
+                continue
+            if module not in universe:
+                found.append((spec["file"], criterion["id"], module))
+    return found
 
 
 def parse_gherkin(block: str) -> tuple[list[dict[str, Any]], str | None]:
@@ -324,6 +429,14 @@ def _list_field(fm: str, pattern: re.Pattern[str]) -> list[str]:
 
 
 def _ac_modules(fm: str) -> dict[str, str]:
+    """`ac-modules` as AC id -> module identity, read the way YAML would read it.
+
+    The quotes are stripped because they are syntax, not part of the name. A
+    scoped identity has to carry them -- `@` cannot start a bare YAML scalar,
+    so `AC-1: @tool/check-ac-state` does not parse at all -- and keeping them
+    made the anchor `"'@tool/...'"`, which matches no module and is not what
+    the document says.
+    """
     m = AC_MODULES_RE.search(fm)
     if not m:
         return {}
@@ -332,8 +445,16 @@ def _ac_modules(fm: str) -> dict[str, str]:
         if not line.strip():
             continue
         key, _, value = line.strip().partition(":")
-        out[key.strip()] = value.strip()
+        out[key.strip()] = _unquote(value.strip())
     return out
+
+
+def _unquote(value: str) -> str:
+    """Drop one matched pair of surrounding quotes, as a YAML scalar would."""
+    for quote in ("'", '"'):
+        if len(value) >= 2 and value.startswith(quote) and value.endswith(quote):
+            return value[1:-1]
+    return value
 
 
 def _decorator_ac_ids(node: ast.AST) -> list[str]:
@@ -1155,7 +1276,36 @@ def _report_movement(regressions: list[str], improvements: list[str], bound: Any
         )
 
 
-def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | None]:
+def _report_stale_grants(stale: list[str]) -> None:
+    if not stale:
+        return
+    print("\nFAIL: authorized floor(s) the notes have overtaken\n")
+    for line in stale:
+        print(f"  - {line}")
+    print(
+        "\nA grant that lowers nothing is not harmless. It sits in "
+        "quality/ratchet-authorizations.json\nunder someone's name and reason, ready to "
+        "absorb the next real fall as though that had\nbeen the one reviewed."
+    )
+
+
+def _report_removed_grants(removed: list[str]) -> None:
+    if not removed:
+        return
+    print("\nFAIL: authorized floor(s) spent by this change and deleted by it\n")
+    for line in removed:
+        print(f"  - {line}")
+    print(
+        "\nThe grant is the record. Permission is read at the base, so removing "
+        "it here\nstill lets the fall land -- and leaves the next run looking at a "
+        "number nobody\ncan account for. Prune a grant once the notes have "
+        "overtaken it, not before."
+    )
+
+
+def _exact_target(
+    bound: Any, measured: bool, floors: dict[str, float]
+) -> tuple[dict[str, float], str | None]:
     """The counters the exact comparison is read against, or why it cannot be.
 
     Extracted from `ratchet` rather than inlined: the fold has two ways to
@@ -1178,7 +1328,32 @@ def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | N
     mismatch = _worktree_mode_mismatch(banked, measured)
     if mismatch is not None:
         return {}, mismatch
-    return (banked.counters if banked.counters else bound.counters), None
+    # The worktree fold as the grants correct it, then raised by the notes this
+    # change writes. The `min` alone was the cap (#691): the fold carries the
+    # merged notes a grant exists to disown, so it re-asserts the number the
+    # grant just declared wrong and the `min` pulls the target back there
+    # however the candidate banks. Raising by the fresh notes is what lets
+    # banking move it again.
+    #
+    # The fold stays in, rather than being replaced by the base bound, because
+    # it is the only thing that sees an inherited note this change *weakened*
+    # (Codex, #692). Rewriting the bound-holding note from 20 to 15 while still
+    # measuring 20 leaves the base comparison happy -- it reads the measurement,
+    # not the notes -- and would silently lower the floor for everyone after the
+    # merge. Against the fold the target drops to 15 and the run says so.
+    #
+    # With no grant `_lowered` is the identity and the fresh notes are a subset
+    # of the fold, so this is exactly develop's behaviour.
+    target = _lowered(banked.counters if banked.counters else bound.counters, floors)
+    for counter, value in _fresh_note_bound().items():
+        target[counter] = (
+            value
+            if counter not in target
+            else max(target[counter], value)
+            if ac_state_notes.direction_of(counter) == "max"
+            else min(target[counter], value)
+        )
+    return target, None
 
 
 def _worktree_mode_mismatch(banked: Any, run_tests: bool) -> str | None:
@@ -1289,6 +1464,225 @@ def _bank(totals: dict[str, Any], measured: bool) -> int:
         "This file is yours alone — another branch banking its own note will not conflict with it."
     )
     return 0
+
+
+#: Grants live under this key in quality/ratchet-authorizations.json, one per
+#: floored counter, spelled `<counter>@<value>` — `design_coverage@26.4762`.
+AUTHORIZATION_RATCHET = "ac-state"
+
+
+def authorized_floors(base: str | None) -> tuple[dict[str, float], dict[str, str]]:
+    """Floors a landed, reviewed grant has lowered, and the reasons given.
+
+    The fold takes `max` across notes, and notes outlive the branches that
+    wrote them, so a merged branch's note holds a floor no later change can
+    lower (#662). That is right for a regression and wrong for a *correction*:
+    when a measurement is found to have been over-counting, the recorded
+    number was never true, and `--bank` cannot say so because it writes only
+    this branch's own note.
+
+    A grant says it. `load_authorizations` reads grants **at the base**, so the
+    same commit cannot both lower the floor and permit itself to — the property
+    the whole mechanism exists for — and the value is in the key, so a grant
+    licenses one specific fall rather than an open season.
+    """
+    prov = ac_state_notes.provenance()
+    # The same tree and the same revision the notes were folded from.
+    # `load_authorizations` defaults both to the helper's own ROOT, which is
+    # the real repository -- so a caller working against another tree would
+    # resolve the base in one repo and the grants in another, and the tests
+    # that stand the ratchet up on a synthetic history would ask the real one
+    # for a SHA it has never seen.
+    root = ac_state_notes.ROOT
+    path = root / "quality" / "ratchet-authorizations.json"
+    # The helper reads `(loaded.get(ratchet) or {})`, so a section that is a
+    # list comes back as "no grants" rather than as a refusal -- silently
+    # ignoring a file somebody wrote and expects to be enforced. The shape is
+    # checked here, at the base revision the permission is read from.
+    _require_grant_section(prov.resolve_baseline(path, base=base, root=root).loads(default={}))
+    try:
+        granted = prov.load_authorizations(
+            AUTHORIZATION_RATCHET,
+            path=path,
+            base=base,
+            root=root,
+        )
+    except (AttributeError, TypeError) as exc:
+        # `"ac-state": []`, or an entry whose record is a scalar, reaches the
+        # helper's `.items()` / `.get()` as an AttributeError. Translated here
+        # rather than fixed there: the helper is shared with the wiring ratchet,
+        # and tightening it would change that gate's behaviour in a change that
+        # is not about it. A malformed grant must refuse, and a traceback is not
+        # a refusal -- it is a crash, and the two read differently in a log.
+        raise RatchetProvenanceError(
+            "ratchet-authorizations.json: the "
+            f"{AUTHORIZATION_RATCHET!r} section is malformed -- it must be an "
+            "object mapping `<counter>@<value>` to a record with an owner, an "
+            f"issue and a reason ({type(exc).__name__}: {exc})"
+        ) from exc
+    floors: dict[str, float] = {}
+    reasons: dict[str, str] = {}
+    for entry, reason in granted.items():
+        counter, _, raw = entry.partition("@")
+        if counter not in FLOORED:
+            raise RatchetProvenanceError(
+                f"ratchet-authorizations.json: {AUTHORIZATION_RATCHET}:{entry} names "
+                f"{counter!r}, which is not a floored counter. Only a floor can be "
+                "lowered by a grant; a debt ceiling is raised by banking it."
+            )
+        try:
+            floors[counter] = float(raw)
+        except ValueError as exc:
+            raise RatchetProvenanceError(
+                f"ratchet-authorizations.json: {AUTHORIZATION_RATCHET}:{entry} does not "
+                "name the value it lowers the floor to. Spell it "
+                "`<counter>@<value>`, so the grant permits one fall and not the next."
+            ) from exc
+        reasons[counter] = reason
+    return floors, reasons
+
+
+def _require_grant_section(payload: object) -> None:
+    """Refuse a grants file whose own section is the wrong shape.
+
+    Absent is "no grants" and passes. Present but not an object is a malformed
+    file, and the two must not answer the same -- a file somebody wrote and
+    expects to be enforced should not be read as an empty one.
+    """
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise RatchetProvenanceError(
+            f"ratchet-authorizations.json is malformed -- it must be a JSON object, "
+            f"not {type(payload).__name__}"
+        )
+    section = payload.get(AUTHORIZATION_RATCHET)
+    if section is None or isinstance(section, dict):
+        return
+    raise RatchetProvenanceError(
+        f"ratchet-authorizations.json: the {AUTHORIZATION_RATCHET!r} section is "
+        f"malformed -- it must be an object mapping `<counter>@<value>` to a "
+        f"record, not {type(section).__name__}"
+    )
+
+
+def candidate_grants() -> dict[str, float]:
+    """The floors this change's *own* authorization file names, if any.
+
+    Permission is a base question and stays one: `authorized_floors` answers
+    "may this fall land". This answers a different one -- "does the file in
+    front of me still say so" -- and the two must not be read from the same
+    revision (#662 review).
+
+    Reading stale-ness from the base made pruning impossible: once the notes
+    folded to a grant's value, every later run failed on a spent grant that the
+    base still carried, including the run whose only change was to remove it.
+    Reading permission from the candidate would reopen self-approval. Each
+    question gets the revision it is actually about.
+    """
+    path = ac_state_notes.ROOT / "quality" / "ratchet-authorizations.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        section = payload.get(AUTHORIZATION_RATCHET) if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RatchetProvenanceError(
+            f"ratchet-authorizations.json: the {AUTHORIZATION_RATCHET!r} section in "
+            f"the working tree could not be read ({type(exc).__name__}: {exc})"
+        ) from exc
+    # One shape check for both revisions, so the candidate and the base cannot
+    # come to different conclusions about the same file.
+    _require_grant_section(payload)
+
+    floors: dict[str, float] = {}
+    for entry in section or {}:
+        counter, _, raw = str(entry).partition("@")
+        with contextlib.suppress(ValueError):
+            floors[counter] = float(raw)
+    return floors
+
+
+def _removed_binding_grants(
+    counters: dict[str, float],
+    floors: dict[str, float],
+    present: dict[str, float],
+) -> list[str]:
+    """Grants this change is spending that it also deletes (#662 review).
+
+    Permission comes from the base, so a candidate could consume a landed grant
+    and remove it in the same commit: the fall lands, and the owner, issue and
+    reason that justified it are gone from the file afterwards. The next run
+    then sees the old folded floor with nothing authorizing it and fails, with
+    no record of why the number moved.
+
+    A grant that is *binding* -- one actually lowering the comparison -- has to
+    survive the change that uses it. A spent one may go; that is the pruning
+    `_stale_grants` asks for.
+    """
+    return [
+        f"{counter}@{floor}: this change spends that authorization and removes it. "
+        "A grant that is still lowering the floor has to stay, or the fall lands "
+        "with no record of who permitted it"
+        for counter, floor in sorted(floors.items())
+        if counter in counters and counters[counter] > floor and present.get(counter) != floor
+    ]
+
+
+def _lowered(counters: dict[str, float], floors: dict[str, float]) -> dict[str, float]:
+    """The folded bound with each authorized floor applied.
+
+    `min`, not replacement: a grant may only *lower*. One that names a value
+    the fold is already below has been overtaken and raises nothing — it is
+    stale rather than binding, and `_stale_grants` says so.
+    """
+    lowered = dict(counters)
+    for counter, floor in floors.items():
+        if counter in lowered:
+            lowered[counter] = min(lowered[counter], floor)
+    return lowered
+
+
+def _fresh_note_bound() -> dict[str, float]:
+    """The bound the notes this change *adds or rewrites* jointly support.
+
+    The worktree fold cannot be used whole (#691). It carries the merged notes
+    a grant exists to disown, so it re-asserts the very number the grant just
+    declared wrong, and `max` then pins the exact target there however the
+    candidate banks. Splitting the fold puts each half under the rule that
+    belongs to it: the inherited notes are what a grant corrects, and the notes
+    this change writes are what "did you bank it?" asks about.
+
+    A note counts as fresh when the base has none by that name, or has one
+    saying something different. That keeps #609's stacking rule intact -- a
+    parent's note is new relative to the base too, so a stacked branch is still
+    judged against it and cannot regress below what its parent banked.
+    """
+    inherited, _, _ = ac_state_notes.load_notes()
+    at_base = {note.name: note.counters for note in inherited}
+    fresh = [
+        note for note in ac_state_notes.worktree_notes() if at_base.get(note.name) != note.counters
+    ]
+    # Annotated because `ac_state_notes` is loaded by path at runtime, so every
+    # attribute of it is `Any` and the declared return would be unchecked.
+    folded: dict[str, float] = ac_state_notes.fold(fresh)
+    return folded
+
+
+def _stale_grants(counters: dict[str, float], floors: dict[str, float]) -> list[str]:
+    """Grants the fold has overtaken, which must be pruned.
+
+    The same rule every ledger here carries: a row that no longer does
+    anything is slack the next regression would spend under someone else's
+    reason. A grant is spent once the notes themselves fold to its value or
+    below.
+    """
+    return [
+        f"{counter}@{floor}: the folded floor is already {counters[counter]}, so this "
+        "grant lowers nothing — prune it"
+        for counter, floor in sorted(floors.items())
+        if counter in counters and counters[counter] <= floor
+    ]
 
 
 def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -1471,17 +1865,59 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     #
     # A branch with no notes at all falls back to the base fold, which is the
     # old exact-equality behaviour, along with the message telling it to bank.
-    target, refusal = _exact_target(bound, measured)
+    #
+    # A landed grant may lower a floor the fold cannot (#662). Read at the
+    # base, like the fold itself, so the change being judged did not write its
+    # own permission.
+    # Two revisions, two questions. `floors` is permission and comes from the
+    # base; `present` is bookkeeping about the file this change actually ships.
+    # Reading stale-ness from the base made pruning impossible -- once the notes
+    # folded to a grant's value, the run whose only change removed that grant
+    # failed on the base's copy of it (#662 review). Both refuse the same way,
+    # so both sit inside the same guard: a malformed file is a failed gate, not
+    # a traceback, whichever revision it is malformed in.
+    try:
+        floors, reasons = authorized_floors(bound.base_sha)
+        present = candidate_grants()
+    except RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    stale = _stale_grants(bound.counters, present)
+    removed = _removed_binding_grants(bound.counters, floors, present)
+
+    # The grants have to be in hand before the exact target can be composed:
+    # the target *is* the inherited bound as they correct it (#691).
+    target, refusal = _exact_target(bound, measured, floors)
     if refusal is not None:
         print(refusal)
         return 1
-    regressions, _ = _compare(bound.counters, totals)
+
+    # Both comparisons, because both fold with `max`. The worktree fold carries
+    # every note in the candidate tree -- including the merged branch's note
+    # that holds the floor -- so a branch cannot *record* a lower value either:
+    # its own note at 26.4762 beside a `_baseline.json` at 27.2395 folds to
+    # 27.2395. Lowering only the regression floor would leave the exact
+    # comparison demanding a number the correction has just disproved.
+    #
+    # The grant is therefore the record, not a step toward one, which is why it
+    # carries the owner, the issue and the reason. What the exact comparison
+    # still enforces is that the measurement *is* the authorized value: below it
+    # is a regression the grant does not cover, above it is slack to bank.
+    regressions, _ = _compare(_lowered(bound.counters, floors), totals)
+    # `target` already carries the grants and this tree's banked values (#691),
+    # so it is compared as it stands. Lowering it again here is what turned a
+    # grant into a cap: the exact target was pulled back to the granted value
+    # every run, and banking -- the remedy the gate printed -- could not move it.
     exact_regressions, improvements = _compare(target, totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
     improvements = _slack_this_run_enforces(improvements)
-    if regressions or improvements:
+    if regressions or improvements or stale or removed:
         _report_movement(regressions, improvements, bound)
+        _report_stale_grants(stale)
+        _report_removed_grants(removed)
         return 1
+    for counter, floor in sorted(floors.items()):
+        print(f"authorized floor: {counter} may fall to {floor} — {reasons[counter]}")
     print(
         f"OK: {len(RATCHETED)} debt counters sit exactly on their ceilings and "
         f"{len(FLOORED)} progress counter sits exactly on its floor "
@@ -1554,6 +1990,13 @@ def main(argv: list[str]) -> int:
     specs = collect_specs(markers, unreachable, passing)
     adrs = collect_adrs(specs, markers, unreachable, passing)
 
+    # Before any counting: an anchor that names nothing cannot be judged, and
+    # the old rung read it as `reachable` because it checked membership in the
+    # *unreachable* set. Failing here rather than scoring it keeps the number
+    # the ratchet floors on made of criteria something actually resolves (#631).
+    if _report_unresolvable_anchors(specs):
+        return 1
+
     # Criteria live in specs AND in the ADRs that carry their own scenarios;
     # counting only spec ids here would report every ADR-bound marker as
     # naming no criterion — an orphan list poisoned by exactly the bindings
@@ -1573,22 +2016,7 @@ def main(argv: list[str]) -> int:
     # criteria to measure yet — its `Implemented` is unverified, not refuted.
     # A document that *has* measurable criteria and still falls short of
     # `reachable` is contradicted by its own artefacts.
-    claiming = [d for d in specs if d["declared_status"] in COMPLETION_CLAIMS]
-    claiming += [d for d in adrs if d["declared_status"] in COMPLETION_CLAIMS]
-
-    def _row(d: dict[str, Any], kind: str) -> dict[str, Any]:
-        return {
-            "id": d["id"],
-            "kind": kind,
-            "declared_status": d["declared_status"],
-            "measured_tier": d["tier"],
-            "file": d.get("file"),
-        }
-
-    kinds = {id(d): "spec" for d in specs}
-    kinds.update({id(d): "adr" for d in adrs})
-    contradicted = [_row(d, kinds[id(d)]) for d in claiming if d["tier"] in RUNGS[:-1]]
-    unverifiable = [_row(d, kinds[id(d)]) for d in claiming if d["tier"] in ("none", "unmeasured")]
+    contradicted, unverifiable = _completion_claims(specs, adrs)
 
     # ---- the chain checked in the *absent* direction (#164) --------------
     #
