@@ -14,8 +14,20 @@ from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from maistro.runs.evidence_json import json_of, model_of, model_of_json
-from maistro.runs.lifecycle import renewed_lease, transition_node_run, transition_run
-from maistro.runs.model import Attempt, ExecutionLease, NodeRun, Run, RunStatus
+from maistro.runs.lifecycle import (
+    renewed_lease,
+    transition_attempt,
+    transition_node_run,
+    transition_run,
+)
+from maistro.runs.model import (
+    Attempt,
+    AttemptStatus,
+    ExecutionLease,
+    NodeRun,
+    Run,
+    RunStatus,
+)
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError, RunStore
@@ -85,6 +97,7 @@ def _claim_models(
     attempt = Attempt.model_validate(
         {**attempt.model_dump(mode="python"), "execution_lease": lease}
     )
+    attempt = transition_attempt(attempt, AttemptStatus.RUNNING)
     return ConsumerClaim(
         run=transition_run(run, RunStatus.RUNNING),
         node_run=node_run,

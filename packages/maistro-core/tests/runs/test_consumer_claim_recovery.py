@@ -142,7 +142,9 @@ async def test_claim_is_run_node_and_leased_attempt_together() -> None:
     node_runs = await container.run_store.list_node_runs(run_id)
     assert run is not None and run.status is RunStatus.RUNNING
     assert len(node_runs) == 1 and node_runs[0].status is RunStatus.RUNNING
-    assert attempt.status is AttemptStatus.CREATED
+    assert attempt.status is AttemptStatus.RUNNING
+    persisted = await container.run_store.get_attempt(attempt.attempt_id)
+    assert persisted is not None and persisted.status is AttemptStatus.RUNNING
     assert attempt.execution_lease is not None
 
 
@@ -178,3 +180,18 @@ async def test_concurrent_claims_have_one_physical_winner() -> None:
     assert len(node_runs) == 1
     attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
     assert len(attempts) == 1
+
+
+async def test_normal_tick_completes_the_exact_claimed_attempt() -> None:
+    _EligibleNode.calls = 0
+    container = await _container()
+    run_id = await _admit(container, workspace="exact-claimed-attempt")
+    assert await container.execute_admitted_runs(limit=1) == 1
+    (node_run,) = await container.run_store.list_node_runs(run_id)
+    attempts = await container.run_store.list_attempts(node_run.node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    assert attempts[0].execution_lease is not None
+    run = await container.run_store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.COMPLETED
+    assert _EligibleNode.calls == 1

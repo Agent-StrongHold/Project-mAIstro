@@ -257,17 +257,18 @@ class AttemptExecutionService:
         remaining work is the physical CREATED→RUNNING edge and the same Runtime,
         heartbeat, terminalization and reconciliation path used by ``execute``.
         """
-        if attempt.status is not AttemptStatus.CREATED:
-            raise RunIntegrityError("execute_claimed requires a CREATED Attempt")
         lease = attempt.execution_lease
         if lease is None:
             raise RunIntegrityError("claimed Attempt is missing its execution lease")
         token = lease.fencing_token
-        attempt = await self._store.transition_attempt(
-            attempt.attempt_id,
-            AttemptStatus.RUNNING,
-            fencing_token=token,
-        )
+        if attempt.status is AttemptStatus.CREATED:
+            attempt = await self._store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=token,
+            )
+        elif attempt.status is not AttemptStatus.RUNNING:
+            raise RunIntegrityError("execute_claimed requires an active Attempt")
         runtime_context = _materialize_execution_context(
             attempt,
             execution_context,
