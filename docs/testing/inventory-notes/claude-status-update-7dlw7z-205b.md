@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +18
+  tests/: +29
 ---
 # claude-status-update-7dlw7z-205b
 
@@ -80,3 +80,38 @@ then asserts `JOB_DOCKERFILES[job]` equals that computed set. A service later
 gaining a new dependency changes what the closure computes and fails this
 test until `JOB_DOCKERFILES` catches up, rather than the job quietly missing
 a pre-pull for an image it has started building.
+
+Eleven more node IDs, `tests/test_ac_state_authorized_floor.py`, for
+SPEC-083026-fcc9 — a different ratchet entirely, found while driving #720
+through the Quality gate. `quality/ratchet-authorizations.json`'s
+`design_coverage@27.8791` grant (#631/#662) had, by design
+(SPEC-082926-6f49's own "Consequences"), become permanent: once independent,
+unrelated work grew the fold past it and stayed there, `_stale_grants` could
+never fire again (it only fires when the fold falls back to the grant) and
+`_removed_binding_grants` refused every removal for the same reason, on every
+future base, regardless of what the removing change touched. #713, #715 and
+#720 each hit "unbanked improvement" against this exact grant in one
+afternoon, none of their diffs touching anything it corrects.
+
+`_superseded_grants` closes it: a grant is superseded once at least three
+*independent* already-merged notes each individually — not via the fold's
+`max` — clear its floor, a claim a single contributor's own PR cannot
+manufacture (one PR contributes at most one note). Five node IDs
+(`TestSupersededGrantsDirectly`) pin the pure function against synthetic
+`Note`s: two below threshold don't supersede, three do, a note sitting
+exactly at the grant's own value doesn't count (`>`, not `>=` — that value is
+the fall the grant permits, not evidence against it), a note missing the
+counter entirely doesn't crash the count, and no grants means nothing to
+check. The remaining six (`TestASupersededGrantCanBePruned`), extending the
+existing `repo`/`gate`/`_run` harness with a new `extra_base_notes` fixture
+argument to seed multiple independently-named base notes (the existing
+fixture only ever wrote one base note, `_baseline`, which a per-note count
+cannot exercise), run the real thing end to end: fewer than three still
+refuses removal, three-or-more fails the run *before* pruning with a named
+list of the superseding notes (replacing the generic "bank it" message that
+sent three PRs looking in the wrong place), the same case then passes once
+pruned, pruning needs no fresh note of its own (mirroring SPEC-082926-6f49's
+own AC-12 for the ordinary case), the candidate's own worktree note cannot
+manufacture supersession on its own (computed from the base's notes only),
+and a grant with no independent notes above it is unaffected — the existing
+AC-8 behavior, unchanged.
