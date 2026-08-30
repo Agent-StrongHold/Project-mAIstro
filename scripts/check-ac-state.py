@@ -172,9 +172,21 @@ def _report_totals(path: Path) -> dict[str, Any]:
     return totals
 
 
-def _actual_base_regressions(base: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
-    """Only worse-than-base movement; improvement becomes the next base itself."""
-    regressions, _improvements = _impl._compare(base, candidate)
+def _actual_base_regressions(
+    base: dict[str, Any],
+    candidate: dict[str, Any],
+    floors: dict[str, float],
+) -> list[str]:
+    """Only worse-than-base movement; improvement becomes the next base itself.
+
+    `floors` is applied to the *base* before comparing, for the same reason the
+    note comparison applies it: an authorized fall is a correction of a number
+    that was never true, and a comparison that does not know that reports it as
+    a regression (#662 review). Without this the whole mechanism worked on the
+    branch and then failed in the merge queue — which is the only place the
+    fall it exists for could ever have landed.
+    """
+    regressions, _improvements = _impl._compare(_impl._lowered(base, floors), candidate)
     return regressions
 
 
@@ -185,7 +197,12 @@ def _guard_actual_base(base_report: Path, candidate_report: Path, base_rev: str)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"FAIL: actual-base AC-state comparison could not be read: {exc}")
         return 1
-    regressions = _actual_base_regressions(base, candidate)
+    try:
+        floors, _reasons = _impl.authorized_floors(base_rev)
+    except _impl.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    regressions = _actual_base_regressions(base, candidate, floors)
     if regressions:
         print(f"FAIL: AC-state regressed from the actual measured base {base_rev}\n")
         for line in regressions:
@@ -195,6 +212,11 @@ def _guard_actual_base(base_report: Path, candidate_report: Path, base_rev: str)
             "improvement becomes part of the next base measurement, so a later "
             "PR cannot spend it even when no author could have pre-banked it."
         )
+        if floors:
+            print(
+                "Authorized floors were applied to the base before comparing: "
+                + ", ".join(f"{name}@{value}" for name, value in sorted(floors.items()))
+            )
         return 1
     print(
         f"OK: candidate preserves the actual measured AC-state of base {base_rev}; "

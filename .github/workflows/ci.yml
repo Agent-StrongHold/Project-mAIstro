@@ -600,6 +600,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # buildx + the GitHub Actions cache backend, so an unchanged Dockerfile
+      # reuses layers across runs instead of re-pulling and re-installing from
+      # nothing every time. `docker-build` is the longest job in the suite --
+      # the wall-clock floor under how fast any candidate can go green -- and
+      # every build below ran with zero cache before this. Scopes are per
+      # image (`engine`, `hive-conductor`, `engine-research`, `rsi-runner`) so
+      # one Dockerfile's cache cannot evict another's, and security.yml's
+      # `containers` job uses the SAME scope names so a main-targeted PR can
+      # warm-start from whatever a develop-targeted run already built.
+      - uses: docker/setup-buildx-action@v3
+
       # Fetch the base images first, retrying (#204). This job used to fail on a
       # registry reset before touching a line of repository content — a red
       # required check that nobody could re-run, because the GitHub App gets
@@ -612,7 +623,16 @@ jobs:
       - name: Pre-pull base images (retry transient registry faults)
         run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
 
-      - run: docker build -t maistro-engine:test .
+      - name: Build maistro-engine (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          tags: maistro-engine:test
+          push: false
+          load: true
+          cache-from: type=gha,scope=engine
+          cache-to: type=gha,scope=engine,mode=max
       - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
         shell: bash
         run: |
@@ -695,7 +715,16 @@ jobs:
           done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
-      - run: docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:ci
+      - name: Build hive-conductor (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/hive-conductor/Dockerfile
+          tags: hive-conductor:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=hive-conductor
+          cache-to: type=gha,scope=hive-conductor,mode=max
       # The static gate above reads the ignore files. This one builds the
       # actual RSI runner from a context carrying canary secrets and proves
       # none is in any layer -- because the question is what Docker did, not
@@ -836,9 +865,31 @@ jobs:
       # download on every PR is a cost this job should not carry. What this
       # buys is the cheap half -- "does it still build" -- on the branch where
       # the change is actually made.
-      - run: docker build -f Dockerfile . -t maistro-engine:ci
-      - run: docker build -f Dockerfile.research . -t maistro-engine-research:ci
-      - run: docker build -f Dockerfile.rsi-runner . -t maistro-rsi-runner:ci
+      # `maistro-engine:ci` is `-f Dockerfile .` on the same context this job
+      # already built as `maistro-engine:test` above -- byte-for-byte the same
+      # build under a second tag. A tag alias proves exactly as much as a
+      # second `docker build` would and costs nothing.
+      - run: docker tag maistro-engine:test maistro-engine:ci
+      - name: Build maistro-engine-research (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.research
+          tags: maistro-engine-research:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=engine-research
+          cache-to: type=gha,scope=engine-research,mode=max
+      - name: Build maistro-rsi-runner (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.rsi-runner
+          tags: maistro-rsi-runner:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=rsi-runner
+          cache-to: type=gha,scope=rsi-runner,mode=max
 
   workflow-lint:
     runs-on: ubuntu-latest

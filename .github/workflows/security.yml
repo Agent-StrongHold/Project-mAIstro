@@ -143,14 +143,36 @@ jobs:
       CANDIDATE_TAG: ${{ github.event.pull_request.number || github.event.merge_group.head_sha || 'nightly' }}
     steps:
       - uses: actions/checkout@v4
+
+      # Same scopes ci.yml's docker-build job writes to, so this main-only,
+      # far rarer job (see the `if:` above) starts warm off whatever a
+      # develop-targeted run already cached instead of building all four
+      # images cold on a fresh runner.
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build hive-conductor image
-        run: |
-          docker build -f packages/hive-conductor/Dockerfile \
-            --build-arg VITE_POC_MODE=pm \
-            --build-arg VITE_BASE_PATH=/pm/ \
-            -t "hive-conductor:pr-${CANDIDATE_TAG}" .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/hive-conductor/Dockerfile
+          tags: hive-conductor:pr-${{ env.CANDIDATE_TAG }}
+          build-args: |
+            VITE_POC_MODE=pm
+            VITE_BASE_PATH=/pm/
+          push: false
+          load: true
+          cache-from: type=gha,scope=hive-conductor
+          cache-to: type=gha,scope=hive-conductor,mode=max
       - name: Build maistro-engine image
-        run: docker build -t "maistro-engine:pr-${CANDIDATE_TAG}" .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          tags: maistro-engine:pr-${{ env.CANDIDATE_TAG }}
+          push: false
+          load: true
+          cache-from: type=gha,scope=engine
+          cache-to: type=gha,scope=engine,mode=max
 
       # The two images the inventory (quality/image-inventory.json) records as
       # DISTRIBUTED. Neither was built or scanned here before #346 -- including
@@ -159,10 +181,26 @@ jobs:
       # could go near-zero-CVE is not the same as being clean; it is the
       # opposite, and it went unmeasured because nothing enumerated the images.
       - name: Build maistro-engine-research image
-        run: docker build -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}" .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.research
+          tags: maistro-engine-research:pr-${{ env.CANDIDATE_TAG }}
+          push: false
+          load: true
+          cache-from: type=gha,scope=engine-research
+          cache-to: type=gha,scope=engine-research,mode=max
 
       - name: Build maistro-rsi-runner image
-        run: docker build -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}" .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.rsi-runner
+          tags: maistro-rsi-runner:pr-${{ env.CANDIDATE_TAG }}
+          push: false
+          load: true
+          cache-from: type=gha,scope=rsi-runner
+          cache-to: type=gha,scope=rsi-runner,mode=max
 
       - name: Verify live Python packages supersede base-image SBOM inventory
         run: |
