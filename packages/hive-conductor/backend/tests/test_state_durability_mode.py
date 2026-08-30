@@ -54,7 +54,7 @@ def _restore_state():
     user_snapshot = dict(stores.users._data)
     prev_persisted = stores._persisted
     yield
-    stores.restore_all()
+    durability.restore_stores(stores)
     durability.reset()
     settings_store.reset()
     stores._persisted = prev_persisted
