@@ -100,11 +100,7 @@ def _candidate_note_fold_weakening() -> list[str]:
     floors, _reasons = _impl.authorized_floors(bound.base_sha)
     candidate = dict(_impl._banked().counters)
     trusted = _impl._lowered(bound.counters, floors)
-    missing = [
-        name
-        for name in (*_impl.RATCHETED, *_impl.FLOORED)
-        if name not in candidate
-    ]
+    missing = [name for name in (*_impl.RATCHETED, *_impl.FLOORED) if name not in candidate]
     if missing:
         return [f"candidate note fold omits bounded counter {name}" for name in missing]
     regressions, _improvements = _impl._compare(trusted, candidate)
@@ -164,10 +160,7 @@ def _rewrite_relaxed_success(output: str) -> str:
 
 def _call_with_output_policy(callable_: Any, *args: Any, **kwargs: Any) -> Any:
     """Rewrite only the success wording on paths where slack may be informational."""
-    if (
-        os.environ.get("GITHUB_EVENT_NAME") != "merge_group"
-        and not _canonical_develop_pr_ci()
-    ):
+    if os.environ.get("GITHUB_EVENT_NAME") != "merge_group" and not _canonical_develop_pr_ci():
         return callable_(*args, **kwargs)
 
     captured = io.StringIO()
