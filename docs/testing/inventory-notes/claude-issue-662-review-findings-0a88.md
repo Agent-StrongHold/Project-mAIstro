@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +16
+  tests/: +19
 ---
 # claude-issue-662-review-findings-0a88
 
@@ -42,3 +42,18 @@ The fixture gained a sentinel — `None` empties the grants file, `UNCHANGED`
 leaves what the base committed. Collapsing those made "the candidate removed
 the grant" inexpressible, which is why two of these four defects shipped with
 no test.
+
+Three more, and a note about how they came to exist. The diff-coverage gate
+found `_guard_actual_base` — the function the merge queue actually runs — with
+**no tests at all**, which is exactly how the grant came to be missing from it:
+every test aimed at the note comparisons, and this path reads its measurements
+off disk and asks `authorized_floors` itself, so testing the comparison in
+isolation would have left that call unwritten and still passed. It did.
+
+Two people fixed that at once. The stubbed cases above monkeypatch
+`authorized_floors`, which is the right shape for asserting *that* the guard
+consults it and *what* it prints when it refuses. These three cover what a stub
+cannot: that the real call resolves a real base revision and finds a real
+committed grant (or finds none, which is the ordinary state and must still
+refuse), and that an unreadable report refuses before any comparison — a
+missing measurement must not read as "nothing moved".

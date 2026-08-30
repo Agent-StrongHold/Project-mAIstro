@@ -505,3 +505,47 @@ class TestReadingTheCandidateFileAtAll:
 
         with pytest.raises(gate.RatchetProvenanceError, match="could not be read"):
             gate.candidate_grants()
+
+
+class TestTheGuardAgainstARealBaseRevision:
+    """The two cases the stubbed guard tests above cannot reach.
+
+    Those monkeypatch `authorized_floors`, which is the right shape for
+    asserting *that* the guard consults it and *what* it prints. It leaves two
+    things unproven: that the real call resolves a real base revision, and that
+    the guard refuses before comparing when a measurement is missing.
+    """
+
+    def _report(self, path: Path, coverage: float) -> Path:
+        path.write_text(
+            json.dumps({"measured": True, "totals": {**TOTALS, "design_coverage": coverage}})
+        )
+        return path
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-7")
+    def test_an_unauthorized_fall_fails_against_a_real_base(self, gate, repo, tmp_path) -> None:
+        """No stub: `authorized_floors` resolves the base revision itself and
+        finds nothing, which is the ordinary state and must still refuse."""
+        repo(20.0, banked=20.0)
+        base = self._report(tmp_path / "base.json", 20.0)
+        candidate = self._report(tmp_path / "candidate.json", 15.0)
+
+        assert gate._guard_actual_base(base, candidate, gate.ac_state_notes.bounds().base_sha) == 1
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-7")
+    def test_an_authorized_fall_passes_against_a_real_base(self, gate, repo, tmp_path) -> None:
+        """The whole point, with the grant read from a real committed file
+        rather than handed to the guard by the test."""
+        repo(20.0, grant_at_base="design_coverage@15.0", banked=15.0)
+        base = self._report(tmp_path / "base.json", 20.0)
+        candidate = self._report(tmp_path / "candidate.json", 15.0)
+
+        assert gate._guard_actual_base(base, candidate, gate.ac_state_notes.bounds().base_sha) == 0
+
+    def test_an_unreadable_report_refuses_before_anything_else(self, gate, tmp_path) -> None:
+        """The guard's first job is to be sure it is comparing two real
+        measurements. A missing file must not read as "nothing moved"."""
+        missing = tmp_path / "absent.json"
+        present = self._report(tmp_path / "candidate.json", 20.0)
+
+        assert gate._guard_actual_base(missing, present, "irrelevant") == 1
