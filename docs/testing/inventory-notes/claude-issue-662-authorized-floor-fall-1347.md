@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +14
+  tests/: +27
 ---
 # claude-issue-662-authorized-floor-fall-1347
 
-All fourteen are `tests/test_ac_state_authorized_floor.py`, the suite for
+All twenty-seven are `tests/test_ac_state_authorized_floor.py`, the suite for
 SPEC-082926-6f49: a grant read at the base revision may lower one AC-state
 floor to one named value. Nothing removed or moved.
 
@@ -42,3 +42,31 @@ banking"; the design does not enforce that and cannot, so the criterion now
 states what is true and enforced — the authorized value is a target, not a
 basement, and a measurement above it is slack to bank rather than a pass.
 `test_a_measurement_above_the_grant_is_slack_to_bank` is that criterion.
+
+Thirteen more came from a Codex review that found four defects, three of them
+P1, and every one of them real.
+
+The largest is that the grant was applied only to the note comparisons.
+`check-ac-state.py` measures the actual base revision in a merge group and
+compares it independently, so an authorized fall passed everything on the
+branch and was then rejected by the queue — the mechanism worked everywhere
+except the one place it had to. `TestTheMergeGroupHonoursTheSameGrant` covers
+that comparison with a grant, without one, and with a deeper fall than the
+grant names.
+
+The other two P1s are a matched pair about *which revision* answers *which
+question*. Stale-ness read from the base made pruning unfollowable: once the
+notes overtook a grant, every later run failed on it, including the run whose
+only change removed it. Permission read from the candidate would reopen
+self-approval. So permission stays at the base and bookkeeping moved to the
+candidate — and a binding grant must survive the change that spends it, or the
+fall lands with the owner, issue and reason deleted from the file.
+
+The P2 is that a malformed section crashed rather than refused, which AC-6
+promised. `"ac-state": []` was additionally read as "no grants" by the helper's
+own `or {}`, so a file somebody wrote and expected to be enforced was silently
+ignored — a quieter failure than the crash.
+
+The fixture gained a sentinel: `None` empties the grants file, `UNCHANGED`
+leaves what the base committed. Collapsing those made "the candidate removed
+the grant" untestable, which is why two of these defects had no test.
