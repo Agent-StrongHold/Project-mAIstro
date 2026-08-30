@@ -1,4 +1,11 @@
-"""Required-CI proof that every live ratchet has an enforced provenance model (#542)."""
+"""Required-CI proof that every live ratchet has an explicit provenance model (#542).
+
+Runtime execution of delegated trusted-base adapters belongs to the required
+Vulture Ratchet workflow, which supplies full git history and the event's actual
+integration base. The generic root pytest job intentionally stays structural so
+it does not duplicate environment-dependent ratchet execution with a depth-1
+checkout and no trusted-base event context.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +26,6 @@ def _checker():
     return module
 
 
-def test_every_live_ratchet_has_enforced_provenance() -> None:
+def test_every_live_ratchet_has_explicit_provenance() -> None:
     checker = _checker()
     assert checker.violations(ROOT) == []
-    assert checker.run_delegated(ROOT) == []
