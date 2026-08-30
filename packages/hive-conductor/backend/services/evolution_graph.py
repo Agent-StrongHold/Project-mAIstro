@@ -94,11 +94,7 @@ def _append_execution_ref(genome: Any, ctx: NodeContext) -> None:
         "node_run_id": ctx.node_run_id,
         "attempt_id": ctx.attempt_id,
     }
-    if not any(
-        item.get("attempt_id") == ctx.attempt_id
-        for item in refs
-        if isinstance(item, dict)
-    ):
+    if not any(item.get("attempt_id") == ctx.attempt_id for item in refs if isinstance(item, dict)):
         refs.append(ref)
 
 
@@ -228,8 +224,7 @@ class _TournamentWork:
         shuffled = list(scored)
         random.shuffle(shuffled)
         pairs = [
-            (shuffled[index].id, shuffled[index + 1].id)
-            for index in range(0, len(shuffled) - 1, 2)
+            (shuffled[index].id, shuffled[index + 1].id) for index in range(0, len(shuffled) - 1, 2)
         ]
         return _PairPlanOutput(
             pairs=pairs,
@@ -353,10 +348,7 @@ async def _finalize_cycle(
     cycle._compute_all_fitness(population)
     population.cull_bottom(config.cull_pct)
 
-    if (
-        cycle._island_pop is None
-        or cycle._island_pop.island_count != config.island_count
-    ):
+    if cycle._island_pop is None or cycle._island_pop.island_count != config.island_count:
         cycle._island_pop = IslandPopulation(config.island_count)
     island_pop = cycle._island_pop
 

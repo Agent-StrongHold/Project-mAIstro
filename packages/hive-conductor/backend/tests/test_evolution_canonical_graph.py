@@ -216,9 +216,7 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
         refs = genome.harness_params["evaluation_runs"]
         assert len(refs) == 1
         assert refs[0]["run_id"] == record.run_id
-        assert refs[0]["attempt_id"] in {
-            attempt.attempt_id for attempt in attempts
-        }
+        assert refs[0]["attempt_id"] in {attempt.attempt_id for attempt in attempts}
 
     child = population.get("child")
     assert child is not None
@@ -284,9 +282,7 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
         container=owner,
     )
     node_runs = await owner.run_store.list_node_runs(record.run_id)
-    battle_runs = [
-        item for item in node_runs if item.node_id.startswith("evolve-battle-")
-    ]
+    battle_runs = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
     assert battle_runs == []
     plan_runs = [item for item in node_runs if item.node_id == "evolve-plan-pairs"]
     assert len(plan_runs) == 1
@@ -417,7 +413,5 @@ async def test_recovered_evaluation_node_run_reuses_published_score_without_reev
     assert persisted is not None
     assert persisted.eval_scores == {"proxy": 0.5}
     assert persisted.harness_params["total_cost_usd"] == 0.01
-    assert persisted.harness_params["evaluation_runs"] == genome.harness_params[
-        "evaluation_runs"
-    ]
+    assert persisted.harness_params["evaluation_runs"] == genome.harness_params["evaluation_runs"]
     assert output.evaluation_attempt_id == "attempt-before-crash"
