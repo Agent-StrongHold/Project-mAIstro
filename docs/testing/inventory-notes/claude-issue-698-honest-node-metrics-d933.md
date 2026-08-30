@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +33
+  packages/hive-conductor/backend/tests: +38
 ---
 # claude-issue-698-honest-node-metrics-d933
 
-All 33 are added (13 in the first round, 20 answering the review below). **Two existing tests changed sides without changing the
+All 38 are added (13 in the first round, 20 answering the review below, 5 more for the branches the diff-coverage gate named). **Two existing tests changed sides without changing the
 count**, and they are the more interesting half: `test_aggregate_empty_returns_zeros`
 and the `record_run_completion` ingest case both asserted `tokens_in == 0`.
 They were pinning the defect — a zero where nothing had been measured — so they
@@ -84,3 +84,23 @@ unmeasured bucket normalized as zero rather than skipped; the bucket's p95 back
 to zero; the LLM node not reporting its model; the subprocess node not
 reporting its model; the route not recording it; the ingest unconditional again
 (6 fail); and an unknown status read as suspended (3 fail).
+
+
+## +5 after the first CI round
+
+The diff-coverage gate measures against the PR's **recorded base sha**, not
+current `develop`, so CI's diff is larger than a local `--base origin/develop`
+produces — and it named three branches my local check had not:
+`dag_agents.py` 82.4% (the ingest's `except`, and the deferral's `logger.info`)
+and `graph_runner.py` 75.0% (the subprocess node's failure return).
+
+All three are covered by *running* the code rather than reading it:
+`run_registered_dag` driven through the real canonical path against a synth
+DAG, once with a failing `record_run_completion` and once with a record forced
+to `paused`; and `_run_node_subprocess` with the executor refusing and with it
+raising. The last two matter for AC-1 as well as coverage — the source
+assertion counts three `"model": model` returns, and these two prove the
+failure ones actually carry it.
+
+The lesson generalises: verify with `--base <the PR's base sha>`, not
+`origin/develop`, or the local check is measuring a smaller diff than the gate.

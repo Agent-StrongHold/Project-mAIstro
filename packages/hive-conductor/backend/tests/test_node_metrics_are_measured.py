@@ -454,3 +454,133 @@ def _record_with_status(status: Any) -> Any:
     record = _Record()
     record.run = run  # type: ignore[attr-defined]
     return record
+
+
+_SYNTH_DAG = {
+    "id": "synth-metrics",
+    "name": "Synth Metrics",
+    "description": "single alias node, for driving the canonical run path",
+    "entry_node": "only",
+    "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+    "edges": [],
+}
+
+
+@pytest.fixture()
+def synth_dag_id():
+    from services.dag_agents import get_registry
+
+    registry = get_registry()
+    registry.register(dict(_SYNTH_DAG))
+    try:
+        yield "synth-metrics"
+    finally:
+        registry.deregister("synth-metrics")
+
+
+class TestTheIngestDecisionDrivenThroughTheRealPath:
+    """The classes above assert on `_is_terminal` and on source shape; these
+    run `run_registered_dag` itself, which is where the decision is actually
+    taken and where its two consequences (a warning, a deferral) live.
+    """
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    async def test_a_finished_run_reaches_the_ingest(self, synth_dag_id: str) -> None:
+        import services.node_metrics_store as metrics_module
+        from services.dag_agents import run_registered_dag
+
+        seen: list[Any] = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(metrics_module, "record_run_completion", lambda r: seen.append(r) or 1)
+            patch.setattr(
+                "services.dag_agents.record_run_completion", lambda r: seen.append(r) or 1
+            )
+            await run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+        assert len(seen) == 1
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    async def test_a_failing_ingest_does_not_fail_the_run(
+        self, synth_dag_id: str, caplog: Any
+    ) -> None:
+        """Named rather than bare: a metrics write must not fail a run that
+        already produced a result, but an operator has to be able to find out
+        that the observations were dropped."""
+        import logging
+
+        from services.dag_agents import run_registered_dag
+
+        def _boom(record: Any) -> int:
+            raise RuntimeError("the metrics buffer is gone")
+
+        with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.WARNING):
+            patch.setattr("services.dag_agents.record_run_completion", _boom)
+            _graph, record = await run_registered_dag(
+                synth_dag_id, workspace_id="w1", project_id="p1"
+            )
+        assert record is not None, "the run still returns its record"
+        assert "node_metrics_not_recorded" in caplog.text
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    async def test_a_run_that_stopped_at_a_pause_is_deferred_not_ingested(
+        self, synth_dag_id: str, caplog: Any
+    ) -> None:
+        """`run_durable_graph` returns as soon as the graph stops advancing, so
+        a wait or HITL node hands back a record that is not a finished run."""
+        import logging
+
+        import services.dag_agents as dag_agents
+
+        real = dag_agents.run_durable_graph
+        seen: list[Any] = []
+
+        async def _paused(*a: Any, **k: Any) -> Any:
+            record = await real(*a, **k)
+            record.run.status = "paused"
+            return record
+
+        with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.INFO):
+            patch.setattr(dag_agents, "run_durable_graph", _paused)
+            patch.setattr(dag_agents, "record_run_completion", lambda r: seen.append(r) or 1)
+            await dag_agents.run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+        assert seen == [], "a partial record must not enter the aggregate"
+        assert "node_metrics_deferred" in caplog.text
+
+
+class TestTheSubprocessNodeReportsItsModelOnEveryOutcome:
+    """Line-level cover for the failure return, which the source assertion
+    above counts but does not execute."""
+
+    @staticmethod
+    def _node() -> dict[str, Any]:
+        return {"id": "n1", "role": "worker", "model": "gemma-27b", "prompt": "hi"}
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_a_failed_subprocess_node_still_names_its_model(self) -> None:
+        import services.hyperlight_executor as executor_module
+        from services.graph_runner import _run_node_subprocess
+
+        class _Executor:
+            @staticmethod
+            async def execute_node(*a: Any, **k: Any) -> dict[str, Any]:
+                return {"success": False, "error": "the sandbox refused", "isolation": "bwrap"}
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(executor_module, "get_executor", lambda: _Executor())
+            result = _run_node_subprocess(self._node(), "task", "", {}, "interactive")
+        assert result["success"] is False
+        assert result["model"] == "gemma-27b"
+        assert result["isolation"] == "bwrap"
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_a_subprocess_node_that_raised_still_names_its_model(self) -> None:
+        import services.hyperlight_executor as executor_module
+        from services.graph_runner import _run_node_subprocess
+
+        def _boom() -> Any:
+            raise RuntimeError("no executor here")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(executor_module, "get_executor", _boom)
+            result = _run_node_subprocess(self._node(), "task", "", {}, "interactive")
+        assert result["success"] is False
+        assert result["model"] == "gemma-27b"
