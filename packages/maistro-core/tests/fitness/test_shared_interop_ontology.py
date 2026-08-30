@@ -187,6 +187,15 @@ def _contract_failures(contract: Mapping[str, Any]) -> list[str]:
     if not isinstance(concepts, dict):
         return [*failures, "concepts must be an object"]
 
+    expected_names = set(_EXPECTED_CONCEPTS)
+    actual_names = set(concepts)
+    unexpected_names = sorted(actual_names - expected_names)
+    if unexpected_names:
+        failures.append(
+            "ontology v1 contains unreviewed shared concept(s): "
+            + ", ".join(unexpected_names)
+        )
+
     for name, expected in _EXPECTED_CONCEPTS.items():
         if drift := _metadata_drift(concepts, name, expected):
             failures.append(drift)
@@ -310,6 +319,16 @@ def test_validator_rejects_non_semantic_version() -> None:
     contract = _load_contract()
     contract["version"] = "v1"
     assert any("semantic" in failure for failure in _contract_failures(contract))
+
+
+def test_validator_rejects_unreviewed_shared_concept() -> None:
+    contract = _load_contract()
+    contract["concepts"]["ShadowRun"] = {
+        "owner": "maistro.shadow",
+        "identity": "shadow_run_id",
+    }
+    failures = _contract_failures(contract)
+    assert any("unreviewed shared concept" in failure for failure in failures)
 
 
 def test_validator_rejects_canonical_owner_and_identity_drift() -> None:
