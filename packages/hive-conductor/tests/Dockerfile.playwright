@@ -18,5 +18,4 @@ RUN npm init -y && npm install \
 COPY tests/e2e/ /tests/tests/e2e/
 COPY frontend/src/pages/DeckBuilder.tsx /tests/frontend/src/pages/DeckBuilder.tsx
 COPY frontend/src/lib/deckSanitizer.ts /tests/frontend/src/lib/deckSanitizer.ts
-COPY frontend/src/lib/deckTemplates.ts /tests/frontend/src/lib/deckTemplates.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]
