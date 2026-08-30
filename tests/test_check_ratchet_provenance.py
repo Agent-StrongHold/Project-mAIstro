@@ -32,9 +32,9 @@ def _tree(tmp_path: Path, script: str, name: str = "gate.py") -> Path:
 def test_candidate_controlled_quality_ledger_is_rejected(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'BASELINE = ROOT / "quality" / "debt.json"\n'
-        'def load(): return BASELINE.read_text()\n',
+        "def load(): return BASELINE.read_text()\n",
     )
 
     assert checker.violations(root) == [
@@ -46,10 +46,10 @@ def test_candidate_controlled_quality_ledger_is_rejected(checker, tmp_path: Path
 def test_trusted_resolver_satisfies_inventory(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'BASELINE = ROOT / "quality" / "debt.json"\n'
-        'import ratchet_provenance\n'
-        'def load(): return ratchet_provenance.resolve_baseline(BASELINE)\n',
+        "import ratchet_provenance\n"
+        "def load(): return ratchet_provenance.resolve_baseline(BASELINE)\n",
     )
 
     assert checker.violations(root) == []
@@ -58,7 +58,7 @@ def test_trusted_resolver_satisfies_inventory(checker, tmp_path: Path) -> None:
 def test_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'QUALITY = ROOT / "quality"\nBASELINE = QUALITY / "debt.json"\n',
     )
 
@@ -69,7 +69,7 @@ def test_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -> Non
 def test_repo_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nREPO = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nREPO = Path(__file__).resolve().parents[1]\n"
         'BASELINE = REPO / "quality" / "debt.json"\n',
     )
 
@@ -79,7 +79,7 @@ def test_repo_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -
 def test_direct_function_path_expression_is_not_invisible(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'def load():\n    return (ROOT / "quality" / "debt.json").read_text()\n',
     )
 
@@ -91,7 +91,7 @@ def test_documented_candidate_authored_specification_is_allowed(
 ) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'SPEC = ROOT / "quality" / "policy.json"\n',
     )
     monkeypatch.setattr(
@@ -109,7 +109,7 @@ def test_delegated_consumer_requires_a_real_trusted_adapter(
 ) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'BASELINE = ROOT / "quality" / "debt.json"\n',
     )
     monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
@@ -119,9 +119,7 @@ def test_delegated_consumer_requires_a_real_trusted_adapter(
         {("gate.py", "quality/debt.json"): "adapter.py"},
     )
 
-    assert checker.violations(root) == [
-        "delegated trusted-base adapter adapter.py does not exist"
-    ]
+    assert checker.violations(root) == ["delegated trusted-base adapter adapter.py does not exist"]
 
 
 def test_delegated_adapter_must_use_shared_resolver(
@@ -129,7 +127,7 @@ def test_delegated_adapter_must_use_shared_resolver(
 ) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'BASELINE = ROOT / "quality" / "debt.json"\n',
     )
     (root / "scripts" / "adapter.py").write_text("def main(): return 0\n", encoding="utf-8")
@@ -150,13 +148,13 @@ def test_delegated_adapter_is_executed(
 ) -> None:
     root = _tree(
         tmp_path,
-        'from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n'
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
         'BASELINE = ROOT / "quality" / "debt.json"\n',
     )
     (root / "scripts" / "adapter.py").write_text(
-        'import ratchet_provenance\n'
-        'def probe(): return ratchet_provenance.resolve_baseline(None)\n'
-        'def main(): return 7\n',
+        "import ratchet_provenance\n"
+        "def probe(): return ratchet_provenance.resolve_baseline(None)\n"
+        "def main(): return 7\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
