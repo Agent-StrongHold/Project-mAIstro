@@ -47,7 +47,7 @@ def _obs(**overrides: Any) -> NodeObservation:
 
 
 class TestAnUnmeasuredMetricIsAbsent:
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-1")
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_the_defaults_are_absent_not_zero(self) -> None:
         """The four fields the route used to invent all default to nothing."""
         obs = _obs()
@@ -59,7 +59,7 @@ class TestAnUnmeasuredMetricIsAbsent:
             None,
         )
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-1")
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_an_unmeasured_cost_is_not_a_zero_cost(self) -> None:
         """The finding in one assertion.
 
@@ -77,7 +77,7 @@ class TestAnUnmeasuredMetricIsAbsent:
         assert agg["cost_measured"] == 0
         assert agg["cost_usd_total"] is None
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-1")
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_a_measured_cost_is_reported(self) -> None:
         """The control: absence must not swallow the values that exist."""
         store = NodeMetricsStore()
@@ -87,7 +87,7 @@ class TestAnUnmeasuredMetricIsAbsent:
 
         assert (agg["cost_measured"], agg["cost_usd_total"]) == (1, 0.25)
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-2")
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
     def test_a_mean_divides_by_what_was_measured(self) -> None:
         """One node at 100ms beside one unmeasured is a 100ms mean, not 50ms.
 
@@ -103,7 +103,7 @@ class TestAnUnmeasuredMetricIsAbsent:
         assert agg["latency_ms_measured"] == 1
         assert agg["latency_ms_mean"] == 100.0
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-2")
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
     def test_percentiles_ignore_the_unmeasured(self) -> None:
         """An untimed node used to enter the percentiles as the fastest one."""
         store = NodeMetricsStore()
@@ -117,7 +117,7 @@ class TestAnUnmeasuredMetricIsAbsent:
 class TestTheIngestHasAProductionCaller:
     """`record_run_completion` read canonical NodeRuns and nothing called it."""
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-3")
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_the_canonical_path_records_the_run(self) -> None:
         """Asserted on the source: reaching the call needs a live container.
 
@@ -138,7 +138,7 @@ class TestTheIngestHasAProductionCaller:
 
         assert calls, "the canonical run path no longer records node metrics"
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-3")
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_an_unmeasured_ingest_leaves_the_fields_absent(self) -> None:
         """The ingest itself: real latency, absent tokens and cost."""
         from services.node_metrics_store import record_run_completion, set_store
@@ -155,7 +155,7 @@ class TestTheIngestHasAProductionCaller:
         assert obs.latency_ms == 1500
         assert (obs.tokens_in, obs.tokens_out, obs.cost_usd) == (None, None, None)
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-3")
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_a_node_run_with_no_timestamps_has_no_latency(self) -> None:
         """`None`, not `0`. Zero would be the fastest node in the window."""
         from services.node_metrics_store import _latency_ms
@@ -166,7 +166,7 @@ class TestTheIngestHasAProductionCaller:
 class TestTheReadersUseThePublicSurface:
     """Two production readers reached for `_filter` and `_aggregate`."""
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-4")
+    @pytest.mark.ac("SPEC-083026-2642/AC-4")
     @pytest.mark.parametrize("module", ["optimizer", "topology_compare"])
     def test_no_reader_touches_a_private_helper(self, module: str) -> None:
         source = (_BACKEND / "services" / f"{module}.py").read_text(encoding="utf-8")
@@ -189,7 +189,7 @@ class TestTheReadersUseThePublicSurface:
         assert private == set(), f"{module} reaches into the metrics store"
         assert imported == set(), f"{module} imports a private metrics helper"
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-4")
+    @pytest.mark.ac("SPEC-083026-2642/AC-4")
     def test_the_public_surface_answers_the_same_question(self) -> None:
         """`observations` and `summarize` are what the readers moved onto."""
         store = NodeMetricsStore()
@@ -202,7 +202,7 @@ class TestTheReadersUseThePublicSurface:
 
 
 class TestTheProcessStoreIsInstalledPerStart:
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-5")
+    @pytest.mark.ac("SPEC-083026-2642/AC-5")
     def test_reset_store_installs_a_fresh_buffer(self) -> None:
         """`set_store` had no production caller; a carried buffer mixes windows."""
         from services.node_metrics_store import get_store, reset_store, set_store
@@ -219,7 +219,7 @@ class TestTheProcessStoreIsInstalledPerStart:
         finally:
             set_store(previous)
 
-    @pytest.mark.ac("SPEC-083026-7a4e/AC-5")
+    @pytest.mark.ac("SPEC-083026-2642/AC-5")
     def test_the_engine_installs_one_at_start(self) -> None:
         from services import engine as engine_module
 
