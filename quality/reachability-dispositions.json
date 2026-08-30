@@ -614,6 +614,16 @@
         "@tool/ci_merge_group_scope"
       ],
       "root": "a workflow step calling scripts/ci_merge_group_scope.py, added by #655"
+    },
+    {
+      "id": "shell-invoked-build-evidence",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Reached from a `run:` shell step in the `setup-uv` composite action (`.github/actions/setup-uv/action.yml`), not from a workflow step's `uses:` or a Python import -- the same blind spot `installer-shell-invoked-tooling` above documents: a script invoked through a shell command inside a workflow or composite action is not seen by the import-graph scan, which errs toward reporting it unreachable rather than toward silence. The code does execute on every job that pulls in `setup-uv`, one shell frame below what the rooting scan can follow. Covered directly by tests/test_build_evidence.py.",
+      "root": ".github/actions/setup-uv/action.yml's \"Record content-addressed setup evidence\" step; becomes visible to the graph if tooling rooting ever follows shell invocations inside composite actions",
+      "modules": [
+        "@tool/build-evidence"
+      ]
     }
   ]
 }
