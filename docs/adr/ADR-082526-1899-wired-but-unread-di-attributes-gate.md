@@ -18,12 +18,12 @@ contracts:
 tests:
   - tests/test_check_wiring_reads.py
 ac-modules:
-  AC-1: scripts/check-wiring-reads.py
-  AC-2: scripts/check-wiring-reads.py
-  AC-3: scripts/check-wiring-reads.py
-  AC-4: scripts/check-wiring-reads.py
-  AC-5: scripts/check-wiring-reads.py
-  AC-6: scripts/check-wiring-reads.py
+  AC-1: '@tool/check-wiring-reads'
+  AC-2: '@tool/check-wiring-reads'
+  AC-3: '@tool/check-wiring-reads'
+  AC-4: '@tool/check-wiring-reads'
+  AC-5: '@tool/check-wiring-reads'
+  AC-6: '@tool/check-wiring-reads'
 history:
   - status: Proposed
     date: 2026-08-25

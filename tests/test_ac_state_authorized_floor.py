@@ -690,3 +690,342 @@ class TestAGrantIsPermissionNotACap:
 
         assert _run(gate, 20.0) == 1
         assert "unbanked improvement" in capsys.readouterr().out
+
+
+def _write_grants(root, section) -> None:
+    """Put an arbitrary `ac-state` section in the worktree's grants file."""
+    (root / "quality" / "ratchet-authorizations.json").write_text(json.dumps({"ac-state": section}))
+
+
+class TestTheCandidateFileIsReadTheWayTheBaseReadsIt:
+    """SPEC-082926-6f49 AC-10 (#685 finding 1).
+
+    `candidate_grants` used to iterate keys and suppress the `ValueError`, so a
+    change could keep a binding key, replace its record with `{}` or a scalar,
+    and pass: `_removed_binding_grants` saw the key, the value parsed, and
+    nothing looked inside. After the merge `load_authorizations` reads the same
+    file as the base and *does* look — so every subsequent run failed on a file
+    only another grant could repair. A gate that refuses runs nobody can fix.
+    """
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_a_record_emptied_to_a_mapping_is_refused(self, gate, repo) -> None:
+        root = repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.8791)
+        _write_grants(root, {"design_coverage@27.8791": {}})
+
+        with pytest.raises(gate.RatchetProvenanceError, match="missing owner, issue, reason"):
+            gate.candidate_grants()
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_a_record_replaced_by_a_scalar_is_refused(self, gate, repo) -> None:
+        """The shape that reached the base helper's `.get()` as an
+        AttributeError — a crash, which reads differently in a log from a
+        refusal, and on the candidate side was not even reached."""
+        root = repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.8791)
+        _write_grants(root, {"design_coverage@27.8791": 5})
+
+        with pytest.raises(gate.RatchetProvenanceError, match="is a int, not a record"):
+            gate.candidate_grants()
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_a_malformed_key_is_named_rather_than_dropped(self, gate, repo) -> None:
+        """`contextlib.suppress(ValueError)` discarded an entry whose value did
+        not parse. Written, expected to be enforced, ignored without a word —
+        the failure #672 finding 4 closed for the section and left open here."""
+        root = repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.8791)
+        _write_grants(
+            root,
+            {
+                "design_coverage@not-a-number": {
+                    "owner": "@someone",
+                    "issue": "#685",
+                    "reason": "a reason",
+                }
+            },
+        )
+
+        with pytest.raises(gate.RatchetProvenanceError, match="does not name the value"):
+            gate.candidate_grants()
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_a_counter_that_is_not_a_floor_is_refused_here_too(self, gate, repo) -> None:
+        """The base refuses a grant naming a debt ceiling. The candidate said
+        nothing, so the two revisions disagreed about the same file."""
+        root = repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.8791)
+        _write_grants(
+            root,
+            {"specs_with_no_criteria@3": {"owner": "@x", "issue": "#685", "reason": "r"}},
+        )
+
+        with pytest.raises(gate.RatchetProvenanceError, match="not a floored counter"):
+            gate.candidate_grants()
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_a_well_formed_candidate_file_still_reads(self, gate, repo) -> None:
+        """The half that must not move: validation is not refusal of everything."""
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.8791)
+
+        assert gate.candidate_grants() == {"design_coverage": 27.8791}
+
+
+class TestAProtectedPushCannotSpendAGrantAndDeleteIt:
+    """SPEC-082926-6f49 AC-11 (#685 finding 2).
+
+    `check-ac-state.py` strips `--ratchet` on a push to develop, integration or
+    main, so `ratchet()` never runs and neither does its retention bookkeeping.
+    `_guard_actual_base` still applied the base grant to the base before
+    comparing — so on the one path with no review in front of it, a commit
+    could consume an authorized fall and remove the grant permitting it, and
+    the guard passed.
+
+    A merge group is not this path: it keeps `--ratchet`, so
+    `_removed_binding_grants` already answers there.
+    """
+
+    @staticmethod
+    def _reports(tmp_path, candidate_coverage: float):
+        base_report = tmp_path / "base.json"
+        candidate_report = tmp_path / "candidate.json"
+        base_report.write_text(json.dumps({"measured": True, "totals": TOTALS}))
+        candidate_report.write_text(
+            json.dumps(
+                {"measured": True, "totals": {**TOTALS, "design_coverage": candidate_coverage}}
+            )
+        )
+        return base_report, candidate_report
+
+    @staticmethod
+    def _floors(gate, monkeypatch, value: float | None) -> None:
+        monkeypatch.setattr(
+            gate._impl,
+            "authorized_floors",
+            lambda base_rev: (
+                ({}, {})
+                if value is None
+                else ({"design_coverage": value}, {"design_coverage": "approved correction"})
+            ),
+        )
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_spending_a_grant_and_removing_it_is_refused(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=15.0)
+        _write_grants(root, {})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 15.0)
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        assert "spends an authorized floor and removes it: design_coverage@15.0" in (
+            capsys.readouterr().out
+        )
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_spending_a_grant_it_still_ships_passes(
+        self, gate, repo, tmp_path, monkeypatch
+    ) -> None:
+        repo(28.2327, grant_at_base="design_coverage@15.0", banked=15.0)
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 15.0)
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 0
+        )
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_pruning_a_grant_this_push_does_not_need_still_passes(
+        self, gate, repo, tmp_path, monkeypatch
+    ) -> None:
+        """The honest case the guard must not catch. This push regresses
+        nothing, so dropping the grant changes no verdict — it has nothing to
+        answer for, and refusing it would make a spent grant unprunable, which
+        is the shape #673 existed to fix."""
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=15.0)
+        _write_grants(root, {})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, TOTALS["design_coverage"])
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 0
+        )
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_merge_group_is_not_asked_twice(self, gate, repo, tmp_path, monkeypatch) -> None:
+        """Same removal, `check_retention` off: a merge group keeps `--ratchet`,
+        so `_removed_binding_grants` is the one that answers. Enforcing it here
+        as well would make either place look optional."""
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=15.0)
+        _write_grants(root, {})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 15.0)
+
+        assert gate._guard_actual_base(base_report, candidate_report, "base-sha") == 0
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_the_base_measurement_itself_asks_nothing(self, gate, tmp_path, monkeypatch) -> None:
+        """The other side of the recursion guard, and the reason the test above
+        must delete it by name. `_measure_base` re-invokes this script inside
+        the base worktree with the guard set; that run must delegate straight
+        to `_impl.main` and never measure a base of its own."""
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+        monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
+        monkeypatch.setenv(gate._BASE_MEASUREMENT, "1")
+        measured: list[str] = []
+        monkeypatch.setattr(gate, "_measure_base", lambda base_rev, report: measured.append("no"))
+        monkeypatch.setattr(gate._impl, "main", lambda argv: 0)
+
+        assert gate.main(["--ratchet", "--out", str(tmp_path / "out.json")]) == 0
+        assert measured == []
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_deeper_fall_is_reported_as_the_fall_it_is(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """Codex, #693. Base 20, grant 15, candidate 12, grant removed.
+
+        The counter regresses *either way*, so the grant is not what permits
+        this push and its removal is not the story. Comparing the rendered
+        lines made it look load-bearing — they name different floors, 15 with
+        the grant and 20 without — and the run then refused the push for the
+        removal instead of for the deeper fall, which is the more serious of
+        the two and the one an operator needs told.
+        """
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=12.0)
+        _write_grants(root, {})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 12.0)
+        base_report.write_text(
+            json.dumps({"measured": True, "totals": {**TOTALS, "design_coverage": 20.0}})
+        )
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        printed = capsys.readouterr().out
+        assert "regressed from the actual measured base" in printed
+        assert "spends an authorized floor and removes it" not in printed
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_the_first_grant_a_push_adds_is_validated_too(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """Codex, #693. A protected push adding the *first* grant has no base
+        floors, so an early return on `not floors` skipped the only validation
+        this path performs — and `--ratchet` is stripped here, so nothing else
+        looks. The malformed record then became the base every later run reads
+        and refuses."""
+        root = repo(28.2327, banked=28.2327)
+        _write_grants(root, {"design_coverage@15.0": {}})
+        self._floors(gate, monkeypatch, None)
+        base_report, candidate_report = self._reports(tmp_path, 28.2327)
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        assert "missing owner, issue, reason" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_push_with_no_grant_in_play_is_not_asked_anything(self, gate, tmp_path) -> None:
+        """No floors, no question — and no read of the grants file either."""
+        base_report, candidate_report = self._reports(tmp_path, TOTALS["design_coverage"])
+
+        assert (
+            gate._spent_grants_removed(
+                gate._report_totals(base_report), gate._report_totals(candidate_report), {}
+            )
+            == []
+        )
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_malformed_candidate_file_fails_the_push_closed(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """The two findings meet here. A candidate file the base will refuse
+        must not pass on this path either — and it must refuse, not raise: a
+        traceback is not a gate verdict, and the two read differently in a log.
+        """
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=15.0)
+        _write_grants(root, {"design_coverage@15.0": {}})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 15.0)
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        assert "missing owner, issue, reason" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    @pytest.mark.parametrize(
+        ("event", "ref", "expected"),
+        [("push", "refs/heads/develop", True), ("merge_group", "refs/heads/develop", False)],
+    )
+    def test_main_asks_for_retention_only_on_a_protected_push(
+        self, gate, tmp_path, monkeypatch, event: str, ref: str, expected: bool
+    ) -> None:
+        """The wiring, not the decision. `_spent_grants_removed` being right
+        while `main` never turns it on is the shape this repository's gates
+        exist to catch — and it is the shape the guard was in before #685,
+        since `--ratchet` was stripped and nothing else asked.
+        """
+        monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+        monkeypatch.setenv("GITHUB_REF", ref)
+        # The constant, not a guessed literal (Codex, #693). `_measure_base`
+        # sets this while running `check-ac-state.py --run-tests`, so an
+        # AC-marked test launched by that run inherits it; deleting the wrong
+        # name left `main` returning early on the recursion guard, the mocked
+        # guard uncalled, and this criterion graded unproven in the very base
+        # measurement it exists to protect.
+        monkeypatch.delenv(gate._BASE_MEASUREMENT, raising=False)
+        monkeypatch.setattr(gate, "_actual_base_revision", lambda: "base-sha")
+        monkeypatch.setattr(gate, "_measure_base", lambda base_rev, report: None)
+        monkeypatch.setattr(gate._impl, "main", lambda argv: 0)
+        seen: list[bool] = []
+
+        def guard(base_report, candidate_report, base_rev, *, check_retention=False):
+            seen.append(check_retention)
+            return 0
+
+        monkeypatch.setattr(gate, "_guard_actual_base", guard)
+
+        assert gate.main(["--ratchet", "--out", str(tmp_path / "out.json")]) == 0
+        assert seen == [expected]
+
+
+class TestPruningASpentGrantAndBankingAGainTogether:
+    """SPEC-082926-6f49 AC-12 (#685 finding 3).
+
+    #673 made pruning a spent grant possible, but only for a change that
+    improved nothing: `_lowered` still applied the base grant to the exact
+    target, so a candidate measuring above it read as unbanked slack and the PR
+    whose only job was to prune could not also carry a gain.
+
+    #692 is what closed it — the exact target is the grant-lowered fold *raised
+    by the notes this change writes*, so the candidate's own measurement is
+    what it is compared against. This pins that the combination works, because
+    the two changes are separate and nothing else states the joint property.
+    """
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-12")
+    def test_a_spent_grant_can_be_pruned_by_a_change_that_also_improves(self, gate, repo) -> None:
+        """Codex's scenario on #673, verbatim: base fold and grant both at 15,
+        candidate note and measurement at 20, and the grant gone from the
+        candidate file."""
+        repo(15.0, grant_at_base="design_coverage@15.0", grant_in_worktree=None, banked=20.0)
+
+        assert _run(gate, 20.0) == 0
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-12")
+    def test_the_same_prune_without_the_improvement_still_passes(self, gate, repo) -> None:
+        """The case #673 already allowed, which must not regress: pruning a
+        grant the fold has overtaken, changing nothing else."""
+        repo(15.0, grant_at_base="design_coverage@15.0", grant_in_worktree=None, banked=15.0)
+
+        assert _run(gate, 15.0) == 0

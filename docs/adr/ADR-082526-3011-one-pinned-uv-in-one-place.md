@@ -17,8 +17,8 @@ contracts:
 tests:
   - tests/test_check_uv_setup.py
 ac-modules:
-  AC-1: scripts/check-uv-setup.py
-  AC-2: scripts/check-uv-setup.py
+  AC-1: '@tool/check-uv-setup'
+  AC-2: '@tool/check-uv-setup'
 history:
   - status: Proposed
     date: 2026-08-25

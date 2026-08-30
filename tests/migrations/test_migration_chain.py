@@ -98,6 +98,10 @@ EXPECTED_TABLES = frozenset(
         "security_rate_limits",
         "security_strikes",
         "security_violations",
+        # A turn's at-most-once marker, a row of its own since 023: one turn
+        # writes several messages, so the key that admits a turn once cannot
+        # live on the message table (#327).
+        "session_turns",
         "sessions",
         "tasks",
         "teams",

@@ -22,8 +22,8 @@ ac-modules:
   AC-1: maistro.container
   AC-2: maistro.container
   AC-3: maistro.container
-  AC-4: services.dag_agents
-  AC-5: services.dag_agents
+  AC-4: '@flat/hive-conductor/services.dag_agents'
+  AC-5: '@flat/hive-conductor/services.dag_agents'
 history:
   - status: Proposed
     date: 2026-08-25

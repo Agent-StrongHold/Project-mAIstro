@@ -225,6 +225,7 @@ class Agent:
         model_override: str | None = None,
         status_callback: Any = None,
         classified_task_type: str = "",
+        turn_id: str | None = None,
         _delegation_depth: int = 0,
     ) -> AgentResponse:
         # `intent` was accepted and never read — line 219 was the only mention of
@@ -256,6 +257,7 @@ class Agent:
                 model_override=model_override,
                 status_callback=status_callback,
                 classified_task_type=classified_task_type,
+                turn_id=turn_id,
                 _delegation_depth=_delegation_depth,
             )
         except Exception as exc:
@@ -300,6 +302,7 @@ class Agent:
         model_override: str | None,
         status_callback: Any,
         classified_task_type: str,
+        turn_id: str | None,
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
@@ -361,6 +364,7 @@ class Agent:
                 classified_task_type=classified_task_type,
                 depth=_delegation_depth,
                 trace=trace,
+                turn_id=turn_id,
             )
             if delegated is not None:
                 return delegated
@@ -391,6 +395,7 @@ class Agent:
             team_id=team_id,
             tool_had_failures=tool_had_failures,
             injected_learning_ids=injected_learning_ids,
+            turn_id=turn_id,
         )
 
         if trace:
@@ -451,14 +456,23 @@ class Agent:
         team_id: str,
         tool_had_failures: bool,
         injected_learning_ids: list[int],
+        turn_id: str | None = None,
     ) -> None:
-        """Persist session history, the outcome record, and learning feedback."""
+        """Persist session history, the outcome record, and learning feedback.
+
+        `turn_id` names the turn to the session store, so a second Attempt
+        under the same Run appends nothing rather than recording the user's
+        message twice (#327, ADR-083026-5fab). This is the only writer, and a
+        delegating turn reaches it exactly once: `_handle_traced` returns the
+        delegate's response before persisting anything of its own, so the
+        identity is not spent twice on one turn.
+        """
         if session_id and self._session_store and result.response:
             save_msgs: list[dict[str, str]] = []
             if user_text:
                 save_msgs.append({"role": "user", "content": user_text})
             save_msgs.append({"role": "assistant", "content": result.response})
-            await self._session_store.append_messages(session_id, save_msgs)
+            await self._session_store.append_messages(session_id, save_msgs, turn_id)
 
         if self._outcome_store:
             await self._record_outcome(
@@ -765,6 +779,7 @@ class Agent:
         status_callback: Any,
         classified_task_type: str,
         depth: int,
+        turn_id: str | None,
         trace: Any,
     ) -> AgentResponse | None:
         """Invoke the sub-agent chosen by the reasoning strategy.
@@ -816,6 +831,11 @@ class Agent:
             model_override=model_override,
             status_callback=status_callback,
             classified_task_type=classified_task_type,
+            # The delegate is the agent that persists the turn -- this one
+            # returns the delegate's answer without writing a session of its
+            # own -- so the identity has to reach it, or a retried delegated
+            # turn is the one that duplicates (#327).
+            turn_id=turn_id,
             _delegation_depth=depth + 1,
         )
         # Record who asked, on the way back out. The delegate's response is

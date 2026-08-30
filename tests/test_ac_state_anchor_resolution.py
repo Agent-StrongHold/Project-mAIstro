@@ -14,6 +14,10 @@ The two failures are kept apart deliberately. "This anchor names nothing" is a
 corpus error and fails the gate; "this module is real but nothing imports it"
 is the finding the rung was built for and still reports `passing`. Collapsing
 them would hide the second inside the first.
+
+Widened to ADRs in #653. The first version of the gate walked specs alone, so
+49 of 279 ADR anchors -- graded on the same ladder, folded into the same floor
+-- were read by nothing.
 """
 
 from __future__ import annotations
@@ -50,6 +54,18 @@ def _spec(module: str | None, *, ac: str = "AC-1") -> dict[str, object]:
     return {
         "file": "docs/specs/SPEC-000-thing.md",
         "criteria": [{"id": f"SPEC-000/{ac}", "module": module}],
+    }
+
+
+def _adr(module: str | None, *, ac: str = "AC-1") -> dict[str, object]:
+    """The shape `collect_adrs` produces, narrowed to what the check reads.
+
+    The key is `own_detail`, not `criteria`. That difference is the whole
+    reason the gate missed the ADRs: a walk that named one key saw one kind.
+    """
+    return {
+        "file": "docs/adr/ADR-000-thing.md",
+        "own_detail": [{"id": f"ADR-000/{ac}", "module": module}],
     }
 
 
@@ -197,7 +213,7 @@ class TestTheReportAndItsCallSite:
 
     @pytest.mark.ac("SPEC-082926-c2d7/AC-2")
     def test_the_report_names_the_file_the_criterion_and_the_string(self, check, capsys) -> None:
-        assert check._report_unresolvable_anchors([_spec("not_a_real_module_at_all")]) is True
+        assert check._report_unresolvable_anchors([_spec("not_a_real_module_at_all")], []) is True
 
         out = capsys.readouterr().out
         assert "docs/specs/SPEC-000-thing.md" in out
@@ -208,20 +224,35 @@ class TestTheReportAndItsCallSite:
     @pytest.mark.ac("SPEC-082926-c2d7/AC-3")
     def test_a_clean_corpus_reports_nothing_and_does_not_fail(self, check, capsys) -> None:
         """The other half. A gate that printed on every run would be noise."""
-        assert check._report_unresolvable_anchors([_spec("maistro.runs.store")]) is False
+        assert check._report_unresolvable_anchors([_spec("maistro.runs.store")], []) is False
         assert capsys.readouterr().out == ""
 
 
-def _corpus(tmp_path: Path, anchor: str, *, status: str = "Accepted") -> Path:
-    """A two-document tree: one ADR, one spec implementing it, one criterion."""
+def _corpus(
+    tmp_path: Path, anchor: str, *, status: str = "Accepted", adr_anchor: str | None = None
+) -> Path:
+    """A two-document tree: one ADR, one spec implementing it, one criterion.
+
+    `adr_anchor` gives the ADR a criterion of its own, which is the half of the
+    corpus the gate used to walk past. An ADR with `ac-modules` and no `## Acceptance
+    Criteria` section declares nothing, so the anchor needs a criterion to hang on
+    before it is reachable from `own_detail` at all.
+    """
     root = tmp_path / "repo"
     (root / "docs" / "specs").mkdir(parents=True)
     (root / "docs" / "adr").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "tests" / "test_nothing.py").write_text("def test_nothing():\n    assert True\n")
+    own = f"ac-modules:\n  AC-1: '{adr_anchor}'\n" if adr_anchor is not None else ""
+    own_body = (
+        "\n## Acceptance Criteria\n\n- **AC-1** The decision holds.\n"
+        if adr_anchor is not None
+        else ""
+    )
     (root / "docs" / "adr" / "ADR-000000-0000-thing.md").write_text(
-        "---\nid: ADR-000000-0000\nkind: adr\nstatus: Accepted\nlayer: Governance\n---\n\n"
-        "# ADR-000000-0000: Thing\n"
+        "---\nid: ADR-000000-0000\nkind: adr\nstatus: Accepted\nlayer: Governance\n"
+        f"{own}---\n\n"
+        f"# ADR-000000-0000: Thing\n{own_body}"
     )
     (root / "docs" / "specs" / "SPEC-000000-0000-thing.md").write_text(
         f"---\nid: SPEC-000000-0000\nkind: spec\nstatus: {status}\nlayer: Governance\n"
@@ -283,3 +314,139 @@ class TestMainStopsBeforeCounting:
         payload = json.loads((root / "out.json").read_text())
         assert payload["totals"]["completion_claims_unverifiable"] == 0
         assert [c["id"] for c in payload["completion_claims_contradicted"]] == ["SPEC-000000-0000"]
+
+
+class TestBothDocumentKindsAreWalked:
+    """#653: ADRs carry `ac-modules` too, and the first version of this gate did not.
+
+    An ADR's own criteria are folded into `design_coverage` beside its specs'
+    -- `rungs = [c["rung"] for c in adr["own_detail"]]` -- so an ADR anchor is
+    graded on the same ladder and raises the same floor. 49 of 279 named no
+    module and nothing said so.
+    """
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-4")
+    def test_an_adr_anchor_naming_nothing_is_reported(self, check) -> None:
+        universe = check.load_module_universe()
+
+        found = check.unresolvable_anchors([_adr("not_a_real_module_at_all")], universe)
+
+        assert found == [("docs/adr/ADR-000-thing.md", "ADR-000/AC-1", "not_a_real_module_at_all")]
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-4")
+    def test_the_report_names_the_kind_the_file_the_criterion_and_the_string(
+        self, check, capsys
+    ) -> None:
+        assert check._report_unresolvable_anchors([], [_adr("not_a_real_module_at_all")]) is True
+
+        out = capsys.readouterr().out
+        assert "adr docs/adr/ADR-000-thing.md" in out
+        assert "ADR-000/AC-1" in out
+        assert "'not_a_real_module_at_all'" in out
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-4")
+    def test_a_spec_finding_is_labelled_spec(self, check, capsys) -> None:
+        """Both kinds are named, or naming one of them says nothing."""
+        assert check._report_unresolvable_anchors([_spec("not_a_real_module_at_all")], []) is True
+
+        assert "spec docs/specs/SPEC-000-thing.md" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-4")
+    def test_the_report_cannot_be_called_for_specs_alone(self, check) -> None:
+        """No default for `adrs`, because a default is how the omission returns.
+
+        The defect was not that ADRs were hard to walk -- it was that a caller
+        could walk specs and believe it had walked the corpus. A parameter with
+        a default preserves exactly that.
+        """
+        with pytest.raises(TypeError):
+            check._report_unresolvable_anchors([_spec("maistro.runs.store")])
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-4")
+    def test_an_unresolvable_adr_anchor_fails_the_whole_gate(
+        self, standalone, tmp_path, capsys
+    ) -> None:
+        """Through `main`, so this is the gate and not a function `main` might skip.
+
+        The spec's anchor resolves; only the ADR's does not. Against the old
+        code this run exits 0.
+        """
+        code = standalone(
+            _corpus(tmp_path, "maistro.runs.store", adr_anchor="not_a_real_module_at_all")
+        )
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "FAIL: ac-modules anchors that name no module" in out
+        assert "adr docs/adr/ADR-000000-0000-thing.md" in out
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-5")
+    def test_every_anchor_in_the_corpus_resolves_for_both_kinds(self, check) -> None:
+        """The corpus itself: the claim this change makes about the 49."""
+        unreachable = check.load_unreachable()
+        specs = check.collect_specs({}, unreachable, None)
+        adrs = check.collect_adrs(specs, {}, unreachable, None)
+        universe = check.load_module_universe()
+
+        assert check.unresolvable_anchors(adrs, universe) == []
+        assert check.unresolvable_anchors(specs, universe) == []
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-5")
+    def test_the_adr_corpus_actually_carries_anchors(self, check) -> None:
+        """Guard on the test above, which an empty ADR walk would also satisfy.
+
+        `_criteria_of` falls back to `[]` for a document holding neither key,
+        so a walk that read the wrong shape would report nothing and look
+        clean. The count is what distinguishes "checked and fine" from "never
+        looked".
+        """
+        unreachable = check.load_unreachable()
+        specs = check.collect_specs({}, unreachable, None)
+        adrs = check.collect_adrs(specs, {}, unreachable, None)
+
+        anchored = [c for a in adrs for c in a["own_detail"] if c["module"] is not None]
+
+        assert len(anchored) > 200
+
+
+class TestWideningChangedNothingForSpecs:
+    """AC-6: #631's verdicts survive intact, which is what makes this a widening."""
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-6")
+    def test_a_clean_adr_corpus_does_not_mask_a_spec_finding(self, check) -> None:
+        universe = check.load_module_universe()
+
+        found = check.unresolvable_anchors([_spec("not_a_real_module_at_all")], universe)
+
+        assert found == [
+            ("docs/specs/SPEC-000-thing.md", "SPEC-000/AC-1", "not_a_real_module_at_all")
+        ]
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-6")
+    def test_a_clean_spec_corpus_does_not_mask_an_adr_finding(self, check, capsys) -> None:
+        """Both directions, because a report that concatenated wrongly would drop one."""
+        assert (
+            check._report_unresolvable_anchors(
+                [_spec("maistro.runs.store")], [_adr("not_a_real_module_at_all")]
+            )
+            is True
+        )
+
+        assert "adr docs/adr/ADR-000-thing.md" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-6")
+    def test_an_adr_criterion_with_no_anchor_is_not_reported(self, check) -> None:
+        """Unannotated is a known state on either kind, handled by the rung."""
+        assert check.unresolvable_anchors([_adr(None)], check.load_module_universe()) == []
+
+    @pytest.mark.ac("SPEC-082926-c2d7/AC-6")
+    def test_a_real_but_unwired_module_in_an_adr_is_not_reported(self, check) -> None:
+        """The two failures stay apart on the ADR side too, as #631 requires."""
+        universe = check.load_module_universe()
+        unreachable = check.load_unreachable()
+        candidates = sorted(unreachable & universe)
+        assert candidates, "no baselined module is a known identity; see #651"
+        unwired = candidates[0]
+
+        assert check.unresolvable_anchors([_adr(unwired)], universe) == []
+        assert check._is_reachable(unwired, unreachable) is False
