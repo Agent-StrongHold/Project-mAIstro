@@ -1,22 +1,29 @@
 """Canvas tool executor — implements the five canvas actions.
 
-Da Vinci and Fabulist agents call this via ToolDispatcher.  The
-executor manages job lifecycle (create → run → accept/cancel) and
-enforces all invariants from spec 1189 before touching the store.
+Da Vinci and Fabulist agents call this via ToolDispatcher. The executor manages
+Canvas-domain job receipts while physical generation is correlated to canonical
+Run/NodeRun/Attempt evidence when a canonical execution binding is configured.
 
-Error wrapping contract: raw provider exceptions never surface to
-callers.  _sanitise_error() strips stack traces and internal details,
-preserving only a safe, actionable message.
+Error wrapping contract: raw provider exceptions never surface to callers.
+_sanitise_error() strips stack traces and internal details, preserving only a
+safe, actionable message.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
+from maistro_canvas.canvas.canonical_execution import (
+    CanvasCanonicalExecution,
+    canonical_run_id,
+    correlate_run,
+)
 from maistro_canvas.types import (
     _IMAGE_GEN_ACTIONS,
     GenerationJobRecord,
@@ -42,21 +49,12 @@ logger = logging.getLogger("maistro_canvas.canvas.executor")
 
 _ACTIVE_STATUSES = frozenset({JobStatus.PENDING, JobStatus.RUNNING})
 _TERMINAL_STATUSES = frozenset({JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED})
-
-
-# ────────────────────────���─────────────────��──────────────────────────
-# Warden protocol (minimal — only scan_prompt used here)
-# ─────────────────────────────────────────────────────────────────────
+_T = TypeVar("_T")
 
 
 class _WardenProtocol:
     async def scan_prompt(self, prompt: str) -> str:
         raise NotImplementedError
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Model registry protocol
-# ─────────────────────────────────────────────���───────────────────────
 
 
 class _ModelRegistryProtocol:
@@ -65,11 +63,6 @@ class _ModelRegistryProtocol:
 
     def get_default_draft(self) -> str:
         raise NotImplementedError
-
-
-# ────────────────────────────��───────────────────────��────────────────
-# Error sanitiser
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _sanitise_error(exc: Exception) -> str:
@@ -84,17 +77,17 @@ def _sanitise_error(exc: Exception) -> str:
         return "Generation failed: provider authentication error."
     if "timeout" in lower or "timed out" in lower:
         return "Generation failed: provider request timed out."
-    # Generic fallback — do not include raw message
     return "Generation failed: provider error. Please try again."
 
 
-# ─────────────────────────────��─────────────────────────────���─────────
-# CanvasExecutor
-# ─────────────────────────────────────────────────────────────────────
-
-
 class CanvasExecutor:
-    """Manages canvas generation jobs end-to-end."""
+    """Manages Canvas generation receipts and their physical execution.
+
+    ``canonical_execution`` is a scope-bound adapter supplied by production
+    composition after authorization. Direct ``run_job`` remains a compatibility
+    surface for tests/CLI when no binding exists, but the background runner and
+    shipped generation route require a canonical binding before provider work.
+    """
 
     def __init__(
         self,
@@ -103,21 +96,24 @@ class CanvasExecutor:
         image_client: ImageGenClient,
         model_registry: _ModelRegistryProtocol,
         warden: _WardenProtocol,
+        canonical_execution: CanvasCanonicalExecution | None = None,
     ) -> None:
         self._store = store
         self._image_client = image_client
         self._model_registry = model_registry
         self._warden = warden
-        # Per-layer lock to prevent concurrent start_job races in-process.
-        # Production uses a DB advisory lock; this covers the in-memory path.
+        self._canonical_execution = canonical_execution
         self._layer_locks: dict[str, asyncio.Lock] = {}
+
+    @property
+    def canonical_enabled(self) -> bool:
+        """Whether this executor can admit and execute canonical Canvas Runs."""
+        return self._canonical_execution is not None
 
     def _layer_lock(self, layer_id: str) -> asyncio.Lock:
         if layer_id not in self._layer_locks:
             self._layer_locks[layer_id] = asyncio.Lock()
         return self._layer_locks[layer_id]
-
-    # ── Public API ──────────────────────────────��─────────────────────
 
     async def start_job(
         self,
@@ -132,11 +128,14 @@ class CanvasExecutor:
         negative_prompt: str = "",
         region: str = "full",
         strength: float = 0.6,
+        actor_principal_id: str | None = None,
     ) -> GenerationJobRecord:
-        """Validate pre-conditions and enqueue a generation job.
+        """Validate preconditions and enqueue a Canvas-domain generation receipt.
 
-        Returns a persisted GenerationJobRecord with status=pending.
-        Raises a domain error (CanvasError subclass) on any violation.
+        When canonical execution is configured, admission happens only after all
+        Canvas preconditions have passed and before the receipt is persisted, so
+        the durable receipt can carry its canonical Run id in the existing JSON
+        ``params`` column without a schema migration.
         """
         async with self._layer_lock(layer_id):
             return await self._start_job_locked(
@@ -150,6 +149,7 @@ class CanvasExecutor:
                 negative_prompt=negative_prompt,
                 region=region,
                 strength=strength,
+                actor_principal_id=actor_principal_id,
             )
 
     async def _start_job_locked(
@@ -165,6 +165,7 @@ class CanvasExecutor:
         negative_prompt: str,
         region: str,
         strength: float,
+        actor_principal_id: str | None,
     ) -> GenerationJobRecord:
         layer = await self._store.get_layer(layer_id)
         if layer is None:
@@ -172,26 +173,21 @@ class CanvasExecutor:
 
             raise LayerNotFoundError(f"layer {layer_id!r} not found")
 
-        # Pre-condition: text layers cannot use image generation actions
         if layer.layer_type == LayerType.TEXT and action in _IMAGE_GEN_ACTIONS:
             raise TextLayerNoGenError(f"layer_type='text' does not support action={action!r}")
 
-        # Pre-condition: resolve and validate model
         resolved_model = model_id or self._model_registry.get_default_draft()
         if not self._model_registry.is_registered(resolved_model):
             raise UnknownModelError(f"model {resolved_model!r} is not registered")
 
-        # Pre-condition: warden scan
         if prompt:
             verdict = await self._warden.scan_prompt(prompt)
             if verdict == "BLOCK":
                 raise PromptBlockedError("prompt blocked by safety policy")
 
-        # Pre-condition: refine requires existing image
         if action == JobAction.REFINE and not layer.image_path:
             raise RefineNoSourceError(f"layer {layer_id!r} has no image_path; cannot refine")
 
-        # Pre-condition: no active job for this layer (checked inside lock)
         active = await self._store.active_job_for_layer(layer_id)
         if active is not None:
             raise JobInProgressError(
@@ -214,13 +210,27 @@ class CanvasExecutor:
                 "strength": strength,
             },
         )
-        return await self._store.create_job(job)
+
+        if self._canonical_execution is None:
+            return await self._store.create_job(job)
+
+        run_id = await self._canonical_execution.admit(
+            job_id=job.id,
+            canvas_id=canvas_id,
+            layer_id=layer_id,
+            action=action,
+            actor_principal_id=actor_principal_id,
+        )
+        correlate_run(job.params, run_id)
+        try:
+            return await self._store.create_job(job)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await self._canonical_execution.cancel(run_id)
+            raise
 
     async def run_job(self, job_id: str) -> GenerationJobRecord:
-        """Execute a pending job synchronously (used in tests and CLI).
-
-        In production, a background task runner calls this after start_job.
-        """
+        """Execute a pending job synchronously (compatibility path for tests/CLI)."""
         job = await self._store.get_job(job_id)
         if job is None:
             raise JobNotFoundError(f"job {job_id!r} not found")
@@ -228,7 +238,6 @@ class CanvasExecutor:
             logger.warning("run_job called on non-pending job %s (status=%s)", job_id, job.status)
             return job
 
-        # Transition to running
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(UTC)
         await self._store.update_job(job)
@@ -240,20 +249,32 @@ class CanvasExecutor:
             job.completed_at = datetime.now(UTC)
             logger.info("Job %s done: %d paths", job_id, len(result_paths))
         except Exception as exc:
+            job.error_message = await self.fail_job_execution(job, exc)
             job.status = JobStatus.FAILED
-            job.error_message = _sanitise_error(exc)
             job.completed_at = datetime.now(UTC)
             logger.warning("Job %s failed: %s", job_id, exc)
 
         return await self._store.update_job(job)
 
     async def _execute_claimed(self, job: GenerationJobRecord) -> None:
-        """Execute an already-claimed job (CanvasJobRunner contract).
-
-        The runner owns status/lease transitions and persistence; this only
-        performs the action and records the result paths on the job.
-        """
+        """Execute one runner-claimed job through canonical physical evidence."""
+        if canonical_run_id(job.params) is None or self._canonical_execution is None:
+            raise RuntimeError(
+                "CanvasJobRunner requires a job correlated to canonical execution before provider work"
+            )
         job.result_paths = await self._execute_action(job)
+
+    async def fail_job_execution(self, job: GenerationJobRecord, exc: Exception) -> str:
+        """Sanitize a terminal provider error and reconcile its canonical Run."""
+        safe_error = _sanitise_error(exc)
+        run_id = canonical_run_id(job.params)
+        if run_id is not None:
+            if self._canonical_execution is None:
+                raise RuntimeError(
+                    f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
+                )
+            await self._canonical_execution.fail(run_id, safe_error)
+        return safe_error
 
     async def _execute_action(self, job: GenerationJobRecord) -> list[str]:
         """Dispatch to the correct image-gen action; return signed URL list."""
@@ -270,37 +291,60 @@ class CanvasExecutor:
         if job.action == JobAction.REFERENCE:
             return await self._execute_reference(job, canvas)
 
-        # Composite and text are handled elsewhere
         msg = f"action {job.action!r} is not an image-gen action"
         raise ValueError(msg)
 
+    async def _execute_stage(
+        self,
+        job: GenerationJobRecord,
+        stage: str,
+        operation: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        run_id = canonical_run_id(job.params)
+        if run_id is None:
+            if self._canonical_execution is not None:
+                raise RuntimeError(
+                    f"Canvas job {job.id!r} has canonical execution configured but no Run correlation"
+                )
+            # Compatibility-only direct run_job path. CanvasJobRunner refuses
+            # this shape in _execute_claimed, so shipped background execution
+            # cannot silently bypass canonical evidence.
+            return await operation()
+        if self._canonical_execution is None:
+            raise RuntimeError(
+                f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
+            )
+        return await self._canonical_execution.execute_stage(run_id, stage, operation)
+
     async def _execute_generate(self, job: GenerationJobRecord, canvas: CanvasRecord) -> list[str]:
         params = job.params
-        count: int = int(params.get("count", 1))
-        seed: int | None = params.get("seed")  # 0 is valid, None means unset
-        negative_prompt: str = str(params.get("negative_prompt", ""))
-        images = await self._image_client.generate(
-            model_id=job.model_id,
-            prompt=job.prompt,
-            width=canvas.width,
-            height=canvas.height,
-            count=count,
-            seed=seed,
-            negative_prompt=negative_prompt,
-        )
-        paths = [img.url for img in images if img.url]
-        if not paths:
-            # No valid URLs — treat as a decode/provider error
-            msg = "Provider returned no usable image URLs (IMAGE_DECODE_ERROR)"
-            raise ValueError(msg)
-        if len(paths) != count:
-            logger.warning(
-                "Expected %d images, got %d valid URLs for job %s",
-                count,
-                len(paths),
-                job.id,
+        count = int(params.get("count", 1))
+        seed = params.get("seed")
+        negative_prompt = str(params.get("negative_prompt", ""))
+
+        async def _generate() -> list[str]:
+            images = await self._image_client.generate(
+                model_id=job.model_id,
+                prompt=job.prompt,
+                width=canvas.width,
+                height=canvas.height,
+                count=count,
+                seed=seed,
+                negative_prompt=negative_prompt,
             )
-        return paths
+            paths = [img.url for img in images if img.url]
+            if not paths:
+                raise ValueError("Provider returned no usable image URLs (IMAGE_DECODE_ERROR)")
+            if len(paths) != count:
+                logger.warning(
+                    "Expected %d images, got %d valid URLs for job %s",
+                    count,
+                    len(paths),
+                    job.id,
+                )
+            return paths
+
+        return await self._execute_stage(job, "generate", _generate)
 
     async def _execute_refine(self, job: GenerationJobRecord) -> list[str]:
         params = job.params
@@ -309,42 +353,58 @@ class CanvasExecutor:
             from maistro_canvas.types import RefineNoSourceError
 
             raise RefineNoSourceError("source image no longer available")
-        refined = await self._image_client.refine(
-            model_id=job.model_id,
-            source_url=layer.image_path,
-            prompt=job.prompt,
-            region=str(params.get("region", "full")),
-            strength=float(params.get("strength", 0.6)),
-        )
-        return [refined.url] if refined.url else []
+
+        async def _refine() -> list[str]:
+            refined = await self._image_client.refine(
+                model_id=job.model_id,
+                source_url=layer.image_path,
+                prompt=job.prompt,
+                region=str(params.get("region", "full")),
+                strength=float(params.get("strength", 0.6)),
+            )
+            return [refined.url] if refined.url else []
+
+        return await self._execute_stage(job, "refine", _refine)
 
     async def _execute_reference(self, job: GenerationJobRecord, canvas: CanvasRecord) -> list[str]:
-        params = job.params
-        seed: int | None = params.get("seed")  # 0 is valid, None means unset
-        # Generate hero image then three turnaround views
-        hero_list = await self._image_client.generate(
-            model_id=job.model_id,
-            prompt=job.prompt + " front view, isolated on white background",
-            width=canvas.width,
-            height=canvas.height,
-            count=1,
-            seed=seed,
-        )
-        hero_url = hero_list[0].url if hero_list else ""
-        if not hero_url:
-            return []
-        views = []
-        for angle in ("side view", "back view", "3/4 view"):
-            v = await self._image_client.refine(
+        seed = job.params.get("seed")
+
+        async def _hero() -> list[str]:
+            hero_list = await self._image_client.generate(
                 model_id=job.model_id,
-                source_url=hero_url,
-                prompt=f"{job.prompt} {angle}, isolated on white background",
-                region="full",
-                strength=0.7,
+                prompt=job.prompt + " front view, isolated on white background",
+                width=canvas.width,
+                height=canvas.height,
+                count=1,
+                seed=seed,
             )
-            if v.url:
-                views.append(v.url)
-        return [hero_url, *views]
+            hero_url = hero_list[0].url if hero_list else ""
+            return [hero_url] if hero_url else []
+
+        hero_paths = await self._execute_stage(job, "reference.hero", _hero)
+        if not hero_paths:
+            return []
+        hero_url = hero_paths[0]
+        paths = [hero_url]
+        for stage, angle in (
+            ("reference.side", "side view"),
+            ("reference.back", "back view"),
+            ("reference.three-quarter", "3/4 view"),
+        ):
+
+            async def _view(angle: str = angle) -> list[str]:
+                view = await self._image_client.refine(
+                    model_id=job.model_id,
+                    source_url=hero_url,
+                    prompt=f"{job.prompt} {angle}, isolated on white background",
+                    region="full",
+                    strength=0.7,
+                )
+                return [view.url] if view.url else []
+
+            view_paths = await self._execute_stage(job, stage, _view)
+            paths.extend(view_paths)
+        return paths
 
     async def accept_variant(
         self,
@@ -361,7 +421,6 @@ class CanvasExecutor:
                 f"job {job_id!r} is in status={job.status!r}; must be 'done' to accept"
             )
 
-        # Explicit bounds check — no negative index tricks
         if variant_index < 0 or variant_index >= len(job.result_paths):
             raise VariantIndexOutOfRangeError(
                 f"variant_index={variant_index} out of range [0, {len(job.result_paths) - 1}]"
@@ -380,7 +439,6 @@ class CanvasExecutor:
         job.selected_index = variant_index
         updated_job = await self._store.update_job(job)
 
-        # Advance canvas.updated_at (invariant: canvas_updated_on_layer_accept)
         canvas = await self._store.get_canvas(job.canvas_id)
         if canvas is not None:
             canvas.updated_at = datetime.now(UTC)
@@ -389,7 +447,7 @@ class CanvasExecutor:
         return updated_job, updated_layer
 
     async def cancel_job(self, job_id: str) -> GenerationJobRecord:
-        """Cancel a pending or running job."""
+        """Cancel a pending or running Canvas receipt and its canonical execution."""
         job = await self._store.get_job(job_id)
         if job is None:
             raise JobNotFoundError(f"job {job_id!r} not found")
@@ -398,6 +456,14 @@ class CanvasExecutor:
             raise JobAlreadyTerminalError(
                 f"job {job_id!r} is already in terminal status={job.status!r}"
             )
+
+        run_id = canonical_run_id(job.params)
+        if run_id is not None:
+            if self._canonical_execution is None:
+                raise RuntimeError(
+                    f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
+                )
+            await self._canonical_execution.cancel(run_id)
 
         job.status = JobStatus.CANCELLED
         job.completed_at = datetime.now(UTC)
