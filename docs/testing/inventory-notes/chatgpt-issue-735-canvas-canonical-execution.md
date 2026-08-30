@@ -11,9 +11,9 @@ Canvas still owns `GenerationJobRecord`, assets, layer/result paths, selected va
 1. `CanvasCanonicalExecution` binds a caller-authorized Workspace/Project to the public `RunStore` and `RunExecutionService`. It never derives canonical scope from Canvas `org_id`, canvas ids, layer ids, or placeholder defaults.
 2. One accepted generation/refine/reference job admits one canonical Run. The Run id is correlated in the existing durable `GenerationJobRecord.params` JSON, so no schema migration is required.
 3. Generate and refine use one canonical NodeRun each. Reference uses hero, side, back, and three-quarter NodeRuns, with each physical provider call recorded as an Attempt.
-4. A failed provider call parks the existing NodeRun; a later Canvas retry creates a new Attempt under that same NodeRun. Failed and successful Attempts remain inspectable.
-5. A reclaimed Canvas worker lease explicitly fences and reconciles a stranded RUNNING Attempt before redispatch. The final exhausted lease does the same before the Canvas receipt and Run become FAILED.
-6. Requested cancellation records canonical physical cancellation with the requested-cancellation disposition before the Canvas receipt becomes CANCELLED.
+4. A failed provider call parks the existing NodeRun only while Canvas still owns a retry decision. A retry creates a fresh Attempt under that same NodeRun. If Canvas cancels or exhausts the retry budget instead, the observed NodeRun becomes CANCELLED or FAILED so WAITING does not outlive the decision.
+5. A reclaimed Canvas worker lease explicitly fences and reconciles a stranded RUNNING Attempt before redispatch. The final exhausted lease does the same before the Canvas receipt, NodeRun and Run become FAILED.
+6. Requested cancellation records canonical physical cancellation with the requested-cancellation disposition before the Canvas receipt becomes CANCELLED, and also terminalizes a previously parked failed NodeRun when the retry decision becomes “do not retry.”
 7. A completed stage is replayed from persisted Attempt evidence instead of reissuing the provider effect.
 8. Existing reference behavior is preserved when the hero call returns no URL: the hero Attempt is recorded, downstream reference stages are not fabricated, and Canvas explicitly completes the Run with the existing empty result.
 9. `CanvasJobRunner` refuses to claim provider work from a real `CanvasExecutor` that lacks a canonical execution binding. Runner-focused test doubles remain compatible with their narrower claim/retry tests.
@@ -21,17 +21,18 @@ Canvas still owns `GenerationJobRecord`, assets, layer/result paths, selected va
 
 ## Focused behavioral evidence
 
-The branch adds ten focused tests across `test_canonical_execution.py` and `test_canonical_executor_integration.py` proving:
+The branch adds eleven focused tests across `test_canonical_execution.py` and `test_canonical_executor_integration.py` proving:
 
 - scoped Run admission and stage Graph shape;
 - successful NodeRun/Attempt evidence;
 - failed-then-successful retry under one NodeRun;
 - worker-lease reclaim fencing before retry;
-- requested cancellation of physical and logical identity;
+- requested cancellation of active physical and logical identity;
+- cancellation after a failed Attempt terminalizes the parked NodeRun without rewriting the failed Attempt;
 - four-stage reference execution;
 - empty-hero reference short-circuit without fabricated stages;
 - completed-stage replay without a duplicate provider call;
-- final worker-loss settlement before terminal Canvas failure;
+- final worker-loss settlement before terminal Canvas failure at Attempt, NodeRun and Run levels;
 - real `CanvasExecutor.start_job` → `CanvasJobRunner` package flow yielding a canonical Run, NodeRun and Attempt while preserving the Canvas receipt/result.
 
 Existing Canvas suites remain the parity evidence for provider error sanitization, layer concurrency exclusion, Warden preconditions, result-path persistence, claim/lease behavior, retry bounds, and receipt semantics.
