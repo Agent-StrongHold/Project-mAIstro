@@ -46,3 +46,13 @@ def test_test_only_gate_change_expands_to_the_script(mutation_targets):
     test_path = "tests/test_check_cross_package_imports.py"
     result = mutation_targets.expand([test_path])
     assert result == ["scripts/check-cross-package-imports.py"]
+
+
+def test_script_mapping_drift_fails_closed(mutation_targets, monkeypatch):
+    source = "scripts/check-cross-package-imports.py"
+    monkeypatch.setattr(mutation_targets, "sources_for_test", lambda _path: [])
+
+    targets, unresolved = mutation_targets._resolve_targets([source])
+
+    assert targets == []
+    assert unresolved == [source]
