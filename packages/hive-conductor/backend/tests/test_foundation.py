@@ -35,6 +35,7 @@ if str(_BACKEND) not in sys.path:
 def _reset_singleton():
     import services.foundation as f
     import stores
+    from services import durability, settings_store
 
     prev = f._singleton
     f._singleton = None
@@ -46,9 +47,7 @@ def _reset_singleton():
     yield
     # `_init_state` can now degrade every store (#333). Left set, that would
     # make the rest of the suite refuse writes for a failure it never had.
-    stores.restore_all()
-    from services import durability, settings_store
-
+    durability.restore_stores(stores)
     durability.reset()
     settings_store.reset()
     f._singleton = prev
