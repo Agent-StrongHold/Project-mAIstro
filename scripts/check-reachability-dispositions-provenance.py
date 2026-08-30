@@ -68,7 +68,9 @@ def main() -> int:
     prov = _load(PROVENANCE, "_ratchet_provenance")
 
     candidate_baseline = _unreachable(json.loads(checker.BASELINE.read_text(encoding="utf-8")))
-    candidate_ledger_payload: dict[str, Any] = json.loads(checker.LEDGER.read_text(encoding="utf-8"))
+    candidate_ledger_payload: dict[str, Any] = json.loads(
+        checker.LEDGER.read_text(encoding="utf-8")
+    )
     candidate_modules = _disposition_modules(candidate_ledger_payload)
     shape_failures = checker.audit(
         candidate_ledger_payload, candidate_baseline, checker.matrix_subsystems()
@@ -76,21 +78,15 @@ def main() -> int:
 
     try:
         trusted_baseline_ref = prov.resolve_baseline(checker.BASELINE, root=ROOT)
-        trusted_baseline = _unreachable(
-            trusted_baseline_ref.loads(default={"unreachable": []})
-        )
+        trusted_baseline = _unreachable(trusted_baseline_ref.loads(default={"unreachable": []}))
         trusted_ledger_ref = prov.resolve_baseline(checker.LEDGER, root=ROOT)
-        trusted_modules = _disposition_modules(
-            trusted_ledger_ref.loads(default={"groups": []})
-        )
+        trusted_modules = _disposition_modules(trusted_ledger_ref.loads(default={"groups": []}))
         prov.require_measurement(
             candidate_baseline,
             ratchet=RATCHET,
             what="unreachable module baseline",
         )
-        authorized = prov.load_authorizations(
-            RATCHET, base=trusted_baseline_ref.base_sha
-        )
+        authorized = prov.load_authorizations(RATCHET, base=trusted_baseline_ref.base_sha)
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
