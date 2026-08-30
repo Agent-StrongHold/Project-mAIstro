@@ -25,8 +25,17 @@ on:
 # `push` (a protected-branch build) and `schedule` (the weekly run) are
 # deliberately excluded from cancellation -- neither is superseded by
 # anything, and canceling either would drop coverage rather than dedupe it.
+#
+# The group key reflects that: pull_request runs share one group per PR, so
+# a superseded push actually collides with (and cancels) the one before it.
+# push/schedule runs must NOT share that fallback -- GitHub allows at most
+# one PENDING job per group regardless of cancel-in-progress, so two runs
+# sharing one `github.ref`-keyed group (three rapid main pushes, or a
+# schedule firing alongside one) would silently drop coverage anyway
+# (Codex, #684). `github.run_id` is unique per run, so outside pull_request
+# every run gets its own group and never collides with another.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  group: codeql-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

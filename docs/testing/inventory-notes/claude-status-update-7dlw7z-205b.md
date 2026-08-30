@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +7
+  tests/: +11
 ---
 # claude-status-update-7dlw7z-205b
 
@@ -28,3 +28,14 @@ and asserts every real `scripts/buildx-build-retry.sh` invocation carries the
 `docker buildx build` ones — a call missing it would silently swallow its
 first real flag as the (rejected) sentinel position instead of building
 anything.
+
+Four more node IDs, same file, for a second Codex finding on #684: a `for`
+loop bounded by `ATTEMPTS` runs zero times when `ATTEMPTS` is zero or
+negative, and the script would then fall off the end with no explicit exit —
+success, without docker ever having been invoked. Three parametrised cases
+(`0`, `-1`, `not-a-number`) pin the new validation's `::error::` exit-2
+refusal; a fourth pins the adjacent, easy-to-get-wrong case in the other
+direction — `BUILDX_RETRY_ATTEMPTS=` (explicitly empty) is not malformed
+input, `${VAR:-default}` already substitutes on empty the same as unset, and
+that fourth test is what stops a future tightening of the validation from
+rejecting a value bash itself treats as absent.
