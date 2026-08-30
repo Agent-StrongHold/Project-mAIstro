@@ -29,6 +29,10 @@ services:
       - MAISTRO_BUILDERS_MODEL=${MAISTRO_BUILDERS_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       - API_KEYS=${API_KEYS:?Run ./install.sh to generate API_KEYS}
       - ROUTER_API_KEY=${ROUTER_API_KEY:?Run ./install.sh to generate ROUTER_API_KEY}
+      # Hive signs explicit Workspace admission bindings with a service-only
+      # capability. A deployment may rotate it independently; existing installs
+      # fall back to the already-generated internal router secret.
+      - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-${ROUTER_API_KEY:?Run ./install.sh to generate ROUTER_API_KEY}}
       - MAISTRO_ACCESS_TOKEN=${MAISTRO_ACCESS_TOKEN:-}
       - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
@@ -180,6 +184,7 @@ services:
       # to any field, so task dispatch silently fell back to localhost with no auth.
       - MAISTRO_BASE_URL=http://maistro-engine:8000
       - MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:-}
+      - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-${ROUTER_API_KEY:?Run ./install.sh to generate ROUTER_API_KEY}}
       # Telemetry (optional; blank keys disable it).
       - LANGFUSE_BASE_URL=http://langfuse:3000
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
