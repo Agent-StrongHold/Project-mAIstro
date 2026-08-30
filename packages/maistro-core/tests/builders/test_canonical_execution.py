@@ -171,12 +171,16 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == [
-        "spec",
-        "tests",
-        "code",
-        "review",
-    ]
+    assert (
+        legacy_dispatcher.calls
+        == canonical_dispatcher.calls
+        == [
+            "spec",
+            "tests",
+            "code",
+            "review",
+        ]
+    )
     assert legacy_dispatcher.max_in_flight == canonical_dispatcher.max_in_flight == 2
     assert legacy_run.context["review"] == canonical_run.context["review"]
 
