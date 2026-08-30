@@ -37,7 +37,6 @@
     "@tool/mutation_targets",
     "@tool/mutation_viability",
     "@tool/openrouter_rpm_pacer",
-    "@tool/ratchet_provenance",
     "@tool/rlphd_band_sim",
     "@tool/rlphd_cold_start_sim",
     "@tool/rlphd_two_tier_sim",
