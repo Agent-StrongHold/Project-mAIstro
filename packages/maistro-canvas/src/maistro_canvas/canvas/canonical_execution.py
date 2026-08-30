@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar, cast
 
 from maistro.graph.definitions import Edge, Graph, Node
+from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -171,7 +172,11 @@ class CanvasCanonicalExecution:
         if node_run is not None and node_run.status is RunStatus.COMPLETED:
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             completed = next(
-                (attempt for attempt in reversed(attempts) if attempt.status is AttemptStatus.COMPLETED),
+                (
+                    attempt
+                    for attempt in reversed(attempts)
+                    if attempt.status is AttemptStatus.COMPLETED
+                ),
                 None,
             )
             if completed is None:
@@ -201,7 +206,11 @@ class CanvasCanonicalExecution:
         else:
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (a for a in reversed(attempts) if a.status not in TERMINAL_ATTEMPT_STATUSES),
+                (
+                    item
+                    for item in reversed(attempts)
+                    if item.status not in TERMINAL_ATTEMPT_STATUSES
+                ),
                 None,
             )
             if active is not None:
@@ -232,7 +241,7 @@ class CanvasCanonicalExecution:
         )
 
     async def cancel(self, run_id: str) -> None:
-        """Cancel live physical work and terminalize the canonical Run."""
+        """Cancel live physical work and terminalize observed logical work."""
 
         run = await self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
@@ -240,7 +249,11 @@ class CanvasCanonicalExecution:
         for node_run in await self._runs.list_node_runs(run_id):
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (a for a in reversed(attempts) if a.status not in TERMINAL_ATTEMPT_STATUSES),
+                (
+                    item
+                    for item in reversed(attempts)
+                    if item.status not in TERMINAL_ATTEMPT_STATUSES
+                ),
                 None,
             )
             if active is not None:
@@ -249,6 +262,16 @@ class CanvasCanonicalExecution:
                     error="Canvas generation cancelled",
                     cancellation=CancellationCause.REQUESTED,
                 )
+
+        # A failed Attempt is intentionally parked while Canvas still owns a
+        # retry decision. User cancellation *is* that decision: don't retry.
+        # Terminalize every observed unfinished NodeRun so the canonical logical
+        # record does not keep saying WAITING after the receipt says CANCELLED.
+        await self._terminalize_observed_nodes(
+            run_id,
+            RunStatus.CANCELLED,
+            error="Canvas generation cancelled",
+        )
         refreshed = await self._require_run(run_id)
         if refreshed.status not in TERMINAL_RUN_STATUSES:
             await self._runs.transition_run(run_id, RunStatus.CANCELLED)
@@ -259,8 +282,9 @@ class CanvasCanonicalExecution:
         A worker can disappear while its canonical Attempt is still RUNNING. On
         the final Canvas lease there will be no subsequent retry to fence that
         stale Attempt, so settle it as recovered physical cancellation first.
-        The Canvas retry policy may then terminalize the Run as FAILED without
-        leaving live physical evidence underneath a terminal logical identity.
+        The Canvas retry policy then changes the current NodeRun from parked to
+        FAILED before terminalizing the Run, making "no more retry" canonical at
+        both logical levels.
         """
 
         run = await self._require_run(run_id)
@@ -272,6 +296,7 @@ class CanvasCanonicalExecution:
             return
         if run.status is not RunStatus.RUNNING:
             await self._resume_for_execution(run_id)
+        await self._terminalize_observed_nodes(run_id, RunStatus.FAILED, error=error)
         await self._runs.transition_run(run_id, RunStatus.FAILED, error=error)
 
     async def _project_stage_result(self, run_id: str, stage: str, result: T) -> T:
@@ -296,13 +321,39 @@ class CanvasCanonicalExecution:
             )
         return result
 
+    async def _terminalize_observed_nodes(
+        self,
+        run_id: str,
+        target: RunStatus,
+        *,
+        error: str,
+    ) -> None:
+        """Apply Canvas's final retry/cancel decision to materialized NodeRuns."""
+
+        if target not in {RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError("Canvas terminal node projection must be failed or cancelled")
+        for node_run in await self._runs.list_node_runs(run_id):
+            if node_run.status in TERMINAL_RUN_STATUSES:
+                continue
+            current = node_run
+            for status in transition_path(current.status, target):
+                current = await self._runs.transition_node_run(
+                    current.node_run_id,
+                    status,
+                    error=error if status is target else None,
+                )
+
     async def _abandon_active_attempts(self, run_id: str, error: str) -> None:
         """Fence Canvas-worker-loss Attempts before terminal receipt failure."""
 
         for node_run in await self._runs.list_node_runs(run_id):
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (attempt for attempt in reversed(attempts) if attempt.status not in TERMINAL_ATTEMPT_STATUSES),
+                (
+                    attempt
+                    for attempt in reversed(attempts)
+                    if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+                ),
                 None,
             )
             if active is not None:
