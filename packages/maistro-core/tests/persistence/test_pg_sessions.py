@@ -221,3 +221,19 @@ async def test_delete_session_uses_the_same_session_lock(
         c for c in conn.calls if "DELETE FROM sessions WHERE session_id = $1" in c.query
     )
     assert delete_call.args == ("s1",)
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_deletes_both_tables_in_one_transaction(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
+    """Codex, #327. The sweep issues two DELETEs, and the state between them is
+    the one a marker must never be left in: messages gone, marker committed,
+    the next retry of that turn silently suppressed. Outside a transaction they
+    are two implicit ones, so a failure between them commits exactly that."""
+    await store.purge_expired(0)
+
+    purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
+    assert conn.transaction_entries == 1
+    assert conn.transaction_exits == 1

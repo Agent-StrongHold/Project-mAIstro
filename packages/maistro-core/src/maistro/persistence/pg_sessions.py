@@ -17,10 +17,14 @@ _SESSION_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 async def _purge_through(conn: asyncpg.Connection, cutoff: float) -> str:
     """Delete expired messages and the turn markers that admitted them.
 
-    Both, always. A marker outliving its messages would suppress a retry of a
-    turn that no longer exists; messages outliving their marker would let one
-    duplicate. The returned command tag counts messages only -- `purge_expired`
-    reports how much conversation it removed, and markers are bookkeeping.
+    Both, always, and inside the caller's transaction. A marker outliving its
+    messages would suppress a retry of a turn that no longer exists; messages
+    outliving their marker would let one duplicate. Neither half may commit
+    alone, so every caller wraps this -- the two `execute` calls here are one
+    unit or they are a bug.
+
+    The returned command tag counts messages only: `purge_expired` reports how
+    much conversation it removed, and markers are bookkeeping.
     """
     status: str = await conn.execute(
         "DELETE FROM sessions WHERE timestamp <= to_timestamp($1)",
@@ -149,7 +153,13 @@ class PgSessionStore:
         # the `task.user_id and ...` scope bug: a falsy but meaningful value
         # swallowed by `or`.
         ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
-        async with self._pool.acquire() as conn:
+        # One transaction, because `_purge_through` issues two DELETEs and the
+        # state between them is exactly the one the marker must never be left
+        # in: messages gone, marker committed, and the next retry of that turn
+        # silently suppressed. Without this the two run as separate implicit
+        # transactions, so a cancellation or a failure between them commits it
+        # (Codex, #327). `append_messages` was already inside one.
+        async with self._pool.acquire() as conn, conn.transaction():
             status = await _purge_through(conn, time.time() - ttl)
         # asyncpg returns a command tag such as "DELETE 12".
         try:

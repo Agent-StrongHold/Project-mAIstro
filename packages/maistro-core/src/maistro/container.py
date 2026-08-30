@@ -1754,10 +1754,24 @@ async def _wire_sqlite_backend(
         )
     conn = await aiosqlite.connect(path)
 
+    # The session store gets its own connection, because it is the only store
+    # here that holds a *transaction* across several statements (#327). A
+    # SQLite transaction belongs to its connection, not to the object that
+    # opened it: sharing one means another store's `commit()` can land between
+    # this one's `BEGIN IMMEDIATE` and its last insert -- committing half a
+    # message batch -- and a rollback here would discard that store's
+    # uncommitted work instead of only this store's (Codex, #327).
+    #
+    # For a file path the two connections are the same database. For a pathless
+    # `sqlite://` they are two in-memory databases, which is sound because
+    # nothing but this store reads `sessions` or `session_turns`, and that URL
+    # is already warned about above as non-durable.
+    session_conn = await aiosqlite.connect(path)
+
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
     sqlite_outcome_store = SqliteOutcomeStore(conn)
-    sqlite_session_store = SqliteSessionStore(conn)
+    sqlite_session_store = SqliteSessionStore(session_conn)
     await sqlite_quota_tracker.ensure_schema()
     await sqlite_learning_store.ensure_schema()
     await sqlite_outcome_store.ensure_schema()
