@@ -23,10 +23,16 @@ def _module() -> ModuleType:
     return module
 
 
+def _contract() -> tuple[dict[str, object], dict[str, object]]:
+    return (
+        json.loads(POLICY.read_text(encoding="utf-8")),
+        json.loads(ONTOLOGY.read_text(encoding="utf-8")),
+    )
+
+
 def test_one_valid_concept_cannot_launder_an_invalid_shared_owner() -> None:
     checker = _module()
-    policy = json.loads(POLICY.read_text(encoding="utf-8"))
-    ontology = json.loads(ONTOLOGY.read_text(encoding="utf-8"))
+    policy, ontology = _contract()
     source = '''class RunEventStore:
     """M1 product-local projection: Event"""
 '''
@@ -42,3 +48,19 @@ def test_one_valid_concept_cannot_launder_an_invalid_shared_owner() -> None:
     assert len(failures) == 1
     assert "Run" in failures[0]
     assert "Event" not in failures[0]
+
+
+def test_retired_events_checkpoint_family_cannot_regain_checkpoint_authority() -> None:
+    checker = _module()
+    policy, ontology = _contract()
+
+    failures = checker.new_shared_owner_violations(
+        "class CheckpointStore:\n    pass\n",
+        "",
+        module="maistro.events.checkpoints",
+        policy=policy,
+        ontology=ontology,
+    )
+
+    assert len(failures) == 1
+    assert "Checkpoint" in failures[0]
