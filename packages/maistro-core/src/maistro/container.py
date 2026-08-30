@@ -46,8 +46,8 @@ from maistro.runs.chat_admission import (
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import (
-    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
+    AttemptStatus,
     Run,
     RunStatus,
 )
@@ -250,6 +250,11 @@ class Container:
     # process-wide singleton (quota/usage_log.py) so this container and any
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
+    #: Where `resume_parked_runs`' next scan of each parked status resumes.
+    #: In-process and deliberately not durable: losing it on restart costs one
+    #: lap back to the oldest page, which is where a fresh process would start
+    #: anyway. What it must not do is stay at zero forever (#666 review).
+    _resume_scan_offsets: dict[RunStatus, int] = field(default_factory=dict)
     # Wired in create_container (P1 resilience, ADR-066).
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
@@ -807,11 +812,23 @@ class Container:
             except Exception:
                 # Another tick won the claim, or the Run moved on. Not ours.
                 continue
+            # Re-read the pause now the claim is ours (#666 review). The read
+            # above happened before it: between the two, another replica can
+            # have resumed this Run, yielded again with a later `resume_at`,
+            # and parked it back to the status this transition then found. The
+            # claim succeeds, and resuming on the pause read beforehand polls
+            # immediately instead of honouring the delay just recorded -- every
+            # replica collapsing the interval into a burst, which is the one
+            # thing a poll deadline exists to prevent.
+            fresh = await self._resumable_pause_for(claimed, moment)
+            if fresh is None:
+                await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
+                continue
             try:
-                await executor.resume(claimed, pause)
+                await executor.resume(claimed, fresh)
             except Exception:
                 logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
-                await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
+                await self._repark_after_failed_resume(run.run_id, fresh.node_run_id, run.status)
             resumed += 1
         return resumed
 
@@ -819,30 +836,42 @@ class Container:
         """Every parked Run this tick will consider, oldest first.
 
         The scan bound and the work bound are different numbers, and conflating
-        them starved the tick (#666 review). `list_by_status` is oldest-first,
-        so asking for the *work* limit and filtering afterwards meant a standing
-        backlog of non-resumable WAITING Runs -- every Run parked by a failed
-        Attempt is one, and they sit there until somebody takes the retry
-        decision -- made every tick inspect the same ineligible rows and never
-        reach a later elapsed poll. Not until the backlog cleared: permanently.
+        them starved the tick. `list_by_status` is oldest-first, so asking for
+        the *work* limit and filtering afterwards meant a standing backlog of
+        non-resumable WAITING Runs -- every Run parked by a failed Attempt is
+        one, and they sit there until somebody takes the retry decision -- made
+        every tick inspect the same ineligible rows and never reach a later
+        elapsed poll. Not until the backlog cleared: permanently.
+
+        Raising the bound only moved that cliff, it did not remove it: past
+        `RESUME_SCAN_LIMIT` ineligible rows the starvation returns exactly as
+        before, and a warning about it is a description, not a fix (#666 review,
+        second round). So the scan **rotates**: each tick resumes where the last
+        one stopped and wraps at the end. Work per tick stays bounded and every
+        parked Run is reached within one lap, however long the ineligible prefix
+        grows.
+
+        Offset paging over a table rows leave is approximate -- a Run
+        terminalizing ahead of the cursor shifts the page and one row can be
+        stepped over. That is acceptable here and nowhere near the defect being
+        fixed: the guarantee this needs is that no row is starved *forever*, and
+        a skipped row is picked up on the next lap. A row hidden behind a
+        permanent prefix never is.
         """
         parked: list[Run] = []
-        truncated = False
         for status in (RunStatus.WAITING, RunStatus.PAUSED):
-            batch = await self.run_store.list_by_status(status, limit=RESUME_SCAN_LIMIT)
-            truncated = truncated or len(batch) >= RESUME_SCAN_LIMIT
-            parked.extend(batch)
-        if truncated:
-            # Said, not silently endured. Past this point the tick is back to
-            # the behaviour the bound exists to prevent, and an operator should
-            # read that rather than infer it from work not happening. A store
-            # query that filtered by eligibility would remove the bound
-            # entirely; it needs the pause evidence, which lives on Attempts.
-            logger.warning(
-                "parked-Run scan hit its %d-row limit; a resumable Run beyond it "
-                "will not be seen this tick",
-                RESUME_SCAN_LIMIT,
+            offset = self._resume_scan_offsets.get(status, 0)
+            batch = await self.run_store.list_by_status(
+                status, limit=RESUME_SCAN_LIMIT, offset=offset
             )
+            # Wrap on a short page rather than on an empty one: a full page
+            # means there is more behind it, anything less means this pass has
+            # reached the end. Advancing past the end and waiting for an empty
+            # page would spend one whole tick seeing nothing.
+            self._resume_scan_offsets[status] = (
+                offset + RESUME_SCAN_LIMIT if len(batch) >= RESUME_SCAN_LIMIT else 0
+            )
+            parked.extend(batch)
         return parked
 
     async def _repark_after_failed_resume(
@@ -868,6 +897,14 @@ class Container:
         for Attempts, of which there are none. What decides is whether an
         Attempt is actually live, not what the NodeRun says.
 
+        Live means `RUNNING`, not merely non-terminal (#666 review, second
+        round). `CREATED` is the window between persisting the Attempt and
+        transitioning it: an exception there leaves a `CREATED` Attempt that
+        nothing owns. Reading it as live re-creates the same hole one step in,
+        and worse than the NodeRun case, because `ScheduleAttemptExecutor`
+        configures no lease TTL -- so nothing expires it and no recovery tick
+        reclaims it. It is re-parked with the rest.
+
         Re-parking rather than failing, because nothing about the pause has
         changed: the next tick may try again, and terminalizing would throw away
         work over what is usually a transient error.
@@ -878,7 +915,7 @@ class Container:
                 return
             if node_run.status is RunStatus.RUNNING:
                 attempts = await self.run_store.list_attempts(node_run_id)
-                if any(a.status not in TERMINAL_ATTEMPT_STATUSES for a in attempts):
+                if any(a.status is AttemptStatus.RUNNING for a in attempts):
                     # Something is genuinely executing, or died holding a lease.
                     # Either way it is the recovery tick's, not this one's.
                     return

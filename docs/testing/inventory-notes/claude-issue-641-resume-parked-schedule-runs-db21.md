@@ -1,10 +1,11 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +27
+  packages/maistro-core/tests: +33
 ---
 # claude-issue-641-resume-parked-schedule-runs-db21
 
-Twenty-seven added, one **rewritten**, none removed. All in
+Thirty-three added, one **rewritten**, none removed — twenty-seven for the
+change itself and six more from a second Codex round, described at the end. All in
 `tests/runs/test_parked_run_resume.py`, the suite for SPEC-082926-a44e.
 
 Three of the twelve pin the classification table itself, and six exercise the
@@ -78,3 +79,23 @@ deliberately — they are owed to the durable Graph traversal, not unrunnable �
 so one parked at its first pause has exactly one NodeRun and passed every other
 check. The tick claimed it, `_single_node` raised, and the warning repeated
 forever without the graph advancing.
+
+## The six from the second review round
+
+Three findings, three fixes, two cases each — because in every pair the first
+case is the one that looked sufficient and was not.
+
+- **Rotating scan.** One proves a Run behind a full scan page is reached on a
+  later tick; the second proves the cursor *wraps*, so advancing does not
+  starve the front of the list instead of the back — the same defect facing the
+  other way.
+- **A `CREATED` Attempt is not something running.** One proves it no longer
+  holds the Run claimed; the second proves a genuinely `RUNNING` Attempt still
+  is left to the recovery tick, so the fix is not simply "always re-park".
+- **Re-read the pause after the claim.** The first makes the re-read answer
+  `None` and asserts the Run is not resumed — and it passes *with the fix
+  reverted*, because it never reaches the line that chooses between the two
+  pauses. The second asserts by identity which object the executor was handed,
+  and is the only one of the six that catches that third fix.
+
+Confirmed by mutation: reverting each fix fails exactly the case that names it.

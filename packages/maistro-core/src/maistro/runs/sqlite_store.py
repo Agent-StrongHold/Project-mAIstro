@@ -308,6 +308,7 @@ class SqliteRunStore:
         status: RunStatus,
         *,
         limit: int = 100,
+        offset: int = 0,
         project_id: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -315,16 +316,24 @@ class SqliteRunStore:
         Mirrored from `DurableRunStore.list_by_status` so the two stores stop
         diverging on query surface; oldest-first so a bounded consumer tick
         drains a backlog fairly.
+
+        A caller that needs to see *every* row eventually, rather than only the
+        oldest page, passes ``offset`` and walks it: the resume tick does, because
+        its filter is applied after the query and a standing prefix of ineligible
+        rows would otherwise hide everything behind it forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
         sql = "SELECT payload FROM canonical_runs WHERE status = ?"
         params: list[object] = [status.value]
         if project_id is not None:
             sql += " AND project_id = ?"
             params.append(project_id)
-        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ?"
+        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
         cursor = await self._conn.execute(sql, tuple(params))  # nosec B608
         rows = await cursor.fetchall()
         return [model_of_json(Run, row[0]) for row in rows]

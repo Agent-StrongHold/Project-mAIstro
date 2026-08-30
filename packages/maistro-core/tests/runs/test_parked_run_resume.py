@@ -670,6 +670,182 @@ class TestTheTickIsNotStarvedByWhatItCannotResume:
         assert _PollingPauseNode.reaches == 5  # 3 first reaches + 2 resumes
 
 
+class TestTheScanRotatesRatherThanAlwaysStartingOver:
+    """Raising the scan bound moved the starvation cliff; it did not remove it.
+
+    Past `RESUME_SCAN_LIMIT` permanently-ineligible rows the tick is back to
+    inspecting the same prefix every time, and the warning that says so is a
+    description rather than a fix (#666 review, second round). The scan now
+    resumes where the last one stopped and wraps at the end, so every parked
+    Run is reached within one lap however long the prefix grows.
+    """
+
+    async def test_a_resumable_run_behind_a_full_scan_page_is_reached_on_a_later_tick(
+        self, monkeypatch
+    ) -> None:
+        """The case a bigger constant cannot answer. The scan page is shrunk to
+        two rather than the backlog grown past a thousand, because what is under
+        test is the rotation, and a test that needed 1001 rows to see it would
+        be measuring the constant instead."""
+        import maistro.container as container_module
+
+        monkeypatch.setattr(container_module, "RESUME_SCAN_LIMIT", 2)
+        _FailingNode.reaches = 0
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        for index in range(4):
+            await _parked_run(container, _FailingNode.kind, workspace=f"rotate-ws-{index}")
+        await _parked_run(container, _PollingPauseNode.kind, workspace="rotate-ws-live")
+
+        # Tick 1 sees rows 0-1, tick 2 rows 2-3: four ineligible failures, and
+        # a fixed oldest-first page of two would have stopped at the first pair
+        # forever.
+        assert await container.resume_parked_runs(limit=1) == 0
+        assert await container.resume_parked_runs(limit=1) == 0
+        assert await container.resume_parked_runs(limit=1) == 1
+        assert _PollingPauseNode.reaches == 2
+
+    async def test_the_cursor_wraps_so_the_oldest_rows_are_seen_again(self, monkeypatch) -> None:
+        """A cursor that only advanced would starve the front of the list
+        instead of the back — the same defect facing the other way."""
+        import maistro.container as container_module
+
+        monkeypatch.setattr(container_module, "RESUME_SCAN_LIMIT", 2)
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        await _parked_run(container, _PollingPauseNode.kind, workspace="wrap-ws-0")
+        for index in range(3):
+            await _parked_run(container, _FailingNode.kind, workspace=f"wrap-ws-f{index}")
+
+        # Lap the cursor past the end and back round to the resumable row.
+        resumed = [await container.resume_parked_runs(limit=1) for _ in range(4)]
+
+        assert sum(resumed) >= 1, "the oldest row was never revisited"
+
+
+class TestAnAttemptThatNeverStartedIsNotSomethingRunning:
+    @pytest.mark.ac("SPEC-082926-a44e/AC-3")
+    async def test_a_created_attempt_does_not_hold_the_run_claimed(self) -> None:
+        """`prepare_execution` persists the Attempt and then transitions it; an
+        exception in between leaves it `CREATED`. Treating merely-non-terminal
+        as live read that as somebody else's work — and nobody's it was:
+        `ScheduleAttemptExecutor` sets no lease TTL, so nothing expires it and
+        no recovery tick reclaims it. The Run stayed RUNNING for ever (#666
+        review, second round).
+        """
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="created-ws")
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        parked_as = run.status
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+
+        await container.run_store.transition_run(run_id, RunStatus.RUNNING)
+        await container.run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        await container.run_store.create_attempt(node_run.node_run_id)
+
+        await container._repark_after_failed_resume(run_id, node_run.node_run_id, parked_as)
+
+        settled = await container.run_store.get_run(run_id)
+        assert settled is not None
+        assert settled.status is parked_as, "a CREATED Attempt held the Run claimed"
+
+    async def test_a_running_attempt_is_still_left_to_the_recovery_tick(self) -> None:
+        """The other direction, and the reason this is not simply 'always
+        re-park': an Attempt that is genuinely RUNNING, or died holding a lease,
+        belongs to abandoned-attempt recovery."""
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="running-ws")
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        parked_as = run.status
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+
+        await container.run_store.transition_run(run_id, RunStatus.RUNNING)
+        await container.run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        attempt = await container.run_store.create_attempt(node_run.node_run_id)
+        await container.run_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+        await container._repark_after_failed_resume(run_id, node_run.node_run_id, parked_as)
+
+        settled = await container.run_store.get_run(run_id)
+        assert settled is not None
+        assert settled.status is RunStatus.RUNNING
+
+
+class TestThePauseIsRereadAfterTheClaim:
+    async def test_a_pause_that_moved_between_the_read_and_the_claim_is_not_used(
+        self, monkeypatch
+    ) -> None:
+        """Two replicas read the same elapsed pause. The first resumes, yields
+        again with a later `resume_at`, and parks it back; the second's claim
+        then succeeds because the Run is parked once more. Resuming on the pause
+        it read *beforehand* polls immediately instead of honouring the delay
+        just recorded — every replica collapsing the interval into a burst,
+        which is the one thing a poll deadline exists to prevent (#666 review,
+        second round).
+        """
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="stale-ws")
+        _PollingPauseNode.reaches = 0
+
+        real = Container._resumable_pause_for
+        calls: list[int] = []
+
+        async def _moves_after_the_first_read(self, run, moment):
+            calls.append(1)
+            # The second call is the one made after the claim: answer None, as
+            # a pause whose deadline has moved into the future would.
+            if len(calls) >= 2:
+                return None
+            return await real(self, run, moment)
+
+        monkeypatch.setattr(Container, "_resumable_pause_for", _moves_after_the_first_read)
+
+        assert await container.resume_parked_runs() == 0
+        assert _PollingPauseNode.reaches == 0, "resumed on a pause that had moved"
+
+        settled = await container.run_store.get_run(run_id)
+        assert settled is not None
+        assert settled.status is not RunStatus.RUNNING, "left claimed with nothing running"
+
+    async def test_the_pause_handed_to_the_executor_is_the_one_read_after_the_claim(
+        self, monkeypatch
+    ) -> None:
+        """The half the None case cannot see, and the reason it is not enough.
+
+        Answering None after the claim exercises the guard but not the choice:
+        with the re-read discarded and the earlier pause passed on, that test
+        still passes, because it never reaches the line that picks one. This
+        one asserts by identity which object the executor was handed.
+        """
+        from maistro.runs.consumption import ScheduleAttemptExecutor
+
+        container = await _container()
+        await _parked_run(container, _PollingPauseNode.kind, workspace="fresh-ws")
+
+        real = Container._resumable_pause_for
+        seen: list[Any] = []
+
+        async def _reads(self, run, moment):
+            pause = await real(self, run, moment)
+            seen.append(pause)
+            return pause
+
+        handed: list[Any] = []
+
+        async def _capture(self, run, pause):
+            handed.append(pause)
+
+        monkeypatch.setattr(Container, "_resumable_pause_for", _reads)
+        monkeypatch.setattr(ScheduleAttemptExecutor, "resume", _capture)
+
+        assert await container.resume_parked_runs() == 1
+
+        assert len(seen) == 2, "the pause was not re-read after the claim"
+        assert handed and handed[0] is seen[1], "the executor got the pre-claim pause"
+
+
 class TestAMultiNodeRunIsNotThisTicksToResume:
     @pytest.mark.ac("SPEC-082926-a44e/AC-5")
     async def test_a_multi_node_parked_run_is_left_alone(self) -> None:

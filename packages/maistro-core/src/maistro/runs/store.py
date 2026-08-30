@@ -277,6 +277,7 @@ class RunStore(Protocol):
         status: RunStatus,
         *,
         limit: int = 100,
+        offset: int = 0,
         project_id: str | None = None,
     ) -> list[Run]: ...
 
@@ -683,6 +684,7 @@ class InMemoryRunStore:
         status: RunStatus,
         *,
         limit: int = 100,
+        offset: int = 0,
         project_id: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first.
@@ -691,9 +693,16 @@ class InMemoryRunStore:
         mirrored from `DurableRunStore.list_by_status` so the two stores stop
         diverging on query surface. Oldest-first, so a bounded tick drains a
         backlog fairly instead of starving what arrived first.
+
+        A caller that needs to see *every* row eventually, rather than only the
+        oldest page, passes ``offset`` and walks it: the resume tick does, because
+        its filter is applied after the query and a standing prefix of ineligible
+        rows would otherwise hide everything behind it forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
         matching = sorted(
             (
                 run
@@ -702,7 +711,7 @@ class InMemoryRunStore:
             ),
             key=lambda run: (run.created_at, run.run_id),
         )
-        return [run.model_copy(deep=True) for run in matching[:limit]]
+        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
