@@ -1,22 +1,39 @@
-# #735 Canvas canonical execution claim
+# #735 Canvas canonical execution evidence
 
-## Claim
+## Scope
 
-Canvas generation currently owns a private execution lifecycle in `GenerationJobRecord.status`. `CanvasExecutor` performs physical provider calls while `CanvasJobRunner` owns claim/retry/cancel transitions, but neither writes canonical Run/NodeRun/Attempt evidence.
+This branch converges the `maistro-canvas` generation package onto the existing public canonical execution spine without modifying core stores, durable Graph internals, Design/provenance files, migrations, ratchets, or workflows.
 
-This branch will converge only the Canvas execution package onto the existing public canonical `RunStore` contract. It will not modify core stores, durable Graph internals, Design/provenance files, migrations, ratchets, or workflows.
+Canvas still owns `GenerationJobRecord`, assets, layer/result paths, selected variants, queue claims, worker leases, retry budget, cancellation receipt, and sanitized Canvas-specific error text. Canonical Run/NodeRun/Attempt records own generic execution history.
 
-## Implementation plan
+## Implemented mapping
 
-1. Introduce a Canvas-local canonical execution adapter around the public `RunStore` API. The adapter receives an already-authorized canonical scope/admission context from its constructor or caller; Canvas does not derive a Workspace/Project identity from `org_id`, asset ids, or standalone placeholders.
-2. Admit exactly one Run per user-requested generation operation when the caller supplies scope, or consume an already-admitted Run when one is supplied.
-3. Map each physical Canvas generation/refine/reference stage to one NodeRun beneath that Run.
-4. Wrap every provider execution, including retries, in a distinct canonical Attempt. Failed Attempts remain inspectable; a later retry creates a new Attempt under the same NodeRun.
-5. Keep `GenerationJobRecord`, assets, layer/result paths, selected variants, cancellation receipt and Canvas-specific error semantics as Canvas domain state. Its status becomes a projection/receipt, not generic execution authority.
-6. Preserve existing runner claim/lease/requeue behavior while correlating each claimed execution to canonical evidence. Do not move Canvas queue leasing into core.
-7. Extend migration-parity tests before demoting any lifecycle behavior: completion, sanitized provider failure, cancellation, retry/lease, layer concurrency exclusion, Warden preconditions and result persistence.
-8. Add direct evidence that a failure followed by retry leaves failed and successful Attempts under the same NodeRun.
-9. Run the complete Canvas suite and required repository CI. If the public `RunStore`/Graph contracts cannot support this without a forbidden core edit, stop and record the missing seam.
+1. `CanvasCanonicalExecution` binds a caller-authorized Workspace/Project to the public `RunStore` and `RunExecutionService`. It never derives canonical scope from Canvas `org_id`, canvas ids, layer ids, or placeholder defaults.
+2. One accepted generation/refine/reference job admits one canonical Run. The Run id is correlated in the existing durable `GenerationJobRecord.params` JSON, so no schema migration is required.
+3. Generate and refine use one canonical NodeRun each. Reference uses hero, side, back, and three-quarter NodeRuns, with each physical provider call recorded as an Attempt.
+4. A failed provider call parks the existing NodeRun; a later Canvas retry creates a new Attempt under that same NodeRun. Failed and successful Attempts remain inspectable.
+5. A reclaimed Canvas worker lease explicitly fences and reconciles a stranded RUNNING Attempt before redispatch. The final exhausted lease does the same before the Canvas receipt and Run become FAILED.
+6. Requested cancellation records canonical physical cancellation with the requested-cancellation disposition before the Canvas receipt becomes CANCELLED.
+7. A completed stage is replayed from persisted Attempt evidence instead of reissuing the provider effect.
+8. Existing reference behavior is preserved when the hero call returns no URL: the hero Attempt is recorded, downstream reference stages are not fabricated, and Canvas explicitly completes the Run with the existing empty result.
+9. `CanvasJobRunner` refuses to claim provider work from a real `CanvasExecutor` that lacks a canonical execution binding. Runner-focused test doubles remain compatible with their narrower claim/retry tests.
+10. Existing direct `run_job` remains a compatibility surface for tests/CLI when no canonical binding exists; the background runner path cannot silently use it.
+
+## Focused behavioral evidence
+
+`packages/maistro-canvas/tests/test_canonical_execution.py` currently adds nine focused tests proving:
+
+- scoped Run admission and stage Graph shape;
+- successful NodeRun/Attempt evidence;
+- failed-then-successful retry under one NodeRun;
+- worker-lease reclaim fencing before retry;
+- requested cancellation of physical and logical identity;
+- four-stage reference execution;
+- empty-hero reference short-circuit without fabricated stages;
+- completed-stage replay without a duplicate provider call;
+- final worker-loss settlement before terminal Canvas failure.
+
+Existing Canvas suites remain the parity evidence for provider error sanitization, layer concurrency exclusion, Warden preconditions, result-path persistence, claim/lease behavior, retry bounds, and receipt semantics.
 
 ## Collision boundary
 
@@ -24,10 +41,9 @@ Owned by this branch:
 
 - `packages/maistro-canvas/src/maistro_canvas/canvas/executor.py`;
 - `packages/maistro-canvas/src/maistro_canvas/canvas/runner.py`;
-- a new Canvas-local execution adapter under `packages/maistro-canvas/src/maistro_canvas/canvas/`;
-- Canvas domain types only if narrow correlation fields are required;
-- `packages/maistro-canvas/tests/**` focused on execution/parity;
-- this Canvas-specific evidence note and any branch-local suite inventory note required by gates.
+- `packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py`;
+- focused `packages/maistro-canvas/tests/**` execution evidence;
+- this Canvas-specific evidence note.
 
 Explicitly excluded:
 
@@ -39,4 +55,10 @@ Explicitly excluded:
 - shared provenance/prompt-digest models;
 - quality/reachability ratchets and workflow YAML.
 
-Before claiming, the open PR set was checked for `canvas/executor.py`, `canvas/runner.py`, `test_migration_parity.py`, and #735. No open PR claims those files or the issue.
+Before claiming, the open PR set was checked for `canvas/executor.py`, `canvas/runner.py`, `test_migration_parity.py`, and #735. No open PR claimed those files or the issue.
+
+## Outer product boundary
+
+The Hive Conductor optional `routes.canvas` mounted in `packages/hive-conductor/backend/main.py` is the older `services.canvas_dag` surface, not `maistro_canvas.canvas.routes`. No repository production composition currently supplies `maistro_canvas.canvas.routes` with an authorized Workspace/Project-bound `CanvasCanonicalExecution`.
+
+This branch therefore does **not** claim that Hive's legacy Canvas entry point has been migrated. It supplies and proves the Canvas-package execution seam that an authorized outer composition can inject, while the cross-package product mounting/cleanup remains parent #52 work. No canonical scope is invented to erase that boundary.
