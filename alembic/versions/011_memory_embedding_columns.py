@@ -5,10 +5,14 @@ Revises: 010_outcome_scope_feedback
 Create Date: 2026-08-24
 
 `ADR-082226-5104` chose pgvector as the vector store and migration 001 carried
-that out for `memory_entries` alone. `learnings`, `outcomes` and
-`episodic_memories` -- the tables `maistro.memory` actually reads and writes --
-had no embedding column, so similarity could not compose with scope in one
-query. Scope, provenance, recency and status all live on the row; putting the
+that out for `memory_entries` alone. `learnings` had no embedding column, so
+similarity could not compose with scope in one query.
+
+(This paragraph used to name `learnings`, `outcomes` and `episodic_memories`
+together as "the tables `maistro.memory` actually reads and writes". That was
+untrue of `episodic_memories` when it was written and stayed untrue until #710:
+nothing outside `alembic/` named the table. The `_EMBEDDED_TABLES` note below
+had it right; only this sentence was wrong.) Scope, provenance, recency and status all live on the row; putting the
 vector anywhere else turns a scoped similarity read into fetch-then-filter in
 Python, which is slower and makes the scope filter something other than the
 database's job.
