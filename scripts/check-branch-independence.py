@@ -268,6 +268,16 @@ def base_registry(root: Path, explicit_base: str | None = None) -> dict[str, Any
         )
     merge_base = _git(["merge-base", resolved.stdout.strip(), "HEAD"], root=root)
     if merge_base.returncode != 0:
+        # Same fallback as the rev-parse above, and for the same reason: a
+        # shallow checkout can resolve `origin/develop` to a commit without
+        # sharing enough history with HEAD for `merge-base` to find a common
+        # ancestor. That is an execution-environment limitation, not a signal
+        # that the base is misconfigured -- tolerated only for the implicit
+        # default, exactly like an unresolvable ref above. An explicit base
+        # failing here is still a real error: something named it and it did
+        # not answer.
+        if not explicit:
+            return None
         raise BranchIndependenceError(
             f"cannot resolve merge base for {base!r}: {merge_base.stderr.strip()}"
         )
