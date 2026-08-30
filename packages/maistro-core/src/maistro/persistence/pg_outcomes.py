@@ -65,9 +65,10 @@ class PgOutcomeStore:
                     org_id, team_id, user_id, agent_id,
                     input_tokens, output_tokens, charged_microchips, pricing_version,
                     project_id, dag_id, dag_run_id, node_id,
-                    thumb, thumb_comment, eval_judge_score, created_at)
+                    thumb, thumb_comment, eval_judge_score, created_at,
+                    usage_reported_calls)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                           $17,$18,$19,$20,$21,$22,$23,$24)
+                           $17,$18,$19,$20,$21,$22,$23,$24,$25)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
@@ -117,6 +118,10 @@ class PgOutcomeStore:
                 # defaults to `now()`, so a caller that sets nothing is
                 # unaffected (#696).
                 outcome.created_at,
+                # NULL, not 0, when the writer did not count: `0` would claim
+                # it counted and found none, which is the conflation the
+                # column exists to end (#717).
+                outcome.usage_reported_calls,
             )
             return int(row["id"]) if row else 0
 
@@ -427,6 +432,7 @@ def _row_to_outcome(r: asyncpg.Record) -> Outcome:
         input_tokens=r.get("input_tokens", 0),
         output_tokens=r.get("output_tokens", 0),
         charged_microchips=r.get("charged_microchips", 0),
+        usage_reported_calls=r.get("usage_reported_calls"),
         pricing_version=r.get("pricing_version", ""),
         created_at=r.get("created_at", datetime.now(UTC)),
         project_id=r.get("project_id", ""),

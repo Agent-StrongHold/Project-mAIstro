@@ -31,6 +31,7 @@ tests:
 source:
   - packages/maistro-core/src/maistro/capabilities/invocation.py
   - packages/maistro-core/src/maistro/capabilities/invocation_store.py
+  - packages/maistro-core/src/maistro/quota/usage_report.py
   - packages/maistro-core/src/maistro/agents/strategies/direct.py
   - packages/maistro-core/src/maistro/agents/strategies/react.py
   - packages/maistro-core/src/maistro/types/memory.py
@@ -54,6 +55,13 @@ owners:
 returns the definition and nothing else, and the strategies spell
 `usage.get("prompt_tokens", 0)`. ADR-083026-aba1 records the decisions. This
 spec states what has to be true.
+
+One parser serves both halves of the second rule, and it is a leaf module
+(`maistro.quota.usage_report`) rather than a function on `quota.recorder`:
+importing the recorder from the agent strategies would make it, `quota.ambient`
+and `quota.reconciliation` reachable, reporting three modules connected when
+nothing wires any of them. Overstating reach while fixing an overstated
+measurement is not a trade worth making.
 
 ## Decision
 

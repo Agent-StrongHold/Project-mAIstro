@@ -179,6 +179,9 @@ async def test_record_inserts_with_all_fields_and_returns_id(
         "wrong file",
         42.5,
         RECORDED_AT,
+        # `None`, because `make_outcome` leaves the count unset: a writer that
+        # did not count binds NULL rather than a measured zero (#717).
+        None,
     )
 
 

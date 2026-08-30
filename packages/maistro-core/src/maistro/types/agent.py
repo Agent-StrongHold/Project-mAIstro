@@ -74,8 +74,14 @@ class ReasoningResult:
     done: bool = True
     reasoning_trace: str = ""
     tool_history: list[dict[str, Any]] = field(default_factory=list)
+    #: A sum over the provider calls of one turn, not one call's usage.
     input_tokens: int = 0
     output_tokens: int = 0
+    #: How many of those calls reported a `usage` object. `None` when the
+    #: strategy did not count. Without it `input_tokens = 0` means "free" and
+    #: "nobody reported" at once, which is the conflation ADR-083026-a91e ruled
+    #: out for metrics and ADR-083026-aba1 rules out here (#717).
+    usage_reported_calls: int | None = None
 
 
 @dataclass

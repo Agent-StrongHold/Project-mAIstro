@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     node_id TEXT NOT NULL DEFAULT '',
     thumb TEXT NOT NULL DEFAULT '',
     thumb_comment TEXT NOT NULL DEFAULT '',
-    eval_judge_score REAL
+    eval_judge_score REAL,
+    usage_reported_calls INTEGER
 )
 """
 
@@ -55,6 +56,10 @@ _ADDED_COLUMNS = (
     ("thumb", "TEXT NOT NULL DEFAULT ''"),
     ("thumb_comment", "TEXT NOT NULL DEFAULT ''"),
     ("eval_judge_score", "REAL"),
+    # Nullable with no default, unlike every column above it: a row written
+    # before this column existed did not count, and `0` would say it counted
+    # and found none (#717).
+    ("usage_reported_calls", "INTEGER"),
 )
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
@@ -95,8 +100,8 @@ class SqliteOutcomeStore:
                 team_id, user_id, agent_id,
                 input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
                 org_id, project_id, dag_id, dag_run_id, node_id,
-                thumb, thumb_comment, eval_judge_score)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                thumb, thumb_comment, eval_judge_score, usage_reported_calls)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -130,6 +135,10 @@ class SqliteOutcomeStore:
                 outcome.thumb,
                 outcome.thumb_comment,
                 outcome.eval_judge_score,
+                # NULL, not 0, when the writer did not count: `0` would claim
+                # it counted and found none, which is the conflation the
+                # column exists to end (#717).
+                outcome.usage_reported_calls,
             ),
         )
         await self._conn.commit()
@@ -418,4 +427,5 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         thumb=r.get("thumb", "") or "",
         thumb_comment=r.get("thumb_comment", "") or "",
         eval_judge_score=r.get("eval_judge_score"),
+        usage_reported_calls=r.get("usage_reported_calls"),
     )
