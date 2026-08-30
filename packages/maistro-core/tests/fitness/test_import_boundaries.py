@@ -182,69 +182,92 @@ def _class_fields(path: Path, class_name: str) -> set[str] | None:
     return None
 
 
-def _compatibility_contract_violations(
-    root: Path, *, contracts: dict[str, Any] | None = None
-) -> list[str]:
-    """Refuse silent canonical renames and underspecified compatibility windows."""
-    document = contracts if contracts is not None else _load_compatibility_contracts()
-    violations: list[str] = []
-
-    if document.get("schema_version") != 1:
-        violations.append("compatibility contract registry schema_version must be 1")
-
+def _compatibility_policy(
+    document: dict[str, Any],
+) -> tuple[set[str], set[str], list[str]]:
+    """Return allowed strategies plus structural policy violations."""
     policy = document.get("policy")
     if not isinstance(policy, dict):
-        violations.append("compatibility contract registry requires policy object")
-        policy = {}
-    persisted_strategies = set(policy.get("persisted_strategies", []))
-    non_persisted_strategies = set(policy.get("non_persisted_strategies", []))
+        return set(), set(), ["compatibility contract registry requires policy object"]
+    return (
+        set(policy.get("persisted_strategies", [])),
+        set(policy.get("non_persisted_strategies", [])),
+        [],
+    )
 
-    reviewed_aliases: set[str] = set()
+
+def _compatibility_record_violations(
+    record: object,
+    *,
+    index: int,
+    seen: set[str],
+    persisted_strategies: set[str],
+    non_persisted_strategies: set[str],
+) -> tuple[str | None, list[str]]:
+    """Validate one reviewed compatibility-owner record."""
+    violations: list[str] = []
+    if not isinstance(record, dict):
+        return None, [f"compatibility_aliases[{index}] must be an object"]
+
+    missing = _REQUIRED_COMPATIBILITY_FIELDS - record.keys()
+    if missing:
+        return None, [
+            f"compatibility_aliases[{index}] missing fields: {', '.join(sorted(missing))}"
+        ]
+
+    identity = record["identity"]
+    if not isinstance(identity, str) or not identity.strip():
+        return None, [f"compatibility_aliases[{index}] has invalid identity"]
+    if identity in seen:
+        violations.append(f"duplicate compatibility identity: {identity}")
+
+    for field in (
+        "scope",
+        "strategy",
+        "migration",
+        "deprecation_window",
+        "owner",
+        "removal_condition",
+        "release_note",
+    ):
+        value = record[field]
+        if not isinstance(value, str) or not value.strip():
+            violations.append(f"compatibility record {identity} requires non-empty {field}")
+
+    persisted = record["persisted_data"]
+    strategy = record["strategy"]
+    if not isinstance(persisted, bool):
+        violations.append(f"compatibility record {identity} persisted_data must be boolean")
+    elif persisted and strategy not in persisted_strategies:
+        violations.append(
+            f"persisted compatibility record {identity} requires durable migration strategy"
+        )
+    elif not persisted and strategy not in non_persisted_strategies:
+        violations.append(f"compatibility record {identity} has unsupported strategy {strategy}")
+    return identity, violations
+
+
+def _compatibility_alias_violations(
+    document: dict[str, Any], root: Path
+) -> list[str]:
+    """Validate compatibility metadata and reconcile it with source aliases."""
+    persisted, non_persisted, violations = _compatibility_policy(document)
     raw_aliases = document.get("compatibility_aliases")
     if not isinstance(raw_aliases, list):
-        violations.append("compatibility_aliases must be a list")
-        raw_aliases = []
+        return violations + ["compatibility_aliases must be a list"]
+
+    reviewed_aliases: set[str] = set()
     for index, record in enumerate(raw_aliases):
-        if not isinstance(record, dict):
-            violations.append(f"compatibility_aliases[{index}] must be an object")
-            continue
-        missing = _REQUIRED_COMPATIBILITY_FIELDS - record.keys()
-        if missing:
-            violations.append(
-                f"compatibility_aliases[{index}] missing fields: {', '.join(sorted(missing))}"
-            )
-            continue
-        identity = record["identity"]
-        if not isinstance(identity, str) or not identity.strip():
-            violations.append(f"compatibility_aliases[{index}] has invalid identity")
-            continue
-        if identity in reviewed_aliases:
-            violations.append(f"duplicate compatibility identity: {identity}")
-        reviewed_aliases.add(identity)
-
-        for field in (
-            "scope",
-            "strategy",
-            "migration",
-            "deprecation_window",
-            "owner",
-            "removal_condition",
-            "release_note",
-        ):
-            value = record[field]
-            if not isinstance(value, str) or not value.strip():
-                violations.append(f"compatibility record {identity} requires non-empty {field}")
-
-        persisted = record["persisted_data"]
-        strategy = record["strategy"]
-        if not isinstance(persisted, bool):
-            violations.append(f"compatibility record {identity} persisted_data must be boolean")
-        elif persisted and strategy not in persisted_strategies:
-            violations.append(
-                f"persisted compatibility record {identity} requires durable migration strategy"
-            )
-        elif not persisted and strategy not in non_persisted_strategies:
-            violations.append(f"compatibility record {identity} has unsupported strategy {strategy}")
+        identity, record_violations = _compatibility_record_violations(
+            record,
+            index=index,
+            seen=reviewed_aliases,
+            persisted_strategies=persisted,
+            non_persisted_strategies=non_persisted,
+        )
+        violations.extend(record_violations)
+        if identity is not None:
+            reviewed_aliases.add(identity)
 
     aliases = _public_direct_aliases(root)
     found_aliases = set(aliases)
@@ -259,41 +282,69 @@ def _compatibility_contract_violations(
         source = aliases[identity].read_text(encoding="utf-8")
         if not any(banner in source for banner in _COMPATIBILITY_BANNERS):
             violations.append(f"compatibility alias is not bannered: {identity}")
+    return violations
 
+
+def _canonical_surface_entry_violations(
+    surface: object, *, index: int, root: Path, seen: set[str]
+) -> list[str]:
+    """Validate one canonical identity and its required identity-bearing fields."""
+    if not isinstance(surface, dict):
+        return [f"canonical_surface[{index}] must be an object"]
+    identity = surface.get("identity")
+    required_fields = surface.get("required_fields")
+    if not isinstance(identity, str) or "::" not in identity:
+        return [f"canonical_surface[{index}] has invalid identity"]
+
+    violations: list[str] = []
+    if identity in seen:
+        violations.append(f"duplicate canonical surface identity: {identity}")
+    if not isinstance(required_fields, list) or not all(
+        isinstance(field, str) and field for field in required_fields
+    ):
+        return violations + [f"canonical surface {identity} has invalid required_fields"]
+
+    relative_path, class_name = identity.split("::", 1)
+    fields = _class_fields(root / relative_path, class_name)
+    if fields is None:
+        return violations + [f"canonical type disappeared without migration: {identity}"]
+    missing_fields = set(required_fields) - fields
+    if missing_fields:
+        violations.append(
+            f"canonical fields disappeared without migration: {identity}: "
+            + ", ".join(sorted(missing_fields))
+        )
+    return violations
+
+
+def _canonical_surface_violations(document: dict[str, Any], root: Path) -> list[str]:
+    """Refuse silent removal or rename of reviewed canonical identities."""
     surfaces = document.get("canonical_surface")
     if not isinstance(surfaces, list):
-        violations.append("canonical_surface must be a list")
-        surfaces = []
-    seen_surfaces: set[str] = set()
-    for index, surface in enumerate(surfaces):
-        if not isinstance(surface, dict):
-            violations.append(f"canonical_surface[{index}] must be an object")
-            continue
-        identity = surface.get("identity")
-        required_fields = surface.get("required_fields")
-        if not isinstance(identity, str) or "::" not in identity:
-            violations.append(f"canonical_surface[{index}] has invalid identity")
-            continue
-        if identity in seen_surfaces:
-            violations.append(f"duplicate canonical surface identity: {identity}")
-        seen_surfaces.add(identity)
-        if not isinstance(required_fields, list) or not all(
-            isinstance(field, str) and field for field in required_fields
-        ):
-            violations.append(f"canonical surface {identity} has invalid required_fields")
-            continue
-        relative_path, class_name = identity.split("::", 1)
-        fields = _class_fields(root / relative_path, class_name)
-        if fields is None:
-            violations.append(f"canonical type disappeared without migration: {identity}")
-            continue
-        missing_fields = set(required_fields) - fields
-        if missing_fields:
-            violations.append(
-                f"canonical fields disappeared without migration: {identity}: "
-                + ", ".join(sorted(missing_fields))
-            )
+        return ["canonical_surface must be a list"]
 
+    violations: list[str] = []
+    seen: set[str] = set()
+    for index, surface in enumerate(surfaces):
+        entry_violations = _canonical_surface_entry_violations(
+            surface, index=index, root=root, seen=seen
+        )
+        violations.extend(entry_violations)
+        if isinstance(surface, dict) and isinstance(surface.get("identity"), str):
+            seen.add(surface["identity"])
+    return violations
+
+
+def _compatibility_contract_violations(
+    root: Path, *, contracts: dict[str, Any] | None = None
+) -> list[str]:
+    """Refuse silent canonical renames and underspecified compatibility windows."""
+    document = contracts if contracts is not None else _load_compatibility_contracts()
+    violations: list[str] = []
+    if document.get("schema_version") != 1:
+        violations.append("compatibility contract registry schema_version must be 1")
+    violations.extend(_compatibility_alias_violations(document, root))
+    violations.extend(_canonical_surface_violations(document, root))
     return violations
 
 
@@ -340,7 +391,7 @@ def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
     planted.mkdir()
     (planted / "offender.py").write_text("from hive import something\n", encoding="utf-8")
     (planted / "innocent.py").write_text(
-        '"""A docstring mentioning hive and maistro_server."""\nimport os\n',
+        '\"\"\"A docstring mentioning hive and maistro_server.\"\"\"\nimport os\n',
         encoding="utf-8",
     )
     (planted / "guarded.py").write_text(
