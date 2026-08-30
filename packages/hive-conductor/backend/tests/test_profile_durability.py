@@ -518,6 +518,30 @@ class TestThePanelReportsASaveItCouldNotMake:
         assert "res.ok" in save
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-6")
+    def test_the_panel_saves_one_field_rather_than_the_whole_document(self) -> None:
+        """A `PUT` of the page's own snapshot deletes whatever changed since it
+        loaded — a fact set in chat, or a second tab (Codex, #699)."""
+        source = self.SOURCE.read_text()
+        save = source[source.index("const savePrompt") : source.index("const addEntry")]
+        assert '"PATCH"' in save
+        assert "preferences" not in save, "a whole-document body is the lost update"
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-6")
+    def test_a_failed_load_is_not_read_as_an_empty_profile(self) -> None:
+        """Asserted on the branch, not on the words `r.ok`.
+
+        The first version of this test looked for that substring, and the
+        comment above the check contains it — so deleting the check itself left
+        the test passing. Mutation-checking caught that; reading did not.
+        """
+        source = self.SOURCE.read_text()
+        load = source[source.index("const load = useCallback") : source.index("const savePrompt")]
+        profile = load[load.index('fetch("/v1/profile"') :]
+        assert "if (!r.ok) throw" in profile
+        assert "setLoadError" in load
+        assert "{loadError && (" in source
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-6")
     def test_the_failure_is_rendered(self) -> None:
         source = self.SOURCE.read_text()
         assert "{saveError && (" in source
@@ -528,3 +552,258 @@ class TestThePanelReportsASaveItCouldNotMake:
         source = self.SOURCE.read_text()
         assert "{!profileDurable && (" in source
         assert "p?.durable !== false" in source
+
+
+class BrokenRecords(FakeRecords):
+    """A reader that fails the way a real one can: I/O, permissions, a
+    malformed file, no descriptors left. All of them arrive here as some
+    exception that is not ours."""
+
+    def get_raw(self, store_name: str, key: str) -> str | None:
+        raise OSError("disk I/O error")
+
+    def list_all_raw(self, store_name: str) -> list[tuple[str, str]]:
+        raise OSError("disk I/O error")
+
+
+class TestAStorageFailureIsReportedAsOne:
+    """The read half of the acknowledgement rule (Codex, #699).
+
+    The write path was wrapped from the start; the read path let a raw
+    `sqlite3` or `OSError` escape, so the `GET` route answered 500 where the
+    `PUT` beside it answered the documented 503, and a chat tool aborted its
+    loop instead of returning an error.
+    """
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_failing_reader_raises_our_error_not_its_own(self) -> None:
+        profile_store.configure(_persisted(BrokenRecords()))
+        with pytest.raises(ProfilePersistenceError, match="could not be read"):
+            profile_store.load("u-1")
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_failing_listing_raises_our_error_not_its_own(self) -> None:
+        profile_store.configure(_persisted(BrokenRecords()))
+        with pytest.raises(ProfilePersistenceError, match="could not be listed"):
+            profile_store.user_ids()
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_the_get_route_answers_503_for_an_unreadable_record(self, authed_client) -> None:
+        profile_store.configure(_persisted(BrokenRecords()))
+        assert authed_client.get("/v1/profile").status_code == 503
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_the_get_route_answers_503_for_a_record_it_cannot_parse(self, authed_client) -> None:
+        records = FakeRecords()
+        profile_store.configure(_persisted(records))
+        user_id = authed_client.get("/v1/auth/whoami").json()["user"]["id"]
+        records.put_raw(STORE_NAME, user_id, "not json at all")
+        assert authed_client.get("/v1/profile").status_code == 503
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_delete_over_a_failing_reader_raises_our_error(self) -> None:
+        profile_store.configure(_persisted(BrokenRecords()))
+        with pytest.raises(ProfilePersistenceError):
+            profile_store.delete("u-1")
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_record_that_is_not_an_object_refuses(self) -> None:
+        records = FakeRecords()
+        records.put_raw(STORE_NAME, "u-1", json.dumps(["not", "an", "object"]))
+        profile_store.configure(_persisted(records))
+        with pytest.raises(ProfileSchemaError, match="not an object"):
+            profile_store.load("u-1")
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_non_integer_schema_version_refuses(self) -> None:
+        records = FakeRecords()
+        records.put_raw(STORE_NAME, "u-1", json.dumps({"schema_version": "one", "user_id": "u-1"}))
+        profile_store.configure(_persisted(records))
+        with pytest.raises(ProfileSchemaError, match="non-integer schema version"):
+            profile_store.load("u-1")
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_record_that_fails_validation_refuses(self) -> None:
+        """`ProfileRecord` forbids extras, so a record from a *newer* build at
+        the *same* version number fails here rather than being read with its
+        unknown fields dropped."""
+        records = FakeRecords()
+        records.put_raw(
+            STORE_NAME,
+            "u-1",
+            json.dumps({"schema_version": 1, "user_id": "u-1", "invented_by_a_newer_build": 1}),
+        )
+        profile_store.configure(_persisted(records))
+        with pytest.raises(ProfileSchemaError, match="failed validation"):
+            profile_store.load("u-1")
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_a_write_read_back_unreadable_is_a_persistence_failure(self) -> None:
+        """Not a schema failure: from the caller's side the write is what did
+        not land, and the route that hears about it is the writing one."""
+        records = FakeRecords()
+        profile_store.configure(_persisted(records))
+        original = records.put_raw
+        records.put_raw = lambda store, key, doc: original(store, key, "not json at all")  # type: ignore[method-assign]
+        with pytest.raises(ProfilePersistenceError, match="read back unreadable"):
+            profile_store.save("u-1", {"name": "Blake"})
+
+
+class TestOneFieldAtATime:
+    """`PATCH /v1/profile`, and the guards around the field name."""
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    def test_patching_one_field_leaves_the_others_alone(self, authed_client) -> None:
+        profile_store.configure(_persisted(FakeRecords()))
+        authed_client.put("/v1/profile", json={"preferences": {"name": "Blake", "role": "op"}})
+        response = authed_client.patch("/v1/profile", json={"field": "team", "value": "platform"})
+        assert response.status_code == 200
+        assert response.json()["preferences"] == {
+            "name": "Blake",
+            "role": "op",
+            "team": "platform",
+        }
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    def test_patching_with_no_field_name_is_refused(self, authed_client) -> None:
+        profile_store.configure(_persisted(FakeRecords()))
+        assert authed_client.patch("/v1/profile", json={"field": "", "value": 1}).status_code == 400
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    def test_the_patch_route_answers_503_when_the_write_does_not_land(self, authed_client) -> None:
+        profile_store.configure(_persisted(ForgetfulRecords()))
+        response = authed_client.patch("/v1/profile", json={"field": "name", "value": "Blake"})
+        assert response.status_code == 503
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    @pytest.mark.parametrize("call", ["set_field", "delete_field"])
+    def test_a_field_operation_needs_a_field_name(self, call: str) -> None:
+        profile_store.configure(_persisted(FakeRecords()))
+        with pytest.raises(ValueError, match="must be named"):
+            if call == "set_field":
+                profile_store.set_field("u-1", "", "x")
+            else:
+                profile_store.delete_field("u-1", "")
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-5")
+    @pytest.mark.parametrize("call", ["load", "delete"])
+    def test_a_profile_operation_needs_a_principal(self, call: str) -> None:
+        profile_store.configure(_persisted(FakeRecords()))
+        with pytest.raises(ValueError, match="addressed by a principal"):
+            getattr(profile_store, call)("")
+
+
+class TestTheHandlersDoNotBlockTheEventLoop:
+    """A profile write waits in `State.flush()` — up to ten seconds when the
+    writer queue is backed up. Inside an `async` handler that stalls every other
+    request on the loop (Codex, #699). Asserted structurally because the cost is
+    a property of the declaration, and a timing test for it would be a flake.
+    """
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_every_profile_route_handler_is_synchronous(self) -> None:
+        import ast
+
+        tree = ast.parse((_BACKEND / "routes/profile.py").read_text())
+        routed = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and any(isinstance(d, ast.Call) for d in node.decorator_list)
+        ]
+        assert not routed, f"async route handlers block the loop on flush: {routed}"
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    def test_every_chat_tool_write_goes_through_a_worker_thread(self) -> None:
+        import ast
+
+        source = (_BACKEND / "services/chat_completion.py").read_text()
+        writes = {"set_field", "delete_field", "save"}
+        offloaded = {
+            node.args[0].attr
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+            and node.args
+            and isinstance(node.args[0], ast.Attribute)
+        }
+        assert writes <= offloaded, f"blocking profile writes: {writes - offloaded}"
+
+
+class TestTheCutoverFromPostgrestIsAnnounced:
+    """No automatic import, and not silence either (Codex, #699).
+
+    Nothing in this repository creates `user_profiles`, so no deployment it
+    provisions can hold a row there. An operator who created the table by hand
+    is the one case where rows exist — and their column shapes are whatever
+    that operator chose, so reading them back would be guessing and writing the
+    guess into the durable record.
+    """
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-3")
+    def test_a_configured_postgrest_is_warned_about(self, monkeypatch, caplog) -> None:
+        import logging
+
+        from services.foundation import _warn_if_postgrest_profiles_are_being_left_behind
+
+        monkeypatch.setenv("POSTGREST_URL", "http://postgrest.invalid")
+        with caplog.at_level(logging.WARNING):
+            _warn_if_postgrest_profiles_are_being_left_behind()
+        assert "PROFILE_STORE_CUTOVER" in caplog.text
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-3")
+    def test_no_warning_when_postgrest_is_not_configured(self, monkeypatch, caplog) -> None:
+        import logging
+
+        from services.foundation import _warn_if_postgrest_profiles_are_being_left_behind
+
+        monkeypatch.delenv("POSTGREST_URL", raising=False)
+        monkeypatch.delenv("DEPLOY_TARGET_POSTGREST_URL", raising=False)
+        with caplog.at_level(logging.WARNING):
+            _warn_if_postgrest_profiles_are_being_left_behind()
+        assert "PROFILE_STORE_CUTOVER" not in caplog.text
+
+
+class TestTheEphemeralStoreIsAWholeStore:
+    """It is what every test and every `memory://` deployment runs on, so its
+    delete and its listing have to work, not merely exist."""
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-1")
+    def test_it_removes_and_lists(self) -> None:
+        store = EphemeralProfileRecordStore()
+        profile_store.configure(store)
+        profile_store.save("u-1", {"name": "Blake"})
+        profile_store.save("u-2", {"name": "Sam"})
+        assert profile_store.user_ids() == ["u-1", "u-2"]
+        assert profile_store.delete("u-1") is True
+        assert profile_store.user_ids() == ["u-2"]
+        assert store.read("u-1") is None
+
+
+class TestATooldCallMissingItsArgumentsSaysSo:
+    """The model composes these calls, so a malformed one is routine rather
+    than exceptional — and the answer has to be an error the model can read,
+    not a write of an empty field name."""
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    @pytest.mark.parametrize(
+        "args", [{}, {"field": "name"}, {"value": "Blake"}, {"field": "", "value": ""}]
+    )
+    async def test_profile_set_needs_a_field_and_a_value(self, args: dict) -> None:
+        from services.chat_completion import _tool_profile_set
+
+        records = FakeRecords()
+        profile_store.configure(_persisted(records))
+        assert "error" in await _tool_profile_set(args, "u-1")
+        assert records.documents == {}, "a malformed call must not write"
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    @pytest.mark.parametrize("args", [{}, {"field": ""}])
+    async def test_profile_delete_needs_a_field(self, args: dict) -> None:
+        from services.chat_completion import _tool_profile_delete
+
+        records = FakeRecords()
+        profile_store.configure(_persisted(records))
+        assert "error" in await _tool_profile_delete(args, "u-1")
+        assert records.documents == {}, "a malformed call must not write"

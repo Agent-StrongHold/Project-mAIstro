@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +41
+  packages/hive-conductor/backend/tests: +70
 ---
 # claude-issue-699-durable-profile-6700
 
@@ -40,6 +40,30 @@ They cover the six criteria of SPEC-083026-ef62:
   that a non-OK response is treated as a failure, and that something renders
   from it. Not the wording and not the styling.
 
+## The Codex review, +29 more
+
+Five findings, all real, all fixed — and the diff-coverage gate was red on the
+same lines, because the branches Codex named were the ones no test entered.
+
+- **AC-2, +14** — a reader that fails the way a real one can (I/O, permissions,
+  a malformed database, no descriptors) now raises `ProfilePersistenceError`
+  rather than escaping unclassified, so `GET` answers the documented 503 like
+  the `PUT` beside it; the schema refusals for a non-object, a non-integer
+  version and a record that fails validation; a write that reads back
+  unparseable; and two structural cases holding the handlers off the event loop
+  (a profile write waits in `State.flush()`, so the route handlers are `def`
+  and the chat tools go through `asyncio.to_thread`).
+- **AC-3, +2** — `PROFILE_STORE_CUTOVER` logged when PostgREST is still
+  configured, and silent when it is not.
+- **AC-4, +9** — `PATCH /v1/profile`, which the panel now uses: `PUT` replaced
+  the whole document, so the page's load-time snapshot deleted anything set in
+  chat or a second tab since. Plus the field-name guards and the tool
+  argument-validation branches the coverage gate named.
+- **AC-1, +1** — the ephemeral store's own delete and listing, which every test
+  and every `memory://` deployment runs on.
+- **AC-6, +2 (in place)** — the panel checks `r.ok` before treating a response
+  as a profile, and saves one field rather than the document.
+
 ## Mutations run
 
 Ten, against the new tests. Nine were killed on the first pass: dropping the
@@ -56,3 +80,16 @@ code and the test for it was vacuous. Both were removed, and replaced with the
 two tests that hold the property that is actually load-bearing — reads go
 through to the store. Re-mutated by reintroducing a process cache in `load()`:
 11 of the 41 fail.
+
+
+Eight more against the review fixes. Seven killed first time: `_read` no longer
+wrapping store failures (3 fail); `GET` no longer catching them; `PATCH`
+replacing the document instead of setting a field; a handler back to `async`;
+a chat-tool write back on the loop; the cutover warning silenced; the panel
+back to `PUT` of the whole profile.
+
+The eighth **survived**: deleting the `if (!r.ok) throw` line left the test
+passing, because it looked for the substring `r.ok` and the comment above the
+check contains those characters. That is the same trap as the AST-versus-grep
+one in AC-3, one layer down. Rewritten to assert on the branch inside the
+`/v1/profile` fetch; re-mutated and killed.

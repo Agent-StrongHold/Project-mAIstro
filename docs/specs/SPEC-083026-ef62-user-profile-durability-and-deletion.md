@@ -140,12 +140,15 @@ Feature: A user profile is durable, deletable, and has exactly one owner
     When a profile is saved
     Then the caller is told the write failed
     And the HTTP surface answers with a storage error rather than the payload
+    And a store that cannot be read fails the same way rather than as a crash
+    And no handler waits for the writer thread on the event loop
 
   @AC-3
   Scenario: No profile path reaches the absent PostgREST table
     Given the Conductor backend source
     When it is searched for the user_profiles table and the profile cache
     Then neither appears on any profile read or write path
+    And a deployment still configuring PostgREST is told so at startup
 
   @AC-4
   Scenario: The route and the chat tools reach the same owner
@@ -154,6 +157,8 @@ Feature: A user profile is durable, deletable, and has exactly one owner
     Then the tool sees what the route wrote
     And the route sees what the tool set
     And the field the tool deleted is gone from both
+    And a caller holding one fact can set that field alone
+    And a call missing its field or value is answered, not written
 
   @AC-5
   Scenario: A profile is deletable, and belongs to its principal
@@ -167,4 +172,6 @@ Feature: A user profile is durable, deletable, and has exactly one owner
     Given the identity panel saving a prompt
     When the request fails
     Then the failure is shown to the user rather than discarded
+    And it saves the one field it edited rather than the whole document
+    And a profile it could not load is reported, not shown as an empty one
 ```

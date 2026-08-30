@@ -109,6 +109,34 @@ not "set it to empty". Retention is stated: a profile is kept until its owner
 deletes it, because it is data the user authored about themselves and no
 schedule the system picks would be the right one.
 
+**One field at a time, where the caller holds one fact.** `PUT` replaces the
+whole document, so a client that read the profile at page load and later sends
+it back deletes whatever changed in between — a fact the user set in chat, or a
+second tab. `PATCH /v1/profile` sets one field, and the identity panel uses it.
+That removes the lost update rather than detecting it; a revision is carried on
+the record for a future caller that genuinely does replace the document.
+
+**The handlers are synchronous, and the chat tools offload.** A write reads
+SQLite and then waits in `State.flush()` — up to ten seconds with a backed-up
+writer queue. In an `async` handler that blocks the event loop and stalls every
+other request; Starlette runs a plain `def` handler in its threadpool instead,
+which is why `routes/settings.py` is sync too. The chat tools are genuinely
+async, so their writes go through `asyncio.to_thread`.
+
+**Reads fail the way writes do.** A reader can fail for reasons that have
+nothing to do with the record — I/O, permissions, a malformed database,
+exhausted descriptors. Those were escaping unclassified, so `GET` answered 500
+where the `PUT` beside it answered the documented 503. They are wrapped at the
+same seam as the write.
+
+**No automatic import from PostgREST, and no silence about it.** Nothing here
+creates `user_profiles`, so no deployment this repo provisions can hold a row
+there. An operator who created the table by hand is the one case where rows
+exist — and its column shapes are whatever that operator chose, so reading them
+back would be guessing and writing the guess into the durable record. Startup
+logs `PROFILE_STORE_CUTOVER` when PostgREST is configured, naming what is no
+longer read.
+
 **A profile is addressed by its authenticated principal, with no fallback.**
 `_user_id` used to fall back to the literal `"dev"` when the request carried a
 principal with neither an id nor a username, which would have had unrelated

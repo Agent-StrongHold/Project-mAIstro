@@ -6,9 +6,18 @@ a fact saved in the panel is the same record a fact saved in chat lands in.
 That was not true before #699: this route wrote a module-global dict and the
 tools read a PostgREST table no migration creates, so neither could see the
 other's writes and the panel's saves were silently overwritten.
+
+The handlers are plain `def`, not `async def`, and that is deliberate. A
+profile write reads SQLite synchronously and then waits in `State.flush()` for
+the writer thread — up to ten seconds when the queue is backed up. Inside an
+`async` handler that blocks the event loop and stalls every other request;
+Starlette runs a sync handler in its threadpool instead. `routes/settings.py`
+is sync for the same reason.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -37,15 +46,16 @@ class ProfileBody(BaseModel):
     preferences: dict = {}
 
 
-@router.get("")
-async def get_profile(request: Request) -> dict:
+class ProfileFieldBody(BaseModel):
+    """One field, for a caller that holds one fact rather than the document."""
+
+    field: str
+    value: Any = None
+
+
+def _answer(record: Any) -> dict:
     from services import profile_store
 
-    user_id = _user_id(request)
-    try:
-        record = profile_store.load(user_id)
-    except ProfileSchemaError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "preferences": record.preferences,
         "revision": record.revision,
@@ -53,8 +63,20 @@ async def get_profile(request: Request) -> dict:
     }
 
 
+@router.get("")
+def get_profile(request: Request) -> dict:
+    from services import profile_store
+
+    user_id = _user_id(request)
+    try:
+        record = profile_store.load(user_id)
+    except (ProfilePersistenceError, ProfileSchemaError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _answer(record)
+
+
 @router.put("")
-async def put_profile(body: ProfileBody, request: Request) -> dict:
+def put_profile(body: ProfileBody, request: Request) -> dict:
     """Replace the profile, and acknowledge only what the store read back.
 
     The previous implementation wrote a dict, mirrored to PostgREST inside a
@@ -68,15 +90,33 @@ async def put_profile(body: ProfileBody, request: Request) -> dict:
         record = profile_store.save(user_id, body.preferences)
     except (ProfilePersistenceError, ProfileSchemaError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {
-        "preferences": record.preferences,
-        "revision": record.revision,
-        "durable": profile_store.durable(),
-    }
+    return _answer(record)
+
+
+@router.patch("")
+def patch_profile(body: ProfileFieldBody, request: Request) -> dict:
+    """Set one field, leaving every other field as the store has it.
+
+    `PUT` replaces the whole document, so a client that read the profile at page
+    load and later sends it back deletes anything changed in between — a fact
+    the user set in chat, or a second tab. The panel edits one field at a time
+    and now says so, which removes the lost update rather than detecting it
+    (Codex, #699).
+    """
+    from services import profile_store
+
+    user_id = _user_id(request)
+    if not body.field:
+        raise HTTPException(status_code=400, detail="field is required")
+    try:
+        record = profile_store.set_field(user_id, body.field, body.value)
+    except (ProfilePersistenceError, ProfileSchemaError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _answer(record)
 
 
 @router.delete("")
-async def delete_profile(request: Request) -> dict:
+def delete_profile(request: Request) -> dict:
     """Remove the whole record.
 
     The record, not its contents: saving `{}` would leave "I deleted my

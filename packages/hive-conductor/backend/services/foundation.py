@@ -16,6 +16,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger("hive.foundation")
 
 
+def _warn_if_postgrest_profiles_are_being_left_behind() -> None:
+    """Say once, loudly, that a configured PostgREST is no longer read.
+
+    Profiles used to be mirrored to a `user_profiles` table over PostgREST.
+    Nothing in this repository creates that table -- no migration, no model, no
+    DDL -- so no deployment it provisions can hold a row there, and the mirror
+    was a silent no-op in every one of them (#699). An operator who created the
+    table by hand against their own PostgREST is the one case where rows could
+    exist, and this is for them.
+
+    Nothing is imported automatically. The table has no schema this repository
+    defines, so its column shapes and types are whatever that operator chose;
+    reading it back would be guessing, and guessing wrong would write the guess
+    into the durable record. Saying so is the honest half (Codex, #699).
+    """
+    import os
+
+    if os.environ.get("DEPLOY_TARGET_POSTGREST_URL") or os.environ.get("POSTGREST_URL"):
+        logger.warning(
+            "PROFILE_STORE_CUTOVER: PostgREST is configured, and user profiles no longer "
+            "read or write its `user_profiles` table -- they are held in the Conductor's "
+            "own state database (#699). Any rows you created there by hand are not "
+            "imported; copy them in through PUT /v1/profile if you need them."
+        )
+
+
 class Foundation:
     """Holds references to all initialised subsystems."""
 
@@ -105,6 +131,7 @@ class Foundation:
             from services.profile_store import configure as configure_profiles
 
             configure_profiles(PersistedProfileRecordStore(persisted, self.state.flush))
+            _warn_if_postgrest_profiles_are_being_left_behind()
 
             self.state.flush()
             logger.info("Stores wired to SQLite persistence")

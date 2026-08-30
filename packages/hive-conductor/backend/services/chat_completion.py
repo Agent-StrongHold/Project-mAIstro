@@ -6,6 +6,7 @@ Jira/Confluence via stored credentials, and can take real actions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -2167,7 +2168,9 @@ async def _tool_profile_set(
     if not field or not value:
         return {"error": "field and value required"}
     try:
-        profile_store.set_field(user_id, field, value)
+        # Off the loop: a profile write waits in `State.flush()` for the writer
+        # thread, and this runs inside the chat request's own task.
+        await asyncio.to_thread(profile_store.set_field, user_id, field, value)
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure
         # and answered `updated: True`, so the model told the user their fact
@@ -2186,7 +2189,7 @@ async def _tool_profile_delete(
     if not field:
         return {"error": "field required"}
     try:
-        profile_store.delete_field(user_id, field)
+        await asyncio.to_thread(profile_store.delete_field, user_id, field)
     except KeyError:
         return {"error": f"field '{field}' not found"}
     except profile_store.ProfilePersistenceError as exc:
@@ -2387,7 +2390,7 @@ async def _tool_favorite_model(
     profile["hidden_models"] = hidden
     profile["task_models"] = task_models
     try:
-        profile_store.save(user_id, profile)
+        await asyncio.to_thread(profile_store.save, user_id, profile)
     except profile_store.ProfilePersistenceError as exc:
         return {"error": f"profile not saved: {exc}"}
     return {"updated": True, "favorites": favorites, "hidden": hidden, "task_models": task_models}

@@ -221,6 +221,27 @@ def _decode(user_id: str, document: str) -> ProfileRecord:
         ) from exc
 
 
+def _read(user_id: str) -> str | None:
+    """Read one document, translating a store's own failure into ours.
+
+    The reader can fail for reasons that have nothing to do with the record: an
+    I/O error, a permission change, a malformed database, exhausted file
+    descriptors. Left alone those cross the service boundary unclassified, and
+    the route answers 500 for what is a storage failure — while the write path
+    beside it already answers the documented 503 (Codex, #699). Wrapped here, at
+    the seam, rather than caught wider up where it would swallow programming
+    errors too.
+    """
+    try:
+        return _store.read(user_id)
+    except ProfilePersistenceError:
+        raise
+    except Exception as exc:
+        raise ProfilePersistenceError(
+            f"the profile store could not be read for {user_id!r}: {exc}"
+        ) from exc
+
+
 def load(user_id: str) -> ProfileRecord:
     """Read `user_id`'s record, or an empty one when nothing is stored.
 
@@ -229,7 +250,7 @@ def load(user_id: str) -> ProfileRecord:
     """
     if not user_id:
         raise ValueError("a profile is addressed by a principal; user_id is empty")
-    document = _store.read(user_id)
+    document = _read(user_id)
     if document is None:
         return ProfileRecord(user_id=user_id)
     return _decode(user_id, document)
@@ -248,7 +269,12 @@ def preferences(user_id: str) -> dict[str, Any]:
 
 def user_ids() -> list[str]:
     """Every user id with a stored profile."""
-    return _store.user_ids()
+    try:
+        return _store.user_ids()
+    except ProfilePersistenceError:
+        raise
+    except Exception as exc:
+        raise ProfilePersistenceError(f"the profile store could not be listed: {exc}") from exc
 
 
 def save(user_id: str, values: dict[str, Any]) -> ProfileRecord:
@@ -303,14 +329,14 @@ def delete(user_id: str) -> bool:
     if not user_id:
         raise ValueError("a profile is addressed by a principal; user_id is empty")
     with _write_lock:
-        existed = _store.read(user_id) is not None
+        existed = _read(user_id) is not None
         try:
             _store.remove(user_id)
         except Exception as exc:
             raise ProfilePersistenceError(
                 f"the profile store refused the delete for {user_id!r}: {exc}"
             ) from exc
-        if _store.read(user_id) is not None:
+        if _read(user_id) is not None:
             raise ProfilePersistenceError(
                 f"profile for {user_id!r} was still stored after the delete"
             )
@@ -344,7 +370,7 @@ def _read_back(user_id: str, written: ProfileRecord) -> ProfileRecord:
     byte comparison would fail on key order while a record that genuinely
     disagreed on a value would be caught either way.
     """
-    document = _store.read(user_id)
+    document = _read(user_id)
     if document is None:
         raise ProfilePersistenceError(
             f"profile write for {user_id!r} was not observed in the store afterwards; "
