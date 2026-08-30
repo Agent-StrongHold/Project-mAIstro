@@ -1155,6 +1155,19 @@ def _report_movement(regressions: list[str], improvements: list[str], bound: Any
         )
 
 
+def _report_stale_grants(stale: list[str]) -> None:
+    if not stale:
+        return
+    print("\nFAIL: authorized floor(s) the notes have overtaken\n")
+    for line in stale:
+        print(f"  - {line}")
+    print(
+        "\nA grant that lowers nothing is not harmless. It sits in "
+        "quality/ratchet-authorizations.json\nunder someone's name and reason, ready to "
+        "absorb the next real fall as though that had\nbeen the one reviewed."
+    )
+
+
 def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | None]:
     """The counters the exact comparison is read against, or why it cannot be.
 
@@ -1289,6 +1302,92 @@ def _bank(totals: dict[str, Any], measured: bool) -> int:
         "This file is yours alone — another branch banking its own note will not conflict with it."
     )
     return 0
+
+
+#: Grants live under this key in quality/ratchet-authorizations.json, one per
+#: floored counter, spelled `<counter>@<value>` — `design_coverage@26.4762`.
+AUTHORIZATION_RATCHET = "ac-state"
+
+
+def authorized_floors(base: str | None) -> tuple[dict[str, float], dict[str, str]]:
+    """Floors a landed, reviewed grant has lowered, and the reasons given.
+
+    The fold takes `max` across notes, and notes outlive the branches that
+    wrote them, so a merged branch's note holds a floor no later change can
+    lower (#662). That is right for a regression and wrong for a *correction*:
+    when a measurement is found to have been over-counting, the recorded
+    number was never true, and `--bank` cannot say so because it writes only
+    this branch's own note.
+
+    A grant says it. `load_authorizations` reads grants **at the base**, so the
+    same commit cannot both lower the floor and permit itself to — the property
+    the whole mechanism exists for — and the value is in the key, so a grant
+    licenses one specific fall rather than an open season.
+    """
+    prov = ac_state_notes.provenance()
+    # The same tree and the same revision the notes were folded from.
+    # `load_authorizations` defaults both to the helper's own ROOT, which is
+    # the real repository -- so a caller working against another tree would
+    # resolve the base in one repo and the grants in another, and the tests
+    # that stand the ratchet up on a synthetic history would ask the real one
+    # for a SHA it has never seen.
+    root = ac_state_notes.ROOT
+    granted = prov.load_authorizations(
+        AUTHORIZATION_RATCHET,
+        path=root / "quality" / "ratchet-authorizations.json",
+        base=base,
+        root=root,
+    )
+    floors: dict[str, float] = {}
+    reasons: dict[str, str] = {}
+    for entry, reason in granted.items():
+        counter, _, raw = entry.partition("@")
+        if counter not in FLOORED:
+            raise RatchetProvenanceError(
+                f"ratchet-authorizations.json: {AUTHORIZATION_RATCHET}:{entry} names "
+                f"{counter!r}, which is not a floored counter. Only a floor can be "
+                "lowered by a grant; a debt ceiling is raised by banking it."
+            )
+        try:
+            floors[counter] = float(raw)
+        except ValueError as exc:
+            raise RatchetProvenanceError(
+                f"ratchet-authorizations.json: {AUTHORIZATION_RATCHET}:{entry} does not "
+                "name the value it lowers the floor to. Spell it "
+                "`<counter>@<value>`, so the grant permits one fall and not the next."
+            ) from exc
+        reasons[counter] = reason
+    return floors, reasons
+
+
+def _lowered(counters: dict[str, float], floors: dict[str, float]) -> dict[str, float]:
+    """The folded bound with each authorized floor applied.
+
+    `min`, not replacement: a grant may only *lower*. One that names a value
+    the fold is already below has been overtaken and raises nothing — it is
+    stale rather than binding, and `_stale_grants` says so.
+    """
+    lowered = dict(counters)
+    for counter, floor in floors.items():
+        if counter in lowered:
+            lowered[counter] = min(lowered[counter], floor)
+    return lowered
+
+
+def _stale_grants(counters: dict[str, float], floors: dict[str, float]) -> list[str]:
+    """Grants the fold has overtaken, which must be pruned.
+
+    The same rule every ledger here carries: a row that no longer does
+    anything is slack the next regression would spend under someone else's
+    reason. A grant is spent once the notes themselves fold to its value or
+    below.
+    """
+    return [
+        f"{counter}@{floor}: the folded floor is already {counters[counter]}, so this "
+        "grant lowers nothing — prune it"
+        for counter, floor in sorted(floors.items())
+        if counter in counters and counters[counter] <= floor
+    ]
 
 
 def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -1475,13 +1574,38 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     if refusal is not None:
         print(refusal)
         return 1
-    regressions, _ = _compare(bound.counters, totals)
-    exact_regressions, improvements = _compare(target, totals)
+
+    # A landed grant may lower a floor the fold cannot (#662). Read at the
+    # base, like the fold itself, so the change being judged did not write its
+    # own permission.
+    try:
+        floors, reasons = authorized_floors(bound.base_sha)
+    except RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    stale = _stale_grants(bound.counters, floors)
+
+    # Both comparisons, because both fold with `max`. The worktree fold carries
+    # every note in the candidate tree -- including the merged branch's note
+    # that holds the floor -- so a branch cannot *record* a lower value either:
+    # its own note at 26.4762 beside a `_baseline.json` at 27.2395 folds to
+    # 27.2395. Lowering only the regression floor would leave the exact
+    # comparison demanding a number the correction has just disproved.
+    #
+    # The grant is therefore the record, not a step toward one, which is why it
+    # carries the owner, the issue and the reason. What the exact comparison
+    # still enforces is that the measurement *is* the authorized value: below it
+    # is a regression the grant does not cover, above it is slack to bank.
+    regressions, _ = _compare(_lowered(bound.counters, floors), totals)
+    exact_regressions, improvements = _compare(_lowered(target, floors), totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
     improvements = _slack_this_run_enforces(improvements)
-    if regressions or improvements:
+    if regressions or improvements or stale:
         _report_movement(regressions, improvements, bound)
+        _report_stale_grants(stale)
         return 1
+    for counter, floor in sorted(floors.items()):
+        print(f"authorized floor: {counter} may fall to {floor} — {reasons[counter]}")
     print(
         f"OK: {len(RATCHETED)} debt counters sit exactly on their ceilings and "
         f"{len(FLOORED)} progress counter sits exactly on its floor "

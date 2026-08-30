@@ -224,6 +224,57 @@ class _NodePaused(Exception):
         super().__init__(reason)
 
 
+#: Every ``paused_reason`` a node in this package passes to :func:`pause_until`,
+#: mapped to who is owed the next action.
+#:
+#: A pause reason is a cross-module contract, not a node-local string: the node
+#: writes it and two *other* modules read it back to decide whether a person or
+#: the system is waited on. One table here, beside the function that carries
+#: the reason, is what lets those readers agree by construction instead of by
+#: both being edited on the same day.
+#:
+#: They previously held two hand-written allowlists which agreed on two reasons
+#: and omitted the rest, so `human.review_and_edit` and `human.delegate_to_role`
+#: parked as "the system will retry" on both paths: a prompt nobody can see,
+#: indistinguishable from a provider being down. A second literal set is a
+#: second thing to forget, and the reason it got forgotten is that nothing
+#: failed when it was.
+#:
+#: A reason absent from this table is not a new feature but an unclassified
+#: one -- the readers fall back to WAITING and nothing says whether that was
+#: the intent. A structural test over the node package's calls is what turns
+#: that silent default into a failing one.
+PAUSE_AWAITING_HUMAN_ANSWER = "awaiting_human_answer"
+PAUSE_AWAITING_HUMAN_APPROVAL = "awaiting_human_approval"
+PAUSE_AWAITING_HUMAN_REVIEW = "awaiting_human_review"
+PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
+PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
+PAUSE_AWAITING_HARNESS = "awaiting_harness"
+PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
+
+#: Who each pause waits on. "human" means a person owes the next action and the
+#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
+#: WAITING. Every reason states its own answer, so adding a pausing node is a
+#: question a reviewer sees rather than a default nobody chose.
+PAUSE_REASON_OWNERS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: "human",
+    PAUSE_AWAITING_HUMAN_APPROVAL: "human",
+    PAUSE_AWAITING_HUMAN_REVIEW: "human",
+    PAUSE_AWAITING_ROLE_DELEGATE: "human",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_HARNESS: "system",
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+}
+
+#: The reasons a *person* is owed an action, derived from the table above so
+#: the two can never disagree. Both readers -- the durable graph executor's
+#: `_is_human_pause` and the schedule consumer's yield disposition -- import
+#: this rather than spelling the set themselves.
+HUMAN_PAUSE_REASONS = frozenset(
+    reason for reason, owner in PAUSE_REASON_OWNERS.items() if owner == "human"
+)
+
+
 def pause_until(
     reason: str,
     *,

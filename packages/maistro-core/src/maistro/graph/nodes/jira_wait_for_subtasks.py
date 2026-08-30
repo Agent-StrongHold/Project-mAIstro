@@ -20,7 +20,13 @@ from pydantic import BaseModel, Field
 from maistro.http import shared_client
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_WAITING_ON_JIRA_SUBTASKS,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+)
 
 
 class WaitForSubtasksIn(BaseModel):
@@ -90,7 +96,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
         if first_seen is None:
             # First reach — store start timestamp, pause for the poll interval.
             pause_until(
-                "waiting_on_jira_subtasks",
+                PAUSE_WAITING_ON_JIRA_SUBTASKS,
                 resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
                 metadata={
                     "parent_key": inputs.parent_key,
@@ -119,7 +125,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
 
         # Still waiting — pause for another poll interval.
         pause_until(
-            "waiting_on_jira_subtasks",
+            PAUSE_WAITING_ON_JIRA_SUBTASKS,
             resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
             metadata={
                 "parent_key": inputs.parent_key,
