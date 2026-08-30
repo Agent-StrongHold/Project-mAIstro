@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -187,3 +188,218 @@ def _generate_gemini(url):
     assert [(site.category, site.entry_point) for site in sites] == [
         ("MODEL_EFFECT", "gemini-image-http"),
     ]
+
+
+def test_production_python_files_is_empty_without_a_packages_dir(gate, tmp_path) -> None:
+    assert gate._production_python_files(tmp_path) == []
+
+
+def test_star_import_is_skipped_by_alias_collection(gate) -> None:
+    import ast
+
+    tree = ast.parse("from os import *\nfrom os import getenv\n")
+    aliases = gate._scope_aliases(tree.body)
+    assert aliases == {"getenv": "os.getenv"}
+
+
+def test_environment_default_via_keyword_argument_is_detected(gate) -> None:
+    source = """
+import os
+import httpx
+def ask():
+    return httpx.post(f"{base}{os.environ.get('LLM_CHAT_PATH', default='/v1/chat/completions')}")
+"""
+    sites = gate.analyze_source(source)
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("MODEL_EFFECT", "openai-compatible-http"),
+    ]
+
+
+def test_environment_lookup_without_a_default_yields_no_endpoint_text(gate) -> None:
+    source = """
+import os
+import httpx
+def ask():
+    return httpx.post(os.getenv("CHAT_URL"))
+"""
+    assert gate.analyze_source(source) == []
+
+
+def test_http_url_via_keyword_argument_is_detected(gate) -> None:
+    source = """
+async def ask(client):
+    return await client.post(json={}, url="https://example.com/v1/chat/completions")
+"""
+    sites = gate.analyze_source(source)
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("MODEL_EFFECT", "openai-compatible-http"),
+    ]
+
+
+def test_syntax_error_source_yields_no_sites(gate) -> None:
+    assert gate.analyze_source("def broken(:\n") == []
+
+
+def test_discover_skips_a_file_that_cannot_be_read(gate, tmp_path) -> None:
+    packages = tmp_path / "packages" / "demo"
+    packages.mkdir(parents=True)
+    real = packages / "effect.py"
+    real.write_text('async def ask(client):\n    await client.post("/v1/chat/completions")\n')
+    broken = packages / "broken.py"
+    broken.symlink_to(tmp_path / "does-not-exist.py")
+
+    found = gate.discover(tmp_path)
+
+    assert len(found) == 1
+    assert next(iter(found.values())).path == "packages/demo/effect.py"
+
+
+def test_discover_rejects_duplicate_site_identities(gate, tmp_path, monkeypatch) -> None:
+    packages = tmp_path / "packages" / "demo"
+    packages.mkdir(parents=True)
+    (packages / "a.py").write_text("pass\n")
+    (packages / "b.py").write_text("pass\n")
+
+    fixed_site = gate.Site(
+        id="dup",
+        path="dup.py",
+        qualname="x",
+        line=1,
+        category="MODEL_EFFECT",
+        entry_point="openai-compatible-http",
+        callee="client.post",
+    )
+    monkeypatch.setattr(gate, "analyze_source", lambda source, path="example.py": [fixed_site])
+
+    with pytest.raises(RuntimeError, match="duplicate direct-effect site identity"):
+        gate.discover(tmp_path)
+
+
+def test_audit_reports_a_field_mismatch_between_recorded_and_discovered(gate) -> None:
+    site = gate.analyze_source(
+        'async def ask(client):\n    await client.post("/v1/chat/completions")\n', "a.py"
+    )[0]
+    entry = {
+        "path": "wrong.py",
+        "qualname": site.qualname,
+        "category": site.category,
+        "entry_point": site.entry_point,
+        "callee": site.callee,
+        "disposition": "RETIRE",
+        "owner": "#56",
+        "rationale": "retire",
+    }
+    failures = gate.audit({site.id: entry}, {site.id: site})
+    assert any("recorded path='wrong.py'" in message for message in failures)
+
+
+def test_write_inventory_preserves_disposition_and_drops_id(gate, tmp_path) -> None:
+    site = gate.Site(
+        id="a.py::ask::MODEL_EFFECT:openai-compatible-http#1",
+        path="a.py",
+        qualname="ask",
+        line=2,
+        category="MODEL_EFFECT",
+        entry_point="openai-compatible-http",
+        callee="client.post",
+    )
+    recorded = {
+        site.id: {
+            "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+            "owner": "#56",
+            "rationale": "carried over",
+        }
+    }
+    out = tmp_path / "inventory.json"
+
+    gate._write_inventory({site.id: site}, recorded, out)
+
+    payload = json.loads(out.read_text())
+    entry = payload["sites"][site.id]
+    assert "id" not in entry
+    assert entry["disposition"] == "MIGRATE_TO_GOVERNED_INVOCATION"
+    assert entry["owner"] == "#56"
+    assert entry["rationale"] == "carried over"
+
+
+def test_main_fails_when_inventory_file_is_missing(gate, tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(gate, "INVENTORY", tmp_path / "missing.json")
+    assert gate.main([]) == 1
+    assert "is missing" in capsys.readouterr().err
+
+
+def test_main_update_writes_inventory_and_returns_zero(gate, tmp_path, monkeypatch, capsys) -> None:
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps({"sites": {}}))
+    monkeypatch.setattr(gate, "INVENTORY", inventory)
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    monkeypatch.setattr(gate, "discover", lambda root: {})
+
+    assert gate.main(["--update"]) == 0
+
+    out = capsys.readouterr().out
+    assert "wrote" in out
+    payload = json.loads(inventory.read_text())
+    assert payload["sites"] == {}
+
+
+def test_main_reports_failures_and_returns_one_when_inventory_is_stale(
+    gate, tmp_path, monkeypatch, capsys
+) -> None:
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps({"sites": {}}))
+    monkeypatch.setattr(gate, "INVENTORY", inventory)
+    site = gate.Site(
+        id="a.py::ask::MODEL_EFFECT:openai-compatible-http#1",
+        path="a.py",
+        qualname="ask",
+        line=2,
+        category="MODEL_EFFECT",
+        entry_point="openai-compatible-http",
+        callee="client.post",
+    )
+    monkeypatch.setattr(gate, "discover", lambda root: {site.id: site})
+
+    assert gate.main([]) == 1
+
+    err = capsys.readouterr().err
+    assert "FAIL: direct-effect inventory does not match" in err
+    assert "NEW" in err
+
+
+def test_main_succeeds_when_inventory_matches(gate, tmp_path, monkeypatch, capsys) -> None:
+    site = gate.Site(
+        id="a.py::ask::MODEL_EFFECT:openai-compatible-http#1",
+        path="a.py",
+        qualname="ask",
+        line=2,
+        category="MODEL_EFFECT",
+        entry_point="openai-compatible-http",
+        callee="client.post",
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "sites": {
+                    site.id: {
+                        "path": site.path,
+                        "qualname": site.qualname,
+                        "category": site.category,
+                        "entry_point": site.entry_point,
+                        "callee": site.callee,
+                        "disposition": "RETIRE",
+                        "owner": "#56",
+                        "rationale": "retire",
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(gate, "INVENTORY", inventory)
+    monkeypatch.setattr(gate, "discover", lambda root: {site.id: site})
+
+    assert gate.main([]) == 0
+
+    out = capsys.readouterr().out
+    assert "Direct-effect inventory matches code" in out
