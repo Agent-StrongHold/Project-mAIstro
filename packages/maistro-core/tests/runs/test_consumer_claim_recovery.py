@@ -195,3 +195,121 @@ async def test_normal_tick_completes_the_exact_claimed_attempt() -> None:
     run = await container.run_store.get_run(run_id)
     assert run is not None and run.status is RunStatus.COMPLETED
     assert _EligibleNode.calls == 1
+
+
+async def test_hard_crash_during_runtime_leaves_recoverable_running_attempt() -> None:
+    """A process-level failure after runtime starts leaves leased physical evidence."""
+    from maistro.runs.execution import AttemptExecutionService
+    from maistro.runtime import PythonExecutionRuntime
+
+    class _HardCrash(BaseException):
+        pass
+
+    container = await _container()
+    run_id = await _admit(container, workspace="runtime-hard-crash")
+    attempt = await _claim(container, run_id, ttl=timedelta(seconds=5))
+    service = AttemptExecutionService(
+        store=container.run_store,
+        runtime=PythonExecutionRuntime(),
+        lease_ttl=timedelta(seconds=5),
+    )
+
+    async def _crash(_work_item: object, _context: object) -> object:
+        raise _HardCrash()
+
+    try:
+        await service.execute_claimed(attempt, None, None, executor=_crash)
+    except _HardCrash:
+        pass
+    else:  # pragma: no cover - the executor above always raises
+        raise AssertionError("hard crash did not escape execution")
+
+    persisted = await container.run_store.get_attempt(attempt.attempt_id)
+    assert persisted is not None and persisted.status is AttemptStatus.RUNNING
+    lease = persisted.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    assert (
+        await container.recover_abandoned_attempts(now=lease.expires_at + timedelta(microseconds=1))
+        == 1
+    )
+    recovered = await container.run_store.get_attempt(attempt.attempt_id)
+    node_run = await container.run_store.get_node_run(attempt.node_run_id)
+    run = await container.run_store.get_run(run_id)
+    assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
+    assert node_run is not None and node_run.status is RunStatus.WAITING
+    assert run is not None and run.status is RunStatus.WAITING
+
+
+async def test_sqlite_claim_is_atomic_running_evidence_and_uses_ordinary_recovery() -> None:
+    """The durable SQLite implementation has the same claim/recovery invariant."""
+    import aiosqlite
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingSqliteRunStore
+    from maistro.runs.reconciliation import AttemptLifecycleReconciler
+
+    workspace = "sqlite-consumer-claim"
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(workspace)
+    project = await projects.create(
+        workspace_id=workspace,
+        parent_project_id=root.project_id,
+        name="claim",
+    )
+    conn = await aiosqlite.connect(":memory:")
+    store = ClaimingSqliteRunStore(conn, project_store=projects)
+    await store.ensure_schema()
+    try:
+        graph = Graph(
+            workspace_id=workspace,
+            project_id=project.project_id,
+            name="sqlite claim",
+            nodes=[Node(node_id="n0", node_type=_EligibleNode.kind)],
+        )
+        run = await store.create_run(
+            graph,
+            provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
+            initial_status=RunStatus.QUEUED,
+        )
+        claim = await store.claim_consumer_run(
+            run.run_id,
+            node_id="n0",
+            runtime_id="sqlite-test",
+            executor_id=SCHEDULE_EXECUTOR_ID,
+            lease_ttl=timedelta(seconds=5),
+        )
+        persisted_run = await store.get_run(run.run_id)
+        persisted_node = await store.get_node_run(claim.node_run.node_run_id)
+        persisted_attempt = await store.get_attempt(claim.attempt.attempt_id)
+        assert persisted_run is not None and persisted_run.status is RunStatus.RUNNING
+        assert persisted_node is not None and persisted_node.status is RunStatus.RUNNING
+        assert persisted_attempt is not None and persisted_attempt.status is AttemptStatus.RUNNING
+        lease = persisted_attempt.execution_lease
+        assert lease is not None and lease.expires_at is not None
+
+        try:
+            await store.claim_consumer_run(
+                run.run_id,
+                node_id="n0",
+                runtime_id="sqlite-test",
+                executor_id=SCHEDULE_EXECUTOR_ID,
+                lease_ttl=timedelta(seconds=5),
+            )
+        except ConsumerClaimLost:
+            pass
+        else:  # pragma: no cover - the first transaction owns the Run
+            raise AssertionError("a second SQLite consumer claim unexpectedly succeeded")
+        assert len(await store.list_node_runs(run.run_id)) == 1
+        assert len(await store.list_attempts(claim.node_run.node_run_id)) == 1
+
+        reclaimed = await store.reclaim_expired_attempts(
+            now=lease.expires_at + timedelta(microseconds=1)
+        )
+        assert len(reclaimed) == 1
+        await AttemptLifecycleReconciler(store).reconcile(reclaimed[0])
+        recovered_run = await store.get_run(run.run_id)
+        recovered_node = await store.get_node_run(claim.node_run.node_run_id)
+        assert recovered_run is not None and recovered_run.status is RunStatus.WAITING
+        assert recovered_node is not None and recovered_node.status is RunStatus.WAITING
+    finally:
+        await conn.close()

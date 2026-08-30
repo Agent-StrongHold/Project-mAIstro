@@ -250,12 +250,13 @@ class AttemptExecutionService:
         reconcile_logical: bool = True,
         context_factory: AttemptContextFactory | None = None,
     ) -> Attempt:
-        """Execute an atomically claimed leased CREATED Attempt.
+        """Execute an Attempt whose consumer claim is already physically RUNNING.
 
-        The consumer claim transaction has already persisted RUNNING Run and
-        NodeRun rows beside this Attempt. Nothing here repeats that claim; the
-        remaining work is the physical CREATED→RUNNING edge and the same Runtime,
-        heartbeat, terminalization and reconciliation path used by ``execute``.
+        The consumer claim transaction persists Run, NodeRun and leased Attempt
+        as RUNNING together. Nothing here repeats that claim. The CREATED branch
+        remains only for compatibility with ordinary execution, which persists
+        its Attempt before preparing logical execution and then enters this same
+        Runtime, heartbeat, terminalization and reconciliation path.
         """
         lease = attempt.execution_lease
         if lease is None:
