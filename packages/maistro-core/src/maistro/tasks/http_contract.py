@@ -15,11 +15,13 @@ import hmac
 
 WORKSPACE_ID_HEADER = "X-Maistro-Workspace-Id"
 WORKSPACE_SCOPE_SIGNATURE_HEADER = "X-Maistro-Workspace-Signature"
+_SCOPE_SIGNATURE_DOMAIN = "maistro-workspace-scope:v1:"
 
 
 def sign_workspace_scope(workspace_id: str, key: str) -> str:
-    """Return the HMAC-SHA256 proof for one explicit Workspace binding."""
-    return hmac.new(key.encode("utf-8"), workspace_id.encode("utf-8"), hashlib.sha256).hexdigest()
+    """Return the domain-separated HMAC-SHA256 proof for one Workspace binding."""
+    message = f"{_SCOPE_SIGNATURE_DOMAIN}{workspace_id}"
+    return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def verify_workspace_scope_signature(workspace_id: str, signature: str, key: str) -> bool:
