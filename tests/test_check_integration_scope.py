@@ -156,7 +156,10 @@ def test_main_rejects_malformed_result(check, capsys) -> None:
 
 
 def test_main_rejects_unknown_check(check, capsys) -> None:
-    assert check.main(["--event-name", "merge_group", "--result", "unknown=success"]) == 1
+    assert (
+        check.main(["--event-name", "merge_group", "--result", "unknown=success"])
+        == 1
+    )
     assert "unknown specialized check name 'unknown'" in capsys.readouterr().out
 
 
