@@ -29,6 +29,11 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
     ),
+    ("check-image-inventory.py", "quality/image-inventory.json"): (
+        "image inventory is the reviewed current-tree specification: the checker validates "
+        "each Dockerfile's disposition and named build/scan jobs rather than comparing "
+        "against a tolerated prior-state oracle"
+    ),
     ("pip_audit_gate.py", "quality/direct-dependency-exceptions.json"): (
         "dependency exceptions are an explicitly reviewed specification"
     ),
@@ -51,6 +56,18 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
 # dynamic load below is visible as a real edge instead of making live CI tooling
 # look unreachable merely because Python loads it from a filename.
 TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
+    ("check-citation-status.py", "quality/citation-baseline.json"): (
+        "check-citation-status-provenance"
+    ),
+    ("check-promotion-surface.py", "quality/promotion-surface-baseline.json"): (
+        "check-promotion-surface-provenance"
+    ),
+    ("check-shell-execution.py", "quality/shell-execution.json"): (
+        "check-shell-execution-provenance"
+    ),
+    ("check_contract_markers_impl.py", "quality/contract-markers-baseline.json"): (
+        "check-contract-markers-provenance"
+    ),
     ("check_enumerations.py", "quality/enumeration-baseline.json"): (
         "check-enumerations-provenance"
     ),
