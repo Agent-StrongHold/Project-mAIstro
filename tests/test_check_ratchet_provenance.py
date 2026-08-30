@@ -76,6 +76,16 @@ def test_repo_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -
     assert checker.Consumer("gate.py", "quality/debt.json") in checker.consumers(root)
 
 
+def test_repo_root_alias_for_quality_directory_is_resolved(checker, tmp_path: Path) -> None:
+    root = _tree(
+        tmp_path,
+        "from pathlib import Path\nREPO_ROOT = Path(__file__).resolve().parents[1]\n"
+        'BASELINE = REPO_ROOT / "quality" / "debt.json"\n',
+    )
+
+    assert checker.Consumer("gate.py", "quality/debt.json") in checker.consumers(root)
+
+
 def test_direct_function_path_expression_is_not_invisible(checker, tmp_path: Path) -> None:
     root = _tree(
         tmp_path,
@@ -122,6 +132,30 @@ def test_delegated_consumer_requires_a_real_trusted_adapter(
     assert checker.violations(root) == ["delegated trusted-base adapter adapter.py does not exist"]
 
 
+def test_delegated_adapter_may_use_tooling_stem_identity(
+    checker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _tree(
+        tmp_path,
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
+        'BASELINE = ROOT / "quality" / "debt.json"\n',
+    )
+    (root / "scripts" / "adapter.py").write_text(
+        "import ratchet_provenance\n"
+        "def probe(): return ratchet_provenance.resolve_baseline(None)\n"
+        "def main(): return 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
+    monkeypatch.setattr(
+        checker,
+        "TRUSTED_ADAPTERS",
+        {("gate.py", "quality/debt.json"): "adapter"},
+    )
+
+    assert checker.violations(root) == []
+
+
 def test_delegated_adapter_must_use_shared_resolver(
     checker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -166,6 +200,19 @@ def test_delegated_adapter_is_executed(
 
     assert checker.violations(root) == []
     assert checker.run_delegated(root) == ["adapter.py: trusted-base gate returned 7"]
+
+
+def test_inventory_only_does_not_execute_delegated_adapters(
+    checker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(checker, "violations", lambda _root: [])
+    monkeypatch.setattr(checker, "consumers", lambda _root: set())
+
+    def _must_not_run(_root):
+        raise AssertionError("inventory-only executed delegated adapters")
+
+    monkeypatch.setattr(checker, "run_delegated", _must_not_run)
+    assert checker.main(["--inventory-only"]) == 0
 
 
 def test_unparseable_checker_fails_closed(checker, tmp_path: Path) -> None:
