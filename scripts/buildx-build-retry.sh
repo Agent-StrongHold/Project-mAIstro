@@ -35,6 +35,14 @@ set -euo pipefail
 
 ATTEMPTS="${BUILDX_RETRY_ATTEMPTS:-2}"
 
+# A zero or negative ATTEMPTS makes the loop below run zero times: the script
+# would reach EOF after `shift` with no explicit exit, which is success --
+# reporting a build step green without ever invoking docker (Codex, #684).
+if ! [[ ${ATTEMPTS} =~ ^[0-9]+$ ]] || [[ ${ATTEMPTS} -lt 1 ]]; then
+	echo "::error::BUILDX_RETRY_ATTEMPTS must be a positive integer, got '${ATTEMPTS}'" >&2
+	exit 2
+fi
+
 if [[ ${1:-} != "--" ]]; then
 	echo "usage: $0 -- <docker buildx build arguments...>" >&2
 	exit 2

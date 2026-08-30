@@ -150,6 +150,14 @@ jobs:
       # images cold on a fresh runner.
       - uses: docker/setup-buildx-action@v3
 
+      # `docker/build-push-action` exposes GitHub's runtime cache-auth
+      # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally
+      # before invoking buildx; a raw `docker buildx build` in a `run:` step
+      # does not have them, so every `type=gha` cache reference below would
+      # silently fail to authenticate and build with no cache (Codex, #684).
+      # Docker's own documented fix: https://docs.docker.com/build/cache/backends/gha/#authentication
+      - uses: crazy-max/ghaction-github-runtime@v3
+
       # Buildx's own driver has its own image store, isolated from the host
       # daemon -- no prepull step protects these fetches, so each build
       # retries itself via buildx-build-retry.sh (Codex, #683).
