@@ -1,0 +1,26 @@
+name: tmp-pr733-ruff-format
+
+on:
+  push:
+    branches:
+      - chatgpt/issue-51-evolve-canonical-runs
+
+permissions:
+  contents: read
+
+jobs:
+  format-diff:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: 0.12.5
+      - name: Print exact Ruff 0.15.12 formatter diff
+        run: |
+          uvx --from ruff==0.15.12 ruff format \
+            packages/hive-conductor/backend/services/evolution_graph.py \
+            packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py
+          git diff --no-ext-diff --no-color -- \
+            packages/hive-conductor/backend/services/evolution_graph.py \
+            packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py
