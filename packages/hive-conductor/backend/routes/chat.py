@@ -20,6 +20,11 @@ router = APIRouter(tags=["chat"])
 # for trusted/internal callers, but this public route must not invoke it.
 _DASHBOARD_EDIT_SCOPE = "dashboard_edit"
 _DASHBOARD_EDIT_DISABLED = "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
+_CONVERSATION_SYSTEM_PROMPT = (
+    "You are a Fantasia orchestration assistant. This external chat surface is temporarily "
+    "conversational-only while governed tool boundaries are being completed. Answer concisely "
+    "and helpfully, but do not claim to have executed tools, changed external systems, or taken actions."
+)
 
 
 def _now() -> datetime:
@@ -111,8 +116,11 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict:
         # interprets textual ```widget_update``` blocks, so tool disabling alone
         # would not contain model-authored widget mutations (#483).
         return _disabled_dashboard_response()
+    messages = list(req.messages)
+    if not any(message.get("role") == "system" for message in messages):
+        messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
     llm = build_llm_port()
-    return await llm.complete(_conversation_only(req))
+    return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
 
 
 @router.post("/stream")
@@ -134,8 +142,13 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
             yield f"data: {json.dumps({'type': 'done', 'content': _DASHBOARD_EDIT_DISABLED})}\n\n"
             return
         try:
+            messages = list(req.messages)
+            if not any(message.get("role") == "system" for message in messages):
+                messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
             llm = build_llm_port()
-            result = await llm.complete(_conversation_only(req))
+            result = await llm.complete(
+                _conversation_only(req.model_copy(update={"messages": messages}))
+            )
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
             yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"

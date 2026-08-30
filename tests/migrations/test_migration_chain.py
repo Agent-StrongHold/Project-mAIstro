@@ -85,6 +85,10 @@ EXPECTED_TABLES = frozenset(
         "node_templates",
         "orgs",
         "outcomes",
+        # A version and the label pointing at it were one row until 022; a
+        # version may carry several labels, which that shape had no room for
+        # (#328).
+        "prompt_labels",
         "prompts",
         "quota_usage",
         # Schedule definitions and their fire cursors (016). Durable so that a
@@ -94,6 +98,10 @@ EXPECTED_TABLES = frozenset(
         "security_rate_limits",
         "security_strikes",
         "security_violations",
+        # A turn's at-most-once marker, a row of its own since 023: one turn
+        # writes several messages, so the key that admits a turn once cannot
+        # live on the message table (#327).
+        "session_turns",
         "sessions",
         "tasks",
         "teams",

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from argon2 import PasswordHasher
+
+logger = logging.getLogger("maistro.security.passwords")
 
 _ARGON2_PREFIX = "$argon2"
 _BCRYPT_PREFIX = "$2"
@@ -47,7 +50,29 @@ def verify_password(plain: str, stored: str) -> bool:
     if stored.startswith(_BCRYPT_PREFIX):
         try:
             import bcrypt
-
+        except ImportError:
+            # bcrypt is `maistro-core[bcrypt]`, so a deployment with no legacy
+            # columns need not carry it (#514). ImportError was not caught
+            # here, and it is not a ValueError: absence turned a login against
+            # a legacy hash into a 500 from the route rather than a denial —
+            # the same "an error where a decision belonged" the Argon2 branch
+            # above was corrected for. Fail closed, and say why, because a
+            # silent False on a correct password is indistinguishable from a
+            # wrong one to the person who cannot log in.
+            logger.error(
+                "Cannot verify a legacy bcrypt hash: bcrypt is not installed. "
+                "Install maistro-core[bcrypt] to verify pre-Argon2id passwords."
+            )
+            # Denied at the same cost as every other denial (#667). Returning
+            # here directly answered in ~0 ms while an unknown username spends
+            # a decoy Argon2 verification at ~88 ms, so in a deployment with
+            # legacy rows and no bcrypt the response time told an attacker
+            # which usernames exist *and* have never been migrated. That is
+            # #366's enumeration oracle, reopened for exactly the accounts
+            # carrying the oldest hashes.
+            _spend_decoy_verification(plain)
+            return False
+        try:
             return bcrypt.checkpw(plain.encode(), stored.encode())
         except (ValueError, TypeError):
             return False
@@ -75,6 +100,18 @@ def _decoy_hash() -> str:
     return _DECOY_HASH
 
 
+def _spend_decoy_verification(plain: str) -> None:
+    """Pay one real Argon2 verification and discard the answer.
+
+    The unit of cost every denial in this module is measured against, named
+    once so its two callers cannot drift: `equal_cost_verify` spends it for an
+    account that does not exist, and the legacy branch above spends it for an
+    account whose hash cannot be checked here. A denial that skips it is a
+    denial that announces which kind of denial it was.
+    """
+    verify_password(plain, _decoy_hash())
+
+
 def equal_cost_verify(plain: str, stored: str | None) -> bool:
     """Verify `plain`, spending the same work whether or not the account exists.
 
@@ -99,7 +136,7 @@ def equal_cost_verify(plain: str, stored: str | None) -> bool:
     measurable across a network.
     """
     if stored is None:
-        verify_password(plain, _decoy_hash())
+        _spend_decoy_verification(plain)
         return False
     return verify_password(plain, stored)
 

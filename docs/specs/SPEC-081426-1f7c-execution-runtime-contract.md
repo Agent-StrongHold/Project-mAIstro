@@ -42,6 +42,10 @@ ac-modules:
   AC-10: maistro.runtime.execution
   AC-11: maistro.runtime.execution
   AC-12: maistro.graph.durable_runs.attempt_executor
+  AC-13: maistro.runtime.execution
+  AC-14: maistro.runtime.execution
+  AC-15: maistro.runtime.execution
+  AC-16: maistro.runtime.execution
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -120,6 +124,12 @@ Runtime benchmark `wall_seconds` MUST measure execution workload completion, exc
 ### R12. Health and metrics
 
 Runtime health/metrics MAY expose mechanics such as active executions, active slots, peak concurrency, scheduling wait, cancellation/failure/timeout counts, event sequence, loop lag, CPU, and RSS. These are telemetry and MUST NOT become authoritative Run lifecycle state.
+
+### R13. Pause classification
+
+An execution that stops deliberately rather than finishing or failing MUST surface a distinct Runtime pause signal, preferably `ExecutionPaused`. Only that signal increments Runtime pause metrics, and it MUST increment neither the failure nor the completion count: a pause is not a failure, and counting it as a completion would trade an undercount of successes for an overcount and lose how much of the workload is parked.
+
+The pause signal is defined by Runtime and carries no domain meaning. Why the work paused, what it waits on and when it resumes are domain facts, carried on a domain subclass; R1 and AC-10 forbid Runtime importing the domain to learn them. Runtime re-raises the signal so the domain service can terminalize the Attempt, exactly as it re-raises a failure.
 
 ## Acceptance Criteria
 
@@ -202,6 +212,31 @@ Feature: ExecutionRuntime contract
     Given the canonical Attempt execution service
     When it invokes the Runtime
     Then the Runtime execution_id is the Attempt's attempt_id
+
+  @AC-13
+  Scenario: A deliberate pause increments the pause count
+    Given an executor that raises the Runtime pause signal
+    When the execution ends
+    Then Runtime pause metrics increment
+
+  @AC-14
+  Scenario: A pause is not a failure
+    Given an executor that raises the Runtime pause signal
+    When the execution ends
+    Then failure metrics do not increment
+
+  @AC-15
+  Scenario: A pause is not a completion
+    Given an executor that raises the Runtime pause signal
+    When the execution ends
+    Then completion metrics do not increment
+
+  @AC-16
+  Scenario: A genuine error is still a failure
+    Given an executor that raises an error that is not the pause signal
+    When the execution ends
+    Then failure metrics increment
+    And pause metrics do not
 ```
 
 ## Non-goals

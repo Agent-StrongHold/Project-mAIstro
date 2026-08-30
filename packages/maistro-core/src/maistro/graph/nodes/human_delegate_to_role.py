@@ -22,7 +22,13 @@ from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_AWAITING_ROLE_DELEGATE,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+)
 
 
 @runtime_checkable
@@ -90,7 +96,7 @@ class HumanDelegateToRoleNode(BaseNode[DelegateToRoleIn, DelegateToRoleOut]):
 
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(
-            "awaiting_role_delegate",
+            PAUSE_AWAITING_ROLE_DELEGATE,
             resume_at=resume_at,
             metadata={
                 "role": inputs.role,

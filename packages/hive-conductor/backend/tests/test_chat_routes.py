@@ -155,11 +155,11 @@ def test_append_message_updates_session_updated_at(authed_client: Any) -> None:
 
 
 def test_complete_calls_conversational_llm_without_tools(authed_client: Any, monkeypatch) -> None:
-    captured: dict[str, Any] = {}
+    captured: list[Any] = []
 
     class FakeLLM:
         async def complete(self, req):
-            captured["request"] = req
+            captured.append(req)
             return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
     monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
@@ -170,10 +170,29 @@ def test_complete_calls_conversational_llm_without_tools(authed_client: Any, mon
     )
     assert r.status_code == 200
     assert r.json()["choices"][0]["message"]["content"] == "ok"
-    req = captured["request"]
-    assert req.messages[0]["content"] == "hi"
+    req = captured[0]
+    assert req.messages[0]["role"] == "system"
+    assert "conversational-only" in req.messages[0]["content"]
+    assert req.messages[1]["content"] == "hi"
     assert req.tools is None
     assert req.model == "test-model"
+
+    r = authed_client.post(
+        "/v1/chat/complete",
+        json={
+            "messages": [
+                {"role": "system", "content": "caller context"},
+                {"role": "user", "content": "hello"},
+            ],
+            "model": "test-model",
+        },
+    )
+    assert r.status_code == 200
+    caller_req = captured[1]
+    assert [message["role"] for message in caller_req.messages] == ["system", "user"]
+    assert caller_req.messages[0]["content"] == "caller context"
+    assert caller_req.messages[1]["content"] == "hello"
+    assert caller_req.tools is None
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +221,35 @@ def test_stream_emits_single_done_event_from_conversational_llm(
     assert '"type": "done"' in body or '"type":"done"' in body
     assert "Hello" in body
     assert '"type": "delta"' not in body and '"type":"delta"' not in body
+
+
+def test_stream_preserves_caller_provided_system_message(authed_client: Any, monkeypatch) -> None:
+    captured: list[Any] = []
+
+    class FakeLLM:
+        async def complete(self, req):
+            captured.append(req)
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
+
+    with authed_client.stream(
+        "POST",
+        "/v1/chat/stream",
+        json={
+            "messages": [
+                {"role": "system", "content": "caller context"},
+                {"role": "user", "content": "hello"},
+            ],
+            "model": "test-model",
+        },
+    ) as r:
+        assert r.status_code == 200
+        "".join(r.iter_text())
+
+    req = captured[0]
+    assert [message["role"] for message in req.messages] == ["system", "user"]
+    assert req.messages[0]["content"] == "caller context"
 
 
 def test_stream_swallows_llm_exception_as_done_event(authed_client: Any, monkeypatch) -> None:

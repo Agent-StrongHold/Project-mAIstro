@@ -269,13 +269,9 @@ def banked_bound(*, notes_dir: Path | None = None) -> Bounds:
     caught by the other half of the comparison, which is folded at the base and
     which nothing in the worktree can reach.
     """
-    notes_dir = NOTES_DIR if notes_dir is None else notes_dir
-    if not notes_dir.is_dir():
+    notes = worktree_notes(notes_dir=notes_dir)
+    if not notes:
         return Bounds(counters={}, notes=(), origin="empty", base_sha=None)
-    notes = [
-        Note.parse(path.name, path.read_text(encoding="utf-8"))
-        for path in sorted(notes_dir.glob("*.json"))
-    ]
     return Bounds(
         counters=fold(notes),
         notes=tuple(note.name for note in notes),
@@ -283,6 +279,23 @@ def banked_bound(*, notes_dir: Path | None = None) -> Bounds:
         base_sha=None,
         modes={note.name: note.measured_with_tests for note in notes},
     )
+
+
+def worktree_notes(*, notes_dir: Path | None = None) -> list[Note]:
+    """Every note file in this tree, unfolded.
+
+    The fold answers "what do these notes jointly support"; some questions need
+    the notes themselves. Whether a measurement was *banked* is one of them: it
+    asks whether some note records this exact value, which a fold has already
+    thrown away (#691).
+    """
+    notes_dir = NOTES_DIR if notes_dir is None else notes_dir
+    if not notes_dir.is_dir():
+        return []
+    return [
+        Note.parse(path.name, path.read_text(encoding="utf-8"))
+        for path in sorted(notes_dir.glob("*.json"))
+    ]
 
 
 def bounds(
