@@ -1643,6 +1643,12 @@ _REQUIRED_PG_TABLES: Final = (
     "quota_usage",
     "sessions",
     "prompts",
+    # A prompt label is a row of its own since 022 (#328). Listed beside
+    # `prompts` for the same reason the four above are listed at all: without
+    # it, a database migrated only as far as 021 passes this preflight and then
+    # fails on the first `upsert`, which is the report this list exists to
+    # replace.
+    "prompt_labels",
     # The canonical execution spine (#132). Listed here for the same reason as
     # the four above: a `postgresql://` deployment that skipped `alembic upgrade
     # head` should be told once, at startup, naming every table it is missing —

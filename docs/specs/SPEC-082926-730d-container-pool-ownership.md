@@ -30,11 +30,11 @@ tests:
 source:
   - packages/maistro-core/src/maistro/container.py
 ac-modules:
-  AC-1: container
-  AC-2: container
-  AC-3: container
-  AC-4: container
-  AC-5: persistence
+  AC-1: maistro.container
+  AC-2: maistro.container
+  AC-3: maistro.container
+  AC-4: maistro.container
+  AC-5: maistro.persistence
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'

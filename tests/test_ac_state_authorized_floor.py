@@ -549,3 +549,144 @@ class TestTheGuardAgainstARealBaseRevision:
         present = self._report(tmp_path / "candidate.json", 20.0)
 
         assert gate._guard_actual_base(missing, present, "irrelevant") == 1
+
+
+class TestAGrantIsPermissionNotACap:
+    """SPEC-082926-6f49 AC-9 (#691).
+
+    A grant permits one fall to one value. Applied to a change that measures
+    *above* it, it stopped being permission and became a ceiling: `_lowered`
+    pulled the exact target back to the granted value, the measurement read as
+    unbanked slack, and banking could not clear it — the fold rose and the
+    grant pulled it down again. The gate printed "bank it" as the remedy for a
+    state banking could not reach.
+
+    Nor could anyone retire the grant. `_stale_grants` fires when the fold is
+    at or below the grant; `_removed_binding_grants` refuses removal while the
+    fold is above it. Complementary conditions on the same pair, so exactly one
+    held at all times and the grant could never leave.
+
+    The numbers below are develop's own on 2026-08-30: base fold 28.2327 from
+    the merged #328 note, a grant at 27.8791 from #686, and #688 measuring
+    28.4214. Nothing had merged since #649.
+    """
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_an_improvement_above_a_landed_grant_passes_once_banked(self, gate, repo) -> None:
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=28.4214)
+
+        assert _run(gate, 28.4214) == 0
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_the_same_improvement_unbanked_still_fails_as_slack(self, gate, repo, capsys) -> None:
+        """The other half, and the one that keeps AC-5 true: the grant no
+        longer caps the target, so the *fold* does — and an improvement nobody
+        recorded is still slack a later regression could spend. This is the
+        case that proves the printed remedy is now reachable rather than
+        decorative."""
+        repo(28.2327, grant_at_base="design_coverage@27.8791")
+
+        assert _run(gate, 28.4214) == 1
+        assert "unbanked improvement" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_taking_the_authorized_fall_is_still_exact(self, gate, repo) -> None:
+        """AC-2 unchanged. The grant still applies to the change that is using
+        it, so #649's own shape — measuring exactly the granted value against a
+        higher fold — still passes."""
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.8791)
+
+        assert _run(gate, 27.8791) == 0
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_a_deeper_fall_is_still_refused(self, gate, repo) -> None:
+        """AC-3 unchanged. Below the grant is still a regression it does not
+        cover — the half that must not loosen when the other half stops
+        capping."""
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.0)
+
+        assert _run(gate, 27.0) == 1
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_an_improvement_between_the_grant_and_the_fold_passes_once_banked(
+        self, gate, repo
+    ) -> None:
+        """The case a narrower fix misses, and the one that catches most PRs.
+
+        A grant exists because the inherited fold is *wrong* — higher than what
+        the repository actually measures. So the interesting branches do not
+        clear the stale fold at all; they land between the grant and it. Here
+        27.9012 is a genuine gain over develop's real 27.8791 while sitting well
+        under the 28.2327 the merged notes still assert.
+
+        Excluding the grant from the exact comparison whenever the measurement
+        is above it would refuse this as a fall to 27.9012 from 28.2327. Keeping
+        it would demand exactly 27.8791. Only correcting the inherited bound and
+        then honouring what this tree banked admits it.
+        """
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.9012)
+
+        assert _run(gate, 27.9012) == 0
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_that_improvement_unbanked_is_still_slack(self, gate, repo, capsys) -> None:
+        """Same measurement, nothing recorded: the corrected floor stands at the
+        grant, and a gain above it nobody wrote down is still slack."""
+        repo(28.2327, grant_at_base="design_coverage@27.8791")
+
+        assert _run(gate, 27.9012) == 1
+        assert "unbanked improvement" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_a_stale_note_cannot_stand_in_for_banking_a_lower_value(
+        self, gate, repo, capsys
+    ) -> None:
+        """The loosening this must not buy. Banking is "some note in this tree
+        records what I measured", so a change measuring *below* the grant does
+        not escape by pointing at the inherited note — that note says 28.2327,
+        not 27.0, and the regression half is folded at the base where nothing in
+        the worktree can reach it."""
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.0)
+
+        assert _run(gate, 27.0) == 1
+        assert "unbanked improvement" not in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_the_inherited_notes_are_not_what_banking_is_asked_about(self, gate, repo) -> None:
+        """Why the fold is split rather than taken whole.
+
+        The inherited notes are the record a grant corrects, so they must not
+        also answer "did you bank it?" — folded in with `max` they pin the
+        target at the number the grant just disowned. Only the notes this
+        change writes carry that question, and here that is the candidate's own
+        27.9012 rather than the merged 28.2327 sitting beside it.
+        """
+        repo(28.2327, grant_at_base="design_coverage@27.8791", banked=27.9012)
+
+        assert gate._fresh_note_bound()["design_coverage"] == 27.9012
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-9")
+    def test_weakening_an_inherited_note_is_still_caught(self, gate, repo, capsys) -> None:
+        """The property the split must not cost (Codex, #692).
+
+        Correcting the inherited record must not stop the run seeing an
+        inherited note this change *rewrote downward*. Here the sole note goes
+        20 -> 15 while the measurement stays 20. The base comparison reads the
+        measurement, not the notes, so it is happy; only the worktree fold sees
+        the weakened note, and against it 20 is unbanked slack. Left undetected
+        the floor would silently drop to 15 for everyone after the merge.
+        """
+        root = repo(20.0)
+        note = root / "quality" / "ac-state-notes" / "_baseline.json"
+        note.write_text(
+            json.dumps(
+                {
+                    "branch": None,
+                    "measured_with_tests": True,
+                    "counters": {**TOTALS, "design_coverage": 15.0},
+                }
+            )
+        )
+
+        assert _run(gate, 20.0) == 1
+        assert "unbanked improvement" in capsys.readouterr().out

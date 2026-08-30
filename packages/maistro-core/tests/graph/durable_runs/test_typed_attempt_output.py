@@ -14,10 +14,11 @@ through each concrete store.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs.stores import InMemoryDurableRunStore, SqliteDurableRunStore
@@ -25,6 +26,14 @@ from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.model import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
+
+
+class TagsOutput(RootModel[list[str]]):
+    """A node output whose root is a list, not an object."""
+
+
+class ScoreOutput(RootModel[float]):
+    """A node output whose root is a bare scalar."""
 
 
 class TypedOutput(BaseModel):
@@ -78,14 +87,51 @@ def test_a_typed_output_survives_a_nodresult_round_trip() -> None:
     assert revived.output == {"text": "done", "score": 7}
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
 def test_a_plain_mapping_output_is_unchanged() -> None:
     result = NodeResult(success=True, output={"text": "done"})
 
     assert NodeResult.model_validate_json(result.model_dump_json()).output == {"text": "done"}
 
 
-@pytest.mark.ac("SPEC-082926-2844/AC-1")
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
+def test_a_root_model_output_survives_its_own_shape() -> None:
+    """The write side accepts every `BaseModel`, so the read side must too.
+
+    A `RootModel` serializes to its root -- a list here, a bare scalar below.
+    Against a dict-only read branch these serialized correctly and then failed
+    validation coming back, which is worse than the loss being fixed: the old
+    contract dropped them silently, a half-fixed one raises.
+    """
+    result = NodeResult(success=True, output=TagsOutput(["alpha", "beta"]))
+
+    assert NodeResult.model_validate_json(result.model_dump_json()).output == ["alpha", "beta"]
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
+def test_a_scalar_root_model_output_survives() -> None:
+    result = NodeResult(success=True, output=ScoreOutput(1.5))
+
+    assert NodeResult.model_validate_json(result.model_dump_json()).output == 1.5
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-4")
+def test_a_mapping_pydantic_serializes_is_still_accepted() -> None:
+    """`JsonValue` alone would have narrowed the write side.
+
+    A mapping whose values are not already JSON -- a `datetime` here -- was
+    accepted by the original `dict[str, Any]` branch. With only `JsonValue` it
+    falls past both branches into the model one and raises from Pydantic's
+    internals, so this is a construction-time regression, not a read-back one.
+    """
+    result = NodeResult(success=True, output={"created_at": datetime(2026, 8, 29, tzinfo=UTC)})
+
+    assert NodeResult.model_validate_json(result.model_dump_json()).output == {
+        "created_at": "2026-08-29T00:00:00Z"
+    }
+
+
+@pytest.mark.ac("SPEC-082926-2844/AC-3")
 def test_an_absent_output_is_unchanged() -> None:
     result = NodeResult(success=True)
 
