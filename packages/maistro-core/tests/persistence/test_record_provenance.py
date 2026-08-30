@@ -34,6 +34,7 @@ async def _sqlite_conn() -> aiosqlite.Connection:
 
 
 class TestWhatTheCallerNamedWins:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-1")
     def test_an_id_the_caller_supplied_survives_an_ambient_one(self) -> None:
         """A record *about* another execution says something the context does
         not know."""
@@ -42,11 +43,13 @@ class TestWhatTheCallerNamedWins:
         assert observed.run_id == "named"
         assert observed.attempt_id == "a-ambient"
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-1")
     def test_the_context_fills_what_the_caller_left_blank(self) -> None:
         with bind_execution_context(run_id="r-1", node_run_id="nr-1", attempt_id="a-1"):
             observed = observed_provenance()
         assert observed == ExecutionProvenance("r-1", "nr-1", "a-1")
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-1")
     def test_a_record_made_outside_any_execution_names_none(self) -> None:
         observed = observed_provenance()
         assert observed == ExecutionProvenance()
@@ -99,6 +102,7 @@ def _learning(**overrides: Any) -> Learning:
 
 
 class TestALearningNamesItsProducer:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-2")
     async def test_a_learning_stored_inside_an_attempt_carries_it(self, learnings: Any) -> None:
         """The caller passes nothing. This is the whole point of #707's context:
         the write path several frames below the executor learns the ids for
@@ -109,6 +113,7 @@ class TestALearningNamesItsProducer:
         found = await learnings.produced_by("r-1", org_id="org-1")
         assert [(x.run_id, x.node_run_id, x.attempt_id) for x in found] == [("r-1", "nr-1", "a-1")]
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-2")
     async def test_a_learning_stored_outside_an_execution_names_no_producer(
         self, learnings: Any
     ) -> None:
@@ -117,12 +122,14 @@ class TestALearningNamesItsProducer:
         assert found
         assert all(x.run_id == "" for x in found)
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-5")
     async def test_a_producer_the_caller_named_is_kept(self, learnings: Any) -> None:
         with bind_execution_context(run_id="ambient"):
             await learnings.store(_learning(run_id="named", trigger_keys=["named"]))
         assert await learnings.produced_by("ambient", org_id="org-1") == []
         assert len(await learnings.produced_by("named", org_id="org-1")) == 1
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-5")
     async def test_a_blank_run_id_returns_nothing_rather_than_the_unattributed(
         self, learnings: Any
     ) -> None:
@@ -132,6 +139,7 @@ class TestALearningNamesItsProducer:
         await learnings.store(_learning(trigger_keys=["orphan"]))
         assert await learnings.produced_by("", org_id="org-1") == []
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-5")
     async def test_provenance_does_not_cross_a_scope(self, learnings: Any) -> None:
         with bind_execution_context(run_id="r-1"):
             await learnings.store(_learning(org_id="org-1", trigger_keys=["scoped-a"]))
@@ -140,6 +148,7 @@ class TestALearningNamesItsProducer:
         mine = await learnings.produced_by("r-1", org_id="org-1")
         assert [x.org_id for x in mine] == ["org-1"]
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-2")
     async def test_the_producer_survives_the_round_trip(self, learnings: Any) -> None:
         with bind_execution_context(run_id="r-2", node_run_id="nr-2", attempt_id="a-2"):
             await learnings.store(_learning(trigger_keys=["round-trip"]))
@@ -202,6 +211,7 @@ async def _stored_provenance(handle: Any, kind: str, outcome_id: int) -> tuple[A
 
 
 class TestAnOutcomeNamesItsProducer:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-3")
     async def test_the_canonical_ids_land_beside_the_dag_identity(self, outcomes: Any) -> None:
         """Not instead of it: `dag_run_id` names a real hive-conductor object
         the Conductor UI reads, and ADR-019 puts that on the product side."""
@@ -224,6 +234,7 @@ class TestAnOutcomeNamesItsProducer:
         if kind == "postgres":
             assert dag_run_id == "dag-run-1"
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-4")
     async def test_an_outcome_outside_an_execution_stores_null_not_empty(
         self, outcomes: Any
     ) -> None:
@@ -241,6 +252,7 @@ class TestAnOutcomeNamesItsProducer:
 
 
 class TestTheOutcomeRoundTripCarriesTheProducer:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-3")
     async def test_a_recorded_outcome_reads_back_naming_its_run(self, pg_pool: Any) -> None:
         """PostgreSQL only: it is the store with a read path returning `Outcome`
         objects, so it is the only one where the mapper can drop a column the
@@ -278,6 +290,7 @@ class TestTheOutcomeRoundTripCarriesTheProducer:
 
 
 class TestAnOlderSqliteFileIsUpgradedInPlace:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-6")
     async def test_existing_rows_survive_the_upgrade(self, tmp_path: Any) -> None:
         """Recreating the table is the only alternative, and it loses the rows
         a real deployment already has."""
@@ -325,3 +338,106 @@ class TestAnOlderSqliteFileIsUpgradedInPlace:
             await store.store(_learning(trigger_keys=["after"]))
         assert len(await store.produced_by("r-after", org_id="org-1")) == 1
         await conn.close()
+
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-6")
+    async def test_an_older_outcomes_file_gains_the_columns_and_keeps_its_rows(
+        self, tmp_path: Any
+    ) -> None:
+        """The outcomes twin's own in-place branch. Held separately from the
+        learnings one because they are separate code paths, and a test of one
+        says nothing about the other."""
+        from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
+
+        conn = await aiosqlite.connect(tmp_path / "old-outcomes.db")
+        await conn.execute(
+            """CREATE TABLE outcomes (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   request_id TEXT NOT NULL DEFAULT '',
+                   task_type TEXT NOT NULL DEFAULT '',
+                   model_used TEXT NOT NULL DEFAULT '',
+                   provider TEXT NOT NULL DEFAULT '',
+                   tool_calls TEXT NOT NULL DEFAULT '',
+                   success INTEGER NOT NULL DEFAULT 1,
+                   error_type TEXT NOT NULL DEFAULT '',
+                   response_time_ms INTEGER NOT NULL DEFAULT 0,
+                   team_id TEXT NOT NULL DEFAULT '',
+                   user_id TEXT NOT NULL DEFAULT '',
+                   agent_id TEXT NOT NULL DEFAULT '',
+                   input_tokens INTEGER NOT NULL DEFAULT 0,
+                   output_tokens INTEGER NOT NULL DEFAULT 0,
+                   charged_microchips INTEGER NOT NULL DEFAULT 0,
+                   pricing_version TEXT NOT NULL DEFAULT '',
+                   created_at TEXT NOT NULL
+               )"""
+        )
+        await conn.execute(
+            "INSERT INTO outcomes (request_id, created_at) VALUES ('older', '2026-01-01T00:00:00')"
+        )
+        await conn.commit()
+
+        store = SqliteOutcomeStore(conn)
+        await store.ensure_schema()
+
+        cursor = await conn.execute("PRAGMA table_info(outcomes)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        assert {"run_id", "node_run_id", "attempt_id"} <= columns
+
+        cursor = await conn.execute("SELECT request_id, run_id FROM outcomes")
+        assert await cursor.fetchall() == [("older", None)]
+
+        with bind_execution_context(run_id="r-after"):
+            await store.record(Outcome(request_id="newer", created_at=datetime.now(UTC)))
+        cursor = await conn.execute("SELECT run_id FROM outcomes WHERE request_id = 'newer'")
+        assert await cursor.fetchone() == ("r-after",)
+        await conn.close()
+
+
+class _Embeddings:
+    """The narrowest embedding client `DurableHybridLearningStore` will accept.
+
+    Its constructor checks the width at wiring time, so a double is required
+    even for a test that never embeds anything.
+    """
+
+    from maistro.memory.vectors import EMBEDDING_DIMENSIONS as _WIDTH
+
+    dimension = _WIDTH
+
+    async def embed(self, text: str) -> list[float]:
+        return [0.0] * self._WIDTH
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self._WIDTH for _ in texts]
+
+
+class TestTheWrappingStoresDelegateProvenance:
+    """`HybridLearningStore` and `DurableHybridLearningStore` wrap another store.
+
+    They are what the container actually builds when embeddings are configured,
+    so a delegation that silently returned nothing would make `produced_by`
+    answer "no learnings" on the deployments that have the most.
+    """
+
+    async def test_the_embedding_wrapper_asks_the_store_it_wraps(self) -> None:
+        from maistro.memory.learnings.embeddings import HybridLearningStore
+        from maistro.memory.learnings.store import InMemoryLearningStore
+
+        inner = InMemoryLearningStore()
+        wrapper = HybridLearningStore(inner)
+        with bind_execution_context(run_id="r-wrapped"):
+            await wrapper.store(_learning(trigger_keys=["wrapped"]))
+
+        found = await wrapper.produced_by("r-wrapped", org_id="org-1")
+        assert [x.learning for x in found] == ["check the branch first"]
+
+    async def test_the_durable_wrapper_asks_the_store_it_wraps(self) -> None:
+        from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+        from maistro.memory.learnings.store import InMemoryLearningStore
+
+        inner = InMemoryLearningStore()
+        wrapper = DurableHybridLearningStore(inner, _Embeddings())  # type: ignore[arg-type]
+        with bind_execution_context(run_id="r-durable"):
+            await wrapper.store(_learning(trigger_keys=["durable"]))
+
+        found = await wrapper.produced_by("r-durable", org_id="org-1")
+        assert [x.learning for x in found] == ["check the branch first"]

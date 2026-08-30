@@ -83,6 +83,7 @@ def _output_params(session: Any) -> list[dict[str, Any]]:
 
 
 class TestAnArtifactNamesItsProducer:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-2")
     async def test_an_output_written_inside_an_attempt_carries_it(self) -> None:
         make, session = _factory()
         with bind_execution_context(run_id="r-1", node_run_id="nr-1", attempt_id="a-1"):
@@ -93,6 +94,7 @@ class TestAnArtifactNamesItsProducer:
         assert params["node_run_id"] == "nr-1"
         assert params["attempt_id"] == "a-1"
 
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-4")
     async def test_an_output_written_outside_an_execution_binds_null(self) -> None:
         """Not `""`. An empty string names a Run whose id is empty, which is a
         claim; NULL says no execution was in scope."""
@@ -131,6 +133,7 @@ class TestAnArtifactNamesItsProducer:
 
 
 class TestTheProducerSurvivesTheReadBack:
+    @pytest.mark.ac("SPEC-083026-b2b5/AC-2")
     def test_a_row_carrying_a_producer_maps_onto_the_output(self) -> None:
         from maistro_design.stores import _coerce_design_output
 
