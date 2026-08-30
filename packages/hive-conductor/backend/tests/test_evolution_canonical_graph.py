@@ -9,7 +9,10 @@ import pytest
 from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 import maistro_evolve.cycle as cycle_module
-from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+)
 from maistro.graph.nodes import NodeContext, NodeResult
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
@@ -55,7 +58,12 @@ class _Population:
 class _Harness:
     fidelity = "proxy"
 
-    async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
+    async def evaluate_genome(
+        self,
+        genome: _Genome,
+        benchmarks: list[str],
+        llm_call: Any,
+    ):
         return [
             SimpleNamespace(
                 benchmark=benchmarks[0],
@@ -71,7 +79,14 @@ class _Tournament:
     def __init__(self) -> None:
         self.battles: list[tuple[str, str, str]] = []
 
-    def record_battle(self, *, benchmark: str, genome_a_id: str, genome_b_id: str, **_: Any) -> None:
+    def record_battle(
+        self,
+        *,
+        benchmark: str,
+        genome_a_id: str,
+        genome_b_id: str,
+        **_: Any,
+    ) -> None:
         self.battles.append((benchmark, genome_a_id, genome_b_id))
 
     def get_avg_elo(self, genome_id: str) -> float:
@@ -89,7 +104,13 @@ class _Cycle:
         self._child_added = False
 
     @staticmethod
-    def _fold_score(genome: _Genome, benchmark: str, score: float, stub: bool, alpha: float) -> None:
+    def _fold_score(
+        genome: _Genome,
+        benchmark: str,
+        score: float,
+        stub: bool,
+        alpha: float,
+    ) -> None:
         genome.eval_scores[benchmark] = score
 
     def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
@@ -109,7 +130,12 @@ class _Cycle:
             population.add(_Genome("child", parent_a_id="g1", parent_b_id="g2"))
             self._child_added = True
 
-    async def _self_improve_top(self, population: _Population, config: Any, llm_call: Any) -> None:
+    async def _self_improve_top(
+        self,
+        population: _Population,
+        config: Any,
+        llm_call: Any,
+    ) -> None:
         return None
 
 
@@ -126,7 +152,12 @@ async def _container() -> Any:
     )
 
 
-def _config(*, population_size: int, eval_batch_size: int, benchmarks: list[str] | None = None):
+def _config(
+    *,
+    population_size: int,
+    eval_batch_size: int,
+    benchmarks: list[str] | None = None,
+):
     return SimpleNamespace(
         eval_batch_size=eval_batch_size,
         target_benchmarks=benchmarks or ["proxy"],
@@ -185,7 +216,9 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
         refs = genome.harness_params["evaluation_runs"]
         assert len(refs) == 1
         assert refs[0]["run_id"] == record.run_id
-        assert refs[0]["attempt_id"] in {attempt.attempt_id for attempt in attempts}
+        assert refs[0]["attempt_id"] in {
+            attempt.attempt_id for attempt in attempts
+        }
 
     child = population.get("child")
     assert child is not None
@@ -231,7 +264,12 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _NoResultHarness(_Harness):
-        async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
             return []
 
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
@@ -246,7 +284,9 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
         container=owner,
     )
     node_runs = await owner.run_store.list_node_runs(record.run_id)
-    battle_runs = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
+    battle_runs = [
+        item for item in node_runs if item.node_id.startswith("evolve-battle-")
+    ]
     assert battle_runs == []
     plan_runs = [item for item in node_runs if item.node_id == "evolve-plan-pairs"]
     assert len(plan_runs) == 1
@@ -258,7 +298,12 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _TwoResultHarness(_Harness):
-        async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
             return [
                 SimpleNamespace(
                     benchmark="first",
@@ -323,12 +368,19 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
 
 
 @pytest.mark.asyncio
-async def test_recovered_evaluation_node_run_reuses_published_score_without_reevaluation() -> None:
+async def test_recovered_evaluation_node_run_reuses_published_score_without_reevaluation() -> (
+    None
+):
     class _MustNotRunHarness(_Harness):
         def __init__(self) -> None:
             self.calls = 0
 
-        async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
             self.calls += 1
             raise AssertionError("recovery replayed already-published evaluation work")
 
@@ -367,5 +419,7 @@ async def test_recovered_evaluation_node_run_reuses_published_score_without_reev
     assert persisted is not None
     assert persisted.eval_scores == {"proxy": 0.5}
     assert persisted.harness_params["total_cost_usd"] == 0.01
-    assert persisted.harness_params["evaluation_runs"] == genome.harness_params["evaluation_runs"]
+    assert persisted.harness_params["evaluation_runs"] == genome.harness_params[
+        "evaluation_runs"
+    ]
     assert output.evaluation_attempt_id == "attempt-before-crash"
