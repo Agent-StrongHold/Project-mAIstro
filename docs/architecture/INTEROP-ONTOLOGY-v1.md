@@ -2,6 +2,7 @@
 
 **Status:** M1 freeze candidate  
 **Machine-readable contract:** `quality/shared-interop-ontology-v1.json`  
+**Importable contract:** `maistro.interop.INTEROP_ONTOLOGY_V1`  
 **Owner:** #458
 
 This document is the named cross-product contract for MAIstro. It does not introduce a parallel domain model. It packages the Accepted architecture into one versioned language that Builders, Conductor, Evolve, Canvas/Design, schedules, and later RSI must use when exchanging shared concepts.
@@ -19,6 +20,12 @@ The canonical execution chain is:
 The canonical governed effect chain is:
 
 `Capability → Provider → Binding → Invocation`
+
+## Executable surface
+
+`maistro.interop.INTEROP_ONTOLOGY_V1` is the importable registry for the contract below. It exposes canonical owner/identity metadata plus validation for product projections, canonical parent/scope references, and ontology-version compatibility. It is metadata over the existing semantic owners, not a second set of Workspace, Project, Graph, Run, Capability, or other domain objects.
+
+The executable registry and `quality/shared-interop-ontology-v1.json` are required to serialize identically. A contract test fails if either representation drifts. Product migration onto this surface remains owned by the product/seam convergence issues; #459 owns the Builders → Conductor cross-product execution proof.
 
 ## Shared identities
 
