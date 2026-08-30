@@ -41,6 +41,11 @@ GLOB_CHARS = frozenset("*?[")
 BASE_ENV = "BRANCH_INDEPENDENCE_BASE_REV"
 RATCHET_BASE_ENV = "RATCHET_BASE_REV"
 DEFAULT_BASE_REV = "origin/develop"
+# Git's null SHA: what `github.event.before` carries on the push that creates
+# a branch. It names no revision, so treating it as an explicit base would
+# make `rev-parse` fail every first push instead of falling through to the
+# default the way an unset variable does.
+NULL_SHA = "0000000000000000000000000000000000000000"
 
 
 class BranchIndependenceError(RuntimeError):
@@ -245,43 +250,18 @@ def _git(args: list[str], *, root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def base_registry(root: Path, explicit_base: str | None = None) -> dict[str, Any] | None:
-    """Read the registry at a named trusted base when available.
-
-    The registry did not exist before this contract lands, so absence is the
-    bootstrap case. After landing, CI may name the base through the dedicated
-    variable or the repository-wide ratchet base variable. Expansion of the
-    legacy set is then rejected even if a candidate edits its own frozen list.
-    """
+def _explicit_base(explicit_base: str | None) -> str:
     explicit = (
         explicit_base
         or os.environ.get(BASE_ENV, "").strip()
         or os.environ.get(RATCHET_BASE_ENV, "").strip()
     )
-    base = explicit or DEFAULT_BASE_REV
-    resolved = _git(["rev-parse", "--verify", f"{base}^{{commit}}"], root=root)
-    if resolved.returncode != 0:
-        if not explicit:
-            return None
-        raise BranchIndependenceError(
-            f"base revision {base!r} cannot be resolved: {resolved.stderr.strip()}"
-        )
-    merge_base = _git(["merge-base", resolved.stdout.strip(), "HEAD"], root=root)
-    if merge_base.returncode != 0:
-        # Same fallback as the rev-parse above, and for the same reason: a
-        # shallow checkout can resolve `origin/develop` to a commit without
-        # sharing enough history with HEAD for `merge-base` to find a common
-        # ancestor. That is an execution-environment limitation, not a signal
-        # that the base is misconfigured -- tolerated only for the implicit
-        # default, exactly like an unresolvable ref above. An explicit base
-        # failing here is still a real error: something named it and it did
-        # not answer.
-        if not explicit:
-            return None
-        raise BranchIndependenceError(
-            f"cannot resolve merge base for {base!r}: {merge_base.stderr.strip()}"
-        )
-    commit = merge_base.stdout.strip()
+    # Git's null SHA names no revision -- treat it exactly like an unset
+    # variable rather than sending it to `rev-parse`.
+    return "" if explicit == NULL_SHA else explicit
+
+
+def _registry_object_at(commit: str, root: Path) -> dict[str, Any] | None:
     object_name = f"{commit}:{REGISTRY_REL.as_posix()}"
     exists = _git(["cat-file", "-e", object_name], root=root)
     if exists.returncode != 0:
@@ -307,6 +287,41 @@ def base_registry(root: Path, explicit_base: str | None = None) -> dict[str, Any
             f"branch-independence registry at base {commit[:12]} is not an object"
         )
     return raw
+
+
+def base_registry(root: Path, explicit_base: str | None = None) -> dict[str, Any] | None:
+    """Read the registry at a named trusted base when available.
+
+    The registry did not exist before this contract lands, so absence is the
+    bootstrap case. After landing, CI may name the base through the dedicated
+    variable or the repository-wide ratchet base variable. Expansion of the
+    legacy set is then rejected even if a candidate edits its own frozen list.
+    """
+    explicit = _explicit_base(explicit_base)
+    base = explicit or DEFAULT_BASE_REV
+    resolved = _git(["rev-parse", "--verify", f"{base}^{{commit}}"], root=root)
+    if resolved.returncode != 0:
+        if not explicit:
+            return None
+        raise BranchIndependenceError(
+            f"base revision {base!r} cannot be resolved: {resolved.stderr.strip()}"
+        )
+    merge_base = _git(["merge-base", resolved.stdout.strip(), "HEAD"], root=root)
+    if merge_base.returncode != 0:
+        # Same fallback as the rev-parse above, and for the same reason: a
+        # shallow checkout can resolve `origin/develop` to a commit without
+        # sharing enough history with HEAD for `merge-base` to find a common
+        # ancestor. That is an execution-environment limitation, not a signal
+        # that the base is misconfigured -- tolerated only for the implicit
+        # default, exactly like an unresolvable ref above. An explicit base
+        # failing here is still a real error: something named it and it did
+        # not answer.
+        if not explicit:
+            return None
+        raise BranchIndependenceError(
+            f"cannot resolve merge base for {base!r}: {merge_base.stderr.strip()}"
+        )
+    return _registry_object_at(merge_base.stdout.strip(), root)
 
 
 def trusted_base_errors(registry: dict[str, Any], base: dict[str, Any] | None) -> list[str]:

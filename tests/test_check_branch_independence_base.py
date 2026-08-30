@@ -136,6 +136,24 @@ def test_raises_when_an_explicit_base_has_no_common_ancestor(tmp_path: Path) -> 
         mod.base_registry(root, explicit_base=island_sha)
 
 
+def test_null_sha_env_var_falls_through_to_the_default_base(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`github.event.before` on the push that creates a branch is git's null
+    SHA. It must be treated as no explicit base, not sent to `rev-parse`."""
+    monkeypatch.setenv(mod.RATCHET_BASE_ENV, mod.NULL_SHA)
+
+    base = mod.base_registry(repo)
+
+    assert base == {"version": 1, "frozen_legacy_paths": ["quality/old.json"]}
+
+
+def test_null_sha_passed_explicitly_also_falls_through(repo: Path) -> None:
+    base = mod.base_registry(repo, explicit_base=mod.NULL_SHA)
+
+    assert base == {"version": 1, "frozen_legacy_paths": ["quality/old.json"]}
+
+
 def test_returns_none_when_the_registry_is_absent_at_the_base(tmp_path: Path) -> None:
     """The bootstrap case: the contract did not exist yet at the base commit."""
     root = tmp_path / "bootstrap"
@@ -220,6 +238,52 @@ class TestMain:
         err = capsys.readouterr().err
         assert "FAIL: branch-independence contract" in err
         assert "quality_roots must be a non-empty list of paths" in err
+
+    def test_rejects_a_candidate_that_expands_the_trusted_legacy_freeze(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: a candidate cannot authorize a new shared aggregate by
+        editing its own frozen list, because `main()` reads the trusted base's
+        list through `base_registry()` and compares against it -- not just the
+        pure `trusted_base_errors()` helper in isolation."""
+        registry = {
+            "version": 1,
+            "quality_roots": ["quality"],
+            "frozen_legacy_paths": ["quality/old.json", "quality/new-aggregate.json"],
+            "surfaces": [
+                {
+                    "id": "reg",
+                    "kind": "specification",
+                    "paths": [REGISTRY],
+                    "reason": "self-describing",
+                },
+                {
+                    "id": "old",
+                    "kind": "legacy_shared_aggregate",
+                    "target_kind": "per_identity_policy",
+                    "paths": ["quality/old.json"],
+                    "reason": "pre-existing",
+                },
+                {
+                    "id": "new-aggregate",
+                    "kind": "legacy_shared_aggregate",
+                    "target_kind": "per_identity_policy",
+                    "paths": ["quality/new-aggregate.json"],
+                    "reason": "a candidate smuggling in a fresh shared aggregate",
+                },
+            ],
+        }
+        _write(repo, REGISTRY, registry)
+        _write(repo, "quality/old.json", {})
+        _write(repo, "quality/new-aggregate.json", {})
+        _commit(repo, "candidate expands the legacy freeze")
+
+        code = mod.main(["--root", str(repo)])
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "candidate expands the trusted legacy freeze" in err
+        assert "quality/new-aggregate.json" in err
 
     def test_reports_evaluation_failure_for_an_unresolvable_explicit_base(
         self, repo: Path, capsys: pytest.CaptureFixture[str]
