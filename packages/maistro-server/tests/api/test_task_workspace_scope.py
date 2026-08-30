@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
@@ -38,16 +38,19 @@ async def durable_spine(tmp_path):
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
+async def client():
+    """Exercise the real ASGI route on the same loop as the durable SQLite spine."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:
+        yield test_client
 
 
 async def test_named_workspace_run_resolves_under_that_workspaces_root_project(
-    durable_spine, client: TestClient
+    durable_spine, client: AsyncClient
 ) -> None:
     scope_store, run_store = durable_spine
 
-    response = client.post(
+    response = await client.post(
         "/tasks",
         headers={WORKSPACE_ID_HEADER: "workspace-a"},
         json={"description": "ship it", "workspace": TASK_WORKSPACE},
@@ -62,16 +65,16 @@ async def test_named_workspace_run_resolves_under_that_workspaces_root_project(
 
 
 async def test_two_workspace_headers_produce_runs_in_distinct_projects(
-    durable_spine, client: TestClient
+    durable_spine, client: AsyncClient
 ) -> None:
     scope_store, run_store = durable_spine
 
-    first = client.post(
+    first = await client.post(
         "/tasks",
         headers={WORKSPACE_ID_HEADER: "workspace-a"},
         json={"description": "first", "workspace": TASK_WORKSPACE},
     )
-    second = client.post(
+    second = await client.post(
         "/tasks",
         headers={WORKSPACE_ID_HEADER: "workspace-b"},
         json={"description": "second", "workspace": TASK_WORKSPACE},
@@ -90,10 +93,10 @@ async def test_two_workspace_headers_produce_runs_in_distinct_projects(
     assert first_run.project_id != second_run.project_id
 
 
-def test_blank_workspace_header_is_rejected_before_admission(
-    durable_spine, client: TestClient
+async def test_blank_workspace_header_is_rejected_before_admission(
+    durable_spine, client: AsyncClient
 ) -> None:
-    response = client.post(
+    response = await client.post(
         "/tasks",
         headers={WORKSPACE_ID_HEADER: " "},
         json={"description": "ship it", "workspace": TASK_WORKSPACE},
