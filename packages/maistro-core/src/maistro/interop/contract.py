@@ -57,6 +57,12 @@ class InteropOntology:
 
     def _validate_definition(self) -> None:
         _parse_version(self.version)
+        self._validate_header()
+        self._validate_concepts()
+        self._validate_lineage()
+        self._validate_consumers()
+
+    def _validate_header(self) -> None:
         if self.issue <= 0:
             raise InteropContractError("ontology issue must be a positive integer")
         if not self.status.strip():
@@ -66,35 +72,9 @@ class InteropOntology:
         if not self.concepts:
             raise InteropContractError("ontology must define at least one concept")
 
+    def _validate_concepts(self) -> None:
         for name, spec in self.concepts.items():
             self._validate_concept(name, spec)
-
-        lineage_parent: dict[str, str] = {}
-        for parent, child in self.required_lineage:
-            if parent not in self.concepts or child not in self.concepts:
-                raise InteropContractError(
-                    f"required lineage {parent!r} -> {child!r} references an unknown concept"
-                )
-            previous = lineage_parent.setdefault(child, parent)
-            if previous != parent:
-                raise InteropContractError(
-                    f"{child} has multiple required lineage parents: {previous!r}, {parent!r}"
-                )
-
-        for name, spec in self.concepts.items():
-            if spec.parent is None or (spec.parent, name) in self.required_lineage:
-                continue
-            parent = self.concepts[spec.parent]
-            if spec.identity != parent.identity:
-                raise InteropContractError(
-                    f"{name} declares parent {spec.parent!r} without required lineage"
-                )
-
-        for consumer, milestone in self.consumers.items():
-            if not consumer.strip() or not _MILESTONE_RE.fullmatch(milestone):
-                raise InteropContractError(
-                    f"invalid consumer milestone declaration {consumer!r}: {milestone!r}"
-                )
 
     def _validate_concept(self, name: str, spec: ConceptSpec) -> None:
         if not name.strip():
@@ -111,6 +91,45 @@ class InteropOntology:
             if target is not None and target not in self.concepts:
                 raise InteropContractError(
                     f"{name} {relation} references unknown concept {target!r}"
+                )
+
+    def _validate_lineage(self) -> None:
+        lineage_parent: dict[str, str] = {}
+        for parent, child in self.required_lineage:
+            self._validate_lineage_edge(parent, child, lineage_parent)
+        for name, spec in self.concepts.items():
+            self._validate_declared_parent(name, spec)
+
+    def _validate_lineage_edge(
+        self,
+        parent: str,
+        child: str,
+        lineage_parent: dict[str, str],
+    ) -> None:
+        if parent not in self.concepts or child not in self.concepts:
+            raise InteropContractError(
+                f"required lineage {parent!r} -> {child!r} references an unknown concept"
+            )
+        previous = lineage_parent.setdefault(child, parent)
+        if previous != parent:
+            raise InteropContractError(
+                f"{child} has multiple required lineage parents: {previous!r}, {parent!r}"
+            )
+
+    def _validate_declared_parent(self, name: str, spec: ConceptSpec) -> None:
+        if spec.parent is None or (spec.parent, name) in self.required_lineage:
+            return
+        parent = self.concepts[spec.parent]
+        if spec.identity != parent.identity:
+            raise InteropContractError(
+                f"{name} declares parent {spec.parent!r} without required lineage"
+            )
+
+    def _validate_consumers(self) -> None:
+        for consumer, milestone in self.consumers.items():
+            if not consumer.strip() or not _MILESTONE_RE.fullmatch(milestone):
+                raise InteropContractError(
+                    f"invalid consumer milestone declaration {consumer!r}: {milestone!r}"
                 )
 
     def concept(self, name: str) -> ConceptSpec:
