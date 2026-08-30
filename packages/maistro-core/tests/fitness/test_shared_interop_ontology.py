@@ -163,33 +163,28 @@ def _metadata_drift(
     return f"{name} canonical metadata drifted: {drift!r}"
 
 
-def _contract_failures(contract: Mapping[str, Any]) -> list[str]:
-    """Return stable, reviewable violations of the v1 shared contract."""
-    failures: list[str] = []
-
+def _version_failures(contract: Mapping[str, Any]) -> list[str]:
     version = contract.get("version")
     match = _VERSION_RE.fullmatch(version) if isinstance(version, str) else None
     if match is None:
-        failures.append("version must be semantic MAJOR.MINOR.PATCH")
-    elif match.group(1) != "1":
-        failures.append("ontology-v1 contract must retain major version 1")
+        return ["version must be semantic MAJOR.MINOR.PATCH"]
+    if match.group(1) != "1":
+        return ["ontology-v1 contract must retain major version 1"]
+    return []
 
-    if contract.get("issue") != 458:
-        failures.append("issue owner must remain #458 for ontology v1")
 
+def _principle_failures(contract: Mapping[str, Any]) -> list[str]:
     principles = contract.get("principles")
     if not isinstance(principles, list):
-        failures.append("principles must be a list")
-    elif not _REQUIRED_PRINCIPLES.issubset(set(principles)):
-        failures.append("required interoperability principles are missing")
+        return ["principles must be a list"]
+    if not _REQUIRED_PRINCIPLES.issubset(set(principles)):
+        return ["required interoperability principles are missing"]
+    return []
 
-    concepts = contract.get("concepts")
-    if not isinstance(concepts, dict):
-        return [*failures, "concepts must be an object"]
 
-    expected_names = set(_EXPECTED_CONCEPTS)
-    actual_names = set(concepts)
-    unexpected_names = sorted(actual_names - expected_names)
+def _concept_inventory_failures(concepts: Mapping[str, Any]) -> list[str]:
+    failures: list[str] = []
+    unexpected_names = sorted(set(concepts) - set(_EXPECTED_CONCEPTS))
     if unexpected_names:
         failures.append(
             "ontology v1 contains unreviewed shared concept(s): "
@@ -199,26 +194,44 @@ def _contract_failures(contract: Mapping[str, Any]) -> list[str]:
     for name, expected in _EXPECTED_CONCEPTS.items():
         if drift := _metadata_drift(concepts, name, expected):
             failures.append(drift)
+    return failures
 
+
+def _concept_record_failures(
+    name: str,
+    metadata: object,
+    concepts: Mapping[str, Any],
+) -> list[str]:
+    if not isinstance(metadata, dict):
+        return [f"invalid concept entry: {name!r}"]
+
+    failures: list[str] = []
+    owner = metadata.get("owner")
+    identity = metadata.get("identity")
+    if not isinstance(owner, str) or _OWNER_RE.fullmatch(owner) is None:
+        failures.append(f"{name} has invalid canonical owner {owner!r}")
+    if not isinstance(identity, str) or _ID_RE.fullmatch(identity) is None:
+        failures.append(f"{name} has invalid canonical identity {identity!r}")
+
+    for relation in ("parent", "scope"):
+        target = metadata.get(relation)
+        if target is not None and target not in concepts:
+            failures.append(f"{name}.{relation} references unknown concept {target!r}")
+    return failures
+
+
+def _concept_record_set_failures(concepts: Mapping[str, Any]) -> list[str]:
+    failures: list[str] = []
     for name, metadata in concepts.items():
-        if not isinstance(name, str) or not isinstance(metadata, dict):
-            failures.append(f"invalid concept entry: {name!r}")
-            continue
+        failures.extend(_concept_record_failures(str(name), metadata, concepts))
+    return failures
 
-        owner = metadata.get("owner")
-        identity = metadata.get("identity")
-        if not isinstance(owner, str) or _OWNER_RE.fullmatch(owner) is None:
-            failures.append(f"{name} has invalid canonical owner {owner!r}")
-        if not isinstance(identity, str) or _ID_RE.fullmatch(identity) is None:
-            failures.append(f"{name} has invalid canonical identity {identity!r}")
 
-        for relation in ("parent", "scope"):
-            target = metadata.get(relation)
-            if target is not None and target not in concepts:
-                failures.append(f"{name}.{relation} references unknown concept {target!r}")
-
-    edges = _lineage(contract)
-    raw_lineage = contract.get("required_lineage")
+def _lineage_shape_failures(
+    raw_lineage: object,
+    edges: list[tuple[str, str]],
+) -> list[str]:
+    failures: list[str] = []
     if not isinstance(raw_lineage, list) or len(edges) != len(raw_lineage):
         failures.append("required_lineage must contain only two-concept edges")
     if len(edges) != len(set(edges)):
@@ -232,21 +245,44 @@ def _contract_failures(contract: Mapping[str, Any]) -> list[str]:
             f"missing={sorted(expected_edges - actual_edges)!r} "
             f"unexpected={sorted(actual_edges - expected_edges)!r}"
         )
+    return failures
 
-    for parent, child in edges:
-        if parent not in concepts or child not in concepts:
-            failures.append(f"lineage edge references unknown concept: {parent} -> {child}")
-            continue
 
-        child_metadata = concepts[child]
-        if not isinstance(child_metadata, dict):
-            continue
-        if child_metadata.get("parent") != parent and child_metadata.get("scope") != parent:
-            failures.append(
-                f"lineage edge {parent} -> {child} disagrees with "
-                f"{child} parent/scope metadata"
-            )
+def _lineage_edge_failure(
+    parent: str,
+    child: str,
+    concepts: Mapping[str, Any],
+) -> str | None:
+    if parent not in concepts or child not in concepts:
+        return f"lineage edge references unknown concept: {parent} -> {child}"
 
+    child_metadata = concepts[child]
+    if not isinstance(child_metadata, dict):
+        return None
+    if child_metadata.get("parent") == parent or child_metadata.get("scope") == parent:
+        return None
+    return (
+        f"lineage edge {parent} -> {child} disagrees with "
+        f"{child} parent/scope metadata"
+    )
+
+
+def _lineage_relationship_failures(
+    edges: list[tuple[str, str]],
+    concepts: Mapping[str, Any],
+) -> list[str]:
+    return [
+        failure
+        for parent, child in edges
+        if (failure := _lineage_edge_failure(parent, child, concepts)) is not None
+    ]
+
+
+def _graph_state_failures(
+    concepts: Mapping[str, Any],
+    edges: list[tuple[str, str]],
+) -> list[str]:
+    failures: list[str] = []
     graph_state = concepts.get("GraphExecutionState")
     run = concepts.get("Run")
     if isinstance(graph_state, dict) and isinstance(run, dict):
@@ -257,15 +293,40 @@ def _contract_failures(contract: Mapping[str, Any]) -> list[str]:
             )
     if any("GraphExecutionState" in edge for edge in edges):
         failures.append("GraphExecutionState must not become a second execution lifecycle edge")
+    return failures
 
+
+def _consumer_failures(contract: Mapping[str, Any]) -> list[str]:
     consumers = contract.get("consumers")
     if not isinstance(consumers, dict):
-        failures.append("consumers must be an object")
-    else:
-        for consumer, milestone in _REQUIRED_CONSUMERS.items():
-            if consumers.get(consumer) != milestone:
-                failures.append(f"consumer {consumer} must remain assigned to {milestone}")
+        return ["consumers must be an object"]
 
+    return [
+        f"consumer {consumer} must remain assigned to {milestone}"
+        for consumer, milestone in _REQUIRED_CONSUMERS.items()
+        if consumers.get(consumer) != milestone
+    ]
+
+
+def _contract_failures(contract: Mapping[str, Any]) -> list[str]:
+    """Return stable, reviewable violations of the v1 shared contract."""
+    failures = _version_failures(contract)
+    if contract.get("issue") != 458:
+        failures.append("issue owner must remain #458 for ontology v1")
+    failures.extend(_principle_failures(contract))
+
+    concepts = contract.get("concepts")
+    if not isinstance(concepts, dict):
+        return [*failures, "concepts must be an object"]
+
+    failures.extend(_concept_inventory_failures(concepts))
+    failures.extend(_concept_record_set_failures(concepts))
+
+    edges = _lineage(contract)
+    failures.extend(_lineage_shape_failures(contract.get("required_lineage"), edges))
+    failures.extend(_lineage_relationship_failures(edges, concepts))
+    failures.extend(_graph_state_failures(concepts, edges))
+    failures.extend(_consumer_failures(contract))
     return failures
 
 
