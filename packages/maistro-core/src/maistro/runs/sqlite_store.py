@@ -40,6 +40,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     DuplicateOccurrence,
     NodeRunNotFound,
+    RunCursor,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
@@ -309,6 +310,7 @@ class SqliteRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: RunCursor | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
 
@@ -323,6 +325,9 @@ class SqliteRunStore:
         if project_id is not None:
             sql += " AND project_id = ?"
             params.append(project_id)
+        if after is not None:
+            sql += " AND (json_extract(payload, '$.created_at'), run_id) > (?, ?)"
+            params.extend(after)
         sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(sql, tuple(params))  # nosec B608

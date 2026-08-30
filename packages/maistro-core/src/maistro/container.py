@@ -685,8 +685,12 @@ class Container:
             executable_by_consumer,
             unresolvable_reason,
         )
+        from maistro.runs.store import run_cursor_key
 
-        queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+        # `limit` bounds successful executions, not visibility into QUEUED.
+        # Page by the stable oldest-first key so permanently ineligible rows
+        # cannot pin every future tick behind the same bounded prefix.
+        after = None
         # The wired resolver, not the bare registry. `agent.delegate_remote`,
         # `agent.spawn_harness` and `rsi.quota_pace_trigger` are all registered,
         # so they pass eligibility either way; constructed bare they then fail,
@@ -704,32 +708,41 @@ class Container:
             ),
         )
         executed = 0
-        for run in queued:
-            if not consumer_owns(run):
-                continue
-            # Owned and impossible: no later tick makes an unregistered kind
-            # appear, so this Run is disposed of rather than left QUEUED
-            # forever. A multi-node Run reaches neither branch — it is owed to
-            # the durable Graph traversal (#44/#34) and waits for it.
-            unresolvable = unresolvable_reason(run)
-            if unresolvable is not None:
-                await self._fail_unresolvable_run(run.run_id, unresolvable)
-                continue
-            if not executable_by_consumer(run):
-                continue
-            try:
-                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-            except Exception:
-                # Another tick won the claim, or the Run moved on. Not ours.
-                continue
-            try:
-                await executor.execute(claimed)
-            except Exception:
-                logger.warning(
-                    "admitted Run %s failed during consumption", run.run_id, exc_info=True
-                )
-                await self._settle_unstarted_consumption(run.run_id)
-            executed += 1
+        while executed < limit:
+            queued = await self.run_store.list_by_status(
+                RunStatus.QUEUED, limit=limit, after=after
+            )
+            if not queued:
+                break
+            for run in queued:
+                after = run_cursor_key(run)
+                if not consumer_owns(run):
+                    continue
+                # Owned and impossible: no later tick makes an unregistered kind
+                # appear, so this Run is disposed of rather than left QUEUED
+                # forever. A multi-node Run reaches neither branch — it is owed to
+                # the durable Graph traversal (#44/#34) and waits for it.
+                unresolvable = unresolvable_reason(run)
+                if unresolvable is not None:
+                    await self._fail_unresolvable_run(run.run_id, unresolvable)
+                    continue
+                if not executable_by_consumer(run):
+                    continue
+                try:
+                    claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+                except Exception:
+                    # Another tick won the claim, or the Run moved on. Not ours.
+                    continue
+                try:
+                    await executor.execute(claimed)
+                except Exception:
+                    logger.warning(
+                        "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                    )
+                    await self._settle_unstarted_consumption(run.run_id)
+                executed += 1
+                if executed >= limit:
+                    break
         return executed
 
     async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:

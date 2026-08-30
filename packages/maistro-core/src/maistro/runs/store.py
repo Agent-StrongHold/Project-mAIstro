@@ -127,6 +127,17 @@ class StaleExecutionFence(RunIntegrityError):
     pass
 
 
+RunCursor = tuple[str, str]
+
+
+def run_cursor_key(run: Run) -> RunCursor:
+    """Stable keyset cursor matching every backend's oldest-first ordering."""
+    created_at = run.model_dump(mode="json")["created_at"]
+    if not isinstance(created_at, str):  # pragma: no cover - pydantic JSON contract
+        raise RunIntegrityError("Run.created_at did not serialize as text")
+    return created_at, run.run_id
+
+
 def validate_child_scope(
     parent: Run,
     *,
@@ -278,6 +289,7 @@ class RunStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: RunCursor | None = None,
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
@@ -684,13 +696,13 @@ class InMemoryRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: RunCursor | None = None,
     ) -> list[Run]:
-        """Runs currently in ``status``, oldest first.
+        """Runs currently in ``status``, oldest first, optionally after a keyset cursor.
 
-        The query a canonical consumer needs to find admitted work (#251),
-        mirrored from `DurableRunStore.list_by_status` so the two stores stop
-        diverging on query surface. Oldest-first, so a bounded tick drains a
-        backlog fairly instead of starving what arrived first.
+        ``after`` is the serialized ``(created_at, run_id)`` sort key, not an
+        offset. Rows before the cursor may leave this status while a consumer
+        works, so OFFSET would skip work as the result set shrinks.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -698,9 +710,11 @@ class InMemoryRunStore:
             (
                 run
                 for run in self._runs.values()
-                if run.status is status and (project_id is None or run.project_id == project_id)
+                if run.status is status
+                and (project_id is None or run.project_id == project_id)
+                and (after is None or run_cursor_key(run) > after)
             ),
-            key=lambda run: (run.created_at, run.run_id),
+            key=run_cursor_key,
         )
         return [run.model_copy(deep=True) for run in matching[:limit]]
 
@@ -1018,10 +1032,12 @@ __all__ = [
     "AttemptNotFound",
     "InMemoryRunStore",
     "NodeRunNotFound",
+    "RunCursor",
     "RunIntegrityError",
     "RunNotFound",
     "RunStore",
     "StaleExecutionFence",
+    "run_cursor_key",
     "validate_accepted_outcome_against_attempt",
     "validate_child_scope",
 ]
