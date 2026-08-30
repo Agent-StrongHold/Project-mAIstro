@@ -27,6 +27,24 @@ async def _adapter() -> tuple[CanvasCanonicalExecution, InMemoryRunStore, str]:
     )
 
 
+async def _seed_active_attempt(
+    runs: InMemoryRunStore,
+    run_id: str,
+    node_id: str,
+):
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    node_run = await runs.create_node_run(run_id, node_id=node_id)
+    await runs.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await runs.create_attempt(node_run.node_run_id, executor_id="dead-canvas-worker")
+    assert attempt.execution_lease is not None
+    await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    return node_run, attempt
+
+
 async def test_admission_creates_one_scoped_run_with_stage_graph() -> None:
     adapter, runs, project_id = await _adapter()
 
@@ -60,7 +78,11 @@ async def test_successful_stage_is_one_completed_node_run_and_attempt() -> None:
         actor_principal_id="user-1",
     )
 
-    result = await adapter.execute_stage(run_id, "generate", lambda: _result(["image://one"]))
+    result = await adapter.execute_stage(
+        run_id,
+        "generate",
+        lambda: _result(["image://one"]),
+    )
 
     assert result == ["image://one"]
     node_runs = await runs.list_node_runs(run_id)
@@ -112,6 +134,70 @@ async def test_failed_stage_retry_keeps_both_attempts_under_same_node_run() -> N
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.COMPLETED
+
+
+async def test_reclaimed_worker_attempt_is_fenced_before_retry() -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-reclaim",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    node_run, abandoned = await _seed_active_attempt(
+        runs,
+        run_id,
+        "canvas:job-reclaim:generate",
+    )
+    calls = 0
+
+    async def operation() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return ["image://replacement"]
+
+    result = await adapter.execute_stage(run_id, "generate", operation)
+
+    assert result == ["image://replacement"]
+    assert calls == 1
+    attempts = await runs.list_attempts(node_run.node_run_id)
+    assert [attempt.status for attempt in attempts] == [
+        AttemptStatus.CANCELLED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert attempts[0].attempt_id == abandoned.attempt_id
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+
+
+async def test_requested_cancel_fences_active_attempt_and_cancels_logical_identity() -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-cancel",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    node_run, active = await _seed_active_attempt(
+        runs,
+        run_id,
+        "canvas:job-cancel:generate",
+    )
+
+    await adapter.cancel(run_id)
+
+    attempt = await runs.get_attempt(active.attempt_id)
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.CANCELLED
+    settled_node = await runs.get_node_run(node_run.node_run_id)
+    assert settled_node is not None
+    assert settled_node.status is RunStatus.CANCELLED
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.CANCELLED
 
 
 async def test_reference_operation_has_four_distinct_canonical_stages() -> None:
@@ -184,15 +270,10 @@ async def test_terminal_canvas_failure_settles_stranded_physical_attempt_first()
         action="generate",
         actor_principal_id="user-1",
     )
-    await runs.transition_run(run_id, RunStatus.RUNNING)
-    node_run = await runs.create_node_run(run_id, node_id="canvas:job-worker-loss:generate")
-    await runs.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
-    attempt = await runs.create_attempt(node_run.node_run_id, executor_id="dead-canvas-worker")
-    assert attempt.execution_lease is not None
-    await runs.transition_attempt(
-        attempt.attempt_id,
-        AttemptStatus.RUNNING,
-        fencing_token=attempt.execution_lease.fencing_token,
+    node_run, attempt = await _seed_active_attempt(
+        runs,
+        run_id,
+        "canvas:job-worker-loss:generate",
     )
 
     await adapter.fail(run_id, "Generation failed: worker lease expired.")
