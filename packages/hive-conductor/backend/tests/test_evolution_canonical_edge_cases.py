@@ -6,7 +6,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from maistro.graph.nodes.base import NodeContext
 import pytest
 from routes.evolution import _actor_principal_id, trigger_cycle
 from services.evolution import _EvolutionService
@@ -16,6 +15,8 @@ from services.evolution_graph import (
     _append_execution_ref,
     _published_evaluation_ref,
 )
+
+from maistro.graph.nodes.base import NodeContext
 
 
 def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.MonkeyPatch) -> None:
