@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from maistro.http import shared_client
+from maistro.runs.model import RunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +111,14 @@ class _EvolutionService:
             actor_principal_id=actor_principal_id,
             cycle_number=self._cycle_count + 1,
         )
-        self._cycle_count += 1
         self._last_run_id = record.run_id
+        if record.run.status is not RunStatus.COMPLETED:
+            detail = record.run.error or f"canonical Run ended {record.run.status.value}"
+            raise RuntimeError(
+                f"Evolution cycle canonical Run {record.run_id} did not complete: {detail}"
+            )
+
+        self._cycle_count += 1
         self._last_cycle_error = None
         pop_size = len(self._population.list_all())
         logger.info(
