@@ -12,6 +12,7 @@ import sys
 
 import structlog
 
+from maistro.observability.correlation import execution_context_processor
 from maistro.security.log_redaction import install_log_redaction, structlog_redact_processor
 
 
@@ -27,6 +28,10 @@ def configure_logging(*, debug: bool = False, json_output: bool = True) -> None:
     # Shared processors for both structlog and stdlib
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        # After `merge_contextvars`, so a caller that bound an id through
+        # structlog directly still wins over the ambient execution context —
+        # `execution_context_processor` uses `setdefault` (#707).
+        execution_context_processor,
         structlog.processors.add_log_level,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.TimeStamper(fmt="iso"),
