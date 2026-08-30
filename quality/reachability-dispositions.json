@@ -614,6 +614,16 @@
         "@tool/check-autonomous-merge"
       ],
       "root": ".github/workflows/autonomous-merge.yml, restored once #562 decides whether a generated quality/ ledger is part of the trusted surface and the check can pass for an ordinary change"
+    },
+    {
+      "id": "unwired-merge-group-scope-classifier",
+      "subsystem": "Repo tooling",
+      "disposition": "CONNECT",
+      "rationale": "Classifies which expensive CI legs a merge-group candidate can affect, written ahead of the workflow step that will call it. No `.github/workflows/*.yml` invokes it yet, so no import or shell-frame edge reaches it. Temporary rather than a standing LIBRARY entry: the module is meant to be reachable, not import-only, and this disposition is to be pruned once #655 wires it into a workflow step and the reachability graph can see the call site on its own.",
+      "modules": [
+        "@tool/ci_merge_group_scope"
+      ],
+      "root": "a workflow step calling scripts/ci_merge_group_scope.py, added by #655"
     }
   ]
 }

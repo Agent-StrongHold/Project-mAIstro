@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Classify which expensive CI legs a merge-group candidate can affect."""
+
 from __future__ import annotations
 
 import argparse
@@ -27,10 +28,7 @@ _GLOBAL = {
 
 
 def _under(path: str, *prefixes: str) -> bool:
-    return any(
-        path == prefix or path.startswith(prefix.rstrip("/") + "/")
-        for prefix in prefixes
-    )
+    return any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in prefixes)
 
 
 def _classify_path(path: str, out: dict[str, bool]) -> None:
@@ -51,26 +49,18 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         )
     ):
         out["postgres"] = True
-    if _under(path, "packages/maistro-core/tests/archive") or (
-        core and "archive" in path
-    ):
+    if _under(path, "packages/maistro-core/tests/archive") or (core and "archive" in path):
         out["object_storage"] = True
-    if (
-        core and any(token in path for token in ("event", "durable"))
-    ) or _under(path, "tests/events", "tests/durable_events"):
+    if (core and any(token in path for token in ("event", "durable"))) or _under(
+        path, "tests/events", "tests/durable_events"
+    ):
         out["durable_events"] = True
-    if core and any(
-        token in path for token in ("strike", "attempt", "execution", "run")
-    ):
+    if core and any(token in path for token in ("strike", "attempt", "execution", "run")):
         out["strike_ladder"] = True
-    if hive or server or _under(
-        path, "docker-compose.yml", "docker-compose", "tests/e2e"
-    ):
+    if hive or server or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
         out["hive_e2e"] = True
     if _under(path, "packages") and (
-        path.endswith("pyproject.toml")
-        or "/src/" in path
-        or path.endswith("/__init__.py")
+        path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py") or hive
     ):
         out["wheel_imports"] = True
     if (
@@ -98,7 +88,7 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
 
 def classify(paths: Iterable[str]) -> dict[str, bool]:
     """Return a run/skip decision for each expensive specialized CI leg."""
-    changed = {PurePosixPath(p).as_posix().lstrip("./") for p in paths if p.strip()}
+    changed = {PurePosixPath(p).as_posix().removeprefix("./") for p in paths if p.strip()}
     if not changed or changed & _GLOBAL:
         return dict.fromkeys(LEGS, True)
     out = dict.fromkeys(LEGS, False)
