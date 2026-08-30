@@ -76,7 +76,7 @@ def _thumb(
 
 
 class TestTheThumbsSignalIsAProtocolQuery:
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-1")
+    @pytest.mark.ac("SPEC-083026-58de/AC-1")
     async def test_a_recorded_thumb_comes_back(self, outcome_store: Any) -> None:
         await outcome_store.record(_thumb("up"))
 
@@ -84,7 +84,7 @@ class TestTheThumbsSignalIsAProtocolQuery:
 
         assert [(o.thumb, o.node_id) for o in found] == [("up", "n1")]
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-1")
+    @pytest.mark.ac("SPEC-083026-58de/AC-1")
     async def test_the_comment_survives_the_round_trip(self, outcome_store: Any) -> None:
         """The comment is the half the optimizer feeds to the prompt rewriter.
 
@@ -97,20 +97,20 @@ class TestTheThumbsSignalIsAProtocolQuery:
 
         assert [o.thumb_comment for o in found] == ["it invented a citation"]
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-1")
+    @pytest.mark.ac("SPEC-083026-58de/AC-1")
     async def test_an_outcome_with_no_thumb_is_not_a_thumb(self, outcome_store: Any) -> None:
         """Most outcomes are ordinary request records; they are not feedback."""
         await outcome_store.record(_thumb(""))
 
         assert await outcome_store.list_thumbs(dag_id="d1") == []
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-2")
+    @pytest.mark.ac("SPEC-083026-58de/AC-2")
     async def test_another_dags_thumb_is_excluded(self, outcome_store: Any) -> None:
         await outcome_store.record(_thumb("up", dag_id="other"))
 
         assert await outcome_store.list_thumbs(dag_id="d1") == []
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-2")
+    @pytest.mark.ac("SPEC-083026-58de/AC-2")
     async def test_an_unattributed_thumb_belongs_to_every_dag(self, outcome_store: Any) -> None:
         """The rule the optimizer applied inline, kept deliberately.
 
@@ -124,7 +124,7 @@ class TestTheThumbsSignalIsAProtocolQuery:
 
         assert [o.thumb for o in found] == ["down"]
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-2")
+    @pytest.mark.ac("SPEC-083026-58de/AC-2")
     async def test_naming_no_dag_returns_every_thumb(self, outcome_store: Any) -> None:
         await outcome_store.record(_thumb("up", dag_id="a"))
         await outcome_store.record(_thumb("down", dag_id="b"))
@@ -133,21 +133,21 @@ class TestTheThumbsSignalIsAProtocolQuery:
 
         assert sorted(o.thumb for o in found) == ["down", "up"]
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-5")
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
     async def test_a_thumb_older_than_the_window_falls_out(self, outcome_store: Any) -> None:
         """Retention is a decision now, not whatever `MAX_OUTCOMES` happened to be."""
         await outcome_store.record(_thumb("up", age_days=THUMB_WINDOW_DAYS + 1))
 
         assert await outcome_store.list_thumbs(dag_id="d1") == []
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-5")
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
     async def test_a_thumb_inside_the_window_is_kept(self, outcome_store: Any) -> None:
         """The other half: a window that excluded everything would also pass above."""
         await outcome_store.record(_thumb("up", age_days=THUMB_WINDOW_DAYS - 1))
 
         assert len(await outcome_store.list_thumbs(dag_id="d1")) == 1
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-5")
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
     async def test_the_limit_keeps_the_most_recent(self, outcome_store: Any) -> None:
         """If the bound ever binds, it must drop the oldest, not an arbitrary half."""
         await outcome_store.record(_thumb("down", age_days=5))
@@ -157,14 +157,14 @@ class TestTheThumbsSignalIsAProtocolQuery:
 
         assert [o.thumb for o in found] == ["up"]
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-5")
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
     async def test_another_orgs_thumb_is_not_returned(self, outcome_store: Any) -> None:
         """Scope authorization, which `list_thumbs` must apply like its siblings."""
         await outcome_store.record(_thumb("up", org_id="org-a"))
 
         assert await outcome_store.list_thumbs(dag_id="d1", org_id="org-b") == []
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-5")
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
     async def test_naming_no_org_sees_every_org(self, outcome_store: Any) -> None:
         """Empty means unscoped, matching every other read on this protocol."""
         await outcome_store.record(_thumb("up", org_id="org-a"))
@@ -182,7 +182,7 @@ class TestTheDurableStoresKeepWhatTheyAreGiven:
     neither.
     """
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-3")
+    @pytest.mark.ac("SPEC-083026-58de/AC-3")
     async def test_every_attribution_field_round_trips(self, outcome_store: Any) -> None:
         await outcome_store.record(
             Outcome(
@@ -222,7 +222,7 @@ class TestASqliteFileMadeBeforeTheColumnsExisted:
     so the added columns need an explicit `ALTER`.
     """
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-3")
+    @pytest.mark.ac("SPEC-083026-58de/AC-3")
     async def test_the_old_table_gains_the_columns_and_keeps_its_rows(self) -> None:
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 

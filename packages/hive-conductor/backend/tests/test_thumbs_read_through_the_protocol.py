@@ -85,7 +85,7 @@ def _sources() -> list[pathlib.Path]:
 
 
 class TestThePrivateListIsNotReadOutsideItsOwner:
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-4")
+    @pytest.mark.ac("SPEC-083026-58de/AC-4")
     def test_no_production_module_reads_outcomes_directly(self) -> None:
         offenders = [
             str(path.relative_to(_REPO))
@@ -99,7 +99,7 @@ class TestThePrivateListIsNotReadOutsideItsOwner:
             "against PostgreSQL or SQLite"
         )
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-4")
+    @pytest.mark.ac("SPEC-083026-58de/AC-4")
     def test_the_scan_actually_reaches_the_two_former_offenders(self) -> None:
         """A guard whose corpus is empty guards nothing.
 
@@ -111,7 +111,7 @@ class TestThePrivateListIsNotReadOutsideItsOwner:
         assert "packages/hive-conductor/backend/services/optimizer.py" in scanned
         assert "packages/hive-conductor/backend/services/topology_compare.py" in scanned
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-4")
+    @pytest.mark.ac("SPEC-083026-58de/AC-4")
     def test_the_pattern_matches_the_attribute_and_not_its_lookalikes(self) -> None:
         """Both false-positive classes, and the true positives, pinned.
 
@@ -134,7 +134,7 @@ class TestTheSetterHasAProductionCaller:
     docstring describing the bridge that would make it.
     """
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-6")
+    @pytest.mark.ac("SPEC-083026-58de/AC-6")
     def test_the_engine_binds_the_containers_store(self) -> None:
         from services import engine as engine_module
 
@@ -143,7 +143,7 @@ class TestTheSetterHasAProductionCaller:
         assert "set_outcome_store(" in source
         assert "_wire_outcome_store" in source
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-6")
+    @pytest.mark.ac("SPEC-083026-58de/AC-6")
     async def test_starting_with_a_container_binds_its_store(self) -> None:
         """Through `_wire_outcome_store` itself, not by reading the source.
 
@@ -165,7 +165,7 @@ class TestTheSetterHasAProductionCaller:
         finally:
             feedback_service.set_outcome_store(before)
 
-    @pytest.mark.ac("SPEC-083026-a1f7/AC-6")
+    @pytest.mark.ac("SPEC-083026-58de/AC-6")
     async def test_no_container_leaves_the_hive_local_store_alone(self) -> None:
         """Without the bridge a thumb still records, into memory, deterministically.
 
