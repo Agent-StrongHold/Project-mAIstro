@@ -2,10 +2,11 @@
 
 A consumer claim is not a bare ``RunStatus.RUNNING`` write. The write that makes
 that statement true also persists the logical NodeRun and a leased physical
-``AttemptStatus.RUNNING`` Attempt in the same transaction. If the claimant dies
-after the transaction commits, the ordinary Attempt lease sweep has evidence to
-reclaim; if it dies before commit, the Run is still QUEUED. There is no third
-state and no second recovery mechanism.
+``AttemptStatus.RUNNING`` Attempt in the same transaction. The physical Attempt
+is therefore RUNNING before the claim returns. If the claimant dies after the
+transaction commits, the ordinary Attempt lease sweep has evidence to reclaim;
+if it dies before commit, the Run is still QUEUED. There is no third state and
+no second recovery mechanism.
 """
 
 from __future__ import annotations
