@@ -9,11 +9,11 @@ import pytest
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
-from maistro.graph.nodes import NodeResult
+from maistro.graph.nodes import NodeContext, NodeResult
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
-from services.evolution_graph import run_canonical_evolution_cycle
+from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 pytestmark = pytest.mark.contract("behavioral")
 
@@ -320,3 +320,52 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
     physical = NodeResult.model_validate(attempts[0].result)
     assert physical.success is False
     assert physical.error_code == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_recovered_evaluation_node_run_reuses_published_score_without_reevaluation() -> None:
+    class _MustNotRunHarness(_Harness):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate_genome(self, genome: _Genome, benchmarks: list[str], llm_call: Any):
+            self.calls += 1
+            raise AssertionError("recovery replayed already-published evaluation work")
+
+    genome = _Genome("g1")
+    genome.eval_scores["proxy"] = 0.5
+    genome.harness_params["total_cost_usd"] = 0.01
+    genome.harness_params["evaluation_runs"] = [
+        {
+            "run_id": "run-1",
+            "node_run_id": "node-run-1",
+            "attempt_id": "attempt-before-crash",
+        }
+    ]
+    population = _Population([genome])
+    harness = _MustNotRunHarness()
+    cycle = _Cycle(harness=harness, tournament=_Tournament())
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="graph-1",
+        node_id="evolve-evaluate-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-after-recovery",
+    )
+
+    output = await _evaluate_one(
+        cycle,
+        population,
+        _config(population_size=1, eval_batch_size=1),
+        None,
+        "g1",
+        ctx,
+    )
+
+    assert harness.calls == 0
+    persisted = population.get("g1")
+    assert persisted is not None
+    assert persisted.eval_scores == {"proxy": 0.5}
+    assert persisted.harness_params["total_cost_usd"] == 0.01
+    assert persisted.harness_params["evaluation_runs"] == genome.harness_params["evaluation_runs"]
+    assert output.evaluation_attempt_id == "attempt-before-crash"
