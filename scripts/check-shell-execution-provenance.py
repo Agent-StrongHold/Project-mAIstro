@@ -114,7 +114,9 @@ def main() -> int:
         for item in unauthorized
     )
     for item in sorted(current - candidate):
-        failures.append(f"  {_identity(item)}: current shell execution missing from candidate ledger")
+        failures.append(
+            f"  {_identity(item)}: current shell execution missing from candidate ledger"
+        )
     for item in sorted(candidate - current):
         failures.append(f"  {_identity(item)}: stale candidate shell approval must be pruned")
 
