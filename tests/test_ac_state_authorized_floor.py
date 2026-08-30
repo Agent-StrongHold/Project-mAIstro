@@ -867,6 +867,71 @@ class TestAProtectedPushCannotSpendAGrantAndDeleteIt:
         assert gate._guard_actual_base(base_report, candidate_report, "base-sha") == 0
 
     @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_the_base_measurement_itself_asks_nothing(self, gate, tmp_path, monkeypatch) -> None:
+        """The other side of the recursion guard, and the reason the test above
+        must delete it by name. `_measure_base` re-invokes this script inside
+        the base worktree with the guard set; that run must delegate straight
+        to `_impl.main` and never measure a base of its own."""
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+        monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
+        monkeypatch.setenv(gate._BASE_MEASUREMENT, "1")
+        measured: list[str] = []
+        monkeypatch.setattr(gate, "_measure_base", lambda base_rev, report: measured.append("no"))
+        monkeypatch.setattr(gate._impl, "main", lambda argv: 0)
+
+        assert gate.main(["--ratchet", "--out", str(tmp_path / "out.json")]) == 0
+        assert measured == []
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_deeper_fall_is_reported_as_the_fall_it_is(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """Codex, #693. Base 20, grant 15, candidate 12, grant removed.
+
+        The counter regresses *either way*, so the grant is not what permits
+        this push and its removal is not the story. Comparing the rendered
+        lines made it look load-bearing — they name different floors, 15 with
+        the grant and 20 without — and the run then refused the push for the
+        removal instead of for the deeper fall, which is the more serious of
+        the two and the one an operator needs told.
+        """
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=12.0)
+        _write_grants(root, {})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 12.0)
+        base_report.write_text(
+            json.dumps({"measured": True, "totals": {**TOTALS, "design_coverage": 20.0}})
+        )
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        printed = capsys.readouterr().out
+        assert "regressed from the actual measured base" in printed
+        assert "spends an authorized floor and removes it" not in printed
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-10")
+    def test_the_first_grant_a_push_adds_is_validated_too(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """Codex, #693. A protected push adding the *first* grant has no base
+        floors, so an early return on `not floors` skipped the only validation
+        this path performs — and `--ratchet` is stripped here, so nothing else
+        looks. The malformed record then became the base every later run reads
+        and refuses."""
+        root = repo(28.2327, banked=28.2327)
+        _write_grants(root, {"design_coverage@15.0": {}})
+        self._floors(gate, monkeypatch, None)
+        base_report, candidate_report = self._reports(tmp_path, 28.2327)
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        assert "missing owner, issue, reason" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
     def test_a_push_with_no_grant_in_play_is_not_asked_anything(self, gate, tmp_path) -> None:
         """No floors, no question — and no read of the grants file either."""
         base_report, candidate_report = self._reports(tmp_path, TOTALS["design_coverage"])
@@ -912,7 +977,13 @@ class TestAProtectedPushCannotSpendAGrantAndDeleteIt:
         """
         monkeypatch.setenv("GITHUB_EVENT_NAME", event)
         monkeypatch.setenv("GITHUB_REF", ref)
-        monkeypatch.delenv("MAISTRO_AC_BASE_MEASUREMENT", raising=False)
+        # The constant, not a guessed literal (Codex, #693). `_measure_base`
+        # sets this while running `check-ac-state.py --run-tests`, so an
+        # AC-marked test launched by that run inherits it; deleting the wrong
+        # name left `main` returning early on the recursion guard, the mocked
+        # guard uncalled, and this criterion graded unproven in the very base
+        # measurement it exists to protect.
+        monkeypatch.delenv(gate._BASE_MEASUREMENT, raising=False)
         monkeypatch.setattr(gate, "_actual_base_revision", lambda: "base-sha")
         monkeypatch.setattr(gate, "_measure_base", lambda base_rev, report: None)
         monkeypatch.setattr(gate._impl, "main", lambda argv: 0)

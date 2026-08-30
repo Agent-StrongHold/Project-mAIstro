@@ -197,31 +197,59 @@ def _spent_grants_removed(
 ) -> list[str] | None:
     """Grants this push relies on and no longer ships, or None if unreadable.
 
-    "Relies on" is measured, not assumed: a grant counts only when dropping it
-    turns this comparison into a regression. That keeps the honest cases
+    "Relies on" is measured, not assumed: a grant counts only where the counter
+    does *not* regress with it and *does* without. That keeps the honest cases
     passing -- a push that prunes a grant the base has already overtaken
     regresses nothing without it, so it has nothing to answer for, and a push
-    that neither spends nor touches one is unaffected.
+    that neither spends nor touches one is unaffected -- and it keeps a push
+    that falls below even the granted floor being reported for that fall rather
+    than for the removal.
     """
-    if not floors:
-        return []
-    load_bearing = {
-        counter
-        for counter in floors
-        if _actual_base_regressions(base, candidate, {counter: floors[counter]})
-        != _actual_base_regressions(base, candidate, {})
-    }
-    if not load_bearing:
-        return []
+    # Read first, and whatever the base says. A protected push that adds the
+    # *first* grant has no base floors at all, so returning early on `not
+    # floors` skipped the only validation this path performs -- and `--ratchet`
+    # is stripped here, so nothing else looks. A malformed record then passed
+    # with unchanged measurements and became the base every later run reads and
+    # refuses (Codex, #693).
     try:
         present = _impl.candidate_grants()
     except _impl.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}")
         return None
+    if not floors:
+        return []
+    load_bearing = {
+        counter
+        for counter in floors
+        if not _regresses(base, candidate, {counter: floors[counter]}, counter)
+        and _regresses(base, candidate, {}, counter)
+    }
     return sorted(
         f"{counter}@{floors[counter]}"
         for counter in load_bearing
         if present.get(counter) != floors[counter]
+    )
+
+
+def _regresses(
+    base: dict[str, Any],
+    candidate: dict[str, Any],
+    floors: dict[str, float],
+    counter: str,
+) -> bool:
+    """Whether one counter regresses under `floors`.
+
+    The status, not the formatted line (Codex, #693). Comparing the rendered
+    lists made a counter that regresses *either way* look load-bearing, because
+    the two messages name different floors -- base 20, grant 15, candidate 12
+    reports "floor still says 15" with the grant and "20" without. The push
+    would then be refused for removing a grant rather than for the deeper fall
+    it actually took, which is the more serious of the two and the one an
+    operator needs told.
+    """
+    prefix = f"{counter}: "
+    return any(
+        line.startswith(prefix) for line in _actual_base_regressions(base, candidate, floors)
     )
 
 
