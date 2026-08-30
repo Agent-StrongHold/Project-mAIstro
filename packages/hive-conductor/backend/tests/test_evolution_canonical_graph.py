@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
@@ -13,7 +14,6 @@ from maistro.graph.nodes import NodeContext, NodeResult
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 pytestmark = pytest.mark.contract("behavioral")
 
