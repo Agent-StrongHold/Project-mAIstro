@@ -32,6 +32,11 @@ export default function KnowledgeBase() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatHistory, setChatHistory] = useState<{role: string; content: string}[]>([]);
   const [profile, setProfile] = useState<Record<string, string>>({});
+  // A failed save used to end in `.catch(() => {})`, so an edit the server
+  // never kept still looked saved (#699). `null` means nothing has failed.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // `false` once the server has told us it is holding profiles in-process.
+  const [profileDurable, setProfileDurable] = useState(true);
   const [tab, setTab] = useState<Tab>("profile");
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [prompts, setPrompts] = useState<Record<string, { system: string; user: string }>>({
@@ -52,6 +57,7 @@ export default function KnowledgeBase() {
     try {
       const p = await fetch("/v1/profile", { credentials: "same-origin" }).then(r => r.json());
       setProfile(p?.preferences || {});
+      setProfileDurable(p?.durable !== false);
       if (p?.preferences?.prompts) setPrompts(p.preferences.prompts);
     } catch { /* */ }
     try {
@@ -66,8 +72,16 @@ export default function KnowledgeBase() {
   const savePrompt = async (section: string, field: "user", value: string) => {
     const updated = { ...prompts, [section]: { ...prompts[section], [field]: value } };
     setPrompts(updated);
-    await fetch("/v1/profile", { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ preferences: { ...profile, prompts: updated } }) }).catch(() => {});
+    // The server answers 503 when the write did not reach the store, so a
+    // non-OK response is a real failure and belongs on screen.
+    try {
+      const res = await fetch("/v1/profile", { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferences: { ...profile, prompts: updated } }) });
+      if (!res.ok) throw new Error(`the server did not save it (${res.status})`);
+      setSaveError(null);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "the save did not reach the server");
+    }
   };
 
   const addEntry = async () => {
@@ -121,6 +135,17 @@ Current memories:\n${entries.slice(0, 15).map(e => `- [${e.namespace}] ${e.value
         <h1 style={{ fontSize: "1.3rem", fontWeight: 700, margin: 0, fontFamily: "Georgia, serif" }}>Inner Temple</h1>
         <p style={{ fontSize: "0.7rem", color: C.muted, margin: "2px 0 0" }}>Your personal chamber — identity, preferences, and everything Fantasia knows about you</p>
       </div>
+
+      {saveError && (
+        <div role="alert" style={{ background: "rgba(232,124,124,0.1)", border: `1px solid ${C.danger}`, borderRadius: 8, padding: "8px 12px", marginBottom: "0.75rem", fontSize: "0.72rem", color: C.danger }}>
+          Not saved — {saveError}. Your edit is still on screen; try again.
+        </div>
+      )}
+      {!profileDurable && (
+        <div style={{ background: "rgba(196,166,97,0.08)", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", marginBottom: "0.75rem", fontSize: "0.72rem", color: C.gold }}>
+          This Conductor is holding profiles in memory only — what you save here will not survive a restart.
+        </div>
+      )}
 
       {/* Persistent Chat Bar */}
       <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: "1rem" }}>

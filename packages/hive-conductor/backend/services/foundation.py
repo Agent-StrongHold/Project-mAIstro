@@ -101,6 +101,11 @@ class Foundation:
 
             configure_dag_run_store(stores.dag_runs)
 
+            from services.profile_store import PersistedProfileRecordStore
+            from services.profile_store import configure as configure_profiles
+
+            configure_profiles(PersistedProfileRecordStore(persisted, self.state.flush))
+
             self.state.flush()
             logger.info("Stores wired to SQLite persistence")
         except Exception as exc:
@@ -116,6 +121,13 @@ class Foundation:
             # durable one (#334). Whether reaching this branch at all should be
             # allowed is #333.
             configure_settings(EphemeralSettingsRecordStore())
+            # Same rule for profiles, and a fresh store rather than an early
+            # return: a second Foundation built in one process would otherwise
+            # inherit the previous one's records (#699, and the same shape as
+            # the fallback outcome store #700 had to fix).
+            from services.profile_store import reset as reset_profiles
+
+            reset_profiles()
 
     def _init_privilege(self, settings: Settings, data_dir: Path) -> None:
         if not settings.conductor_admin_public_key:

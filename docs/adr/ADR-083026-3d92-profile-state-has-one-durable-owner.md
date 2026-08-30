@@ -66,11 +66,22 @@ to dashboard layouts. This is the same shape, one family later.
 
 ## Decision
 
-**One owner: `services/profile_store.py`, over `stores.user_profiles`.**
-Profiles join the Conductor's own registry, the same `_all_json_stores` that
-`configure_persistence` already wires to SQLite. This needs no service the repo
-does not provision. The HTTP route and all five chat-tool paths call the same
-module; none of them touches a dict of its own.
+**One owner: `services/profile_store.py`.** The HTTP route and all five
+chat-tool paths call the same module; none of them touches a dict of its own.
+It stores through `PersistedStore` under the namespace `user_profiles` —
+the Conductor's own SQLite state, needing no service this repo does not
+provision.
+
+It follows `settings_store` (#334) rather than the `stores.py` registry that
+#340 used for dashboard layouts, and the reason is the read-back below: the
+`JsonStore` wrapper exposes no way to read a raw document back, so a store in
+that registry can only acknowledge a write it has not confirmed. Layouts can
+live with that; a profile the user is told was saved cannot.
+
+**No cache.** Every read decodes from the store. A process cache is what let
+the panel and the tools disagree without either noticing, and it is what makes
+a second replica serve a profile its owner has already changed. A profile read
+is one row.
 
 **`_PROFILE_CACHE` is deleted rather than wrapped.** Following ADR-082926-0b72:
 removing the name makes a missed call site an `AttributeError` at import, where

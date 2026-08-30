@@ -57,12 +57,17 @@ ADR-083026-3d92 records the decisions. This spec states what has to be true.
 
 ## Decision
 
-`services/profile_store.py` owns the record, over `stores.user_profiles`, which
-joins `_all_json_stores`. Everything that reads or writes a profile goes through
-it: the four HTTP handlers and the five chat-tool paths. A write is acknowledged
-only after the store is read back and agrees.
+`services/profile_store.py` owns the record, over `PersistedStore` under the
+namespace `user_profiles`. Everything that reads or writes a profile goes
+through it: the three HTTP handlers and the five chat-tool paths. A write is
+acknowledged only after the store is read back and agrees.
 
-Two rules carry most of the weight and are not obvious from the code:
+Three rules carry most of the weight and are not obvious from the code:
+
+**Reads go through to the store, always.** There is no cache. The module global
+this replaces is what let the panel and the tools hold different answers, and a
+cache is also what makes a second replica serve a profile its owner has already
+changed. A profile read is one row.
 
 **Read-back, not write-and-return.** `PersistedStore.put_raw` enqueues onto
 `State`'s writer thread, whose loop swallows the exceptions its closures raise.

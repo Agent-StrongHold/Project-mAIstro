@@ -188,8 +188,12 @@ def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prom
         "unless that tool requires a connection the user hasn't configured. "
         "You ARE the dashboard — you can read and surface any data the system tracks."
     )
-    # Inject cached profile
-    profile = _PROFILE_CACHE.get(user_id)
+    # Inject the stored profile. Read through to the store on every call: the
+    # process cache this replaces is what let the panel and the chat tools hold
+    # different answers without either noticing (#699).
+    from services import profile_store
+
+    profile = profile_store.preferences(user_id) if user_id else {}
     if profile:
         filled = {k: v for k, v in profile.items() if v}
         if filled:
@@ -1781,7 +1785,6 @@ async def _run_chat_completion_inner(
     # Build messages with PM system prompt
     messages: list[dict[str, Any]] = list(req.messages)
     if not any(m.get("role") == "system" for m in messages):
-        await hydrate_profile_cache(user_id)
         system_prompt = _build_system_prompt(user_id)
         messages.insert(0, {"role": "system", "content": system_prompt})
 
@@ -1966,7 +1969,6 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
 
     messages: list[dict[str, Any]] = list(req.messages)
     if not any(m.get("role") == "system" for m in messages):
-        await hydrate_profile_cache(user_id)
         system_prompt = _build_system_prompt(user_id)
         messages.insert(0, {"role": "system", "content": system_prompt})
 
@@ -2125,32 +2127,26 @@ PROFILE_SCHEMA = {
     "communication": ["challenge_style", "presentation_format", "terminology"],
 }
 
-_PROFILE_CACHE: dict[str, dict] = {}
-
-
-async def hydrate_profile_cache(user_id: str) -> None:
-    """Load profile from DB into cache. Called on first chat request."""
-    if user_id in _PROFILE_CACHE:
-        return
-    try:
-        from services.pg_store import pg_get
-
-        rows = await pg_get("user_profiles", {"id": f"eq.{user_id}"})
-        row = rows[0] if rows else None
-        _PROFILE_CACHE[user_id] = (row or {}).get("preferences", {})
-    except Exception:
-        _PROFILE_CACHE[user_id] = {}
+# `_PROFILE_CACHE` and `hydrate_profile_cache` are deliberately absent. The
+# cache was a module global that `PUT /v1/profile` wrote and these tools never
+# read, and the hydrator filled it from a PostgREST table no migration in this
+# repository creates -- so it filled it with `{}` and the next `profile_set`
+# wrote that `{}` back, erasing whatever the panel had saved (#699).
+#
+# Removing the names rather than wrapping them is the point: a call site this
+# change missed is an ImportError at import time, where a write-through wrapper
+# would have made it a write that quietly does not land (ADR-082926-0b72).
+# `services.profile_store` owns the record now, and it reads through on every
+# call, so there is nothing to hydrate.
 
 
 async def _tool_profile_get(
     args: dict[str, Any], user_id: str, jira_pat: str | None = None
 ) -> dict[str, Any]:
     """Get profile fields. No args = full profile. section= filters by category."""
-    from services.pg_store import pg_get
+    from services import profile_store
 
-    rows = await pg_get("user_profiles", {"id": f"eq.{user_id}"})
-    row = rows[0] if rows else None
-    profile = (row or {}).get("preferences", {})
+    profile = profile_store.preferences(user_id)
     section = args.get("section")
     if section and section in PROFILE_SCHEMA:
         return {
@@ -2164,18 +2160,19 @@ async def _tool_profile_set(
     args: dict[str, Any], user_id: str, jira_pat: str | None = None
 ) -> dict[str, Any]:
     """Set a profile field. e.g. field='name', value='Blake'"""
-    from services.pg_store import pg_get, pg_upsert
+    from services import profile_store
 
-    rows = await pg_get("user_profiles", {"id": f"eq.{user_id}"})
-    row = rows[0] if rows else None
-    profile = (row or {}).get("preferences", {})
     field = args.get("field", "")
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
-    profile[field] = value
-    await pg_upsert("user_profiles", {"id": user_id, "preferences": profile})
-    _PROFILE_CACHE[user_id] = profile
+    try:
+        profile_store.set_field(user_id, field, value)
+    except profile_store.ProfilePersistenceError as exc:
+        # Reported, not swallowed. The old path suppressed the write failure
+        # and answered `updated: True`, so the model told the user their fact
+        # was saved when nothing held it (#699).
+        return {"error": f"profile not saved: {exc}"}
     return {"updated": True, "field": field, "value": value}
 
 
@@ -2183,19 +2180,17 @@ async def _tool_profile_delete(
     args: dict[str, Any], user_id: str, jira_pat: str | None = None
 ) -> dict[str, Any]:
     """Remove a profile field."""
-    from services.pg_store import pg_get, pg_upsert
+    from services import profile_store
 
-    rows = await pg_get("user_profiles", {"id": f"eq.{user_id}"})
-    row = rows[0] if rows else None
-    profile = (row or {}).get("preferences", {})
     field = args.get("field", "")
     if not field:
         return {"error": "field required"}
-    removed = profile.pop(field, None)
-    if removed is None:
+    try:
+        profile_store.delete_field(user_id, field)
+    except KeyError:
         return {"error": f"field '{field}' not found"}
-    await pg_upsert("user_profiles", {"id": user_id, "preferences": profile})
-    _PROFILE_CACHE.pop(user_id, None)
+    except profile_store.ProfilePersistenceError as exc:
+        return {"error": f"profile not saved: {exc}"}
     return {"deleted": True, "field": field}
 
 
@@ -2363,11 +2358,9 @@ async def _tool_favorite_model(
     args: dict[str, Any], user_id: str, jira_pat: str | None = None
 ) -> dict[str, Any]:
     """Add/remove a model from favorites, or set a per-task default."""
-    from services.pg_store import pg_get, pg_upsert
+    from services import profile_store
 
-    rows = await pg_get("user_profiles", {"id": f"eq.{user_id}"})
-    row = rows[0] if rows else None
-    profile = (row or {}).get("preferences", {})
+    profile = profile_store.preferences(user_id)
     model = args.get("model", "")
     action = args.get("action", "add")  # add, remove, hide, unhide, set_task
     task = args.get("task", "")  # chat, widget_wizard, biographer
@@ -2393,8 +2386,10 @@ async def _tool_favorite_model(
     profile["favorite_models"] = favorites
     profile["hidden_models"] = hidden
     profile["task_models"] = task_models
-    await pg_upsert("user_profiles", {"id": user_id, "preferences": profile})
-    _PROFILE_CACHE[user_id] = profile
+    try:
+        profile_store.save(user_id, profile)
+    except profile_store.ProfilePersistenceError as exc:
+        return {"error": f"profile not saved: {exc}"}
     return {"updated": True, "favorites": favorites, "hidden": hidden, "task_models": task_models}
 
 
