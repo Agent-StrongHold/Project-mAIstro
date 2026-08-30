@@ -9,13 +9,20 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
+import pytest
 
-from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
+from maistro.tasks.http_contract import (
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_workspace_scope,
+)
 from maistro.tasks.models import TaskCreate
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+
+SCOPE_KEY = "test-only-workspace-scope-key"
 
 
 def _backend_module() -> Any:
@@ -67,7 +74,11 @@ async def test_named_workspace_crosses_the_production_http_boundary(
         yield _Client()
 
     monkeypatch.setattr(task_backend_module, "shared_client", _client)
-    backend = backend_type(base_url="http://maistro-server", api_key="secret")
+    backend = backend_type(
+        base_url="http://maistro-server",
+        api_key="secret",
+        workspace_scope_key=SCOPE_KEY,
+    )
 
     record = await backend.submit(
         TaskCreate(description="ship it"),
@@ -77,10 +88,29 @@ async def test_named_workspace_crosses_the_production_http_boundary(
 
     assert record.id == "srv-1"
     assert seen_headers[WORKSPACE_ID_HEADER] == "workspace-a"
+    assert seen_headers[WORKSPACE_SCOPE_SIGNATURE_HEADER] == sign_workspace_scope(
+        "workspace-a", SCOPE_KEY
+    )
     assert seen_headers["Authorization"] == "Bearer secret"
 
 
-async def test_unscoped_submission_does_not_fabricate_a_workspace_header(
+async def test_named_workspace_fails_closed_without_scope_proof_key() -> None:
+    task_backend_module = _backend_module()
+    backend = task_backend_module.MaistroServerTaskBackend(
+        base_url="http://maistro-server",
+        api_key="secret",
+        workspace_scope_key="",
+    )
+
+    with pytest.raises(task_backend_module.WorkspaceNotRoutable):
+        await backend.submit(
+            TaskCreate(description="ship it"),
+            user_id="user-1",
+            workspace_id="workspace-a",
+        )
+
+
+async def test_unscoped_submission_does_not_fabricate_workspace_scope(
     monkeypatch,
 ) -> None:
     task_backend_module = _backend_module()
@@ -109,8 +139,9 @@ async def test_unscoped_submission_does_not_fabricate_a_workspace_header(
         yield _Client()
 
     monkeypatch.setattr(task_backend_module, "shared_client", _client)
-    backend = backend_type(base_url="http://maistro-server", api_key=None)
+    backend = backend_type(base_url="http://maistro-server", api_key=None, workspace_scope_key="")
 
     await backend.submit(TaskCreate(description="ship it"), user_id="user-1")
 
     assert WORKSPACE_ID_HEADER not in seen_headers
+    assert WORKSPACE_SCOPE_SIGNATURE_HEADER not in seen_headers
