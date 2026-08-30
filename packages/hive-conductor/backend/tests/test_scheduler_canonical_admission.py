@@ -141,9 +141,10 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert run.project_id == root.project_id
             assert run.provenance["admission_source"] == "schedule"
             assert run.provenance["schedule_id"] == "s-1"
-            assert run.provenance["scheduled_for"] == datetime(
-                2026, 8, 21, 12, 0, tzinfo=UTC
-            ).isoformat()
+            assert (
+                run.provenance["scheduled_for"]
+                == datetime(2026, 8, 21, 12, 0, tzinfo=UTC).isoformat()
+            )
             assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
         finally:
             _remove_row(row)
