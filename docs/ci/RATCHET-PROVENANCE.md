@@ -65,7 +65,7 @@ independent of the candidate ledger.
 
 Delegation is enforcement, not documentation: a missing adapter, an adapter that
 does not use `ratchet_provenance`, or an adapter returning non-zero fails the
-repository provenance test.
+provenance gate.
 
 ## CI inventory contract
 
@@ -73,13 +73,18 @@ repository provenance test.
 It structurally inventories Python scripts reading `quality/*.json`. A consumer
 must be directly base-resolved, delegated to an executed trusted adapter, or
 recorded as a deliberate candidate-authored/derived exception with a reason.
-The lightweight `Vulture Ratchet` job runs `--inventory-only`, making that
-inventory script itself a real workflow-rooted tool and catching an unclassified
-consumer before analyzer installation. The required repository test supplies the
-deeper proof below.
 
-`tests/test_ratchet_provenance_repository.py` runs that inventory and every live
-delegated adapter in the required root test suite. Adding a new ratchet therefore
+The required `Vulture Ratchet` workflow executes the full inventory and every
+live delegated adapter before its Vulture comparison. It checks out full history
+because trusted resolution uses `git merge-base`/`git show`, and it supplies
+`RATCHET_BASE_REV` from the event itself: PR base SHA, merge-group base SHA, or
+the previous SHA on a protected-branch push. A depth-1 checkout or an implicit
+candidate-tree fallback is not an acceptable monotonicity verdict.
+
+`tests/test_ratchet_provenance_repository.py` independently runs the same
+inventory and delegated adapters from the root test suite. The unit contract also
+pins the required workflow to full history, an event-bound base, and the full
+provenance command rather than `--inventory-only`. Adding a new ratchet therefore
 requires choosing and enforcing its provenance model in the same change rather
 than inheriting candidate-controlled comparison by accident.
 
