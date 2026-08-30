@@ -182,6 +182,28 @@ class TestSummarize:
         assert pr496["attempts"] == 2
         assert pr496["residency_min"] == pytest.approx(50.0)
 
+    def test_residency_prefers_the_admission_timestamp(self, latency):
+        """`added_to_merge_queue` fires when the PR enters the queue — before
+        Actions schedules anything and before a build slot frees up. Clocking
+        from the first run start instead drops exactly the wait that grows
+        when the queue is busiest."""
+        merged = {496: latency._when("2026-08-29T15:50:00Z")}
+        admitted = {496: latency._when("2026-08-29T14:50:00Z")}
+        (pr496, _pr639) = latency.summarize(self._cands(latency), merged, admitted)
+        assert pr496["residency_min"] == pytest.approx(60.0)
+        assert pr496["residency_from_admission"] is True
+
+    def test_an_admission_after_the_first_run_is_not_trusted(self, latency):
+        """An admission timestamp later than the first observed run start can
+        only mean the fetched timeline pages missed the admission that
+        actually opened this window — using it would shrink residency below
+        even the run-start lower bound. Fall back instead."""
+        merged = {496: latency._when("2026-08-29T15:50:00Z")}
+        admitted = {496: latency._when("2026-08-29T15:10:00Z")}
+        (pr496, _pr639) = latency.summarize(self._cands(latency), merged, admitted)
+        assert pr496["residency_min"] == pytest.approx(50.0)
+        assert pr496["residency_from_admission"] is False
+
     def test_an_unmerged_pr_has_attempts_but_no_residency(self, latency):
         """Scoring an ejected-and-abandoned PR as zero residency would pull the
         median down — the queue looking faster the more PRs it fails."""
@@ -240,6 +262,17 @@ class TestFigures:
         assert figs["dequeued_candidates"] == 2
         assert figs["dequeue_rate"] == pytest.approx(0.5)
 
+    def test_fallback_residencies_are_counted_for_the_report(self, latency):
+        cands = latency.candidates([_run(495, "aaa", "19:13:00", "19:26:00")], "develop")
+        merged = {495: latency._when("2026-08-29T19:27:00Z")}
+        with_admission = latency.figures(
+            latency.summarize(cands, merged, {495: latency._when("2026-08-29T19:00:00Z")})
+        )
+        without = latency.figures(latency.summarize(cands, merged))
+        assert with_admission["residency_fallbacks"] == 0
+        assert without["residency_fallbacks"] == 1
+        assert without["residencies"] == 1
+
     def test_no_merged_prs_does_not_divide_by_zero(self, latency):
         figs = latency.figures([])
         assert figs["requeue_rate"] == 0.0
@@ -266,6 +299,7 @@ class TestRender:
                 "attempts": 2,
                 "merged": True,
                 "residency_min": 58.1,
+                "residency_from_admission": True,
                 "candidate_wall_min": [13.9, 14.1],
             },
             {
@@ -273,6 +307,7 @@ class TestRender:
                 "attempts": 1,
                 "merged": False,
                 "residency_min": None,
+                "residency_from_admission": False,
                 "candidate_wall_min": [12.0],
             },
         ]
@@ -280,7 +315,8 @@ class TestRender:
         assert "496" in out and "58.1" in out
         assert "requeue rate" in out
         assert "dequeued candidates" in out
-        assert "residency, median / p90" in out and "lower bound" in out
+        assert "queue admission -> merged" in out
+        assert "0 of 1 from run-start fallback" in out
         assert "clean candidate, med / p90" in out
 
 
@@ -347,6 +383,50 @@ class TestCollect:
         assert truncated is True
 
 
+class TestCollectAdmissions:
+    def test_the_earliest_admission_event_wins_and_other_events_are_ignored(
+        self, latency, monkeypatch
+    ):
+        pages = {
+            "/issues/496/timeline?per_page=100&page=1": [
+                {"event": "labeled", "created_at": "2026-08-29T10:00:00Z"},
+                {"event": "added_to_merge_queue", "created_at": "2026-08-29T15:30:00Z"},
+                {"event": "added_to_merge_queue", "created_at": "2026-08-29T14:50:00Z"},
+            ],
+            "/issues/496/timeline?per_page=100&page=2": [],
+            "/issues/639/timeline?per_page=100&page=1": [
+                {"event": "review_requested", "created_at": "2026-08-29T09:00:00Z"}
+            ],
+            "/issues/639/timeline?per_page=100&page=2": [],
+        }
+
+        def fake_get(path, token):
+            for suffix, payload in pages.items():
+                if path.endswith(suffix):
+                    return payload
+            raise AssertionError(path)
+
+        monkeypatch.setattr(latency, "_get", fake_get)
+        admitted = latency.collect_admissions([496, 639], 3, None)
+        assert admitted == {496: latency._when("2026-08-29T14:50:00Z")}
+
+    def test_one_unreadable_timeline_does_not_fail_the_measurement(self, latency, monkeypatch):
+        """A partial upgrade must not fail the whole measurement: the PR with
+        the broken timeline falls back to run start, disclosed in the report,
+        and every other PR keeps its admission timestamp."""
+
+        def fake_get(path, token):
+            if "/issues/496/" in path:
+                raise urllib.error.URLError("boom")
+            if path.endswith("page=1"):
+                return [{"event": "added_to_merge_queue", "created_at": "2026-08-29T14:00:00Z"}]
+            return []
+
+        monkeypatch.setattr(latency, "_get", fake_get)
+        admitted = latency.collect_admissions([496, 639], 2, None)
+        assert admitted == {639: latency._when("2026-08-29T14:00:00Z")}
+
+
 class TestMain:
     def test_a_measurement_prints_the_window_and_the_report(self, latency, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -357,6 +437,11 @@ class TestMain:
                 {628: latency._when("2026-08-29T15:20:00Z")},
                 False,
             ),
+        )
+        monkeypatch.setattr(
+            latency,
+            "collect_admissions",
+            lambda prs, pages, token: {628: latency._when("2026-08-29T14:55:00Z")},
         )
         assert latency.main([]) == 0
         out = capsys.readouterr().out

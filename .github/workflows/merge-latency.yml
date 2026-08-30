@@ -25,6 +25,11 @@ on:
 permissions:
   contents: read
   actions: read
+  # The admission upgrade reads each queued PR's issue timeline
+  # (added_to_merge_queue); without these the token 403s and every
+  # residency silently degrades to the run-start fallback.
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: merge-latency
