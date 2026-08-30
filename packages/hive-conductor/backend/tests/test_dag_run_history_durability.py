@@ -69,7 +69,7 @@ class FakeRecords:
 
 
 class TestARunSurvivesTheProcess:
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-1")
+    @pytest.mark.ac("SPEC-083026-2601/AC-1")
     async def test_a_run_and_its_events_come_back_after_a_restart(self) -> None:
         records = FakeRecords()
         store = DagRunStore(records=records)
@@ -88,7 +88,7 @@ class TestARunSurvivesTheProcess:
         assert detail["user_id"] == "u1"
         assert [e["capability"] for e in detail["events"]] == ["parse"]
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-1")
+    @pytest.mark.ac("SPEC-083026-2601/AC-1")
     async def test_a_second_reader_of_the_same_records_sees_the_same_history(self) -> None:
         """The multi-replica half. One store writes, another only ever reads."""
         records = FakeRecords()
@@ -99,7 +99,7 @@ class TestARunSurvivesTheProcess:
 
         assert [r["id"] for r in reader.list_runs()] == ["r1"]
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-1")
+    @pytest.mark.ac("SPEC-083026-2601/AC-1")
     async def test_without_a_records_store_history_is_process_local(self) -> None:
         """The honest fallback, not a silent one: no records, no durability.
 
@@ -120,14 +120,14 @@ class TestACompletedRunSaysSo:
     list endpoint therefore never showed a completed run as completed.
     """
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-2")
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
     async def test_a_new_run_is_running(self) -> None:
         store = DagRunStore()
         await store.start_run(run_id="r1")
 
         assert store.list_runs()[0]["status"] == "running"
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-2")
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
     async def test_a_finished_run_reports_its_status_to_the_list(self) -> None:
         store = DagRunStore()
         await store.start_run(run_id="r1")
@@ -138,7 +138,7 @@ class TestACompletedRunSaysSo:
         assert summary["status"] == "completed"
         assert summary["finished_at"] is not None
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-2")
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
     async def test_a_failed_run_is_finished_too(self) -> None:
         """The branch a reader is likelier to go looking for."""
         store = DagRunStore()
@@ -150,7 +150,7 @@ class TestACompletedRunSaysSo:
         assert summary["status"] == "failed"
         assert summary["finished_at"] is not None
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-2")
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
     async def test_the_status_is_a_declared_field_not_an_attached_attribute(self) -> None:
         """The defect in one assertion: `DagRun` must declare what it reports.
 
@@ -162,7 +162,7 @@ class TestACompletedRunSaysSo:
 
 
 class TestTheBoundIsStatedAndEnforced:
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-3")
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
     async def test_an_evicted_run_leaves_the_records_too(self) -> None:
         """Or it would come back on the next load and re-expand past the bound."""
         records = FakeRecords()
@@ -173,7 +173,7 @@ class TestTheBoundIsStatedAndEnforced:
         assert len(records) == 2
         assert DagRunStore(max_runs=2, records=records).get_run("r1") is None
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-3")
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
     async def test_a_reload_keeps_the_newest_and_drops_the_oldest(self) -> None:
         """Order is restored from `started_at`, not from the store's iteration.
 
@@ -191,7 +191,7 @@ class TestTheBoundIsStatedAndEnforced:
 
         assert [r["id"] for r in restarted.list_runs()] == ["new", "mid"]
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-3")
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
     async def test_the_retention_endpoint_states_the_bound(self) -> None:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -214,7 +214,7 @@ class TestTheBoundIsStatedAndEnforced:
             "max_events_per_run": MAX_EVENTS_PER_RUN,
         }
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-3")
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
     async def test_retention_is_not_swallowed_by_the_run_id_route(self) -> None:
         """`/retention` is declared before `/{run_id}`, and order is the reason.
 
@@ -233,7 +233,7 @@ class TestTheBoundIsStatedAndEnforced:
 
 
 class TestSubscribersAreNotHistory:
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-4")
+    @pytest.mark.ac("SPEC-083026-2601/AC-4")
     async def test_a_subscriber_is_not_written_to_the_records(self) -> None:
         """A queue has no stored form, and another replica could not use one.
 
@@ -269,14 +269,14 @@ class TestTheCanonicalIdentityHasSomewhereToGo:
     Stated as a test so the gap is recorded rather than implied.
     """
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-5")
+    @pytest.mark.ac("SPEC-083026-2601/AC-5")
     async def test_a_run_carries_the_canonical_id_when_given_one(self) -> None:
         store = DagRunStore()
         await store.start_run(run_id="r1", canonical_run_id="run-canonical-1")
 
         assert store.list_runs()[0]["canonical_run_id"] == "run-canonical-1"
 
-    @pytest.mark.ac("SPEC-083026-9b1c/AC-5")
+    @pytest.mark.ac("SPEC-083026-2601/AC-5")
     async def test_a_run_without_one_says_so_rather_than_inventing_it(self) -> None:
         """Empty, not the DAG-run id: those are different identities.
 
