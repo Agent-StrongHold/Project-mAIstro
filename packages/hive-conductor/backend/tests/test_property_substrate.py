@@ -416,7 +416,7 @@ async def test_property_record_thumb_persists_round_trip(
 
 @given(st.text(alphabet="abc123-", min_size=1, max_size=20))
 @settings(max_examples=20, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_property_optimizer_zero_signal_produces_zero_proposals(
+async def test_property_optimizer_zero_signal_produces_zero_proposals(
     dag_id: str,
 ) -> None:
     """A DAG with no metrics, no thumbs, no verdicts, no edits → zero
@@ -440,7 +440,7 @@ def test_property_optimizer_zero_signal_produces_zero_proposals(
         stores.optimizer_proposals.pop(k)
     edit_lock.clear()
 
-    out = run_optimizer(dag_id)
+    out = await run_optimizer(dag_id)
     assert out["proposals"] == []
     assert out["auto_applied"] == 0
     assert out["blocked_by_edit_lock"] == 0

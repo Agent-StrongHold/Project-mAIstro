@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +11
+  tests/: +14
 ---
 # claude-status-update-7dlw7z-205b
 
@@ -39,3 +39,17 @@ direction — `BUILDX_RETRY_ATTEMPTS=` (explicitly empty) is not malformed
 input, `${VAR:-default}` already substitutes on empty the same as unset, and
 that fourth test is what stops a future tightening of the validation from
 rejecting a value bash itself treats as absent.
+
+Three more node IDs, `tests/test_prepull_base_images.py`, for the gap a live
+develop protected push actually hit: `hive-conductor-e2e` and
+`hive-conductor-e2e-ui` run `docker compose --build` straight against
+`packages/hive-conductor/docker-compose.test.yml`'s three Dockerfiles, never
+through `prepull-base-images.sh`, so neither job carried any retry when one
+of them failed outright on the exact #204 signature —
+`cgr.dev/chainguard/python:latest: ... connection reset by peer`. The fix adds
+a pre-pull step to both jobs; these tests are what stops it from rotting the
+way `test_every_shipped_from_line_is_accounted_for` already guards
+`docker-build`'s list — one confirms every `FROM` line across the three
+compose Dockerfiles is covered by the pre-pull invocation, the other
+(parametrised over both jobs) confirms `ci.yml` actually wires the step into
+each job body, not just one of them.

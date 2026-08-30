@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -64,9 +65,9 @@ class PgOutcomeStore:
                     org_id, team_id, user_id, agent_id,
                     input_tokens, output_tokens, charged_microchips, pricing_version,
                     project_id, dag_id, dag_run_id, node_id,
-                    thumb, thumb_comment, eval_judge_score)
+                    thumb, thumb_comment, eval_judge_score, created_at)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                           $17,$18,$19,$20,$21,$22,$23)
+                           $17,$18,$19,$20,$21,$22,$23,$24)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
@@ -106,6 +107,16 @@ class PgOutcomeStore:
                 outcome.thumb,
                 outcome.thumb_comment,
                 outcome.eval_judge_score,
+                # The fourth omission of the same kind as the three above.
+                # `created_at` fell to the column's server default, so this
+                # store alone decided when an outcome happened, while the
+                # in-memory and SQLite twins honoured the caller's timestamp.
+                # Every time-windowed read -- the completion rate, the daily
+                # series, the thumbs retention window -- then answered a
+                # different question here than there. `Outcome.created_at`
+                # defaults to `now()`, so a caller that sets nothing is
+                # unaffected (#696).
+                outcome.created_at,
             )
             return int(row["id"]) if row else 0
 
@@ -353,6 +364,37 @@ class PgOutcomeStore:
             query = _scoped(query, params, org_id)
             params.append(limit)
             query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
+            rows = await conn.fetch(query, *params)
+
+        return [_row_to_outcome(r) for r in rows]
+
+    async def list_thumbs(
+        self,
+        *,
+        dag_id: str = "",
+        days: int = THUMB_WINDOW_DAYS,
+        limit: int = THUMB_LIMIT,
+        org_id: str = "",
+    ) -> list[Outcome]:
+        """Outcomes carrying a thumb, most recent first.
+
+        The DAG predicate is `(dag_id = $n OR dag_id = '')`, not equality: a
+        thumb with no `dag_id` predates the attribution wire and belongs to
+        every DAG, which is the rule `_dag_matches` states for the in-memory
+        store. Pushing it into SQL rather than filtering after the LIMIT is
+        what keeps the bound meaningful -- a post-filter would discard rows
+        the limit had already spent.
+        """
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        params: list[Any] = [cutoff]
+        query = "SELECT * FROM outcomes WHERE created_at >= $1 AND thumb <> ''"
+        if dag_id:
+            params.append(dag_id)
+            query += f" AND (dag_id = ${len(params)} OR dag_id = '')"
+        query = _scoped(query, params, org_id)
+        params.append(limit)
+        query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
+        async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
 
         return [_row_to_outcome(r) for r in rows]

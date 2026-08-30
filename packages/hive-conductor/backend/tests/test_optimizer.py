@@ -107,21 +107,23 @@ def _seed_metrics(
         )
 
 
-def _seed_thumb(dag_id: str, node_id: str, thumb: str, comment: str = "") -> None:
-    import asyncio
+async def _seed_thumb(dag_id: str, node_id: str, thumb: str, comment: str = "") -> None:
+    """Record a thumb through the real service, not by poking the store.
 
+    Async because the seed goes through `record_thumb`, and the tests that
+    read it back are now async too -- `asyncio.run` inside one of them raises
+    rather than nesting.
+    """
     from services.feedback_service import record_thumb
 
-    asyncio.run(
-        record_thumb(
-            user_id="u1",
-            project_id="p",
-            run_id="r",
-            thumb=thumb,
-            comment=comment,
-            node_id=node_id,
-            dag_id=dag_id,
-        )
+    await record_thumb(
+        user_id="u1",
+        project_id="p",
+        run_id="r",
+        thumb=thumb,
+        comment=comment,
+        node_id=node_id,
+        dag_id=dag_id,
     )
 
 
@@ -166,12 +168,12 @@ def test_priority_score_sums_all_components() -> None:
 # --- _build_snapshot_for_dag --------------------------------------------
 
 
-def test_build_snapshot_rolls_up_per_node() -> None:
+async def test_build_snapshot_rolls_up_per_node() -> None:
     from services.optimizer import _build_snapshot_for_dag
 
     _seed_metrics("d", "n1", count=10, failed=4, p95=200)
     _seed_metrics("d", "n2", count=5, failed=0, p95=10_000)
-    _seed_thumb("d", "n1", "down", "buggy")
+    await _seed_thumb("d", "n1", "down", "buggy")
     _seed_eval_verdict(
         "d",
         "r1",
@@ -185,7 +187,7 @@ def test_build_snapshot_rolls_up_per_node() -> None:
         },
     )
 
-    snaps = _build_snapshot_for_dag("d", window_seconds=3600)
+    snaps = await _build_snapshot_for_dag("d", window_seconds=3600)
     assert "n1" in snaps
     assert "n2" in snaps
     n1 = snaps["n1"]
@@ -199,10 +201,10 @@ def test_build_snapshot_rolls_up_per_node() -> None:
     assert snaps["n2"].latency_score == 0.5
 
 
-def test_build_snapshot_no_data_returns_empty() -> None:
+async def test_build_snapshot_no_data_returns_empty() -> None:
     from services.optimizer import _build_snapshot_for_dag
 
-    assert _build_snapshot_for_dag("d-empty") == {}
+    assert await _build_snapshot_for_dag("d-empty") == {}
 
 
 # --- _propose_for_snapshot ----------------------------------------------
@@ -383,37 +385,37 @@ def test_propose_thumbs_score_high_but_no_comments() -> None:
 # --- run_optimizer end-to-end -------------------------------------------
 
 
-def test_run_optimizer_with_no_signals_returns_zero_proposals() -> None:
+async def test_run_optimizer_with_no_signals_returns_zero_proposals() -> None:
     from services.optimizer import run_optimizer
 
-    out = run_optimizer("d-empty")
+    out = await run_optimizer("d-empty")
     assert out["proposals"] == []
     assert out["auto_applied"] == 0
     assert out["blocked_by_edit_lock"] == 0
 
 
-def test_run_optimizer_empty_dag_id_raises_value_error() -> None:
+async def test_run_optimizer_empty_dag_id_raises_value_error() -> None:
     from services.optimizer import run_optimizer
 
     with pytest.raises(ValueError, match="dag_id is required"):
-        run_optimizer("")
+        await run_optimizer("")
 
 
-def test_run_optimizer_default_does_not_apply() -> None:
+async def test_run_optimizer_default_does_not_apply() -> None:
     from services.optimizer import run_optimizer
 
     _seed_metrics("d1", "n1", count=10, failed=8, p95=100)
-    out = run_optimizer("d1")
+    out = await run_optimizer("d1")
     # apply_auto=False default → never applied
     assert out["auto_applied"] == 0
     assert any(p["class"] == "auto_apply" for p in out["proposals"])
 
 
-def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
+async def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
     from services.optimizer import run_optimizer
 
     _seed_metrics("d2", "n-target", count=10, failed=8, p95=100)
-    out = run_optimizer("d2", apply_auto=True, actor="optimizer-bot")
+    out = await run_optimizer("d2", apply_auto=True, actor="optimizer-bot")
     # At least the model_swap auto-applies (no edit lock)
     assert out["auto_applied"] >= 1
     # Audit log has the auto-apply entry
@@ -423,14 +425,14 @@ def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
     assert len(apply_entries) >= 1
 
 
-def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
+async def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
     from services.edit_lock import mark_edited
     from services.optimizer import run_optimizer
 
     _seed_metrics("d3", "n1", count=10, failed=8, p95=100)
     # User just edited the model field → optimizer must NOT auto-apply on it
     mark_edited("d3", ["nodes[n1].model"], user_id="u1")
-    out = run_optimizer("d3", apply_auto=True)
+    out = await run_optimizer("d3", apply_auto=True)
     # blocked_by_edit_lock incremented; proposal flagged
     assert out["blocked_by_edit_lock"] >= 1
     locked = [p for p in out["proposals"] if p["blocked_by_edit_lock"]]
@@ -439,23 +441,23 @@ def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
     assert all(not p["applied"] for p in locked)
 
 
-def test_run_optimizer_ranks_by_priority_desc() -> None:
+async def test_run_optimizer_ranks_by_priority_desc() -> None:
     """High error_score node should rank above low-signal node."""
     from services.optimizer import run_optimizer
 
     _seed_metrics("d4", "n-hot", count=10, failed=9, p95=100)
     _seed_metrics("d4", "n-cold", count=10, failed=0, p95=9000)
-    out = run_optimizer("d4")
+    out = await run_optimizer("d4")
     # First proposal targets n-hot (higher error_score outweighs n-cold's latency)
     assert out["proposals"][0]["target_node_id"] == "n-hot"
 
 
-def test_run_optimizer_writes_run_audit() -> None:
+async def test_run_optimizer_writes_run_audit() -> None:
     import stores
     from services.optimizer import run_optimizer
 
     _seed_metrics("d5", "n1", count=10, failed=8, p95=100)
-    run_optimizer("d5", actor="alice")
+    await run_optimizer("d5", actor="alice")
     runs = [e for e in stores.audit_log.values() if e["action"] == "optimizer_run"]
     assert len(runs) == 1
     assert runs[0]["actor"] == "alice"
@@ -466,12 +468,12 @@ def test_run_optimizer_writes_run_audit() -> None:
 # --- record_decision -----------------------------------------------------
 
 
-def test_record_decision_accepts_proposal() -> None:
+async def test_record_decision_accepts_proposal() -> None:
     import stores
     from services.optimizer import record_decision, run_optimizer
 
     _seed_metrics("d-dec", "n1", count=10, failed=8, p95=100)
-    out = run_optimizer("d-dec")
+    out = await run_optimizer("d-dec")
     pid = out["proposals"][0]["id"]
     decision = record_decision(pid, "accepted", actor="alice")
     assert decision["decision"] == "accepted"
@@ -483,11 +485,11 @@ def test_record_decision_accepts_proposal() -> None:
     )
 
 
-def test_record_decision_rejects_proposal() -> None:
+async def test_record_decision_rejects_proposal() -> None:
     from services.optimizer import record_decision, run_optimizer
 
     _seed_metrics("d-rej", "n1", count=10, failed=8, p95=100)
-    out = run_optimizer("d-rej")
+    out = await run_optimizer("d-rej")
     pid = out["proposals"][0]["id"]
     d = record_decision(pid, "rejected", actor="bob")
     assert d["decision"] == "rejected"
@@ -510,25 +512,25 @@ def test_record_decision_unknown_id_raises_key_error() -> None:
 # --- list_proposals ------------------------------------------------------
 
 
-def test_list_proposals_filter_by_dag_id() -> None:
+async def test_list_proposals_filter_by_dag_id() -> None:
     from services.optimizer import list_proposals, run_optimizer
 
     _seed_metrics("d-A", "n", count=10, failed=8, p95=100)
     _seed_metrics("d-B", "n", count=10, failed=8, p95=100)
-    run_optimizer("d-A")
-    run_optimizer("d-B")
+    await run_optimizer("d-A")
+    await run_optimizer("d-B")
     items_a = list_proposals(dag_id="d-A")
     assert items_a
     assert all(p["dag_id"] == "d-A" for p in items_a)
 
 
-def test_list_proposals_filter_by_decision() -> None:
+async def test_list_proposals_filter_by_decision() -> None:
     from services.optimizer import list_proposals, record_decision, run_optimizer
 
     # Two nodes with different failure rates → two AUTO_APPLY proposals.
     _seed_metrics("d", "n1", count=10, failed=8, p95=100)
     _seed_metrics("d", "n2", count=10, failed=7, p95=100)
-    out = run_optimizer("d")
+    out = await run_optimizer("d")
     assert len(out["proposals"]) >= 2  # spec invariant for this test
     # Accept the first; leave the rest pending.
     record_decision(out["proposals"][0]["id"], "accepted", actor="u")
@@ -538,11 +540,11 @@ def test_list_proposals_filter_by_decision() -> None:
     assert len(pending) >= 1
 
 
-def test_list_proposals_limit_clamped() -> None:
+async def test_list_proposals_limit_clamped() -> None:
     from services.optimizer import list_proposals, run_optimizer
 
     _seed_metrics("d", "n", count=10, failed=8, p95=100)
-    run_optimizer("d")
+    await run_optimizer("d")
     # limit clamps to 1 minimum
     items = list_proposals(limit=0)
     assert len(items) == 1
@@ -588,11 +590,11 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
         routes_opt.run_optimizer = original
 
 
-def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
+async def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
     _seed_metrics("d-list", "n", count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    run_optimizer("d-list")
+    await run_optimizer("d-list")
     r = admin_client.get("/v1/optimizer/d-list/proposals")
     assert r.status_code == 200
     items = r.json()
@@ -600,32 +602,32 @@ def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
     assert all(p["dag_id"] == "d-list" for p in items)
 
 
-def test_list_all_endpoint(admin_client: Any) -> None:
+async def test_list_all_endpoint(admin_client: Any) -> None:
     _seed_metrics("d-all", "n", count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    run_optimizer("d-all")
+    await run_optimizer("d-all")
     r = admin_client.get("/v1/optimizer/proposals?decision=pending")
     assert r.status_code == 200
     assert r.json()
 
 
-def test_accept_endpoint(admin_client: Any) -> None:
+async def test_accept_endpoint(admin_client: Any) -> None:
     _seed_metrics("d-acc", "n", count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    out = run_optimizer("d-acc")
+    out = await run_optimizer("d-acc")
     pid = out["proposals"][0]["id"]
     r = admin_client.post(f"/v1/optimizer/proposals/{pid}/accept")
     assert r.status_code == 200
     assert r.json()["decision"] == "accepted"
 
 
-def test_reject_endpoint(admin_client: Any) -> None:
+async def test_reject_endpoint(admin_client: Any) -> None:
     _seed_metrics("d-rejhttp", "n", count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    out = run_optimizer("d-rejhttp")
+    out = await run_optimizer("d-rejhttp")
     pid = out["proposals"][0]["id"]
     r = admin_client.post(f"/v1/optimizer/proposals/{pid}/reject")
     assert r.status_code == 200
@@ -700,55 +702,49 @@ def test_reject_endpoint_unauthenticated() -> None:
 # --- collector edge cases -----------------------------------------------
 
 
-def test_collect_thumbs_ignores_blank_thumb_outcomes() -> None:
+async def test_collect_thumbs_ignores_blank_thumb_outcomes() -> None:
     """An Outcome with thumb='' (e.g. recorded by a non-thumbs flow)
     must NOT count toward the optimizer's signal."""
-    import asyncio
-
     from services.feedback_service import get_outcome_store
     from services.optimizer import _collect_thumbs
 
     from maistro.memory.types import Outcome
 
     store = get_outcome_store()
-    asyncio.run(store.record(Outcome(task_type="x", thumb="", dag_id="d", node_id="n")))
-    out = _collect_thumbs("d")
+    await store.record(Outcome(task_type="x", thumb="", dag_id="d", node_id="n"))
+    out = await _collect_thumbs("d")
     assert out == {}
 
 
-def test_collect_thumbs_ignores_other_dag_ids() -> None:
+async def test_collect_thumbs_ignores_other_dag_ids() -> None:
     """A thumb tagged dag_id="other" must NOT appear in dag_id="d"'s
     aggregator."""
-    _seed_thumb("other-dag", "n1", "down")
+    await _seed_thumb("other-dag", "n1", "down")
     from services.optimizer import _collect_thumbs
 
-    assert _collect_thumbs("d") == {}
+    assert await _collect_thumbs("d") == {}
 
 
-def test_collect_thumbs_thumbs_with_no_dag_id_attribution_pass_through() -> None:
+async def test_collect_thumbs_thumbs_with_no_dag_id_attribution_pass_through() -> None:
     """The loose filter: outcomes with no dag_id attribution still
     surface (the wire wasn't there in older runs)."""
-    import asyncio
-
     from services.feedback_service import record_thumb
     from services.optimizer import _collect_thumbs
 
-    asyncio.run(
-        record_thumb(
-            user_id="u",
-            project_id="p",
-            run_id="r",
-            thumb="up",
-            node_id="legacy",
-            dag_id="",
-        )
+    await record_thumb(
+        user_id="u",
+        project_id="p",
+        run_id="r",
+        thumb="up",
+        node_id="legacy",
+        dag_id="",
     )
-    out = _collect_thumbs("d")
+    out = await _collect_thumbs("d")
     assert "legacy" in out
     assert out["legacy"]["up"] == 1
 
 
-def test_user_edit_count_caps_at_five() -> None:
+async def test_user_edit_count_caps_at_five() -> None:
     """5+ dag_edit audit entries → edit_score plateaus at WEIGHT_USER_EDIT."""
     import stores
     from services.optimizer import WEIGHT_USER_EDIT, _build_snapshot_for_dag
@@ -761,11 +757,11 @@ def test_user_edit_count_caps_at_five() -> None:
             "detail": {"changed": ["name"]},
         }
     _seed_metrics("d-edits", "n", count=2, failed=0, p95=0)
-    snaps = _build_snapshot_for_dag("d-edits")
+    snaps = await _build_snapshot_for_dag("d-edits")
     assert snaps["n"].edit_score == WEIGHT_USER_EDIT  # 1.0 * weight = weight
 
 
-def test_eval_baseline_uses_most_recent_verdict() -> None:
+async def test_eval_baseline_uses_most_recent_verdict() -> None:
     """Multiple verdicts → the newest one (by scored_at) drives the
     baseline."""
     from services.optimizer import _build_snapshot_for_dag
@@ -773,58 +769,50 @@ def test_eval_baseline_uses_most_recent_verdict() -> None:
     _seed_metrics("d-multi", "n", count=2, failed=0, p95=0)
     _seed_eval_verdict("d-multi", "r-old", score=80, scored_at="2026-01-01T00:00:00+00:00")
     _seed_eval_verdict("d-multi", "r-new", score=30, scored_at="2026-05-22T12:00:00+00:00")
-    snaps = _build_snapshot_for_dag("d-multi")
+    snaps = await _build_snapshot_for_dag("d-multi")
     # 30 → baseline (100-30)/100 = 0.7 → * 1.5 = 1.05
     assert snaps["n"].eval_score == 1.05
 
 
-def test_collect_thumbs_down_without_comment_skips_append() -> None:
+async def test_collect_thumbs_down_without_comment_skips_append() -> None:
     """Thumbs-down with empty comment hits the `if o.thumb_comment:` =
     False branch (142→129). The down count still increments, no
     comments appended."""
-    import asyncio
-
     from services.feedback_service import record_thumb
     from services.optimizer import _collect_thumbs
 
-    asyncio.run(
-        record_thumb(
-            user_id="u",
-            project_id="p",
-            run_id="r",
-            thumb="down",
-            comment="",
-            node_id="n9",
-            dag_id="d-no-comment",
-        )
+    await record_thumb(
+        user_id="u",
+        project_id="p",
+        run_id="r",
+        thumb="down",
+        comment="",
+        node_id="n9",
+        dag_id="d-no-comment",
     )
-    out = _collect_thumbs("d-no-comment")
+    out = await _collect_thumbs("d-no-comment")
     assert out["n9"]["down"] == 1
     assert out["n9"]["comments"] == []
 
 
-def test_collect_thumbs_unknown_value_falls_through() -> None:
+async def test_collect_thumbs_unknown_value_falls_through() -> None:
     """Direct Outcome.thumb='weird' (bypasses service validation) must
     NOT crash. Hits the 'neither up nor down' fall-through (140→129)."""
-    import asyncio
-
     from services.feedback_service import get_outcome_store
     from services.optimizer import _collect_thumbs
 
     from maistro.memory.types import Outcome
 
-    asyncio.run(
-        get_outcome_store().record(
-            Outcome(
-                task_type="x",
-                thumb="sideways",
-                dag_id="d-weird",
-                node_id="n",
-                user_id="u",
-            )
+    await get_outcome_store().record(
+        Outcome(
+            task_type="x",
+            thumb="sideways",
+            dag_id="d-weird",
+            node_id="n",
+            user_id="u",
         )
     )
-    out = _collect_thumbs("d-weird")
+    out = await _collect_thumbs("d-weird")
     # Node slot was created but neither up nor down incremented.
     assert out["n"]["up"] == 0
     assert out["n"]["down"] == 0
@@ -845,11 +833,11 @@ def test_route_user_id_helper_raises_401_for_missing_id() -> None:
     assert ei.value.status_code == 401
 
 
-def test_only_zero_score_snapshots_are_skipped() -> None:
+async def test_only_zero_score_snapshots_are_skipped() -> None:
     """A snapshot with priority_score=0 should NOT produce proposals."""
     from services.optimizer import run_optimizer
 
     # Seed a clean run: success-only, no thumbs, no eval, no edits.
     _seed_metrics("d-clean", "n", count=10, failed=0, p95=100)
-    out = run_optimizer("d-clean")
+    out = await run_optimizer("d-clean")
     assert out["proposals"] == []
