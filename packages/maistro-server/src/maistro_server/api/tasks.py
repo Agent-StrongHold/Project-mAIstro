@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
+from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskResult
 from maistro.tasks.queue import TaskQueue, get_task_queue
 from maistro.tools.sandbox.workspace import validate_workspace_path
@@ -38,10 +39,16 @@ async def create_task(
     response: Response,
     auth: RequireAuth,
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    workspace_id: Annotated[str | None, Header(alias=WORKSPACE_ID_HEADER)] = None,
 ) -> TaskCreatedResponse:
     _validate_task_workspace(request.workspace)
+    if workspace_id is not None and not workspace_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Workspace id must be a non-empty string",
+        )
     uid = _owner_id(auth)
-    task = await queue.submit(request, user_id=uid)
+    task = await queue.submit(request, user_id=uid, workspace_id=workspace_id)
     response.headers["Location"] = f"/tasks/{task.task_id}"
     return TaskCreatedResponse(
         task_id=task.task_id,
