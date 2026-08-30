@@ -724,3 +724,64 @@ class TestAProtectedPushCannotSpendAGrantAndDeleteIt:
         base_report, candidate_report = self._reports(tmp_path, 15.0)
 
         assert gate._guard_actual_base(base_report, candidate_report, "base-sha") == 0
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_push_with_no_grant_in_play_is_not_asked_anything(self, gate, tmp_path) -> None:
+        """No floors, no question — and no read of the grants file either."""
+        base_report, candidate_report = self._reports(tmp_path, TOTALS["design_coverage"])
+
+        assert (
+            gate._spent_grants_removed(
+                gate._report_totals(base_report), gate._report_totals(candidate_report), {}
+            )
+            == []
+        )
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    def test_a_malformed_candidate_file_fails_the_push_closed(
+        self, gate, repo, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """The two findings meet here. A candidate file the base will refuse
+        must not pass on this path either — and it must refuse, not raise: a
+        traceback is not a gate verdict, and the two read differently in a log.
+        """
+        root = repo(28.2327, grant_at_base="design_coverage@15.0", banked=15.0)
+        _write_grants(root, {"design_coverage@15.0": {}})
+        self._floors(gate, monkeypatch, 15.0)
+        base_report, candidate_report = self._reports(tmp_path, 15.0)
+
+        assert (
+            gate._guard_actual_base(base_report, candidate_report, "base-sha", check_retention=True)
+            == 1
+        )
+        assert "missing owner, issue, reason" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-11")
+    @pytest.mark.parametrize(
+        ("event", "ref", "expected"),
+        [("push", "refs/heads/develop", True), ("merge_group", "refs/heads/develop", False)],
+    )
+    def test_main_asks_for_retention_only_on_a_protected_push(
+        self, gate, tmp_path, monkeypatch, event: str, ref: str, expected: bool
+    ) -> None:
+        """The wiring, not the decision. `_spent_grants_removed` being right
+        while `main` never turns it on is the shape this repository's gates
+        exist to catch — and it is the shape the guard was in before #685,
+        since `--ratchet` was stripped and nothing else asked.
+        """
+        monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+        monkeypatch.setenv("GITHUB_REF", ref)
+        monkeypatch.delenv("MAISTRO_AC_BASE_MEASUREMENT", raising=False)
+        monkeypatch.setattr(gate, "_actual_base_revision", lambda: "base-sha")
+        monkeypatch.setattr(gate, "_measure_base", lambda base_rev, report: None)
+        monkeypatch.setattr(gate._impl, "main", lambda argv: 0)
+        seen: list[bool] = []
+
+        def guard(base_report, candidate_report, base_rev, *, check_retention=False):
+            seen.append(check_retention)
+            return 0
+
+        monkeypatch.setattr(gate, "_guard_actual_base", guard)
+
+        assert gate.main(["--ratchet", "--out", str(tmp_path / "out.json")]) == 0
+        assert seen == [expected]
