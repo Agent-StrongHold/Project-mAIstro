@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +30
+  tests/: +37
 ---
 # claude-status-update-7dlw7z-205b
 
@@ -138,3 +138,19 @@ substring `in`, so a job renamed from `api-tests` to `api-tests-v2` would
 still validate against the old target. Now uses the same whole-token regex
 the Dockerfile-pull check two functions up already needed for the same
 reason.
+
+Seven more node IDs, `TestSupersededGrantsDirectly` again, for the diff
+coverage gate's own review of #742 (the follow-up PR carrying the two Codex
+fixes above, opened after #720 merged one commit ahead of them): every new
+git-provenance helper's error path — an unreachable `root` raising before
+git runs, and a real but non-git directory where git runs and exits non-zero
+— was written defensively but never exercised, in `_note_landing_commits`,
+`_grants_file_landing_commit` and `_commit_timestamps` alike, plus the one
+path in `_superseded_grants` itself where the grant's landing commit
+resolves but its timestamp does not. Six pin the three helpers' two failure
+shapes directly; the seventh monkeypatches `_commit_timestamps` (through
+`gate._impl`, since `check-ac-state.py` copies impl's names into its own
+module rather than re-exporting the same bound function) to fail for one
+sha while everything else about the grant resolves normally, and confirms
+that alone is enough to count nothing rather than falling back to treating
+every note as later than an unknown grant time.

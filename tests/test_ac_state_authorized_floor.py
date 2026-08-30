@@ -1144,6 +1144,58 @@ class TestSupersededGrantsDirectly:
 
         assert gate._superseded_grants(notes, {"design_coverage": 15.0}, base_sha=None) == {}
 
+    def test_note_landing_commits_tolerates_an_unreachable_root(self, gate) -> None:
+        """`root` pointing nowhere makes `subprocess.run`'s `cwd` raise
+        before git ever executes -- the helper absorbs that the same way a
+        real git failure is absorbed, rather than propagating it into a
+        caller whose job is only to compute supersession."""
+        assert (
+            gate._note_landing_commits(
+                Path("quality/ac-state-notes"), "HEAD", root=Path("/nonexistent-root-xyz")
+            )
+            == {}
+        )
+
+    def test_note_landing_commits_tolerates_a_non_git_root(self, gate, tmp_path) -> None:
+        """A real directory that is simply not a git repository fails with a
+        non-zero exit rather than an exception -- the other failure shape
+        the helper must absorb the same way."""
+        assert (
+            gate._note_landing_commits(Path("quality/ac-state-notes"), "HEAD", root=tmp_path) == {}
+        )
+
+    def test_grants_file_landing_commit_tolerates_an_unreachable_root(self, gate) -> None:
+        assert gate._grants_file_landing_commit("HEAD", root=Path("/nonexistent-root-xyz")) is None
+
+    def test_grants_file_landing_commit_tolerates_a_non_git_root(self, gate, tmp_path) -> None:
+        assert gate._grants_file_landing_commit("HEAD", root=tmp_path) is None
+
+    def test_commit_timestamps_tolerates_an_unreachable_root(self, gate) -> None:
+        assert gate._commit_timestamps({"deadbeef"}, root=Path("/nonexistent-root-xyz")) == {}
+
+    def test_commit_timestamps_tolerates_a_non_git_root(self, gate, tmp_path) -> None:
+        assert gate._commit_timestamps({"deadbeef"}, root=tmp_path) == {}
+
+    def test_an_unresolvable_grant_timestamp_supersedes_nothing(
+        self, gate, repo, monkeypatch
+    ) -> None:
+        """The grant's own landing commit can resolve
+        (`_grants_file_landing_commit` succeeds) while its timestamp still
+        cannot -- `_commit_timestamps` failing for that one sha, in
+        practice. Without a grant time to compare against, nothing can be
+        said to land after it, so the count must not silently treat every
+        note as later."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            extra_base_notes={"a": 20.0, "b": 20.0, "c": 20.0},
+        )
+        base_sha = gate.ac_state_notes.bounds().base_sha
+        notes, _, _ = gate.ac_state_notes.load_notes(base=base_sha)
+        monkeypatch.setattr(gate._impl, "_commit_timestamps", lambda shas, **kwargs: {})
+
+        assert gate._superseded_grants(notes, {"design_coverage": 15.0}, base_sha=base_sha) == {}
+
 
 class TestASupersededGrantCanBePruned:
     """SPEC-083026-fcc9.
