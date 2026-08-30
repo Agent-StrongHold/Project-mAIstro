@@ -40,34 +40,26 @@ jobs:
           else
             scope_json="$(python3 scripts/ci_merge_group_scope.py --json)"
           fi
+          required_json="$(
+            python3 scripts/check-integration-scope.py \
+              --event-name "$GITHUB_EVENT_NAME" \
+              --scope-json "$scope_json" \
+              --required-json
+          )"
           echo "scope_json=$scope_json" >> "$GITHUB_OUTPUT"
+          echo "required_json=$required_json" >> "$GITHUB_OUTPUT"
           echo "$scope_json"
+          echo "$required_json"
 
       - name: Wait only for required specialized CI evidence
         uses: actions/github-script@v7
         env:
-          SCOPE_JSON: ${{ steps.scope.outputs.scope_json }}
+          REQUIRED_JSON: ${{ steps.scope.outputs.required_json }}
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         with:
           script: |
-            const scope = JSON.parse(process.env.SCOPE_JSON);
+            const required = new Set(JSON.parse(process.env.REQUIRED_JSON));
             const candidateSha = process.env.CANDIDATE_SHA;
-            const checksByLeg = {
-              postgres: ['postgres (pg17)', 'postgres (pg18)'],
-              object_storage: ['object storage (MinIO)'],
-              durable_events: ['durable-events'],
-              strike_ladder: ['strike-ladder'],
-              hive_e2e: ['hive-conductor-e2e', 'hive-conductor-e2e-ui'],
-              wheel_imports: ['wheel-imports'],
-              docker_build: ['docker-build'],
-            };
-
-            const required = new Set();
-            for (const [leg, names] of Object.entries(checksByLeg)) {
-              if (scope[leg] !== false) {
-                for (const name of names) required.add(name);
-              }
-            }
 
             core.info(`candidate ${candidateSha}: waiting for ${[...required].join(', ') || '<no specialized checks>'}`);
             if (required.size === 0) return;
