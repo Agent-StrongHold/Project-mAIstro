@@ -23,6 +23,7 @@ on:
   workflow_run:
     workflows:
       - "CI"
+      - "Integration Scope"
       - "quality"
       - "security"
       - "CodeQL Advanced"
