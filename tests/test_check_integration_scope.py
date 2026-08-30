@@ -107,6 +107,13 @@ def test_out_of_scope_skipped_check_is_not_a_finding(check) -> None:
     assert check.evaluate("merge_group", _scope(), results) == []
 
 
+def test_out_of_scope_executed_failure_is_a_finding(check) -> None:
+    results = {"postgres (pg17)": "failure"}
+    assert check.evaluate("merge_group", _scope(), results) == [
+        "postgres (pg17): out of scope but result was failure"
+    ]
+
+
 def test_pull_request_skipped_check_is_a_finding(check) -> None:
     results = {**ALL_RESULTS, "postgres (pg17)": "skipped"}
     assert check.evaluate("pull_request", _scope(), results) == [
