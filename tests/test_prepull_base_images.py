@@ -241,7 +241,12 @@ def test_the_job_targets_the_service_job_target_service_names(job: str) -> None:
     body = workflow.split(f"\n  {job}:", 1)[1]
     body = re.split(r"\n  \S", body, maxsplit=1)[0]
 
-    assert f"--exit-code-from {JOB_TARGET_SERVICE[job]}" in body, (
+    # Whole-token match: plain `in` would let `--exit-code-from api-tests`
+    # match a renamed `--exit-code-from api-tests-v2` too (Codex, #720), so a
+    # renamed service would validate against the old dependency graph while
+    # the job silently builds a different one.
+    service = re.escape(JOB_TARGET_SERVICE[job])
+    assert re.search(rf"--exit-code-from {service}(?!\S)", body), (
         f"{job} does not run `--exit-code-from {JOB_TARGET_SERVICE[job]}`"
     )
 
