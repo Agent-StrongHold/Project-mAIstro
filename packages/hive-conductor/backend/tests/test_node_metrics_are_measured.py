@@ -270,3 +270,187 @@ class _FakeRun:
 class _FakeRecord:
     run = _FakeRun()
     node_runs = (_FakeNodeRun(),)
+
+
+class TestAnUnmeasuredLatencyIsNotTheFastest:
+    """The review's P1, and the same defect as the rest of #698 one layer up.
+
+    `topology_compare` normalizes p95 with `invert=True`. A bucket that
+    reported `0` because nobody timed it therefore scored 1.0 on speed and
+    outranked every bucket with real numbers — so the change that stopped
+    fabricating per-node latency made the *comparison* worse until the readers
+    of that absence were fixed too (Codex, #698).
+    """
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
+    def test_a_percentile_over_nothing_is_absent(self) -> None:
+        from services.node_metrics_store import _percentile
+
+        assert _percentile([], 50) is None
+        assert _percentile([7], 95) == 7
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
+    def test_a_window_with_no_timed_node_reports_no_percentiles(self) -> None:
+        from services.node_metrics_store import NodeMetricsStore, NodeObservation
+
+        store = NodeMetricsStore()
+        store.append(
+            NodeObservation(
+                run_id="r",
+                node_id="n",
+                node_kind="llm",
+                project_id="",
+                dag_id="d",
+                phase="COMPLETED",
+            )
+        )
+        agg = store.aggregate(window_seconds=3600)
+        assert agg["count"] == 1
+        assert agg["latency_ms_measured"] == 0
+        assert agg["latency_ms_p50"] is None
+        assert agg["latency_ms_p95"] is None
+        assert agg["latency_ms_p99"] is None
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
+    def test_an_untimed_bucket_has_no_p95(self) -> None:
+        from services.node_metrics_store import NodeObservation
+        from services.topology_compare import VariantBucket
+
+        bucket = VariantBucket(label="x")
+        bucket.observations.append(
+            NodeObservation(
+                run_id="r",
+                node_id="n",
+                node_kind="llm",
+                project_id="",
+                dag_id="d",
+                phase="COMPLETED",
+            )
+        )
+        assert bucket.p95_latency is None
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
+    def test_an_untimed_variant_does_not_outrank_a_timed_one_on_speed(self) -> None:
+        """The midpoint, not the best score. An unmeasured bucket cannot be
+        compared on speed; 1.0 says it was fastest and 0.0 says it was slowest,
+        and both are claims the data does not support."""
+        from services.topology_compare import _normalize_measured
+
+        scores = _normalize_measured([100.0, 900.0, None], invert=True)
+        assert scores[0] == 1.0, "the fastest measured bucket still scores best"
+        assert scores[1] == 0.0
+        assert scores[2] == 0.5, "the unmeasured one is neither rewarded nor penalized"
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-2")
+    def test_when_nothing_is_measured_the_latency_term_stops_deciding(self) -> None:
+        from services.topology_compare import _normalize_measured
+
+        assert _normalize_measured([None, None], invert=True) == [0.5, 0.5]
+
+
+class TestTheModelANodeRanOnIsAMeasurement:
+    """Also the review's P1, and the opposite error to the rest of #698.
+
+    The old route took the *first* node's model behind a hardcoded fallback and
+    stamped it on every node, which was a fabrication. Dropping it entirely was
+    the overcorrection: `graph_runner` resolves each node's own model and passes
+    it to the call, so that value is measured. Without it `topology_compare`,
+    whose default grouping is `model_used`, puts every new observation in one
+    `(unset)` bucket and can no longer compare model variants at all.
+    """
+
+    @staticmethod
+    def _runner_source() -> str:
+        return (_BACKEND / "services/graph_runner.py").read_text()
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_every_llm_result_carries_the_model_it_called(self) -> None:
+        """Both outcomes: which model a node *failed* on is exactly what a
+        comparison of model variants needs."""
+        source = self._runner_source()
+        body = source[source.index("async def _run_llm_node") :]
+        body = body[: body.index("def _invoke_subprocess_usage_hooks")]
+        assignments = [line for line in body.splitlines() if "results[nid] = {" in line]
+        assert len(assignments) == 2, assignments
+        for line in assignments:
+            assert '"model": model' in line
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_the_subprocess_path_reports_the_model_it_set(self) -> None:
+        source = self._runner_source()
+        body = source[source.index("def _run_node_subprocess") :]
+        body = body[: body.index("async def _tool_web_search")]
+        assert '"DAG_NODE_MODEL": model' in body, "the env var and the report are one value"
+        assert body.count('"model": model') == 3, "success, failure and exception all report it"
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_the_route_records_the_model_the_runner_reported(self) -> None:
+        """From the runner's own result, not re-resolved: a second copy of
+        `node.get("model", ...) or CHAT_DEFAULT_MODEL or ...` in the route is
+        two places to drift."""
+        source = (_BACKEND / "routes/dags.py").read_text()
+        call = source[source.index("NodeObservation(") : source.index("except Exception:")]
+        assert 'model_used=str(nr.get("model", ""))' in call
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_a_node_that_ran_no_model_reports_none(self) -> None:
+        """A tool node makes no LLM call, so it has no model, and `""` is the
+        honest answer rather than the DAG's default."""
+        assert str({"role": "worker", "success": True}.get("model", "")) == ""
+
+
+class TestOnlyATerminalRunIsIngested:
+    """The review's P2. `run_durable_graph` returns as soon as the graph stops
+    advancing, and a wait or HITL node stops it in `waiting` or `paused`. Those
+    NodeRuns are a partial picture: the paused one lands in the aggregate's
+    denominator and everything after it is missing, and no resume path calls
+    back to correct it.
+    """
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    @pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "timed_out"])
+    def test_a_finished_run_is_ingested(self, status: str) -> None:
+        from services.dag_agents import _is_terminal
+
+        assert _is_terminal(_record_with_status(status)) is True
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    @pytest.mark.parametrize("status", ["created", "queued", "running", "waiting", "paused"])
+    def test_a_run_still_going_is_not(self, status: str) -> None:
+        from services.dag_agents import _is_terminal
+
+        assert _is_terminal(_record_with_status(status)) is False
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    def test_a_status_this_build_does_not_know_is_ingested(self) -> None:
+        """Spelled as the complement of terminal on purpose: an unrecognised
+        status is likelier a new terminal state than a new suspended one, and
+        reading it as suspended would silently stop recording — the shape of
+        defect this whole change removes."""
+        from services.dag_agents import _is_terminal
+
+        assert _is_terminal(_record_with_status("superseded")) is True
+        assert _is_terminal(_record_with_status("")) is True
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-3")
+    def test_a_status_carried_as_an_enum_reads_the_same_as_a_string(self) -> None:
+        from services.dag_agents import _is_terminal
+
+        from maistro.runs.model import RunStatus
+
+        assert _is_terminal(_record_with_status(RunStatus.PAUSED)) is False
+        assert _is_terminal(_record_with_status(RunStatus.COMPLETED)) is True
+
+
+def _record_with_status(status: Any) -> Any:
+    class _Run:
+        pass
+
+    class _Record:
+        pass
+
+    run = _Run()
+    run.status = status  # type: ignore[attr-defined]
+    record = _Record()
+    record.run = run  # type: ignore[attr-defined]
+    return record

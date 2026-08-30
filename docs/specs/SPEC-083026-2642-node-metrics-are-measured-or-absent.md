@@ -77,6 +77,37 @@ calling itself durable. Making the observations durable needs the UI run path
 to mint a canonical Run, which `execute_dag` does not — that is **#53**, the
 same blocker SPEC-083026-2601 records for run history.
 
+## What the review changed
+
+Two of these rules were wrong in the first version of this change, and in
+opposite directions.
+
+**An absent measure has to be absent to its readers too.** Stopping the
+fabrication at the writer was half the job. `_percentile` still returned `0`
+for an empty list, and `topology_compare` normalizes p95 with `invert=True` —
+so a variant nobody timed scored 1.0 on speed and outranked every variant with
+real numbers. A percentile over nothing is `None` now, and a bucket with no
+measured latency takes the midpoint of the normalized scale: it cannot be
+compared on speed, and both 1.0 and 0.0 are claims the data does not support.
+The row carries `latency_measured` so a reader is not left to infer it.
+
+**A value the runner resolved is a measurement, not a guess.** `model_used`
+went out with the fabrications because the old code took the *first* node's
+model and stamped it on every node. But `graph_runner` resolves each node's own
+model and passes that to the call, so it is measured — and without it
+`topology_compare`, whose default grouping is `model_used`, collapses every new
+observation into one `(unset)` bucket and stops comparing model variants
+entirely. The runner reports what it called; the route records what the runner
+reported. A tool node calls no model and reports none.
+
+**A partial run is not a finished one.** `run_durable_graph` returns as soon as
+the graph stops advancing, and a wait or HITL node stops it in `waiting` or
+`paused`. Ingesting that record puts the paused NodeRun in the aggregate's
+denominator while every node after it is missing, and no resume path calls back
+to correct it. Only terminal records are ingested; a status this build does not
+recognise counts as terminal, because reading an unknown status as suspended
+would silently stop recording — the shape of defect this change removes.
+
 ## Consequences
 
 ### Positive
@@ -98,11 +129,13 @@ same blocker SPEC-083026-2601 records for run history.
 Feature: Node metrics are measured or absent
 
   @AC-1
-  Scenario: An unmeasured cost is not a zero cost
+  Scenario: An unmeasured cost is not a zero cost, and a measured model is not absent
     Given observations that carry no cost, and one that carries a real cost
     When each window is aggregated
     Then the unmeasured window reports no cost measured and no total
     And the measured one reports its total
+    And each node reports the model it was actually called with
+    And a node that called no model reports none
 
   @AC-2
   Scenario: An average divides by what was measured
@@ -110,6 +143,8 @@ Feature: Node metrics are measured or absent
     When the window is aggregated
     Then the mean is 100ms, not 50ms
     And an untimed node does not enter the latency percentiles
+    And a window nobody timed reports no percentile rather than zero
+    And a variant nobody timed is not ranked as the fastest one
 
   @AC-3
   Scenario: The canonical run path records its own NodeRuns
@@ -118,6 +153,8 @@ Feature: Node metrics are measured or absent
     Then the metrics ingest is called with that record
     And the fields the durable slice does not carry are left absent
     And a NodeRun with no timestamps has no latency rather than zero
+    And a run that stopped at a wait or a pause is not ingested as finished
+    And a status this build does not recognise is ingested rather than dropped
 
   @AC-4
   Scenario: Readers use the store's public surface

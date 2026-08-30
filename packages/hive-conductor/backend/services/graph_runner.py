@@ -135,9 +135,10 @@ def _run_node_subprocess(
 
     from services.hyperlight_executor import get_executor
 
+    model = node.get("model", "gemini-3.5-flash")
     node_env = {
         **base_env,
-        "DAG_NODE_MODEL": node.get("model", "gemini-3.5-flash"),
+        "DAG_NODE_MODEL": model,
         "DAG_NODE_SYSTEM": node.get("prompt", "") or "",
         "DAG_NODE_TASK": task_desc,
         "DAG_NODE_CONTEXT": context[:2000],
@@ -161,15 +162,22 @@ def _run_node_subprocess(
                 "success": True,
                 "isolation": result.get("isolation", "unknown"),
                 "usage": usage,
+                "model": model,
             }
         return {
             "role": node.get("role", "worker"),
             "response": result.get("error", "")[:500],
             "success": False,
             "isolation": result.get("isolation", "unknown"),
+            "model": model,
         }
     except Exception as e:
-        return {"role": node.get("role", "worker"), "response": str(e), "success": False}
+        return {
+            "role": node.get("role", "worker"),
+            "response": str(e),
+            "success": False,
+            "model": model,
+        }
 
 
 async def _tool_web_search(
@@ -351,9 +359,11 @@ async def _run_llm_node(
     ]
     try:
         response = await _build_llm_call(on_response)(messages, model=model)
-        results[nid] = {"role": role, "response": response, "success": True}
+        results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as e:
-        results[nid] = {"role": role, "response": str(e), "success": False}
+        # The model is reported on the failure too: which model a node failed
+        # on is exactly what a comparison of model variants needs (#698).
+        results[nid] = {"role": role, "response": str(e), "success": False, "model": model}
 
 
 def _invoke_subprocess_usage_hooks(

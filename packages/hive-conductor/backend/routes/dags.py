@@ -279,14 +279,23 @@ async def run_dag(dag_id: str) -> dict:
             )
         # Record node metrics (Signal #5).
         #
-        # Only what this path measured. It knows each node's outcome and
-        # nothing about any individual node's latency, tokens, cost, or
-        # model. Those used to be filled in with the whole-DAG elapsed time
-        # divided by the cycle count, zeroes, and the first node's model
-        # behind a hardcoded fallback -- so the optimizer, which weights cost
-        # at 0.15, scored every variant as free and every node as equally
-        # fast (#698). The DAG-level timer went with them: it existed only to
-        # be divided.
+        # Only what this path measured. It knows each node's outcome and the
+        # model that node was actually called with, and nothing about any
+        # individual node's latency, tokens, or cost. Those used to be filled
+        # in with the whole-DAG elapsed time divided by the cycle count and
+        # zeroes -- so the optimizer, which weights cost at 0.15, scored every
+        # variant as free and every node as equally fast (#698). The DAG-level
+        # timer went with them: it existed only to be divided.
+        #
+        # `model_used` is not among them. The first version of this change
+        # dropped it with the rest, because the old code reached for the *first
+        # node's* model behind a hardcoded fallback and called that the model
+        # for every node. But `graph_runner` resolves and reports each node's
+        # own model now, so this is a measurement and not a guess -- and
+        # without it `topology_compare`, whose default grouping is
+        # `model_used`, collapses every new observation into one `(unset)`
+        # bucket and can no longer compare model variants at all (Codex, #698).
+        # A tool node runs no model and reports none, which is correct.
         #
         # `project_id` is likewise absent rather than `""`: this route carries
         # no project scope, and an empty string is a value the project filter
@@ -305,6 +314,7 @@ async def run_dag(dag_id: str) -> dict:
                         project_id="",
                         dag_id=dag_id,
                         phase="COMPLETED" if nr.get("success") else "FAILED",
+                        model_used=str(nr.get("model", "")),
                     )
                 )
         except Exception:

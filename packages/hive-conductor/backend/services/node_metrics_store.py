@@ -161,10 +161,17 @@ class NodeMetricsStore:
         return [_to_dict(o) for o in reversed(obs[-limit:])]
 
 
-def _percentile(values: list[int], pct: float) -> int:
-    """Linear-interpolation percentile over a pre-sorted list."""
+def _percentile(values: list[int], pct: float) -> int | None:
+    """Linear-interpolation percentile over a pre-sorted list, or None.
+
+    `None` and not `0` for an empty list, and this is the same rule the rest of
+    this module turns on rather than a separate nicety: a window whose nodes
+    nobody timed used to report p50/p95/p99 of zero, and `topology_compare`
+    normalizes p95 with `invert=True` — so a wholly unmeasured variant ranked
+    as the fastest one in the comparison (Codex, #698).
+    """
     if not values:
-        return 0
+        return None
     if len(values) == 1:
         return values[0]
     rank = (pct / 100.0) * (len(values) - 1)
@@ -186,9 +193,9 @@ def _aggregate(obs: Iterable[NodeObservation]) -> dict[str, Any]:
             "failed": 0,
             "success_rate": 0.0,
             "latency_ms_measured": 0,
-            "latency_ms_p50": 0,
-            "latency_ms_p95": 0,
-            "latency_ms_p99": 0,
+            "latency_ms_p50": None,
+            "latency_ms_p95": None,
+            "latency_ms_p99": None,
             "latency_ms_mean": None,
             "tokens_measured": 0,
             "tokens_in_total": None,

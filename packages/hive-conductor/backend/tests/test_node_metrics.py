@@ -298,7 +298,9 @@ def test_aggregate_empty_reports_nothing_measured() -> None:
     agg = store.aggregate(window_seconds=3600)
     assert agg["count"] == 0
     assert agg["success_rate"] == 0.0
-    assert agg["latency_ms_p50"] == 0
+    assert agg["latency_ms_p50"] is None
+    assert agg["latency_ms_p95"] is None
+    assert agg["latency_ms_p99"] is None
     assert agg["tokens_measured"] == 0
     assert agg["tokens_in_total"] is None
     assert agg["cost_usd_total"] is None
@@ -379,11 +381,17 @@ def test_aggregate_single_observation_percentile_is_identity() -> None:
     assert agg["latency_ms_p99"] == 42
 
 
-def test_percentile_returns_zero_for_empty_list() -> None:
-    """Direct call to _percentile defensive check."""
+def test_percentile_is_absent_for_an_empty_list() -> None:
+    """Was `== 0`, and that zero was a real defect.
+
+    `topology_compare` normalizes p95 with `invert=True`, so a variant nobody
+    timed reported a p95 of zero and ranked as the fastest in the comparison —
+    the same "unmeasured read as best" this change removes one layer down
+    (Codex, #698).
+    """
     from services.node_metrics_store import _percentile
 
-    assert _percentile([], 50) == 0
+    assert _percentile([], 50) is None
 
 
 # --- list_observations --------------------------------------------------
