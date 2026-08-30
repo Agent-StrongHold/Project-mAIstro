@@ -26,18 +26,26 @@ class BaseRevisionError(RuntimeError):
 
 def _read_mapping(value: object, *, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise BaseRevisionError(f"GitHub event field {field!r} is missing or is not an object")
+        raise BaseRevisionError(
+            f"GitHub event field {field!r} is missing or is not an object"
+        )
     return value
 
 
 def _read_sha(value: object, *, field: str) -> str:
     if not isinstance(value, str):
-        raise BaseRevisionError(f"GitHub event field {field!r} is missing or is not a SHA")
+        raise BaseRevisionError(
+            f"GitHub event field {field!r} is missing or is not a SHA"
+        )
     sha = value.strip()
     if len(sha) not in _VALID_SHA_LENGTHS or any(ch not in _HEX for ch in sha):
-        raise BaseRevisionError(f"GitHub event field {field!r} is not a valid commit SHA: {value!r}")
+        raise BaseRevisionError(
+            f"GitHub event field {field!r} is not a valid commit SHA: {value!r}"
+        )
     if set(sha) == {"0"}:
-        raise BaseRevisionError(f"GitHub event field {field!r} is git's null SHA, not a base revision")
+        raise BaseRevisionError(
+            f"GitHub event field {field!r} is git's null SHA, not a base revision"
+        )
     return sha.lower()
 
 
@@ -62,9 +70,13 @@ def load_event_payload(path: Path) -> Mapping[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise BaseRevisionError(f"could not read GitHub event payload {path}: {exc}") from exc
+        raise BaseRevisionError(
+            f"could not read GitHub event payload {path}: {exc}"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise BaseRevisionError(f"GitHub event payload {path} is not valid JSON: {exc}") from exc
+        raise BaseRevisionError(
+            f"GitHub event payload {path} is not valid JSON: {exc}"
+        ) from exc
     if not isinstance(payload, Mapping):
         raise BaseRevisionError(f"GitHub event payload {path} is not a JSON object")
     return payload
