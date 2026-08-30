@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-ac-state.py"
@@ -50,6 +51,67 @@ def test_imported_or_synthetic_pr_keeps_conservative_banking(monkeypatch):
     assert seen == [["x"]]
 
 
+def test_direct_front_door_fails_closed_when_path_resolution_fails(monkeypatch):
+    def fail_resolve(_path):
+        raise OSError("unresolvable path")
+
+    monkeypatch.setattr(gate.Path, "resolve", fail_resolve)
+
+    assert gate._direct_front_door() is False
+
+
+def test_candidate_note_fold_reports_missing_bounded_counter(monkeypatch):
+    monkeypatch.setattr(gate._impl, "RATCHETED", ("debt",))
+    monkeypatch.setattr(gate._impl, "FLOORED", ("progress",))
+    monkeypatch.setattr(
+        gate._impl.ac_state_notes,
+        "bounds",
+        lambda: SimpleNamespace(base_sha="trusted", counters={"debt": 2, "progress": 20}),
+    )
+    monkeypatch.setattr(gate._impl, "authorized_floors", lambda _sha: ({}, []))
+    monkeypatch.setattr(
+        gate._impl,
+        "_banked",
+        lambda: SimpleNamespace(counters={"debt": 2}),
+    )
+    monkeypatch.setattr(gate._impl, "_lowered", lambda counters, _floors: counters)
+
+    assert gate._candidate_note_fold_weakening() == [
+        "candidate note fold omits bounded counter progress"
+    ]
+
+
+def test_candidate_note_fold_compares_candidate_with_authorized_trusted_fold(monkeypatch):
+    trusted = {"debt": 2, "progress": 20}
+    lowered = {"debt": 2, "progress": 18}
+    candidate = {"debt": 2, "progress": 19}
+    seen: list[tuple[dict[str, int], dict[str, int]]] = []
+
+    monkeypatch.setattr(gate._impl, "RATCHETED", ("debt",))
+    monkeypatch.setattr(gate._impl, "FLOORED", ("progress",))
+    monkeypatch.setattr(
+        gate._impl.ac_state_notes,
+        "bounds",
+        lambda: SimpleNamespace(base_sha="trusted", counters=trusted),
+    )
+    monkeypatch.setattr(gate._impl, "authorized_floors", lambda _sha: ({"progress": 18}, []))
+    monkeypatch.setattr(
+        gate._impl,
+        "_banked",
+        lambda: SimpleNamespace(counters=candidate),
+    )
+    monkeypatch.setattr(gate._impl, "_lowered", lambda _counters, _floors: lowered)
+
+    def compare(base, worktree):
+        seen.append((base, worktree))
+        return (["weakened"], ["improved"])
+
+    monkeypatch.setattr(gate._impl, "_compare", compare)
+
+    assert gate._candidate_note_fold_weakening() == ["weakened"]
+    assert seen == [(lowered, candidate)]
+
+
 def test_candidate_note_weakening_is_not_excused_as_measurement_slack(monkeypatch, capsys):
     _canonical_develop_ci(monkeypatch)
     monkeypatch.setattr(
@@ -93,6 +155,23 @@ def test_relaxed_success_wording_claims_bounds_not_exact_equality():
     assert "sits exactly" not in rewritten
     assert "debt counters satisfy their ceilings" in rewritten
     assert "progress counter satisfies its floor" in rewritten
+
+
+def test_relaxed_output_policy_captures_and_rewrites_success(monkeypatch, capsys):
+    _canonical_develop_ci(monkeypatch)
+    exact = (
+        f"OK: {len(gate._impl.RATCHETED)} debt counters sit exactly on their ceilings and "
+        f"{len(gate._impl.FLOORED)} progress counter sits exactly on its floor (base)\n"
+    )
+
+    def successful_call():
+        print(exact, end="")
+        return 7
+
+    assert gate._call_with_output_policy(successful_call) == 7
+    out = capsys.readouterr().out
+    assert "debt counters satisfy their ceilings" in out
+    assert "progress counter satisfies its floor" in out
 
 
 def test_public_ratchet_installs_and_restores_review_policy(monkeypatch):
