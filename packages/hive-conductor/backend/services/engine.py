@@ -125,16 +125,19 @@ class EngineService:
         in-process list and was lost on restart. This is the call the setter's
         own docstring already described (#696).
 
-        Without the bridge there is no container, so the Hive-local default
-        stands: a thumb still records, deterministically, into memory. That is
-        the honest behaviour for a process with no durable backend, and it is
-        the mode the tests run in.
+        Without a container this installs a *fresh* Hive-local store rather
+        than leaving whatever was bound before. Returning early would be a bug
+        on the second start in one process -- an engine restart, or a
+        configuration retry that falls back to the stub -- because the module
+        global would still point at the previous container's store, and
+        feedback would keep being written to a database this engine no longer
+        owns, or to a closed connection. `start()` decides the store for the
+        engine it is starting; it does not inherit one.
         """
-        store = self.outcome_store
-        if store is None:
-            return
+        from maistro.memory.outcomes import InMemoryOutcomeStore
         from services import feedback_service
 
+        store = self.outcome_store or InMemoryOutcomeStore()
         feedback_service.set_outcome_store(store)
         logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
 

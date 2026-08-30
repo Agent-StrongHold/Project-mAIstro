@@ -279,7 +279,14 @@ class InMemoryOutcomeStore:
             and _dag_matches(o.dag_id, dag_id)
             and self._org_matches(o.org_id, org_id)
         ]
-        return list(reversed(matched))[:limit]
+        # Sorted, not reversed. Insertion order equals timestamp order only
+        # while every write is "now"; a backfill, an import or a delayed event
+        # breaks that, and then a small `limit` would drop a newer thumb and
+        # keep an older one -- while the two SQL twins, which order by
+        # `created_at DESC`, answered correctly. Three implementations of one
+        # protocol have to agree about which thumbs are the recent ones (#696).
+        matched.sort(key=lambda o: o.created_at, reverse=True)
+        return matched[:limit]
 
     @staticmethod
     def _org_matches(record_org: str, caller_org: str) -> bool:

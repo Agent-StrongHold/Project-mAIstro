@@ -166,7 +166,7 @@ class TestTheSetterHasAProductionCaller:
             feedback_service.set_outcome_store(before)
 
     @pytest.mark.ac("SPEC-083026-58de/AC-6")
-    async def test_no_container_leaves_the_hive_local_store_alone(self) -> None:
+    async def test_no_container_installs_a_hive_local_store(self) -> None:
         """Without the bridge a thumb still records, into memory, deterministically.
 
         Binding `None` here would turn every feedback write into an
@@ -176,8 +176,99 @@ class TestTheSetterHasAProductionCaller:
         from services import feedback_service
         from services.engine import EngineService
 
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
         before = feedback_service.get_outcome_store()
+        try:
+            EngineService()._wire_outcome_store()
 
-        EngineService()._wire_outcome_store()
+            assert isinstance(feedback_service.get_outcome_store(), InMemoryOutcomeStore)
+        finally:
+            feedback_service.set_outcome_store(before)
 
-        assert feedback_service.get_outcome_store() is before
+    @pytest.mark.ac("SPEC-083026-58de/AC-6")
+    async def test_a_start_without_a_bridge_does_not_inherit_the_last_container(self) -> None:
+        """The second start in one process, which the early return got wrong.
+
+        An engine restart, or a configuration retry that falls back to the
+        stub, would otherwise leave the module global pointing at the previous
+        container's store -- so feedback would keep being written to a database
+        this engine no longer owns, or to a closed connection.
+        """
+        from services import feedback_service
+        from services.engine import EngineService
+
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        durable = object()
+        bound = EngineService()
+        bound._agent_port = type(
+            "_Port", (), {"container": type("_C", (), {"outcome_store": durable})()}
+        )()
+        before = feedback_service.get_outcome_store()
+        try:
+            bound._wire_outcome_store()
+            assert feedback_service.get_outcome_store() is durable
+
+            EngineService()._wire_outcome_store()
+
+            assert feedback_service.get_outcome_store() is not durable
+            assert isinstance(feedback_service.get_outcome_store(), InMemoryOutcomeStore)
+        finally:
+            feedback_service.set_outcome_store(before)
+
+
+class TestTheBridgeTellsTheContainerWhichDatabase:
+    """Binding the container's store is only durability if the container has one.
+
+    `MaistroCoreBridge` builds `AgentConfig` directly rather than through
+    `config.loader`, and left `database_url` at its empty default. So
+    `create_container` took the ephemeral branch and built an
+    `InMemoryOutcomeStore` however the deployment was configured -- and this
+    change would then have bound *that* as the durable store, leaving every
+    thumb still lost on restart while claiming otherwise (Codex, #696).
+    """
+
+    @pytest.mark.ac("SPEC-083026-58de/AC-6")
+    def test_the_bridge_resolves_the_database_url(self) -> None:
+        """Asserted on the source, because reaching the call needs a live LLM.
+
+        `start()` builds the config and immediately opens a container and an
+        HTTP client against it. What this pins is the omission itself: the
+        argument is passed, and it is passed from the shared resolver rather
+        than from a Hive-only setting that would be a second answer to
+        "which database".
+        """
+        import ast
+
+        from adapters import maistro_core
+
+        source = pathlib.Path(maistro_core.__file__).read_text(encoding="utf-8")
+        calls = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AgentConfig"
+        ]
+
+        assert calls, "the bridge no longer builds an AgentConfig; re-target this guard"
+        for call in calls:
+            supplied = {kw.arg for kw in call.keywords}
+            assert "database_url" in supplied, (
+                "the container decides its backend from `config.database_url`; "
+                "omitting it makes every store ephemeral whatever the deployment set"
+            )
+        assert "resolve_database_url" in source
+
+    @pytest.mark.ac("SPEC-083026-58de/AC-6")
+    def test_an_empty_url_still_yields_an_in_memory_store(self) -> None:
+        """The resolver returning nothing is a real answer, not a failure.
+
+        A deployment that configures no database gets ephemeral stores, and
+        `_wire_outcome_store` then binds an in-memory one -- which is the
+        documented fallback, not a downgrade this change introduced.
+        """
+        from maistro.config.database import resolve_database_url
+
+        assert resolve_database_url({}) == ""

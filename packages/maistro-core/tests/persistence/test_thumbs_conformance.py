@@ -158,6 +158,51 @@ class TestTheThumbsSignalIsAProtocolQuery:
         assert [o.thumb for o in found] == ["up"]
 
     @pytest.mark.ac("SPEC-083026-58de/AC-5")
+    async def test_the_limit_keeps_the_most_recent_when_writes_arrive_out_of_order(
+        self, outcome_store: Any
+    ) -> None:
+        """Recorded oldest-last, so insertion order is the opposite of time order.
+
+        A backfill, an import or a delayed event produces exactly this. The two
+        SQL stores order by `created_at DESC` and answer correctly; the
+        in-memory one reversed its insertion list, so it kept the older thumb
+        and dropped the newer -- three implementations of one protocol
+        disagreeing about which thumbs are the recent ones (Codex, #696).
+        """
+        await outcome_store.record(_thumb("up", age_days=0))
+        await outcome_store.record(_thumb("down", age_days=30))
+
+        found = await outcome_store.list_thumbs(dag_id="d1", limit=1)
+
+        assert [o.thumb for o in found] == ["up"]
+
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
+    async def test_a_non_utc_timestamp_is_compared_as_an_instant(self, outcome_store: Any) -> None:
+        """SQLite compares ISO text, so an offset sorts by its spelling.
+
+        The timestamp has to sit *just* outside the window, and be spelled in a
+        zone far enough ahead that its wall-clock text lands inside it. An hour
+        past the 90-day cutoff, rendered at +14:00, reads as thirteen hours
+        *after* the cutoff -- so a lexicographic comparison keeps a thumb the
+        instant comparison excludes.
+
+        The first version of this test used a timestamp five days stale, which
+        no offset can move across the boundary: it passed against the
+        un-normalised write, and mutation-checking is what caught that rather
+        than reading it (Codex, #696).
+        """
+        from datetime import timedelta as _timedelta
+        from datetime import timezone as _timezone
+
+        stale = _thumb("up")
+        stale.created_at = (
+            datetime.now(UTC) - timedelta(days=THUMB_WINDOW_DAYS, hours=1)
+        ).astimezone(_timezone(_timedelta(hours=14)))
+        await outcome_store.record(stale)
+
+        assert await outcome_store.list_thumbs(dag_id="d1") == []
+
+    @pytest.mark.ac("SPEC-083026-58de/AC-5")
     async def test_another_orgs_thumb_is_not_returned(self, outcome_store: Any) -> None:
         """Scope authorization, which `list_thumbs` must apply like its siblings."""
         await outcome_store.record(_thumb("up", org_id="org-a"))

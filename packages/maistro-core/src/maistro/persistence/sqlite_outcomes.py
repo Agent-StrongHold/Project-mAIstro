@@ -113,7 +113,15 @@ class SqliteOutcomeStore:
                 outcome.output_tokens,
                 outcome.charged_microchips,
                 outcome.pricing_version,
-                outcome.created_at.isoformat(),
+                # Normalised to UTC before it becomes text. SQLite compares
+                # these lexicographically, so an offset-bearing timestamp sorts
+                # by its spelling rather than its instant --
+                # `2026-08-30T01:00:00+10:00` sorts after
+                # `2026-08-29T20:00:00+00:00` while being the earlier moment.
+                # That would let an expired thumb survive the window, misorder
+                # the result, and disagree with the two stores that compare
+                # real timestamps (#696).
+                _utc_text(outcome.created_at),
                 outcome.org_id,
                 outcome.project_id,
                 outcome.dag_id,
@@ -361,6 +369,19 @@ class SqliteOutcomeStore:
         columns = [d[0] for d in cursor.description]
         rows = await cursor.fetchall()
         return [_row_to_outcome(dict(zip(columns, raw, strict=True))) for raw in rows]
+
+
+def _utc_text(moment: datetime) -> str:
+    """An instant as text that sorts in instant order.
+
+    Naive timestamps are read as UTC rather than rejected: the dataclass
+    default is aware, so a naive one came from a caller that constructed it
+    explicitly, and assuming UTC matches what every other store here does with
+    it.
+    """
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC).isoformat()
+    return moment.astimezone(UTC).isoformat()
 
 
 def _row_to_outcome(r: dict[str, Any]) -> Outcome:
