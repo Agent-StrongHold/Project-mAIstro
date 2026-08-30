@@ -96,8 +96,13 @@ def main() -> int:
         f"{module}: authorized unreachable addition is not banked in candidate baseline"
         for module in unbanked_authorized
     )
-    failures.extend(f"{module}: current unreachable module missing from candidate baseline" for module in candidate_added)
-    failures.extend(f"{module}: now reachable; prune from candidate baseline" for module in candidate_removed)
+    failures.extend(
+        f"{module}: current unreachable module missing from candidate baseline"
+        for module in candidate_added
+    )
+    failures.extend(
+        f"{module}: now reachable; prune from candidate baseline" for module in candidate_removed
+    )
     failures.extend(
         f"{entry}: candidate baseline identity resolves to no module"
         + (f"; use {suggestion}" if suggestion else "")
