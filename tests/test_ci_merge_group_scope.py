@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ci_merge_group_scope import LEGS, classify
+from scripts.ci_merge_group_scope import LEGS, classify
 
 
 def test_missing_diff_evidence_fails_closed() -> None:
