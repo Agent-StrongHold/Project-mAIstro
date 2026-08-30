@@ -65,6 +65,7 @@ jobs:
       - name: Format and focused verification
         run: |
           uv sync --locked --extra dev
+          uv run ruff check --fix packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
           uv run ruff format packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/consumption.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
           uv run ruff check packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/consumption.py packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/src/maistro/runs/wiring.py packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
           uv run pytest packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_recovery_events.py -q
