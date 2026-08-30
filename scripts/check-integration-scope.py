@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify the specialized CI legs required by one integration candidate.
+"""Verify the specialized CI checks required by one integration candidate.
 
 Pull requests and protected pushes preserve the existing contract: every
-specialized leg must complete successfully. Merge-group candidates may use the
-reviewed path classifier to omit legs that cannot be affected, but uncertainty
-never widens the skip set: a missing or malformed scope requires every leg.
+specialized check must complete successfully. Merge-group candidates may use
+the reviewed path classifier to omit checks that cannot be affected, but
+uncertainty never widens the skip set: a missing or malformed scope requires
+every check.
 """
 
 from __future__ import annotations
@@ -15,16 +16,20 @@ from collections.abc import Mapping
 
 from ci_merge_group_scope import LEGS
 
-JOB_IDS: dict[str, tuple[str, ...]] = {
-    "postgres": ("postgres",),
-    "object_storage": ("object-storage",),
+CHECK_NAMES: dict[str, tuple[str, ...]] = {
+    "postgres": ("postgres (pg17)", "postgres (pg18)"),
+    "object_storage": ("object storage (MinIO)",),
     "durable_events": ("durable-events",),
     "strike_ladder": ("strike-ladder",),
     "hive_e2e": ("hive-conductor-e2e", "hive-conductor-e2e-ui"),
     "wheel_imports": ("wheel-imports",),
     "docker_build": ("docker-build",),
 }
-ALL_JOB_IDS = {job_id for job_ids in JOB_IDS.values() for job_id in job_ids}
+ALL_CHECK_NAMES = {
+    check_name
+    for check_names in CHECK_NAMES.values()
+    for check_name in check_names
+}
 
 
 def _fail_closed_scope(raw: str | None) -> dict[str, bool]:
@@ -41,17 +46,17 @@ def _fail_closed_scope(raw: str | None) -> dict[str, bool]:
     return {leg: value[leg] for leg in LEGS}
 
 
-def required_jobs(event_name: str, scope_json: str | None) -> set[str]:
-    """Return the job ids whose success this candidate must prove."""
+def required_checks(event_name: str, scope_json: str | None) -> set[str]:
+    """Return the check names whose success this candidate must prove."""
     if event_name == "merge_group":
         scope = _fail_closed_scope(scope_json)
     else:
         scope = dict.fromkeys(LEGS, True)
 
     required: set[str] = set()
-    for leg, job_ids in JOB_IDS.items():
+    for leg, check_names in CHECK_NAMES.items():
         if scope[leg]:
-            required.update(job_ids)
+            required.update(check_names)
     return required
 
 
@@ -60,12 +65,14 @@ def evaluate(
     scope_json: str | None,
     results: Mapping[str, str],
 ) -> list[str]:
-    """Return findings for required jobs that did not complete successfully."""
+    """Return findings for required checks that did not complete successfully."""
     findings: list[str] = []
-    for job_id in sorted(required_jobs(event_name, scope_json)):
-        result = results.get(job_id)
+    for check_name in sorted(required_checks(event_name, scope_json)):
+        result = results.get(check_name)
         if result != "success":
-            findings.append(f"{job_id}: required but result was {result or '<missing>'}")
+            findings.append(
+                f"{check_name}: required but result was {result or '<missing>'}"
+            )
     return findings
 
 
@@ -73,25 +80,31 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--scope-json")
+    parser.add_argument("--required-json", action="store_true")
     parser.add_argument(
         "--result",
         action="append",
         default=[],
-        metavar="JOB=RESULT",
-        help="GitHub Actions job result, repeated once per specialized job id",
+        metavar="CHECK=RESULT",
+        help="GitHub check result, repeated once per specialized check name",
     )
     args = parser.parse_args(argv)
+
+    required = required_checks(args.event_name, args.scope_json)
+    if args.required_json:
+        print(json.dumps(sorted(required)))
+        return 0
 
     results: dict[str, str] = {}
     for item in args.result:
         if "=" not in item:
-            print(f"FAIL: malformed --result {item!r}; expected JOB=RESULT")
+            print(f"FAIL: malformed --result {item!r}; expected CHECK=RESULT")
             return 1
-        job_id, result = item.split("=", 1)
-        if not job_id or job_id not in ALL_JOB_IDS:
-            print(f"FAIL: unknown specialized job id {job_id!r}")
+        check_name, result = item.split("=", 1)
+        if not check_name or check_name not in ALL_CHECK_NAMES:
+            print(f"FAIL: unknown specialized check name {check_name!r}")
             return 1
-        results[job_id] = result
+        results[check_name] = result
 
     findings = evaluate(args.event_name, args.scope_json, results)
     if findings:
