@@ -189,6 +189,10 @@ async def test_record_inserts_with_all_fields_and_returns_id(
         # `None`, because `make_outcome` leaves the count unset: a writer that
         # did not count binds NULL rather than a measured zero (#717).
         None,
+        # The session, NULL because this outcome was recorded outside one. It
+        # is bound here rather than into `request_id`, which is what
+        # `agents/base.py` used to do (#748).
+        None,
     )
 
 
