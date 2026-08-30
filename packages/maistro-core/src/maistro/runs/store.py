@@ -168,6 +168,11 @@ def run_cursor_key(run: Run) -> RunCursor:
     return (created_at, run.run_id)
 
 
+def _run_matches_status_scope(run: Run, *, status: RunStatus, project_id: str | None) -> bool:
+    """Whether one Run belongs in a status/scope listing."""
+    return run.status is status and (project_id is None or run.project_id == project_id)
+
+
 def validate_child_scope(
     parent: Run,
     *,
@@ -752,7 +757,7 @@ class InMemoryRunStore:
             (
                 run
                 for run in self._runs.values()
-                if run.status is status and (project_id is None or run.project_id == project_id)
+                if _run_matches_status_scope(run, status=status, project_id=project_id)
             ),
             key=run_cursor_key,
         )
