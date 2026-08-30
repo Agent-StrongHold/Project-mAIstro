@@ -9,12 +9,15 @@ from maistro.sessions.turns import reject_blank_turn_id
 
 if TYPE_CHECKING:
     import asyncpg
+    import asyncpg.pool
 
 
 _SESSION_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 
 
-async def _purge_through(conn: asyncpg.Connection, cutoff: float) -> str:
+async def _purge_through(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, cutoff: float
+) -> str:
     """Delete expired messages and the turn markers that admitted them.
 
     Both, always, and inside the caller's transaction. A marker outliving its
