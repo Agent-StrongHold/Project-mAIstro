@@ -46,10 +46,22 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: 0.12.5
-      - name: Patch focused evidence
+      - name: Patch implementation and focused evidence
         run: |
           python - <<'PY'
           from pathlib import Path
+
+          claim = Path('packages/maistro-core/src/maistro/runs/consumer_claim.py')
+          text = claim.read_text()
+          old = '''                """INSERT INTO canonical_attempts
+                   (attempt_id, node_run_id, ordinal, status, payload)
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",'''
+          new = '''                """INSERT INTO canonical_attempts
+                   (attempt_id, node_run_id, ordinal, status, payload)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",'''
+          if old not in text:
+              raise SystemExit('PostgreSQL Attempt INSERT anchor not found')
+          claim.write_text(text.replace(old, new, 1))
 
           consumption = Path('packages/maistro-core/tests/runs/test_consumption.py')
           text = consumption.read_text()
@@ -62,13 +74,13 @@ jobs:
               raise SystemExit('pagination anchor not found')
           text = text.replace(old, new, 1)
           if 'test_schedule_executor_requires_physical_claim_capability' not in text:
-              text += '''\n\nasync def test_schedule_executor_requires_physical_claim_capability() -> None:\n    from maistro.runs.consumption import ScheduleAttemptExecutor\n    from maistro.runs.store import InMemoryRunStore, RunIntegrityError\n\n    with pytest.raises(RunIntegrityError, match="consumer claim capability"):\n        ScheduleAttemptExecutor(InMemoryRunStore())\n'''
+              text += '''\n\nasync def test_schedule_executor_requires_physical_claim_capability() -> None:\n    from maistro.projects.scope_store import InMemoryProjectScopeStore\n    from maistro.runs.consumption import ScheduleAttemptExecutor\n    from maistro.runs.store import InMemoryRunStore, RunIntegrityError\n\n    store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())\n    with pytest.raises(RunIntegrityError, match="consumer claim capability"):\n        ScheduleAttemptExecutor(store)\n'''
           consumption.write_text(text)
 
           execution = Path('packages/maistro-core/tests/runs/test_execution.py')
           text = execution.read_text()
           if 'test_execute_claimed_rejects_attempt_without_lease' not in text:
-              text += '''\n\n@pytest.mark.asyncio\nasync def test_execute_claimed_rejects_attempt_without_lease() -> None:\n    from maistro.runs.store import RunIntegrityError\n\n    store, _run_id, node_run_id = await _node_run()\n    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())\n    attempt = Attempt(node_run_id=node_run_id, ordinal=1, runtime_id="test")\n\n    async def executor(_work: Any, _context: Any) -> None:\n        return None\n\n    with pytest.raises(RunIntegrityError, match="missing its execution lease"):\n        await service.execute_claimed(attempt, None, None, executor=executor)\n\n\n@pytest.mark.asyncio\nasync def test_execute_claimed_rejects_terminal_attempt() -> None:\n    from datetime import timedelta\n\n    from maistro.runs.store import RunIntegrityError\n\n    store, _run_id, node_run_id = await _node_run()\n    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())\n    attempt = await store.create_attempt(\n        node_run_id,\n        runtime_id="test",\n        lease_holder="test",\n        lease_ttl=timedelta(seconds=30),\n    )\n    terminal = Attempt.model_validate(\n        {**attempt.model_dump(mode="python"), "status": AttemptStatus.COMPLETED}\n    )\n\n    async def executor(_work: Any, _context: Any) -> None:\n        return None\n\n    with pytest.raises(RunIntegrityError, match="requires an active Attempt"):\n        await service.execute_claimed(terminal, None, None, executor=executor)\n'''
+              text += '''\n\n@pytest.mark.asyncio\nasync def test_execute_claimed_rejects_attempt_without_lease() -> None:\n    from maistro.runs.store import RunIntegrityError\n\n    store, _run_id, node_run_id = await _node_run()\n    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())\n    attempt = Attempt(node_run_id=node_run_id, ordinal=1, runtime_id="test")\n\n    async def executor(_work: Any, _context: Any) -> None:\n        return None\n\n    with pytest.raises(RunIntegrityError, match="missing its execution lease"):\n        await service.execute_claimed(attempt, None, None, executor=executor)\n\n\n@pytest.mark.asyncio\nasync def test_execute_claimed_rejects_terminal_attempt() -> None:\n    from datetime import UTC, datetime, timedelta\n\n    from maistro.runs.store import RunIntegrityError\n\n    store, _run_id, node_run_id = await _node_run()\n    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())\n    attempt = await store.create_attempt(\n        node_run_id,\n        runtime_id="test",\n        lease_holder="test",\n        lease_ttl=timedelta(seconds=30),\n    )\n    terminal = Attempt.model_validate(\n        {\n            **attempt.model_dump(mode="python"),\n            "status": AttemptStatus.COMPLETED,\n            "finished_at": datetime.now(UTC),\n        }\n    )\n\n    async def executor(_work: Any, _context: Any) -> None:\n        return None\n\n    with pytest.raises(RunIntegrityError, match="requires an active Attempt"):\n        await service.execute_claimed(terminal, None, None, executor=executor)\n'''
           execution.write_text(text)
 
           recovery = Path('packages/maistro-core/tests/runs/test_consumer_claim_recovery.py')
@@ -83,8 +95,8 @@ jobs:
         run: uv run alembic upgrade head
       - name: Format and lint
         run: |
-          uv run ruff format packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
-          uv run ruff check packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run ruff format packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run ruff check packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
       - name: Focused tests
         run: |
           uv run pytest packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py -q
@@ -93,6 +105,6 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git rm .github/workflows/tmp-640-diff-coverage-proof.yml
-          git add packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
-          git commit -m 'test: close #640 diff coverage evidence gaps'
+          git add packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          git commit -m 'fix: prove #640 PostgreSQL consumer claims'
           git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
