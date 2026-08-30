@@ -24,6 +24,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from maistro.graph.durable_runs import DurableRunRecord
 from maistro.runs.model import RunStatus
 from maistro_turing.runtime import TuringChatSession
 
@@ -46,11 +47,10 @@ class ChatBody(BaseModel):
     session_id: str | None = None
 
 
-def _reply_from_record(record: object) -> str:
-    node_runs = getattr(record, "node_runs", None)
-    if not node_runs:
+def _reply_from_record(record: DurableRunRecord) -> str:
+    if not record.node_runs:
         raise RuntimeError("canonical Turing chat Run produced no NodeRun")
-    result = node_runs[-1].result
+    result = record.node_runs[-1].result
     if not isinstance(result, dict) or "reply" not in result:
         raise RuntimeError("canonical Turing chat NodeRun produced no reply")
     return str(result["reply"])
