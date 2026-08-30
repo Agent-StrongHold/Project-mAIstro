@@ -21,7 +21,7 @@ Canvas still owns `GenerationJobRecord`, assets, layer/result paths, selected va
 
 ## Focused behavioral evidence
 
-`packages/maistro-canvas/tests/test_canonical_execution.py` currently adds nine focused tests proving:
+The branch adds ten focused tests across `test_canonical_execution.py` and `test_canonical_executor_integration.py` proving:
 
 - scoped Run admission and stage Graph shape;
 - successful NodeRun/Attempt evidence;
@@ -31,7 +31,8 @@ Canvas still owns `GenerationJobRecord`, assets, layer/result paths, selected va
 - four-stage reference execution;
 - empty-hero reference short-circuit without fabricated stages;
 - completed-stage replay without a duplicate provider call;
-- final worker-loss settlement before terminal Canvas failure.
+- final worker-loss settlement before terminal Canvas failure;
+- real `CanvasExecutor.start_job` → `CanvasJobRunner` package flow yielding a canonical Run, NodeRun and Attempt while preserving the Canvas receipt/result.
 
 Existing Canvas suites remain the parity evidence for provider error sanitization, layer concurrency exclusion, Warden preconditions, result-path persistence, claim/lease behavior, retry bounds, and receipt semantics.
 
