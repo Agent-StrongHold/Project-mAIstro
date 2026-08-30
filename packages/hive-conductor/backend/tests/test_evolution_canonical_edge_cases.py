@@ -6,8 +6,8 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from maistro.graph.nodes.base import NodeContext
+import pytest
 from routes.evolution import _actor_principal_id, trigger_cycle
 from services.evolution import _EvolutionService
 from services.evolution_graph import (
