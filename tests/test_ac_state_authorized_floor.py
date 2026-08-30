@@ -124,8 +124,16 @@ def repo(gate, tmp_path, monkeypatch):
         grant_in_worktree: str | None = UNCHANGED,
         banked: float | None = None,
         raw_grant_at_base: object = UNCHANGED,
+        extra_base_notes: dict[str, float] | None = None,
     ) -> Path:
         _note("_baseline", base)
+        # Named separately from `_baseline`, so a test that counts *notes*
+        # above a floor -- supersession is deliberately per-note, not
+        # per-fold -- has more than the one file `base` alone would give it.
+        # `_baseline` still carries the fold's own maximum for tests that
+        # only care what the fold is.
+        for name, coverage in (extra_base_notes or {}).items():
+            _note(name, coverage)
         if raw_grant_at_base is not UNCHANGED:
             grants_path.write_text(json.dumps(raw_grant_at_base))
         else:
@@ -1029,3 +1037,171 @@ class TestPruningASpentGrantAndBankingAGainTogether:
         repo(15.0, grant_at_base="design_coverage@15.0", grant_in_worktree=None, banked=15.0)
 
         assert _run(gate, 15.0) == 0
+
+
+class TestSupersededGrantsDirectly:
+    """SPEC-083026-fcc9's own detection, at the function level.
+
+    `_stale_grants`/`_removed_binding_grants` are complementary by
+    `SPEC-082926-6f49`'s own design (its AC-9 test class documents the
+    deadlock), so once a floored counter's honest growth outpaces a grant,
+    no PR can ever remove it under the original mechanism: `counters[counter]
+    > floor` holds for every future base, regardless of that base's own
+    content or of what the removing change touches. `_superseded_grants` is
+    the escape -- multiple *independent* already-landed notes, not the fold's
+    `max`, each clearing the floor on their own.
+    """
+
+    def _note(self, gate, name: str, coverage: float | None) -> object:
+        counters = {} if coverage is None else {"design_coverage": coverage}
+        return gate.ac_state_notes.Note(
+            name=name, branch=name, measured_with_tests=True, counters=counters
+        )
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-1")
+    def test_two_notes_above_the_floor_do_not_supersede_it(self, gate) -> None:
+        notes = [self._note(gate, "a", 20.0), self._note(gate, "b", 20.0)]
+
+        assert gate._superseded_grants(notes, {"design_coverage": 15.0}) == {}
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-2")
+    def test_three_notes_above_the_floor_supersede_it(self, gate) -> None:
+        notes = [
+            self._note(gate, "a", 20.0),
+            self._note(gate, "b", 20.0),
+            self._note(gate, "c", 20.0),
+        ]
+
+        superseded = gate._superseded_grants(notes, {"design_coverage": 15.0})
+
+        assert superseded == {"design_coverage": ["a", "b", "c"]}
+
+    def test_a_note_exactly_at_the_floor_does_not_count(self, gate) -> None:
+        """`>`, not `>=`: a note naming the grant's own value is not evidence
+        against it -- it is the fall the grant permits, taken."""
+        notes = [
+            self._note(gate, "a", 15.0),
+            self._note(gate, "b", 15.0),
+            self._note(gate, "c", 15.0),
+        ]
+
+        assert gate._superseded_grants(notes, {"design_coverage": 15.0}) == {}
+
+    def test_a_note_with_no_value_for_the_counter_is_ignored(self, gate) -> None:
+        """An older note predating a counter, or one for an unrelated ratchet,
+        must not crash the count or be mistaken for a low value."""
+        notes = [
+            self._note(gate, "a", 20.0),
+            self._note(gate, "b", 20.0),
+            self._note(gate, "c", None),
+        ]
+
+        assert gate._superseded_grants(notes, {"design_coverage": 15.0}) == {}
+
+    def test_no_grants_means_nothing_to_supersede(self, gate) -> None:
+        notes = [self._note(gate, "a", 20.0)]
+
+        assert gate._superseded_grants(notes, {}) == {}
+
+
+class TestASupersededGrantCanBePruned:
+    """SPEC-083026-fcc9.
+
+    Verified against `develop` on 2026-08-30 before this was written: a grant
+    at `design_coverage@27.8791` (#631/#662), a base fold of `31.7134`, and
+    nineteen already-merged notes independently clearing it -- and no PR could
+    remove the grant, because `_removed_binding_grants` refused for exactly
+    the reason `counters[counter] > floor` names, on every base from then on.
+    These pin the fix at the same real-repository granularity
+    `SPEC-082926-6f49`'s own tests use, per this file's own header on stubbed
+    provenance going quiet.
+    """
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-1")
+    def test_fewer_than_three_independent_notes_do_not_excuse_removal(self, gate, repo) -> None:
+        """`_baseline` at 20 and one more at 16 is two notes above the grant
+        -- short of the three this spec requires -- so the grant is still
+        binding and removing it is still refused, exactly as before this
+        spec existed."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            banked=20.0,
+            extra_base_notes={"other-one": 16.0},
+        )
+
+        assert _run(gate, 20.0) == 1
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-2")
+    def test_three_independent_notes_fail_the_run_until_pruned(self, gate, repo, capsys) -> None:
+        """The grant is still in the candidate's own file -- not yet pruned
+        -- and the run fails and says why: independent landings, named, not
+        the ordinary "bank it" message that sent #713/#715/#720 looking in
+        the wrong place three times."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            banked=20.0,
+            extra_base_notes={"n1": 16.0, "n2": 17.0, "n3": 18.0},
+        )
+
+        assert _run(gate, 20.0) == 1
+        out = capsys.readouterr().out
+        assert "authorized floor(s) independent landings have superseded" in out
+        assert "design_coverage" in out
+        assert "n1" in out and "n2" in out and "n3" in out
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-3")
+    def test_a_superseded_grant_may_be_pruned(self, gate, repo) -> None:
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            banked=20.0,
+            extra_base_notes={"n1": 16.0, "n2": 17.0, "n3": 18.0},
+        )
+
+        assert _run(gate, 20.0) == 0
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-4")
+    def test_pruning_a_superseded_grant_needs_no_fresh_note_of_its_own(self, gate, repo) -> None:
+        """No `banked=` at all -- this change only edits the grants file --
+        and the run still passes, because the comparison excludes a
+        superseded grant entirely rather than relying on a fresh note to
+        outrun it (the shape SPEC-082926-6f49 AC-12 already closed for the
+        ordinary case, reopened here for supersession)."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            extra_base_notes={"n1": 16.0, "n2": 17.0, "n3": 18.0},
+        )
+
+        assert _run(gate, 20.0) == 0
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-5")
+    def test_the_candidates_own_note_cannot_manufacture_supersession(self, gate, repo) -> None:
+        """`_baseline` at 20 and one more at 16 -- two independent base notes,
+        short of three -- plus this change's own measurement, well above the
+        grant. Three by a naive count, but the candidate's own claim about
+        itself must not count toward supersession: removal is still
+        refused."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            banked=25.0,
+            extra_base_notes={"n1": 16.0},
+        )
+
+        assert _run(gate, 25.0) == 1
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-6")
+    def test_a_grant_with_no_independent_notes_above_it_is_unaffected(self, gate, repo) -> None:
+        """No extra base notes at all -- the ordinary case this spec must not
+        change. Removal while still binding is refused exactly as
+        SPEC-082926-6f49 AC-8 already established."""
+        repo(20.0, grant_at_base="design_coverage@15.0", grant_in_worktree=None, banked=20.0)
+
+        assert _run(gate, 20.0) == 1
