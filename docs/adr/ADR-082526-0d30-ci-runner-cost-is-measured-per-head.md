@@ -17,9 +17,9 @@ contracts:
 tests:
   - tests/test_measure_ci_cost.py
 ac-modules:
-  AC-1: scripts/measure-ci-cost.py
-  AC-2: scripts/measure-ci-cost.py
-  AC-3: scripts/measure-ci-cost.py
+  AC-1: '@tool/measure-ci-cost'
+  AC-2: '@tool/measure-ci-cost'
+  AC-3: '@tool/measure-ci-cost'
 history:
   - status: Proposed
     date: 2026-08-25

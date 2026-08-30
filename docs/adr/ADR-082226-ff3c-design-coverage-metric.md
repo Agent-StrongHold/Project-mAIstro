@@ -18,13 +18,13 @@ contracts:
 tests:
   - tests/test_check_ac_state.py
 ac-modules:
-  AC-1: scripts/check-ac-state.py
-  AC-2: scripts/check-ac-state.py
-  AC-3: scripts/check-ac-state.py
-  AC-4: scripts/check-ac-state.py
-  AC-5: scripts/check-ac-state.py
-  AC-6: scripts/check-ac-state.py
-  AC-7: scripts/check-ac-state.py
+  AC-1: '@tool/check-ac-state'
+  AC-2: '@tool/check-ac-state'
+  AC-3: '@tool/check-ac-state'
+  AC-4: '@tool/check-ac-state'
+  AC-5: '@tool/check-ac-state'
+  AC-6: '@tool/check-ac-state'
+  AC-7: '@tool/check-ac-state'
 history:
   - status: Proposed
     date: 2026-08-22
