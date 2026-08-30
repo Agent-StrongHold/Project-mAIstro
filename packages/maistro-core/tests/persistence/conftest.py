@@ -28,6 +28,7 @@ _SCRATCH_TABLES = (
     "session_turns",
     "audit_log",
     "learnings",
+    "episodic_memories",
     "outcomes",
     "prompts",
     "prompt_labels",

@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
+from uuid import uuid4
 
 
 class MemoryTier(StrEnum):
@@ -192,7 +194,13 @@ class SkillMutation:
 class EpisodicMemory:
     """A single episodic memory in the 7-tier weighted system."""
 
-    memory_id: str = ""
+    #: Minted when the caller does not supply one. It used to default to `""`,
+    #: and `TuringMemoryBridge.store_episode` constructs an `EpisodicMemory`
+    #: without an id — so every episode shared one. The in-memory store appended
+    #: them all and only the ids were wrong; the durable stores upsert on this
+    #: column, which turned the same gap into each episode overwriting the last
+    #: (Codex, #710).
+    memory_id: str = field(default_factory=lambda: uuid4().hex)
     tier: MemoryTier = MemoryTier.OBSERVATION
     content: str = ""
     weight: float = 0.3
@@ -203,7 +211,13 @@ class EpisodicMemory:
     scope: MemoryScope = MemoryScope.AGENT
     project_id: str = ""
     source: str = ""
-    context: dict[str, str] = field(default_factory=dict)
+    #: `Any`, not `str`: `TuringMemoryBridge.store_episode` declares
+    #: `context: dict[str, Any]` and passes it straight through, and the
+    #: in-memory store keeps what it was handed. The annotation said `str` while
+    #: the only producer sent numbers and nested objects, so a durable store
+    #: reading it back faithfully would have contradicted the type, and one
+    #: coercing to `str` would have contradicted the other store (Codex, #710).
+    context: dict[str, Any] = field(default_factory=dict)
     reinforcement_count: int = 0
     contradiction_count: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))

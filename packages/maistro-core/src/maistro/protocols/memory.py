@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.types.memory import REINFORCE_DELTA
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -118,7 +119,7 @@ class EpisodicStore(Protocol):
         """Retrieve relevant memories, scope-filtered."""
         ...
 
-    async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
+    async def reinforce(self, memory_id: str, delta: float = REINFORCE_DELTA) -> None:
         """Reinforce a memory (increase weight, clamped to tier ceiling)."""
         ...
 
