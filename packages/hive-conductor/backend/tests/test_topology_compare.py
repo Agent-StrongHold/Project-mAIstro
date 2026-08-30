@@ -218,7 +218,7 @@ def test_variant_bucket_thumb_down_rate_no_total_is_zero() -> None:
 # --- compare_variants end-to-end ----------------------------------------
 
 
-def test_compare_variants_returns_ranked_variants() -> None:
+async def test_compare_variants_returns_ranked_variants() -> None:
     from services.topology_compare import compare_variants
 
     # Two variants: gpt-4 succeeds, claude fails
@@ -229,7 +229,7 @@ def test_compare_variants_returns_ranked_variants() -> None:
     for _ in range(5):
         _seed_obs(dag_id="d", node_id="n1", model="claude", kind="llm", latency=300, phase="FAILED")
 
-    out = compare_variants("d", group_by="model_used")
+    out = await compare_variants("d", group_by="model_used")
     assert out["dag_id"] == "d"
     assert out["group_by"] == "model_used"
     assert len(out["variants"]) == 2
@@ -243,43 +243,39 @@ def test_compare_variants_returns_ranked_variants() -> None:
     assert out["variants"][1]["success_rate"] == 0.0
 
 
-def test_compare_variants_empty_returns_no_winner() -> None:
+async def test_compare_variants_empty_returns_no_winner() -> None:
     from services.topology_compare import compare_variants
 
-    out = compare_variants("d-empty")
+    out = await compare_variants("d-empty")
     assert out["winner"] == ""
     assert out["variants"] == []
 
 
-def test_compare_variants_groups_by_node_kind() -> None:
+async def test_compare_variants_groups_by_node_kind() -> None:
     from services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d", node_id="n1", model="x", kind="jira.poll", latency=100)
     _seed_obs(dag_id="d", node_id="n2", model="x", kind="transform.alias", latency=10)
-    out = compare_variants("d", group_by="node_kind")
+    out = await compare_variants("d", group_by="node_kind")
     assert {v["label"] for v in out["variants"]} == {"jira.poll", "transform.alias"}
 
 
-def test_compare_variants_groups_by_node_id_includes_thumbs() -> None:
+async def test_compare_variants_groups_by_node_id_includes_thumbs() -> None:
     """When group_by='node_id', thumbs attribute to the matching bucket."""
-    import asyncio
-
     from services.feedback_service import record_thumb
     from services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d", node_id="n-good", model="x", kind="k", latency=100)
     _seed_obs(dag_id="d", node_id="n-bad", model="x", kind="k", latency=100)
-    asyncio.run(
-        record_thumb(
-            user_id="u",
-            project_id="p",
-            run_id="r",
-            thumb="down",
-            node_id="n-bad",
-            dag_id="d",
-        )
+    await record_thumb(
+        user_id="u",
+        project_id="p",
+        run_id="r",
+        thumb="down",
+        node_id="n-bad",
+        dag_id="d",
     )
-    out = compare_variants("d", group_by="node_id")
+    out = await compare_variants("d", group_by="node_id")
     bad = next(v for v in out["variants"] if v["label"] == "n-bad")
     good = next(v for v in out["variants"] if v["label"] == "n-good")
     assert bad["thumb_down"] == 1
@@ -288,143 +284,123 @@ def test_compare_variants_groups_by_node_id_includes_thumbs() -> None:
     assert good["composite_score"] >= bad["composite_score"]
 
 
-def test_compare_variants_thumbs_not_folded_for_non_node_id_group() -> None:
-    import asyncio
-
+async def test_compare_variants_thumbs_not_folded_for_non_node_id_group() -> None:
     from services.feedback_service import record_thumb
     from services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d", node_id="n1", model="gpt-4", kind="k", latency=100)
-    asyncio.run(
-        record_thumb(
-            user_id="u",
-            project_id="p",
-            run_id="r",
-            thumb="down",
-            node_id="n1",
-            dag_id="d",
-        )
+    await record_thumb(
+        user_id="u",
+        project_id="p",
+        run_id="r",
+        thumb="down",
+        node_id="n1",
+        dag_id="d",
     )
-    out = compare_variants("d", group_by="model_used")
+    out = await compare_variants("d", group_by="model_used")
     # No thumb counts attributed when grouping by model
     assert out["variants"][0]["thumb_down"] == 0
 
 
-def test_compare_variants_empty_dag_id_raises() -> None:
+async def test_compare_variants_empty_dag_id_raises() -> None:
     from services.topology_compare import compare_variants
 
     with pytest.raises(ValueError, match="dag_id is required"):
-        compare_variants("")
+        await compare_variants("")
 
 
-def test_compare_variants_invalid_group_by_raises() -> None:
+async def test_compare_variants_invalid_group_by_raises() -> None:
     from services.topology_compare import compare_variants
 
     with pytest.raises(ValueError, match="group_by must be one of"):
-        compare_variants("d", group_by="something_weird")
+        await compare_variants("d", group_by="something_weird")
 
 
-def test_compare_variants_unknown_thumb_value_does_not_increment() -> None:
+async def test_compare_variants_unknown_thumb_value_does_not_increment() -> None:
     """Direct outcome bypass: thumb='sideways' must not increment up or
     down. Hits the elif fall-through inside _fold_in_thumbs (line 116)."""
-    import asyncio
-
     from services.feedback_service import get_outcome_store
     from services.topology_compare import compare_variants
 
     from maistro.memory.types import Outcome
 
     _seed_obs(dag_id="d", node_id="n1", model="x", kind="k", latency=10)
-    asyncio.run(
-        get_outcome_store().record(
-            Outcome(
-                task_type="x",
-                thumb="sideways",
-                dag_id="d",
-                node_id="n1",
-                user_id="u",
-            )
+    await get_outcome_store().record(
+        Outcome(
+            task_type="x",
+            thumb="sideways",
+            dag_id="d",
+            node_id="n1",
+            user_id="u",
         )
     )
-    out = compare_variants("d", group_by="node_id")
+    out = await compare_variants("d", group_by="node_id")
     bucket = next(v for v in out["variants"] if v["label"] == "n1")
     assert bucket["thumb_up"] == 0
     assert bucket["thumb_down"] == 0
 
 
-def test_fold_in_thumbs_skips_other_dag_outcomes() -> None:
+async def test_fold_in_thumbs_skips_other_dag_outcomes() -> None:
     """An Outcome tagged with a different dag_id must NOT contribute to
     this DAG's buckets (covers `continue` on line 110)."""
-    import asyncio
-
     from services.feedback_service import record_thumb
     from services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d-target", node_id="n", model="x", kind="k", latency=10)
-    asyncio.run(
-        record_thumb(
-            user_id="u",
-            project_id="p",
-            run_id="r",
-            thumb="down",
-            node_id="n",
-            dag_id="some-other-dag",
-        )
+    await record_thumb(
+        user_id="u",
+        project_id="p",
+        run_id="r",
+        thumb="down",
+        node_id="n",
+        dag_id="some-other-dag",
     )
-    out = compare_variants("d-target", group_by="node_id")
+    out = await compare_variants("d-target", group_by="node_id")
     bucket = next(v for v in out["variants"] if v["label"] == "n")
     assert bucket["thumb_down"] == 0
 
 
-def test_fold_in_thumbs_skips_outcomes_with_blank_thumb() -> None:
+async def test_fold_in_thumbs_skips_outcomes_with_blank_thumb() -> None:
     """An Outcome with thumb='' (e.g. one recorded by a non-feedback
     flow) is skipped (covers `continue` on line 112)."""
-    import asyncio
-
     from services.feedback_service import get_outcome_store
     from services.topology_compare import compare_variants
 
     from maistro.memory.types import Outcome
 
     _seed_obs(dag_id="d-blank", node_id="n", model="x", kind="k", latency=10)
-    asyncio.run(
-        get_outcome_store().record(
-            Outcome(
-                task_type="x",
-                thumb="",
-                dag_id="d-blank",
-                node_id="n",
-                user_id="u",
-            )
+    await get_outcome_store().record(
+        Outcome(
+            task_type="x",
+            thumb="",
+            dag_id="d-blank",
+            node_id="n",
+            user_id="u",
         )
     )
-    out = compare_variants("d-blank", group_by="node_id")
+    out = await compare_variants("d-blank", group_by="node_id")
     bucket = next(v for v in out["variants"] if v["label"] == "n")
     assert bucket["thumb_up"] == 0
     assert bucket["thumb_down"] == 0
 
 
-def test_compare_variants_thumbs_for_unseeded_node_creates_bucket() -> None:
+async def test_compare_variants_thumbs_for_unseeded_node_creates_bucket() -> None:
     """A thumb on a node that has NO observations still creates a
     bucket — the user told us something even if the metrics didn't."""
-    import asyncio
-
     from services.feedback_service import record_thumb
     from services.topology_compare import compare_variants
 
     # Seed a different node so the dag has observations at all
     _seed_obs(dag_id="d", node_id="n-seen", model="x", kind="k", latency=10)
-    asyncio.run(
-        record_thumb(
-            user_id="u",
-            project_id="p",
-            run_id="r",
-            thumb="up",
-            node_id="n-only-thumbs",
-            dag_id="d",
-        )
+    await record_thumb(
+        user_id="u",
+        project_id="p",
+        run_id="r",
+        thumb="up",
+        node_id="n-only-thumbs",
+        dag_id="d",
     )
-    out = compare_variants("d", group_by="node_id")
+    out = await compare_variants("d", group_by="node_id")
     labels = {v["label"] for v in out["variants"]}
     assert "n-only-thumbs" in labels
 

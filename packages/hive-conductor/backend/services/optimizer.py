@@ -130,29 +130,18 @@ def _collect_node_metrics(dag_id: str, window_seconds: int) -> dict[str, dict[st
     return out
 
 
-def _collect_thumbs(dag_id: str) -> dict[str, dict[str, Any]]:
-    """Return {node_id: {up, down, comments}} from feedback_service's
-    outcome store."""
-    from services.feedback_service import get_outcome_store
+async def _collect_thumbs(dag_id: str) -> dict[str, dict[str, Any]]:
+    """Return {node_id: {up, down, comments}} from feedback_service's store.
 
-    store = get_outcome_store()
-    by_node: dict[str, dict[str, Any]] = {}
-    for o in getattr(store, "_outcomes", []):
-        # Loose filter so we don't miss thumbs that arrived before the
-        # DAG attribution wire was complete.
-        if dag_id and getattr(o, "dag_id", "") and o.dag_id != dag_id:
-            continue
-        if not getattr(o, "thumb", ""):
-            continue
-        nid = o.node_id or ""
-        slot = by_node.setdefault(nid, {"up": 0, "down": 0, "comments": []})
-        if o.thumb == "up":
-            slot["up"] += 1
-        elif o.thumb == "down":
-            slot["down"] += 1
-            if o.thumb_comment:
-                slot["comments"].append(o.thumb_comment)
-    return by_node
+    Async because the thumbs signal is now read from a durable store rather
+    than walked off a list in this process. The loop that used to live here
+    read `store._outcomes` directly, which only the in-memory store has, so
+    the optimizer would have gone quietly blind the moment the Conductor was
+    pointed at PostgreSQL or SQLite (#696).
+    """
+    from services.feedback_service import collect_thumbs
+
+    return await collect_thumbs(dag_id)
 
 
 def _collect_eval_verdicts(dag_id: str) -> list[dict[str, Any]]:
@@ -177,13 +166,13 @@ def _collect_user_edits(dag_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _build_snapshot_for_dag(
+async def _build_snapshot_for_dag(
     dag_id: str,
     window_seconds: int = 24 * 3600,
 ) -> dict[str, SignalSnapshot]:
     """Build one SignalSnapshot per node_id that has any signal."""
     metrics = _collect_node_metrics(dag_id, window_seconds)
-    thumbs = _collect_thumbs(dag_id)
+    thumbs = await _collect_thumbs(dag_id)
     verdicts = _collect_eval_verdicts(dag_id)
     edits = _collect_user_edits(dag_id)
 
@@ -351,7 +340,7 @@ def _propose_for_snapshot(
     return proposals
 
 
-def run_optimizer(
+async def run_optimizer(
     dag_id: str,
     *,
     actor: str = "optimizer",
@@ -384,7 +373,7 @@ def run_optimizer(
 
     from services.edit_lock import is_locked
 
-    snapshots = _build_snapshot_for_dag(dag_id, window_seconds=window_seconds)
+    snapshots = await _build_snapshot_for_dag(dag_id, window_seconds=window_seconds)
     ranked = sorted(snapshots.values(), key=lambda s: s.priority_score, reverse=True)
 
     out_proposals: list[dict[str, Any]] = []

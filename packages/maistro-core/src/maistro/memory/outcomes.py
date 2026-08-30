@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.memory.types import Outcome
 
 MAX_OUTCOMES = 10_000
@@ -35,6 +36,20 @@ def _format_thumb_lines(thumb_downs: list[Outcome]) -> list[str]:
         tail = f" — {comment}" if comment else ""
         lines.append(f"- node={o.node_id or '(unknown)'} task={o.task_type}{tail}")
     return lines
+
+
+def _dag_matches(record_dag: str, caller_dag: str) -> bool:
+    """Whether a thumb belongs to the DAG being asked about.
+
+    Empty on either side matches: a caller naming no DAG wants all of them,
+    and a thumb carrying no `dag_id` predates the attribution wire, so
+    excluding it would silently discard feedback a user actually gave. That
+    second half is the rule the optimizer already applied inline, kept here
+    where all three stores can share one definition of it (#696).
+    """
+    if not caller_dag or not record_dag:
+        return True
+    return record_dag == caller_dag
 
 
 class InMemoryOutcomeStore:
@@ -245,6 +260,33 @@ class InMemoryOutcomeStore:
             and self._org_matches(o.org_id, org_id)
         ]
         return filtered[-limit:]
+
+    async def list_thumbs(
+        self,
+        *,
+        dag_id: str = "",
+        days: int = THUMB_WINDOW_DAYS,
+        limit: int = THUMB_LIMIT,
+        org_id: str = "",
+    ) -> list[Outcome]:
+        """Outcomes carrying a thumb, most recent first."""
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        matched = [
+            o
+            for o in self._outcomes
+            if o.thumb
+            and o.created_at >= cutoff
+            and _dag_matches(o.dag_id, dag_id)
+            and self._org_matches(o.org_id, org_id)
+        ]
+        # Sorted, not reversed. Insertion order equals timestamp order only
+        # while every write is "now"; a backfill, an import or a delayed event
+        # breaks that, and then a small `limit` would drop a newer thumb and
+        # keep an older one -- while the two SQL twins, which order by
+        # `created_at DESC`, answered correctly. Three implementations of one
+        # protocol have to agree about which thumbs are the recent ones (#696).
+        matched.sort(key=lambda o: o.created_at, reverse=True)
+        return matched[:limit]
 
     @staticmethod
     def _org_matches(record_org: str, caller_org: str) -> bool:

@@ -11,10 +11,12 @@ NodeRun disposition themselves. Runtime never mutates Run/NodeRun state.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.observability.correlation import bind_execution_context
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
     AcceptedNodeOutcome,
@@ -256,6 +258,56 @@ class AttemptExecutionService:
         context_factory: AttemptContextFactory | None = None,
         prior_completion_accepted: bool = False,
     ) -> Attempt:
+        """Execute one physical Attempt under the canonical correlation context.
+
+        This wrapper exists only to own the correlation scope. `node_run_id` is
+        known here; `attempt_id` is not known until the Attempt is persisted
+        several awaits later, so the stack is handed down and the inner method
+        pushes the second binding onto it when it has something true to say.
+        Unwinding here rather than there means both bindings end with the try,
+        including on the paths that re-raise.
+
+        `context_factory` still exists and still does its own thing: it attaches
+        canonical ids to the *domain's* execution context object, which is what
+        the executor receives as an argument. This is the ambient context, which
+        is what the executor's logs, spans and events read without being handed
+        anything. Neither replaces the other.
+
+        See :meth:`_execute_attempt` for the ordering this delegates to.
+        """
+        with contextlib.ExitStack() as correlation:
+            correlation.enter_context(bind_execution_context(node_run_id=node_run_id))
+            return await self._execute_attempt(
+                node_run_id,
+                work_item,
+                execution_context,
+                executor=executor,
+                executor_id=executor_id,
+                runtime_id=runtime_id,
+                timeout_s=timeout_s,
+                resume_checkpoint_id=resume_checkpoint_id,
+                reconcile_logical=reconcile_logical,
+                context_factory=context_factory,
+                prior_completion_accepted=prior_completion_accepted,
+                correlation=correlation,
+            )
+
+    async def _execute_attempt(
+        self,
+        node_run_id: str,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        executor: ExecutionCallable,
+        executor_id: str = "",
+        runtime_id: str | None = None,
+        timeout_s: float | None = None,
+        resume_checkpoint_id: str | None = None,
+        reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
+        prior_completion_accepted: bool = False,
+        correlation: contextlib.ExitStack,
+    ) -> Attempt:
         """Create, run, terminalize, and optionally defer successful reconciliation.
 
         ``reconcile_logical=False`` allows Graph-like domains to interpret a
@@ -304,6 +356,12 @@ class AttemptExecutionService:
             AttemptStatus.RUNNING,
             fencing_token=token,
         )
+        # Here and not earlier: before this the Attempt is not running, and an
+        # id bound over work that has not started names an execution that has
+        # not happened. Everything from this line on -- the executor, the
+        # heartbeat task that copies this context at creation, terminalization,
+        # and reconciliation on every exit path -- is inside the Attempt (#707).
+        correlation.enter_context(bind_execution_context(attempt_id=attempt.attempt_id))
         runtime_context = _materialize_execution_context(
             attempt,
             execution_context,

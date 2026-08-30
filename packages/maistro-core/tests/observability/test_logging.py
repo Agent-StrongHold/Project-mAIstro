@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 
 import pytest
 import structlog
 
 from maistro.observability.logging import configure_logging
+from maistro.security.log_redaction import RedactingFormatter
 
 
 def test_configure_logging_json_output_uses_json_renderer() -> None:
@@ -89,3 +91,34 @@ async def test_bound_context_does_not_leak_between_concurrent_requests() -> None
 
     assert seen["r-1"]["request_id"] == "r-1"
     assert seen["r-2"]["request_id"] == "r-2"
+
+
+def test_configure_logging_installs_the_stdlib_correlation_formatter() -> None:
+    """The wiring, not the formatter.
+
+    `install_log_correlation` has its own tests; this is the one that fails if
+    `configure_logging` stops calling it. A mutation removing that call survived
+    every other test in this change, which is exactly the "wired but never read"
+    shape #236 exists to catch (#707).
+    """
+    from maistro.observability.correlation import (
+        CorrelatingFormatter,
+        bind_execution_context,
+    )
+
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    try:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        root.handlers = [handler]
+
+        configure_logging(debug=True, json_output=False)
+
+        assert isinstance(handler.formatter, CorrelatingFormatter | RedactingFormatter)
+        with bind_execution_context(run_id="r-wired"):
+            logging.getLogger("maistro.test.wiring").warning("through the stdlib")
+        assert "run_id=r-wired" in stream.getvalue()
+    finally:
+        root.handlers = saved
