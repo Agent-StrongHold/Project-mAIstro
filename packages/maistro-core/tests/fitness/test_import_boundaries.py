@@ -254,7 +254,7 @@ def _compatibility_alias_violations(
     persisted, non_persisted, violations = _compatibility_policy(document)
     raw_aliases = document.get("compatibility_aliases")
     if not isinstance(raw_aliases, list):
-        return violations + ["compatibility_aliases must be a list"]
+        return [*violations, "compatibility_aliases must be a list"]
 
     reviewed_aliases: set[str] = set()
     for index, record in enumerate(raw_aliases):
@@ -302,12 +302,12 @@ def _canonical_surface_entry_violations(
     if not isinstance(required_fields, list) or not all(
         isinstance(field, str) and field for field in required_fields
     ):
-        return violations + [f"canonical surface {identity} has invalid required_fields"]
+        return [*violations, f"canonical surface {identity} has invalid required_fields"]
 
     relative_path, class_name = identity.split("::", 1)
     fields = _class_fields(root / relative_path, class_name)
     if fields is None:
-        return violations + [f"canonical type disappeared without migration: {identity}"]
+        return [*violations, f"canonical type disappeared without migration: {identity}"]
     missing_fields = set(required_fields) - fields
     if missing_fields:
         violations.append(
@@ -391,7 +391,7 @@ def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
     planted.mkdir()
     (planted / "offender.py").write_text("from hive import something\n", encoding="utf-8")
     (planted / "innocent.py").write_text(
-        '\"\"\"A docstring mentioning hive and maistro_server.\"\"\"\nimport os\n',
+        '"""A docstring mentioning hive and maistro_server."""\nimport os\n',
         encoding="utf-8",
     )
     (planted / "guarded.py").write_text(
