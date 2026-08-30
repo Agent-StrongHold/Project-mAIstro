@@ -45,7 +45,12 @@ from maistro.runs.chat_admission import (
 )
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    Run,
+    RunStatus,
+)
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -125,6 +130,13 @@ if TYPE_CHECKING:
     from maistro.types.skill import SkillDefinition
 
 logger = logging.getLogger("maistro.container")
+
+#: How many parked Runs `resume_parked_runs` will look at while trying to fill
+#: its work limit. The two are different numbers: every Run parked by a failed
+#: Attempt is permanently ineligible for resumption and sits in the oldest-first
+#: WAITING list forever, so a scan bounded by the work limit inspects the same
+#: ineligible rows every tick and never reaches a resumable one (#666 review).
+RESUME_SCAN_LIMIT = 1000
 
 
 @dataclass
@@ -757,14 +769,11 @@ class Container:
         """
         from maistro.runs.consumption import (
             ScheduleAttemptExecutor,
-            parked_by_consumer,
-            unresolvable_reason,
+            resumable_by_consumer,
         )
 
         moment = now if now is not None else datetime.now(UTC)
-        parked: list[Run] = []
-        for status in (RunStatus.WAITING, RunStatus.PAUSED):
-            parked.extend(await self.run_store.list_by_status(status, limit=limit))
+        parked = await self._parked_candidates()
 
         executor = ScheduleAttemptExecutor(
             self.run_store,
@@ -777,8 +786,10 @@ class Container:
             ),
         )
         resumed = 0
-        for run in parked[:limit]:
-            if not parked_by_consumer(run) or unresolvable_reason(run) is not None:
+        for run in parked:
+            if resumed >= limit:
+                break
+            if not resumable_by_consumer(run):
                 continue
             pause = await self._resumable_pause_for(run, moment)
             if pause is None:
@@ -792,11 +803,46 @@ class Container:
                 await executor.resume(claimed, pause)
             except Exception:
                 logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
-                await self._repark_after_failed_resume(run.run_id, pause.node_run_id)
+                await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
             resumed += 1
         return resumed
 
-    async def _repark_after_failed_resume(self, run_id: str, node_run_id: str) -> None:
+    async def _parked_candidates(self) -> list[Run]:
+        """Every parked Run this tick will consider, oldest first.
+
+        The scan bound and the work bound are different numbers, and conflating
+        them starved the tick (#666 review). `list_by_status` is oldest-first,
+        so asking for the *work* limit and filtering afterwards meant a standing
+        backlog of non-resumable WAITING Runs -- every Run parked by a failed
+        Attempt is one, and they sit there until somebody takes the retry
+        decision -- made every tick inspect the same ineligible rows and never
+        reach a later elapsed poll. Not until the backlog cleared: permanently.
+        """
+        parked: list[Run] = []
+        truncated = False
+        for status in (RunStatus.WAITING, RunStatus.PAUSED):
+            batch = await self.run_store.list_by_status(status, limit=RESUME_SCAN_LIMIT)
+            truncated = truncated or len(batch) >= RESUME_SCAN_LIMIT
+            parked.extend(batch)
+        if truncated:
+            # Said, not silently endured. Past this point the tick is back to
+            # the behaviour the bound exists to prevent, and an operator should
+            # read that rather than infer it from work not happening. A store
+            # query that filtered by eligibility would remove the bound
+            # entirely; it needs the pause evidence, which lives on Attempts.
+            logger.warning(
+                "parked-Run scan hit its %d-row limit; a resumable Run beyond it "
+                "will not be seen this tick",
+                RESUME_SCAN_LIMIT,
+            )
+        return parked
+
+    async def _repark_after_failed_resume(
+        self,
+        run_id: str,
+        node_run_id: str,
+        parked_as: RunStatus,
+    ) -> None:
         """Put a claimed Run back where the resume found it (#641).
 
         `_settle_unstarted_consumption` is the wrong tool here and would be a
@@ -806,18 +852,30 @@ class Container:
         the "claimed, with nothing running" state that helper exists to prevent,
         one variant across.
 
+        The NodeRun being RUNNING is not on its own a reason to stand back
+        (#666 review). `prepare_execution` un-parks it *before* the Attempt is
+        created, so a failure in between leaves a RUNNING NodeRun with nothing
+        running under it -- and that state is invisible to both ticks: the
+        resume tick looks for parked Runs and abandoned-attempt recovery looks
+        for Attempts, of which there are none. What decides is whether an
+        Attempt is actually live, not what the NodeRun says.
+
         Re-parking rather than failing, because nothing about the pause has
         changed: the next tick may try again, and terminalizing would throw away
         work over what is usually a transient error.
         """
         try:
             node_run = await self.run_store.get_node_run(node_run_id)
-            if node_run is None or node_run.status not in {
-                RunStatus.WAITING,
-                RunStatus.PAUSED,
-            }:
+            if node_run is None or node_run.status in TERMINAL_RUN_STATUSES:
                 return
-            await self.run_store.transition_run(run_id, node_run.status)
+            if node_run.status is RunStatus.RUNNING:
+                attempts = await self.run_store.list_attempts(node_run_id)
+                if any(a.status not in TERMINAL_ATTEMPT_STATUSES for a in attempts):
+                    # Something is genuinely executing, or died holding a lease.
+                    # Either way it is the recovery tick's, not this one's.
+                    return
+                await self.run_store.transition_node_run(node_run_id, parked_as)
+            await self.run_store.transition_run(run_id, parked_as)
         except Exception:
             logger.warning("parked Run %s could not be re-parked", run_id, exc_info=True)
 

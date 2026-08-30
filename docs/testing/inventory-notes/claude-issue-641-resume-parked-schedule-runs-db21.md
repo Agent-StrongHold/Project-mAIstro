@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +23
+  packages/maistro-core/tests: +27
 ---
 # claude-issue-641-resume-parked-schedule-runs-db21
 
-Twenty-three added, none removed, none rewritten. All in
+Twenty-seven added, one **rewritten**, none removed. All in
 `tests/runs/test_parked_run_resume.py`, the suite for SPEC-082926-a44e.
 
 Three of the twelve pin the classification table itself, and six exercise the
@@ -53,3 +53,28 @@ before the executor runs, so a resume that fails *after* that leaves a NodeRun
 genuinely RUNNING, and re-parking the Run over it would say the work stopped
 when it had not. The guard that declines there was written on that reasoning
 and now has the test that holds it.
+
+Four more, and one correction, from a Codex review that found three defects.
+
+The rewritten one matters most. `test_a_node_run_that_actually_started_is_not_re_parked`
+asserted that a RUNNING NodeRun means the tick should stand back — the derived
+state being the answer. That is true only when an Attempt is actually live.
+`prepare_execution` un-parks the NodeRun *before* creating the Attempt, so a
+failure in between leaves a RUNNING NodeRun with nothing under it, invisible to
+both ticks: this one looks for parked Runs, recovery looks for Attempts, and
+there are none. My test had blessed a Run that stays RUNNING forever. It is now
+two tests, split on the fact that actually decides: whether an Attempt is live.
+
+Two cover the starvation. The backlog is the steady state, not an edge case —
+every Run parked by a failed Attempt sits WAITING until somebody takes the
+retry decision, and `list_by_status` is oldest-first, so a scan bounded by the
+*work* limit inspected the same ineligible rows every tick and never reached a
+resumable Run. One test puts a live poll behind four failures with `limit=1`;
+the other pins that the work limit still bounds a tick, since a scan that wide
+must not become an unbounded amount of work.
+
+The last covers multi-node Runs. `unresolvable_reason` answers `None` for them
+deliberately — they are owed to the durable Graph traversal, not unrunnable —
+so one parked at its first pause has exactly one NodeRun and passed every other
+check. The tick claimed it, `_single_node` raised, and the warning repeated
+forever without the graph advancing.

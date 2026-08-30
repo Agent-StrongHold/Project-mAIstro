@@ -379,6 +379,23 @@ def parked_by_consumer(run: Run) -> bool:
     )
 
 
+def resumable_by_consumer(run: Run) -> bool:
+    """Whether the resume tick may claim this parked Run at all.
+
+    The parked mirror of `executable_by_consumer`, and it has to be: a
+    multi-node Run parked at its first pause has exactly one NodeRun, and
+    `unresolvable_reason` deliberately answers `None` for multi-node graphs
+    because they are owed to the durable Graph traversal. Without the same
+    single-node requirement the tick claimed such a Run, `resume` raised inside
+    `_single_node`, and every later tick repeated the warning without the graph
+    ever advancing (#666 review).
+    """
+    if not parked_by_consumer(run):
+        return False
+    nodes = run.graph.materialize().nodes
+    return len(nodes) == 1 and unresolvable_reason(run) is None
+
+
 @dataclass(frozen=True, slots=True)
 class ParkedPause:
     """One pause, read back off the Attempt that recorded it.
@@ -469,6 +486,7 @@ __all__ = [
     "consumer_owns",
     "executable_by_consumer",
     "parked_by_consumer",
+    "resumable_by_consumer",
     "resumable_pause",
     "unresolvable_reason",
 ]

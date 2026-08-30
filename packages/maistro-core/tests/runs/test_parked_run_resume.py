@@ -102,6 +102,24 @@ class _DispatchingPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
+class _FailingNode(BaseNode[_PauseIn, _PauseOut]):
+    """Fails, so its Run parks WAITING and is never resumable.
+
+    The backlog this tick has to see past. A failure's park means a retry
+    decision is owed, which is somebody else's to take.
+    """
+
+    kind: ClassVar[str] = "test.resume.failing"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _PauseIn
+    output_schema: ClassVar[type[BaseModel]] = _PauseOut
+    reaches: ClassVar[int] = 0
+
+    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
+        type(self).reaches += 1
+        raise RuntimeError("this node always fails")
+
+
 class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
     """Pauses for a reason the table has never heard of."""
 
@@ -120,7 +138,7 @@ class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
-for _cls in (_PollingPauseNode, _DispatchingPauseNode, _UnclassifiedPauseNode):
+for _cls in (_PollingPauseNode, _DispatchingPauseNode, _UnclassifiedPauseNode, _FailingNode):
     with contextlib.suppress(ValueError):
         register_node(_cls)
 
@@ -521,11 +539,17 @@ class TestTheClaimAndTheWayBack:
         assert await container.resume_parked_runs() == 0
         assert _PollingPauseNode.reaches == 1
 
-    async def test_a_node_run_that_actually_started_is_not_re_parked(self, monkeypatch) -> None:
-        """The realistic failure. `prepare_execution` un-parks the NodeRun
-        before the executor runs, so a failure after that point leaves a NodeRun
-        that is genuinely RUNNING. Re-parking the Run over it would say the work
-        stopped when it did not -- the derived state is already the answer.
+    async def test_a_running_node_run_with_no_live_attempt_is_re_parked(self, monkeypatch) -> None:
+        """The state `prepare_execution` can leave behind (#666 review).
+
+        It un-parks the NodeRun *before* the Attempt is created, so a failure in
+        between leaves a RUNNING NodeRun with nothing running under it. That is
+        invisible to both ticks -- this one looks for parked Runs, and
+        abandoned-attempt recovery looks for Attempts, of which there are none.
+        Left alone the Run is RUNNING forever, which is why "the NodeRun says
+        RUNNING" is not on its own a reason to stand back.
+
+        An earlier version of this test asserted the opposite and was wrong.
         """
         _PollingPauseNode.reaches = 0
         container = await _container()
@@ -534,7 +558,7 @@ class TestTheClaimAndTheWayBack:
 
         async def start_then_fail(self: Any, run: Any, pause: Any) -> None:
             await container.run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
-            raise RuntimeError("the executor died after the NodeRun started")
+            raise RuntimeError("the store refused the Attempt after preparation")
 
         monkeypatch.setattr(
             "maistro.runs.consumption.ScheduleAttemptExecutor.resume", start_then_fail
@@ -543,8 +567,41 @@ class TestTheClaimAndTheWayBack:
         await container.resume_parked_runs()
 
         run = await container.run_store.get_run(run_id)
-        assert run is not None
-        assert run.status is RunStatus.RUNNING
+        settled = await container.run_store.get_node_run(node_run.node_run_id)
+        assert run is not None and run.status is RunStatus.WAITING
+        assert settled is not None and settled.status is RunStatus.WAITING
+
+    async def test_a_live_attempt_is_left_to_the_recovery_tick(self, monkeypatch) -> None:
+        """The other half. Something is genuinely executing, or died holding a
+        lease; either way abandoned-attempt recovery owns it, and re-parking the
+        Run over a live Attempt would say the work stopped when it had not."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        run_id = await _parked_run(container, _PollingPauseNode.kind, workspace="resume-ws-12b")
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+
+        async def start_an_attempt_then_fail(self: Any, run: Any, pause: Any) -> None:
+            await container.run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+            attempt = await container.run_store.create_attempt(
+                node_run.node_run_id, executor_id="probe"
+            )
+            lease = attempt.execution_lease
+            await container.run_store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=lease.fencing_token if lease else None,
+            )
+            raise RuntimeError("the executor died with its Attempt still open")
+
+        monkeypatch.setattr(
+            "maistro.runs.consumption.ScheduleAttemptExecutor.resume",
+            start_an_attempt_then_fail,
+        )
+
+        await container.resume_parked_runs()
+
+        run = await container.run_store.get_run(run_id)
+        assert run is not None and run.status is RunStatus.RUNNING
 
     async def test_a_failing_re_park_is_logged_rather_than_raised(
         self, monkeypatch, caplog
@@ -570,3 +627,80 @@ class TestTheClaimAndTheWayBack:
             assert await container.resume_parked_runs() == 1
 
         assert "could not be re-parked" in caplog.text
+
+
+class TestTheTickIsNotStarvedByWhatItCannotResume:
+    """The backlog is the steady state, not an edge case (#666 review).
+
+    Every Run parked by a *failed* Attempt sits WAITING until somebody decides
+    to retry it, and `list_by_status` is oldest-first. So asking for `limit`
+    rows and filtering afterwards meant a standing backlog of ineligible rows
+    made every tick inspect the same ones and never reach a resumable Run —
+    permanently, not until it cleared.
+    """
+
+    async def _failed_parked_run(self, container: Container, index: int) -> str:
+        """A Run parked WAITING by a failure, which is never resumable."""
+        run_id = await _parked_run(container, _FailingNode.kind, workspace=f"starve-ws-{index}")
+        return run_id
+
+    async def test_a_backlog_of_failures_does_not_hide_a_resumable_poll(self) -> None:
+        _FailingNode.reaches = 0
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        for index in range(4):
+            await self._failed_parked_run(container, index)
+        await _parked_run(container, _PollingPauseNode.kind, workspace="starve-ws-live")
+
+        # A work limit smaller than the backlog. Before the fix the scan was
+        # bounded by this same number, so the poll behind four failures was
+        # invisible however many times the tick ran.
+        assert await container.resume_parked_runs(limit=1) == 1
+        assert _PollingPauseNode.reaches == 2
+
+    async def test_the_work_limit_still_bounds_what_one_tick_resumes(self) -> None:
+        """The scan is wide; the work is not. A tick that resumed everything it
+        could see would be unbounded, which is the discipline ADR-019 sets."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        for index in range(3):
+            await _parked_run(container, _PollingPauseNode.kind, workspace=f"bound-ws-{index}")
+
+        assert await container.resume_parked_runs(limit=2) == 2
+        assert _PollingPauseNode.reaches == 5  # 3 first reaches + 2 resumes
+
+
+class TestAMultiNodeRunIsNotThisTicksToResume:
+    @pytest.mark.ac("SPEC-082926-a44e/AC-5")
+    async def test_a_multi_node_parked_run_is_left_alone(self) -> None:
+        """`unresolvable_reason` answers `None` for a multi-node graph on
+        purpose — it is owed to the durable Graph traversal, not unrunnable. So
+        a multi-node Run parked at its first pause has exactly one NodeRun and
+        passed every other check; the tick claimed it, `_single_node` raised,
+        and the warning repeated forever without the graph advancing.
+        """
+        from maistro.runs.consumption import resumable_by_consumer
+
+        container = await _container()
+        root = await container.project_scope_store.create_root("multi-ws")
+        graph = Graph(
+            workspace_id="multi-ws",
+            project_id=root.project_id,
+            name="two nodes",
+            nodes=[
+                Node(node_id="n1", node_type=_PollingPauseNode.kind),
+                Node(node_id="n2", node_type=_PollingPauseNode.kind),
+            ],
+        )
+        run = await container.run_store.create_run(
+            graph,
+            provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
+            initial_status=RunStatus.QUEUED,
+        )
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        await container.run_store.transition_run(run.run_id, RunStatus.WAITING)
+        parked = await container.run_store.get_run(run.run_id)
+        assert parked is not None
+
+        assert resumable_by_consumer(parked) is False
+        assert await container.resume_parked_runs() == 0
