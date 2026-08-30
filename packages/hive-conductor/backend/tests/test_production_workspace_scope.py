@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import pathlib
 import sys
 from contextlib import asynccontextmanager
@@ -9,9 +10,16 @@ from typing import Any
 
 import httpx
 
+from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
+from maistro.tasks.models import TaskCreate
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+
+
+def _backend_module() -> Any:
+    return importlib.import_module("adapters.task_backend")
 
 
 def _task_body() -> dict[str, Any]:
@@ -31,11 +39,8 @@ def _task_body() -> dict[str, Any]:
 
 
 async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch) -> None:
-    from adapters import task_backend as task_backend_module
-    from adapters.task_backend import MaistroServerTaskBackend
-    from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
-    from maistro.tasks.models import TaskCreate
-
+    task_backend_module = _backend_module()
+    backend_type = task_backend_module.MaistroServerTaskBackend
     seen_headers: dict[str, str] = {}
 
     class _Client:
@@ -60,7 +65,7 @@ async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch)
         yield _Client()
 
     monkeypatch.setattr(task_backend_module, "shared_client", _client)
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key="secret")
+    backend = backend_type(base_url="http://maistro-server", api_key="secret")
 
     record = await backend.submit(
         TaskCreate(description="ship it"),
@@ -74,11 +79,8 @@ async def test_named_workspace_crosses_the_production_http_boundary(monkeypatch)
 
 
 async def test_unscoped_submission_does_not_fabricate_a_workspace_header(monkeypatch) -> None:
-    from adapters import task_backend as task_backend_module
-    from adapters.task_backend import MaistroServerTaskBackend
-    from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
-    from maistro.tasks.models import TaskCreate
-
+    task_backend_module = _backend_module()
+    backend_type = task_backend_module.MaistroServerTaskBackend
     seen_headers: dict[str, str] = {}
 
     class _Client:
@@ -103,7 +105,7 @@ async def test_unscoped_submission_does_not_fabricate_a_workspace_header(monkeyp
         yield _Client()
 
     monkeypatch.setattr(task_backend_module, "shared_client", _client)
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    backend = backend_type(base_url="http://maistro-server", api_key=None)
 
     await backend.submit(TaskCreate(description="ship it"), user_id="user-1")
 
