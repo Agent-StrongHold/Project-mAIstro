@@ -152,6 +152,38 @@ async def test_sqlite_with_a_path_wires_the_durable_backend(tmp_path) -> None:
     assert container is not None
 
 
+async def test_the_session_store_does_not_share_its_connection(tmp_path) -> None:
+    """Codex, #327. The session store is the only SQLite store here that holds
+    a transaction across several statements, and a SQLite transaction belongs to
+    its connection rather than to the object that opened it. Sharing one means
+    another store's `commit()` can land between this one's `BEGIN IMMEDIATE`
+    and its last insert — committing half a message batch — and a rollback here
+    would discard that store's uncommitted work rather than only this store's."""
+    container = await create_container(_config(f"sqlite:///{tmp_path}/maistro.db"))
+
+    session_conn = container.session_store._conn
+    assert session_conn is not container.quota_tracker._conn
+    assert session_conn is not container.learning_store._conn
+    assert session_conn is not container.outcome_store._conn
+
+
+async def test_the_session_store_still_writes_and_reads_on_its_own_connection(
+    tmp_path,
+) -> None:
+    """The guard on the test above: a connection nobody can use would satisfy
+    "not shared" and be useless."""
+    container = await create_container(_config(f"sqlite:///{tmp_path}/maistro.db"))
+
+    await container.session_store.append_messages(
+        "s1", [{"role": "user", "content": "hello"}], "turn-1"
+    )
+    await container.session_store.append_messages(
+        "s1", [{"role": "user", "content": "hello"}], "turn-1"
+    )
+
+    assert await container.session_store.get_history("s1") == [{"role": "user", "content": "hello"}]
+
+
 @pytest.mark.parametrize("url", ["sqlite://", "sqlite:///"])
 async def test_pathless_sqlite_is_allowed_but_warned(url: str, caplog) -> None:
     """`_wire_sqlite_backend` reduces a pathless URL to `:memory:`, so it is
