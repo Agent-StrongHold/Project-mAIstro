@@ -35,29 +35,35 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
     core = _under(path, "packages/maistro-core")
     server = _under(path, "packages/maistro-server")
     hive = _under(path, "packages/hive-conductor")
-    if _under(
-        path,
-        "alembic",
-        "tests/migrations",
-        "packages/maistro-core/tests/persistence",
-        "packages/maistro-core/tests/workspaces",
-    ) or (
-        core
-        and any(
-            token in path
-            for token in ("persistence", "workspace", "container", "storage", "run_store")
+    alembic = _under(path, "alembic") or path == "alembic.ini"
+    if (
+        alembic
+        or _under(
+            path,
+            "tests/migrations",
+            "packages/maistro-core/tests/persistence",
+            "packages/maistro-core/tests/workspaces",
+        )
+        or (
+            core
+            and any(
+                token in path
+                for token in ("persistence", "workspace", "container", "storage", "run_store")
+            )
         )
     ):
         out["postgres"] = True
     if _under(path, "packages/maistro-core/tests/archive") or (core and "archive" in path):
         out["object_storage"] = True
-    if (core and any(token in path for token in ("event", "durable"))) or _under(
-        path, "tests/events", "tests/durable_events"
+    if (
+        (core and any(token in path for token in ("event", "durable")))
+        or _under(path, "tests/events", "tests/durable_events")
+        or (alembic and any(token in path for token in ("event", "durable")))
     ):
         out["durable_events"] = True
     if core and any(token in path for token in ("strike", "attempt", "execution", "run")):
         out["strike_ladder"] = True
-    if hive or server or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
+    if hive or server or core or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
         out["hive_e2e"] = True
     if _under(path, "packages") and (
         path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py") or hive
@@ -67,10 +73,10 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         path.startswith("Dockerfile")
         or path.startswith(".dockerignore")
         or path == "README.md"
+        or alembic
         or _under(
             path,
             "packages",
-            "alembic",
             "scripts",
             "tests",
             "formal",

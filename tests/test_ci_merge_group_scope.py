@@ -60,13 +60,36 @@ def test_docs_only_change_skips_service_legs_but_not_docker() -> None:
     }
 
 
-def test_archive_change_runs_minio_wheel_and_docker_only() -> None:
+def test_archive_change_runs_minio_wheel_docker_and_hive_e2e() -> None:
     result = classify(["packages/maistro-core/src/maistro/archive/store.py"])
     assert result["object_storage"] is True
     assert result["wheel_imports"] is True
     assert result["docker_build"] is True
     assert result["postgres"] is False
-    assert result["hive_e2e"] is False
+    # Hive imports and ships maistro-core in its E2E image, so any core
+    # change can break the live Conductor flow that leg verifies.
+    assert result["hive_e2e"] is True
+
+
+def test_core_only_change_runs_hive_e2e_too() -> None:
+    result = classify(["packages/maistro-core/src/maistro/types.py"])
+    assert result["hive_e2e"] is True
+
+
+def test_alembic_ini_runs_postgres_and_docker() -> None:
+    result = classify(["alembic.ini"])
+    assert result["postgres"] is True
+    assert result["docker_build"] is True
+
+
+def test_durable_events_migration_runs_durable_events_leg() -> None:
+    result = classify(["alembic/versions/004_durable_events.py"])
+    assert result["postgres"] is True
+    assert result["durable_events"] is True
+
+
+def test_root_file_outside_every_prefix_skips_docker_build_too() -> None:
+    assert classify(["LICENSE"]) == dict.fromkeys(LEGS, False)
 
 
 def test_migration_change_runs_postgres_and_docker() -> None:
