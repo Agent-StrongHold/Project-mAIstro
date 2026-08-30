@@ -17,6 +17,7 @@ from typing import Any, Protocol
 import httpx
 
 from maistro.http import shared_client
+from maistro.tasks.http_contract import WORKSPACE_ID_HEADER
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
 
 _TERMINAL = frozenset({"completed", "failed"})
@@ -95,10 +96,9 @@ class TaskRecord:
         return self._task
 
 
-#: What an API caller is told when `WorkspaceNotRoutable` reaches a route.
-#: Separate from the exception's own message, which names the server this
-#: deployment would have submitted to -- that belongs in the log, not in a
-#: response body.
+#: Legacy route-facing detail retained while older backend implementations may
+#: still raise WorkspaceNotRoutable. The production MaistroServerTaskBackend no
+#: longer does: it carries the authorized binding over the shared HTTP contract.
 WORKSPACE_NOT_ROUTABLE_DETAIL = (
     "this deployment routes tasks to a single-Workspace task server, which "
     "cannot admit work into a named workspace"
@@ -106,14 +106,11 @@ WORKSPACE_NOT_ROUTABLE_DETAIL = (
 
 
 class WorkspaceNotRoutable(RuntimeError):
-    """This backend cannot file work in the Workspace the submission named.
+    """A backend cannot file work in the Workspace the submission named.
 
-    maistro-server binds one Workspace per instance (ADR-019/ADR-068: one
-    instance is one Workspace), so a Conductor that proxies to it has exactly
-    one Workspace to offer no matter how many its users belong to. Refusing is
-    the honest answer: admitting anyway would file the work in the server's
-    default Project while telling the caller it went to theirs, which is the
-    silent scope loss #158 exists to remove.
+    Retained as a backend capability error for route compatibility. The
+    production MaistroServerTaskBackend supports named Workspace admission as
+    of #234 by carrying the already-authorized binding to maistro-server.
     """
 
 
@@ -217,15 +214,19 @@ class MaistroServerTaskBackend:
     async def submit(
         self, create: TaskCreate, *, user_id: str, workspace_id: str | None = None
     ) -> TaskRecord:
+        headers = self._headers()
         if workspace_id is not None:
-            raise WorkspaceNotRoutable(
-                f"this deployment submits tasks to a single-Workspace maistro-server at "
-                f"{self._base}, which cannot admit into Workspace {workspace_id!r}"
-            )
+            if not workspace_id.strip():
+                raise ValueError("workspace_id must be a non-empty string")
+            # Scope is a trusted server-to-server admission binding, not a
+            # TaskCreate field. Hive has already authorized membership before
+            # EngineService reaches this adapter; maistro-server must either
+            # honor this exact binding or reject it (#234).
+            headers[WORKSPACE_ID_HEADER] = workspace_id
         async with shared_client(timeout=30.0) as client:
             r = await client.post(
                 f"{self._base}/tasks",
-                headers=self._headers(),
+                headers=headers,
                 json=create.model_dump(mode="json"),
             )
             r.raise_for_status()
