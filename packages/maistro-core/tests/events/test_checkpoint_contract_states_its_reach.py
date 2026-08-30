@@ -20,6 +20,7 @@ nothing about the docstring that ships.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -67,7 +68,7 @@ class TestThePackageStopsPublishingIt:
         import maistro.events as events
 
         exported = set(getattr(events, "__all__", ()))
-        assert not (exported & {"Checkpoint", "CheckpointStore", "SqliteCheckpointStore"})
+        assert not (exported & {"Checkpoint", "RunCheckpointStore", "SqliteRunCheckpointStore"})
         assert not hasattr(events, "Checkpoint")
 
     @pytest.mark.ac("SPEC-083026-7297/AC-2")
@@ -108,14 +109,14 @@ class TestTheTwoStoresDoNotCollide:
     def test_they_really_do_share_a_name_and_no_methods(self) -> None:
         """The premise of the disambiguation, asserted rather than assumed: if
         these ever converge, the docstrings below become wrong."""
-        canonical = {m for m in vars(checkpoints.CheckpointStore) if not m.startswith("_")}
+        canonical = {m for m in vars(checkpoints.RunCheckpointStore) if not m.startswith("_")}
         wave = {m for m in vars(ensemble.CheckpointStore) if not m.startswith("_")}
         assert canonical and wave
         assert not (canonical & wave)
 
     @pytest.mark.ac("SPEC-083026-7297/AC-4")
     def test_each_names_the_other(self) -> None:
-        assert "waves.ensemble" in (checkpoints.CheckpointStore.__doc__ or "")
+        assert "waves.ensemble" in (checkpoints.RunCheckpointStore.__doc__ or "")
         assert "events.checkpoints" in (ensemble.CheckpointStore.__doc__ or "")
 
     @pytest.mark.ac("SPEC-083026-7297/AC-4")
@@ -152,17 +153,33 @@ class TestTheClaimedAbsencesAreTrue:
         importers = sorted(
             str(path.relative_to(_REPO))
             for path in _REPO.glob("packages/*/src/**/*.py")
-            if _imports_it(path.read_text()) and path.resolve() != _CONTRACT.resolve()
+            if _imports_it(path.read_text(), path) and path.resolve() != _CONTRACT.resolve()
         )
         assert importers == []
 
     def test_the_import_scan_finds_one_when_there_is_one(self) -> None:
-        """A scan that can only return empty proves nothing. This is the shape
-        it will see the day something wires the contract again."""
+        """A scan that can only return empty proves nothing. These are the
+        shapes it will see the day something wires the contract again — the
+        relative ones included, which a prefix match could not see at all."""
+        events = _REPO / "packages/maistro-core/src/maistro/events/bus.py"
+        core = _REPO / "packages/maistro-core/src/maistro/container.py"
+
         assert _imports_it("from maistro.events.checkpoints import Checkpoint")
         assert _imports_it("import maistro.events.checkpoints")
+        assert _imports_it("from maistro.events import checkpoints")
+        # the shapes the prefix match missed
+        assert _imports_it("from .checkpoints import SqliteRunCheckpointStore as S", events)
+        assert _imports_it("from .events.checkpoints import SqliteRunCheckpointStore", core)
+        # and the things that are not imports of it
         assert not _imports_it("# maistro.events.checkpoints is superseded")
         assert not _imports_it("from maistro.tasks.checkpoint import TaskCheckpoint")
+        assert not _imports_it("from .bus import EventBus", events)
+
+    def test_an_unresolvable_relative_import_is_not_vouched_for(self) -> None:
+        """A guard that cannot tell must not answer "no". Without a path there
+        is no package to resolve `from .checkpoints import ...` against, so it
+        reports rather than clearing it."""
+        assert _imports_it("from .checkpoints import SqliteRunCheckpointStore")
 
 
 class TestARetiredDuplicateCannotBecomeAuthoritative:
@@ -172,24 +189,61 @@ class TestARetiredDuplicateCannotBecomeAuthoritative:
         sentence. A duplicate lifecycle store cannot become authoritative after
         a restore because nothing wires one; this fails the day something does.
         The durable-run path is not spelled `Checkpoint`, so it is unaffected."""
-        container = (_REPO / "packages/maistro-core/src/maistro/container.py").read_text()
-        wired = [
-            line.strip()
-            for line in container.splitlines()
-            if "CheckpointStore(" in line or _imports_it(line)
-        ]
+        path = _REPO / "packages/maistro-core/src/maistro/container.py"
+        source = path.read_text()
+        wired = [line.strip() for line in source.splitlines() if "CheckpointStore(" in line]
         assert wired == []
+        assert not _imports_it(source, path)
 
 
-def _imports_it(text: str) -> bool:
+def _module_of(path: Path) -> str:
+    """The dotted module name of a file under `packages/*/src`."""
+    parts = path.resolve().parts
+    src = len(parts) - 1 - parts[::-1].index("src")
+    tail = list(parts[src + 1 :])
+    if tail[-1] == "__init__.py":
+        tail.pop()
+    else:
+        tail[-1] = tail[-1].removesuffix(".py")
+    return ".".join(tail)
+
+
+def _imports_it(text: str, path: Path | None = None) -> bool:
     """Whether `text` imports the superseded contract module.
 
-    A comment mentioning it is not an import, and the modules now name it in
-    prose, so the line has to start with `import` or `from`.
+    Parsed, not matched by prefix. A substring scan sees only the two absolute
+    spellings, and `from .checkpoints import SqliteRunCheckpointStore as Store`
+    is neither — so a module could wire the retired store from inside the events
+    package and leave this guard green, which is the one thing it exists to
+    prevent (Codex, #729). `ImportFrom.level` is what resolves that, so the AST
+    is the only honest reader.
+
+    `path` supplies the package a relative import is relative *to*; without it a
+    relative import cannot be resolved and is conservatively reported, because a
+    guard that cannot tell must not answer "no".
     """
-    return any(
-        stripped.startswith(
-            ("import maistro.events.checkpoints", "from maistro.events.checkpoints")
-        )
-        for stripped in (line.strip() for line in text.splitlines())
-    )
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    own = _module_of(path) if path is not None else ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name == _MODULE or a.name.startswith(_MODULE + ".") for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if not node.level:
+                base = node.module or ""
+            elif not own:
+                return True  # unresolvable: refuse to vouch for it
+            else:
+                pkg = own.split(".")
+                # a module's own dots are its package; a package `__init__` is itself
+                anchor = pkg if (path and path.name == "__init__.py") else pkg[:-1]
+                anchor = anchor[: len(anchor) - (node.level - 1)] if node.level > 1 else anchor
+                base = ".".join(anchor + ([node.module] if node.module else []))
+            if base == _MODULE or base.startswith(_MODULE + "."):
+                return True
+            if any(f"{base}.{a.name}" == _MODULE for a in node.names):
+                return True
+    return False

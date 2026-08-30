@@ -128,6 +128,20 @@ identifier denotes does not depend on the import line.
   authoritative after restore" — gains a mechanism instead of a sentence.
 
 ### Negative / Trade-offs
+- **Dropping the re-export removes public names from `maistro.events`.**
+  `maistro-core` is a shared runtime and AGENTS.md names Conductor, Stronghold
+  and Canvas as its consumers, so this is a compatibility question rather than a
+  private refactor, and a repository scan cannot prove no external importer
+  exists. What it can establish is that every *named* consumer is either in this
+  repository and clean — `hive-conductor` and `maistro-canvas` import
+  `maistro.events.bus` and nothing else from the package — or unwritten, since
+  Stronghold is a planned refactor rather than existing code. A compatibility
+  alias was considered and rejected: it would preserve names for a contract
+  whose store writes to a table that exists in no deployment, and it would keep
+  the re-export edge that made the module read as reachable, which is the defect
+  being fixed. The alternative Codex raised — teaching the walker to disregard
+  re-export-only edges — is the general fix, and the spec defers it deliberately
+  because it would reclassify an unknown number of modules at once.
 - Keeping a superseded 428-line module costs reader attention even with the
   statement. The alternative, deleting it, discards a specified contract that the
   eventual consolidation may want; this defers that call rather than making it

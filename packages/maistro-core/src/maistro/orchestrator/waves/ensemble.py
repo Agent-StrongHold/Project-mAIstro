@@ -248,9 +248,10 @@ class LLMJudgeComparator:
 class CheckpointStore(Protocol):
     """Append-only store of ADR-056 task checkpoints, keyed by `task_id`.
 
-    The reached one. `maistro.events.checkpoints.CheckpointStore` shares this
-    name and no methods -- `append`/`get`/`latest`/`list_run` over Run-keyed
-    snapshots -- and is superseded and unconstructed (ADR-083026-ebcb).
+    The reached one. `maistro.events.checkpoints.RunCheckpointStore` was the other one: it
+    shared this name until #729 renamed it, holds `append`/`get`/`latest`/
+    `list_run` over Run-keyed snapshots, and is superseded and unconstructed
+    (ADR-083026-ebcb). Nothing is called `CheckpointStore` but this.
     """
 
     async def save(self, checkpoint: TaskCheckpoint) -> None: ...

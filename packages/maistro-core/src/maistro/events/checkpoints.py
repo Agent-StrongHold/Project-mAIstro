@@ -183,7 +183,7 @@ def checkpoint_created_event(checkpoint: Checkpoint) -> EventEnvelope:
 
 
 @runtime_checkable
-class CheckpointStore(Protocol):
+class RunCheckpointStore(Protocol):
     """Append-only persistence for canonical Checkpoint snapshots.
 
     Not `maistro.orchestrator.waves.ensemble.CheckpointStore`, which shares this
@@ -217,7 +217,7 @@ class CheckpointStore(Protocol):
 
 
 async def resolve_checkpoint(
-    store: CheckpointStore,
+    store: RunCheckpointStore,
     ref: CheckpointRef,
     *,
     supported_schema_versions: frozenset[int] = SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS,
@@ -245,8 +245,8 @@ async def resolve_checkpoint(
     return checkpoint
 
 
-class InMemoryCheckpointStore:
-    """Concurrency-safe in-memory CheckpointStore."""
+class InMemoryRunCheckpointStore:
+    """Concurrency-safe in-memory RunCheckpointStore."""
 
     def __init__(self) -> None:
         self._checkpoints_by_id: dict[str, Checkpoint] = {}
@@ -323,8 +323,8 @@ CREATE INDEX IF NOT EXISTS idx_canonical_checkpoint_run
 """
 
 
-class SqliteCheckpointStore:
-    """SQLite implementation of the canonical CheckpointStore contract."""
+class SqliteRunCheckpointStore:
+    """SQLite implementation of the canonical RunCheckpointStore contract."""
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn

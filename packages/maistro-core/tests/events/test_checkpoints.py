@@ -15,10 +15,10 @@ from maistro.events.checkpoints import (
     Checkpoint,
     CheckpointNotFoundError,
     CheckpointRef,
-    CheckpointStore,
     CheckpointVersionError,
-    InMemoryCheckpointStore,
-    SqliteCheckpointStore,
+    InMemoryRunCheckpointStore,
+    RunCheckpointStore,
+    SqliteRunCheckpointStore,
     checkpoint_created_event,
     resolve_checkpoint,
 )
@@ -27,12 +27,12 @@ from maistro.events.checkpoints import (
 @pytest.fixture(params=["memory", "sqlite"])
 async def checkpoint_store(
     request: pytest.FixtureRequest,
-) -> AsyncIterator[CheckpointStore]:
+) -> AsyncIterator[RunCheckpointStore]:
     if request.param == "memory":
-        yield InMemoryCheckpointStore()
+        yield InMemoryRunCheckpointStore()
         return
     conn = await aiosqlite.connect(":memory:")
-    store = SqliteCheckpointStore(conn)
+    store = SqliteRunCheckpointStore(conn)
     await store.ensure_schema()
     yield store
     await conn.close()
@@ -117,7 +117,7 @@ def test_checkpoint_created_event_preserves_correlation() -> None:
 
 
 class TestCheckpointStoreContract:
-    async def test_assigns_sequence_per_run(self, checkpoint_store: CheckpointStore) -> None:
+    async def test_assigns_sequence_per_run(self, checkpoint_store: RunCheckpointStore) -> None:
         first = await checkpoint_store.append(_checkpoint(checkpoint_id="cp-1"))
         second = await checkpoint_store.append(_checkpoint(checkpoint_id="cp-2"))
         other = _checkpoint(checkpoint_id="cp-other", run_id="run-2")
@@ -126,7 +126,7 @@ class TestCheckpointStoreContract:
         assert second.sequence == 2
         assert persisted_other.sequence == 1
 
-    async def test_append_is_idempotent(self, checkpoint_store: CheckpointStore) -> None:
+    async def test_append_is_idempotent(self, checkpoint_store: RunCheckpointStore) -> None:
         checkpoint = _checkpoint(checkpoint_id="stable")
         first = await checkpoint_store.append(checkpoint)
         duplicate = await checkpoint_store.append(checkpoint)
@@ -134,11 +134,11 @@ class TestCheckpointStoreContract:
         assert duplicate == first
         assert [item.checkpoint_id for item in history] == ["stable"]
 
-    async def test_rejects_caller_sequence(self, checkpoint_store: CheckpointStore) -> None:
+    async def test_rejects_caller_sequence(self, checkpoint_store: RunCheckpointStore) -> None:
         with pytest.raises(ValueError, match="store-assigned"):
             await checkpoint_store.append(_checkpoint(sequence=7))
 
-    async def test_round_trips_metadata(self, checkpoint_store: CheckpointStore) -> None:
+    async def test_round_trips_metadata(self, checkpoint_store: RunCheckpointStore) -> None:
         checkpoint = _checkpoint(
             checkpoint_id="cp-roundtrip",
             node_run_id="node-run-1",
@@ -160,7 +160,7 @@ class TestCheckpointStoreContract:
         assert loaded.graph_snapshot_hash == "graph-sha"
         assert loaded.state_hash == checkpoint.state_hash
 
-    async def test_latest_and_cursor_reads(self, checkpoint_store: CheckpointStore) -> None:
+    async def test_latest_and_cursor_reads(self, checkpoint_store: RunCheckpointStore) -> None:
         for index in range(5):
             checkpoint = _checkpoint(checkpoint_id=f"cp-{index}")
             await checkpoint_store.append(checkpoint)
@@ -171,7 +171,7 @@ class TestCheckpointStoreContract:
         assert [item.sequence for item in page] == [3, 4]
         assert await checkpoint_store.list_run("run-1", limit=0) == []
 
-    async def test_concurrent_sequences(self, checkpoint_store: CheckpointStore) -> None:
+    async def test_concurrent_sequences(self, checkpoint_store: RunCheckpointStore) -> None:
         checkpoints = [_checkpoint(checkpoint_id=f"cp-{i}") for i in range(20)]
         calls = [checkpoint_store.append(item) for item in checkpoints]
         persisted = await asyncio.gather(*calls)
@@ -180,7 +180,7 @@ class TestCheckpointStoreContract:
 
     async def test_rejects_schema_incompatibility(
         self,
-        checkpoint_store: CheckpointStore,
+        checkpoint_store: RunCheckpointStore,
     ) -> None:
         persisted = await checkpoint_store.append(_checkpoint(checkpoint_id="cp-resume"))
         resolved = await resolve_checkpoint(checkpoint_store, persisted.ref)
@@ -192,7 +192,7 @@ class TestCheckpointStoreContract:
 
     async def test_rejects_reference_version_mismatch(
         self,
-        checkpoint_store: CheckpointStore,
+        checkpoint_store: RunCheckpointStore,
     ) -> None:
         checkpoint = _checkpoint(checkpoint_id="cp-versioned", schema_version=2)
         await checkpoint_store.append(checkpoint)
@@ -206,7 +206,7 @@ class TestCheckpointStoreContract:
 
     async def test_rejects_executable_incompatibility(
         self,
-        checkpoint_store: CheckpointStore,
+        checkpoint_store: RunCheckpointStore,
     ) -> None:
         checkpoint = _checkpoint(
             checkpoint_id="cp-runtime",
@@ -223,7 +223,7 @@ class TestCheckpointStoreContract:
 
     async def test_requires_existing_checkpoint(
         self,
-        checkpoint_store: CheckpointStore,
+        checkpoint_store: RunCheckpointStore,
     ) -> None:
         with pytest.raises(CheckpointNotFoundError):
             await resolve_checkpoint(checkpoint_store, CheckpointRef("missing"))
