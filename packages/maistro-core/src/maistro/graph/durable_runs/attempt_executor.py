@@ -16,6 +16,7 @@ from typing import Any
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
@@ -242,6 +243,44 @@ async def _walk(
     execution_service = AttemptExecutionService(store=execution_store, runtime=runtime)
     steps = 0
 
+    # This path never goes through `RunExecutionService`, which is where the Run
+    # is otherwise bound, so it binds its own. Without it a top-level durable
+    # execution named no Run at all -- and a *child* durable graph launched from
+    # inside a parent Attempt was worse than that: binding is additive, so with
+    # nothing overriding it the child's nodes inherited the parent's ambient
+    # `run_id` and attributed their logs, spans and blank event fields to the
+    # parent Run (Codex, #707).
+    with bind_execution_context(run_id=record.run_id):
+        return await _walk_until_settled(
+            record,
+            graph=graph,
+            store=store,
+            node_resolver=node_resolver,
+            execution_service=execution_service,
+            execution_store=execution_store,
+            spine=spine,
+            max_steps=max_steps,
+            steps=steps,
+        )
+
+
+async def _walk_until_settled(
+    record: DurableRunRecord,
+    *,
+    graph: Graph,
+    store: DurableRunStore,
+    node_resolver: NodeResolver,
+    execution_service: AttemptExecutionService,
+    execution_store: DurableRunExecutionStore,
+    spine: RunStore | None,
+    max_steps: int,
+    steps: int,
+) -> DurableRunRecord:
+    """Walk frontiers until the Run settles or `max_steps` is spent.
+
+    Split out only so the caller can own the correlation scope: the loop below
+    is unchanged, and everything it drives now runs under the Run's id.
+    """
     while record.graph_state.active_node_ids and steps < max_steps:
         steps += 1
         record = await _walk_frontier(

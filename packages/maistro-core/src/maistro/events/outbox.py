@@ -13,7 +13,8 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from maistro.events.envelope import EventEnvelope, EventStore
+from maistro.events.envelope import EventEnvelope, EventStore, correlated
+from maistro.observability.correlation import detached_execution_context
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -52,7 +53,12 @@ class SqliteEventOutbox:
         """
         if event.sequence is not None:
             raise ValueError("cannot stage an event with a store-assigned sequence")
-        serialized = json.dumps(event.to_dict(), sort_keys=True)
+        # Correlated here, where the producer's execution is still in scope.
+        # `EventStore.append` correlates too, but by the time this row reaches a
+        # publisher that execution has ended -- so the ids would either be lost
+        # or, worse, taken from whatever unrelated execution the publisher was
+        # running under (Codex, #707).
+        serialized = json.dumps(correlated(event).to_dict(), sort_keys=True)
         await self._conn.execute(
             """INSERT INTO canonical_event_outbox (event_id, event_json, created_at)
                VALUES (?, ?, ?)
@@ -87,7 +93,12 @@ class SqliteEventOutbox:
         for row in rows:
             outbox_id = int(row[0])
             event = EventEnvelope(**json.loads(row[1]))
-            await event_store.append(event)
+            # Detached: the publisher is not the producer. Whatever execution it
+            # happens to be running under has nothing to do with an event staged
+            # in another one, and `append` would otherwise fill this event's
+            # blanks from it.
+            with detached_execution_context():
+                await event_store.append(event)
             await self._conn.execute(
                 "UPDATE canonical_event_outbox SET published_at = ? WHERE outbox_id = ?",
                 (time.time(), outbox_id),
