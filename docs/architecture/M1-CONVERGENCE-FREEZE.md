@@ -27,7 +27,7 @@ The freeze composes the architecture-fitness controls established by #36 rather 
 - `packages/maistro-core/tests/fitness/test_import_boundaries.py` remains the authority for core/application direction and compatibility-owner aliases;
 - `quality/shared-interop-ontology-v1.json` remains the canonical owner map for cross-product concepts.
 
-`check-m1-convergence-freeze.py` adds only the gap those controls do not cover: a PR can define a new canonical-looking `WorkspaceStore`, `EventSequence`, `RunStore`, `CheckpointStore`, or similar authority inside an already-known subsystem without adding a new matrix row or a work-state enum. The checker compares new top-level class definitions with the PR base and rejects those shared-owner-shaped additions outside their canonical owner packages.
+`check-m1-convergence-freeze.py` adds only the gap those controls do not cover: a PR can define a new canonical-looking `WorkspaceStore`, `EventSequence`, `RunStore`, `CheckpointStore`, or similar authority inside an already-known subsystem without adding a new matrix row or a work-state enum. The checker compares new top-level class definitions with the candidate's immutable base and rejects those shared-owner-shaped additions outside their canonical owner packages.
 
 Existing convergence debt is not recharged merely because its file changes. The check is new-definition based. A canonical owner may extend its own concept normally.
 
@@ -64,9 +64,9 @@ The exception is deliberately expensive. M1 should normally change the canonical
 
 ## Enforcement path
 
-The required root test suite executes `tests/test_m1_convergence_freeze.py`. On pull requests that test resolves the actual integration base, passes the PR body as the exception plan, and runs `scripts/check-m1-convergence-freeze.py` against `base...HEAD`. Missing base evidence fails rather than silently skipping the comparison.
+The required root test suite executes `tests/test_m1_convergence_freeze.py`. On pull-request and merge-group candidates that test resolves the immutable base SHA from the event payload, fetches that exact commit if a shallow checkout lacks it, and runs `scripts/check-m1-convergence-freeze.py` against `base...HEAD`. Pull-request bodies supply any declared exception plan. Missing base evidence fails rather than silently comparing against a moving branch tip.
 
-Regression tests plant representative second lifecycle, model-egress, Workspace/Event/Checkpoint owner, and shared-type shapes. This protects the detector itself rather than relying on examples in prose.
+Regression tests plant representative second lifecycle, model-egress, Workspace/Event/Checkpoint owner, and shared-type shapes. They also pin immutable base selection for both pull requests and merge groups. This protects the detector itself rather than relying on examples in prose.
 
 ## Frozen known competing owners
 
