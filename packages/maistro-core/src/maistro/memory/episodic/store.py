@@ -37,6 +37,16 @@ def _selected(
 
 
 class InMemoryEpisodicStore:
+    """Episodic memory in this process's heap, for the lifetime of this process.
+
+    Stated because it was not, and the absence cost something: until #710 the
+    container wired this store whatever `database_url` said, so every tier,
+    weight and reinforcement count in ADR-080 was lost at every restart and
+    differed between replicas. The durable stores are
+    `maistro.persistence.pg_episodic` and `maistro.persistence.sqlite_episodic`;
+    this one is what a `memory://` deployment gets, deliberately.
+    """
+
     def __init__(self) -> None:
         self._memories: list[EpisodicMemory] = []
 

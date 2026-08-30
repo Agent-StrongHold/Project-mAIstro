@@ -25,6 +25,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/persistence/test_episodic_store_conformance.py
+  - packages/maistro-core/tests/memory/test_scope_predicate.py
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'

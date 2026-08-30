@@ -27,8 +27,12 @@ contracts:
 tests:
   - packages/maistro-core/tests/persistence/test_episodic_store_conformance.py
   - packages/maistro-core/tests/memory/test_scope_predicate.py
+  - packages/maistro-core/tests/memory/test_episodic_lifetime_is_stated.py
+  - packages/maistro-core/tests/test_container_episodic_store.py
 source:
   - packages/maistro-core/src/maistro/persistence/pg_episodic.py
+  - packages/maistro-core/src/maistro/persistence/episodic_rows.py
+  - alembic/versions/025_episodic_record_fields.py
   - packages/maistro-core/src/maistro/persistence/sqlite_episodic.py
   - packages/maistro-core/src/maistro/memory/scopes.py
   - packages/maistro-core/src/maistro/memory/episodic/store.py
