@@ -13,6 +13,9 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-m1-convergence-freeze.py"
 MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
+POLICY = ROOT / "quality" / "m1-convergence-freeze.json"
+ONTOLOGY = ROOT / "quality" / "shared-interop-ontology-v1.json"
+PR_TEMPLATE = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
 
 
 def _module() -> ModuleType:
@@ -28,6 +31,25 @@ def _matrix(*subsystems: str) -> str:
     return f"# matrix\n\n<!-- matrix:ownership -->\n| Subsystem | Modules |\n|---|---|\n{rows}\n"
 
 
+def _policy() -> dict[str, object]:
+    return json.loads(POLICY.read_text(encoding="utf-8"))
+
+
+def _ontology() -> dict[str, object]:
+    return json.loads(ONTOLOGY.read_text(encoding="utf-8"))
+
+
+def _exception_plan() -> str:
+    return "\n".join(
+        (
+            "Architecture rationale: the canonical owner cannot yet represent this reviewed extension",
+            "Canonical owner: maistro.runs remains the execution authority",
+            "Disposition owner: #460 follow-up owner",
+            "Retirement/convergence path: retire the extension after the canonical seam supports it",
+        )
+    )
+
+
 def test_new_subsystem_is_rejected_without_exception() -> None:
     checker = _module()
     current = _matrix("Canonical", "New island")
@@ -40,6 +62,23 @@ def test_new_subsystem_is_rejected_without_exception() -> None:
     assert "m1-convergence-exception" in failures[0]
 
 
+def test_exception_label_without_complete_plan_is_rejected() -> None:
+    checker = _module()
+
+    failures = checker.check(
+        _matrix("Canonical", "Reviewed extension"),
+        _matrix("Canonical"),
+        exception=True,
+        exception_plan="Architecture rationale: seems useful",
+        policy=_policy(),
+    )
+
+    assert failures
+    assert any("canonical_owner" in failure for failure in failures)
+    assert any("disposition_owner" in failure for failure in failures)
+    assert any("retirement_path" in failure for failure in failures)
+
+
 def test_explicit_exception_allows_reviewed_new_subsystem() -> None:
     checker = _module()
 
@@ -48,6 +87,8 @@ def test_explicit_exception_allows_reviewed_new_subsystem() -> None:
             _matrix("Canonical", "Reviewed extension"),
             _matrix("Canonical"),
             exception=True,
+            exception_plan=_exception_plan(),
+            policy=_policy(),
         )
         == []
     )
@@ -66,20 +107,162 @@ def test_shrinking_the_island_set_is_always_allowed() -> None:
     )
 
 
+def test_policy_reuses_the_existing_architecture_vocabulary() -> None:
+    checker = _module()
+
+    assert checker.validate_authoritative_gate_map(_policy()) == []
+
+
+def test_second_run_lifecycle_is_seen_by_the_existing_lifecycle_detector() -> None:
+    checker = _module()
+    source = """
+from enum import StrEnum
+
+class ShadowRunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    FAILED = "failed"
+"""
+
+    found = checker.lifecycle_candidates(source, "product.shadow")
+
+    assert "product.shadow::ShadowRunStatus" in found
+    assert found["product.shadow::ShadowRunStatus"] == {"PENDING", "RUNNING", "FAILED"}
+
+
+def test_direct_model_egress_is_seen_by_the_existing_egress_detector() -> None:
+    checker = _module()
+    source = """
+ENDPOINT = "/v1/chat/completions"
+client.post(ENDPOINT)
+"""
+
+    assert checker.performs_model_egress(source)
+
+
+def test_new_workspace_authority_outside_canonical_owner_is_rejected() -> None:
+    checker = _module()
+
+    failures = checker.new_shared_owner_violations(
+        "class WorkspaceStore:\n    pass\n",
+        "",
+        module="maistro_canvas.shadow",
+        policy=_policy(),
+        ontology=_ontology(),
+    )
+
+    assert len(failures) == 1
+    assert "Workspace" in failures[0]
+    assert "maistro_canvas.shadow::WorkspaceStore" in failures[0]
+
+
+def test_new_event_sequence_outside_canonical_owner_is_rejected() -> None:
+    checker = _module()
+
+    failures = checker.new_shared_owner_violations(
+        "class ProductEventSequence:\n    pass\n",
+        "",
+        module="maistro_turing.shadow",
+        policy=_policy(),
+        ontology=_ontology(),
+    )
+
+    assert len(failures) == 1
+    assert "Event" in failures[0]
+
+
+def test_canonical_owner_may_extend_its_own_shared_concept() -> None:
+    checker = _module()
+
+    assert (
+        checker.new_shared_owner_violations(
+            "class WorkspaceStore:\n    pass\n",
+            "",
+            module="maistro.workspaces.store",
+            policy=_policy(),
+            ontology=_ontology(),
+        )
+        == []
+    )
+
+
+def test_product_local_projection_must_name_the_canonical_concept() -> None:
+    checker = _module()
+    source = '''class DagRunStore:
+    """M1 product-local projection: Run"""
+'''
+
+    assert (
+        checker.new_shared_owner_violations(
+            source,
+            "",
+            module="services.dag_run_store",
+            policy=_policy(),
+            ontology=_ontology(),
+        )
+        == []
+    )
+
+
+def test_existing_legacy_owner_is_not_recharged_when_its_file_changes() -> None:
+    checker = _module()
+    source = "class WorkspaceStore:\n    pass\n"
+
+    assert (
+        checker.new_shared_owner_violations(
+            source,
+            source,
+            module="legacy.product",
+            policy=_policy(),
+            ontology=_ontology(),
+        )
+        == []
+    )
+
+
+def test_new_checkpoint_store_uses_the_supplemental_canonical_owner_map() -> None:
+    checker = _module()
+
+    failures = checker.new_shared_owner_violations(
+        "class CheckpointStore:\n    pass\n",
+        "",
+        module="new_product.recovery",
+        policy=_policy(),
+        ontology=_ontology(),
+    )
+
+    assert len(failures) == 1
+    assert "Checkpoint" in failures[0]
+
+
+def test_pr_template_asks_the_no_new_islands_review_question() -> None:
+    template = PR_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "new universal execution/scope/event/effect/approval/recovery owner" in template
+    for marker in (
+        "Architecture rationale:",
+        "Canonical owner:",
+        "Disposition owner:",
+        "Retirement/convergence path:",
+    ):
+        assert marker in template
+
+
 def test_live_pull_request_does_not_add_unapproved_subsystem() -> None:
     """Make the freeze a real PR gate, not merely a unit-tested policy helper."""
     base_ref = os.environ.get("GITHUB_BASE_REF")
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not base_ref or not event_path:
-        # Local/push runs still execute the three policy tests above. The live
+        # Local/push runs still execute the policy tests above. The live
         # comparison is meaningful only when Actions has checked out a PR and
         # fetched its base ref.
         return
 
     event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    pull_request = event.get("pull_request", {})
     labels = {
         item.get("name", "")
-        for item in event.get("pull_request", {}).get("labels", [])
+        for item in pull_request.get("labels", [])
         if isinstance(item, dict)
     }
     # `actions/checkout` clones one commit deep, so `origin/<base>` does not
@@ -90,10 +273,12 @@ def test_live_pull_request_does_not_add_unapproved_subsystem() -> None:
     # prevent one level up.
     base = _fetched_base(base_ref)
     command = [sys.executable, str(CHECKER), "--base", base]
+    env = os.environ.copy()
+    env["M1_CONVERGENCE_EXCEPTION_PLAN"] = str(pull_request.get("body") or "")
     if "m1-convergence-exception" in labels:
         command.append("--exception")
 
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run(command, cwd=ROOT, check=True, env=env)
 
 
 def _fetched_base(base_ref: str) -> str:
