@@ -1,7 +1,9 @@
-"""CanvasJobRunner — background worker that claims, executes, and reaps canvas generation jobs.
+"""CanvasJobRunner — claim/retry mechanics projected over canonical execution.
 
-Poll loop: claim_next_pending → _execute_claimed → mark done/failed/requeue.
-Reaper: periodic sweep of expired leases (dead workers).
+The Canvas store still owns queue claims, worker leases, retry budget, and the
+user-facing GenerationJobRecord receipt. Physical provider work is delegated to
+CanvasExecutor, which records it as canonical Attempts. This runner therefore
+must never terminalize the receipt without reconciling the canonical Run first.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from maistro_canvas.canvas.executor import CanvasExecutor
+    from maistro_canvas.types import GenerationJobRecord
 
 logger = logging.getLogger("maistro.canvas.runner")
 
@@ -52,13 +55,28 @@ class CanvasJobRunner:
             if reap_counter >= self._reap_interval:
                 reap_counter = 0.0
                 try:
-                    await self._store.reap_expired_leases()
+                    await self.reap_once()
                 except Exception:
                     logger.exception("canvas_runner_reap_error")
             await asyncio.sleep(self._poll_interval)
 
     def stop(self) -> None:
         self._running = False
+
+    async def reap_once(self) -> list[GenerationJobRecord]:
+        """Reap expired Canvas leases and reconcile exhausted jobs canonically."""
+        from maistro_canvas.types import JobStatus
+
+        reaped = await self._store.reap_expired_leases()
+        terminal_failure = getattr(self._executor, "fail_job_execution", None)
+        if terminal_failure is None:
+            return reaped
+        for job in reaped:
+            if job.status == JobStatus.FAILED:
+                error = RuntimeError(job.error_message or "canvas worker lease expired")
+                job.error_message = await terminal_failure(job, error)
+                await self._store.update_job(job)
+        return reaped
 
     async def tick_once(self) -> bool:
         """Claim and execute one job. Returns True if work was done."""
@@ -78,17 +96,25 @@ class CanvasJobRunner:
             job.completed_at = datetime.now(UTC)
             job.leased_by = None
             job.lease_expires_at = None
-        except Exception as e:
-            logger.warning("canvas_job_failed job=%s error=%s", job.id, str(e)[:200])
+        except Exception as exc:
+            logger.warning("canvas_job_failed job=%s error=%s", job.id, str(exc)[:200])
             if job.attempts < job.max_attempts:
-                # Retryable — requeue
+                # The canonical Attempt has already failed and parked its
+                # NodeRun. Requeueing is a Canvas retry-policy decision; the
+                # next claim calls retry_node under that same NodeRun.
                 job.status = JobStatus.PENDING
                 job.leased_by = None
                 job.lease_expires_at = None
             else:
-                # Terminal failure
+                terminal_failure = getattr(self._executor, "fail_job_execution", None)
+                if terminal_failure is not None:
+                    job.error_message = await terminal_failure(job, exc)
+                else:
+                    # Compatibility for runner-focused test doubles. The real
+                    # CanvasExecutor always provides fail_job_execution and
+                    # sanitizes before the domain receipt becomes terminal.
+                    job.error_message = f"Generation failed: {str(exc)[:500]}"
                 job.status = JobStatus.FAILED
-                job.error_message = f"Generation failed: {str(e)[:500]}"
                 job.completed_at = datetime.now(UTC)
                 job.leased_by = None
                 job.lease_expires_at = None
