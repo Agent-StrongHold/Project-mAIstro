@@ -21,7 +21,7 @@
     "Attempt": {"owner": "maistro.runs", "identity": "attempt_id", "parent": "NodeRun"},
     "ExecutionRuntime": {"owner": "maistro.runtime", "identity": "execution_id", "parent": "Attempt"},
     "Capability": {"owner": "maistro.capabilities", "identity": "capability_id"},
-    "Provider": {"owner": "maistro.capabilities", "identity": "provider_id"},
+    "Provider": {"owner": "maistro.capabilities", "identity": "provider_id", "parent": "Capability"},
     "Binding": {"owner": "maistro.capabilities", "identity": "binding_id", "parent": "Provider"},
     "Invocation": {"owner": "maistro.capabilities", "identity": "invocation_id", "parent": "Binding"}
   },
