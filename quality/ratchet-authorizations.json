@@ -1,1 +1,9 @@
-{}
+{
+  "wiring-reads": {
+    "maistro.container.Container.schedule_admitter": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#231",
+      "reason": "The seam #231 exists to have the live Hive scheduler build against, not yet a consumed dependency: the migration is blocked on maistro.runs.consumption's deliberate single-node-Run scope (#44/#34), since Hive's bundled daily-status DAG is multi-node and a straight swap today would leave firings QUEUED forever. Exposed ahead of its reader so the constructor exists in one reviewed place before the migration lands, following template_store's own precedent (#251) of exposing a store ahead of the routes that consume it."
+    }
+  }
+}
