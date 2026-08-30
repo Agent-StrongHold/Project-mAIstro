@@ -15,6 +15,7 @@ substrate:
   - maistro-engine#ADR-083026-e602
   - maistro-engine#ADR-083026-1cb1
   - maistro-engine#ADR-083026-5fab
+  - maistro-engine#ADR-083026-aba1
 implements: []
 related: []
 supersedes: []
@@ -22,7 +23,9 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/persistence/test_session_turn_provenance.py
+  - packages/maistro-core/tests/agents/test_outcome_names_its_session.py
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -150,6 +153,15 @@ test holds that surface still.
   historical row came from the one call site that wrote a session there, which
   is exactly the kind of assumption this ADR exists to stop making. The
   ambiguity is recorded instead of erased.
+- `produced_runs` has no production caller today. Its callers are the
+  conformance suite and an operator's query; no product surface exposes a
+  session's Runs, and #465's surface matrix is where one would be
+  dispositioned. That is recorded in the vulture ledger under
+  `session-run-correlation-read-surface` rather than hidden, per
+  ADR-083026-aba1 — a keep-alive that made such identities *look* used is
+  exactly the suppressed signal ADR-083026-ebcb removed. What separates it from
+  an unreached contract is that it is one rule with three implementations held
+  together by a parametrized suite, not a store nothing drives.
 - The ledger key change is a behaviour change to an external integration made
   from the parameter's name and the two readings of it, not from its contract.
   If the ledger keyed reporting on the session deliberately, this splits its

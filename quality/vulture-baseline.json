@@ -688,6 +688,21 @@
       ]
     },
     {
+      "id": "session-run-correlation-read-surface",
+      "category": "stated_absent_consumer",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-core/src/maistro/(sessions/store|protocols/memory|persistence/(pg|sqlite)_sessions)\\.py",
+      "message_regex": "unused method '(produced_runs|turn_provenance)'",
+      "rationale": "The session-to-Run read surface #748 added (ADR-083026-56ee). Its only callers today are the conformance suite and an operator's ad-hoc query; no product surface exposes a session's Runs yet, and #465's surface matrix is where one would be dispositioned. Recorded rather than hidden, per ADR-083026-aba1: an absent consumer is a fact to state, and a keep-alive tuple that made the identities look used is exactly the suppressed signal #729 removed. `produced_runs` is a protocol method with three implementations held to one rule by a parametrized suite, which is what distinguishes it from an unreached contract; `turn_provenance` is twin-only, the twin's answer to the SELECT the two durable stores are asked directly.",
+      "findings": [
+        "packages/maistro-core/src/maistro/persistence/pg_sessions.py::unused method 'produced_runs'",
+        "packages/maistro-core/src/maistro/persistence/sqlite_sessions.py::unused method 'produced_runs'",
+        "packages/maistro-core/src/maistro/protocols/memory.py::unused method 'produced_runs'",
+        "packages/maistro-core/src/maistro/sessions/store.py::unused method 'produced_runs'",
+        "packages/maistro-core/src/maistro/sessions/store.py::unused method 'turn_provenance'"
+      ]
+    },
+    {
       "id": "core-public-api-surface",
       "category": "public_extension_point",
       "owner": "@BlakeMatthews-dev",

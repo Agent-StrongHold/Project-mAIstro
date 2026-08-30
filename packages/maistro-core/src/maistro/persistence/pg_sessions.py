@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from maistro.observability.correlation import observed_provenance
 from maistro.sessions.turns import reject_blank_turn_id
 
 if TYPE_CHECKING:
@@ -100,6 +101,14 @@ class PgSessionStore:
         because a store cannot invent an identity for a turn it did not observe
         being retried, and deduplicating on content would silently drop a user
         who says the same thing twice.
+
+        The turn marker also records the execution that produced it, resolved
+        from the ambient context (ADR-083026-56ee). That is a *separate* fact
+        from ``turn_id``: the one production caller happens to pass a Run id as
+        the turn identity, but the identity is opaque by contract and any caller
+        may pass any non-empty string, so a reader of ``session_turns`` could
+        not tell a Run id from a UUID. The provenance columns can be read as
+        Run ids because nothing else is ever written to them.
         """
         reject_blank_turn_id(turn_id)
         async with self._pool.acquire() as conn, conn.transaction():
@@ -137,9 +146,12 @@ class PgSessionStore:
                 # guarantee rather than a property of everyone remembering to
                 # take the lock above.
                 await conn.execute(
-                    "INSERT INTO session_turns (session_id, turn_id) VALUES ($1, $2)",
+                    """INSERT INTO session_turns
+                           (session_id, turn_id, run_id, node_run_id, attempt_id)
+                       VALUES ($1, $2, $3, $4, $5)""",
                     session_id,
                     turn_id,
+                    *observed_provenance().as_columns(),
                 )
 
             # Purge inline while the append transaction is still open. A normal
@@ -169,6 +181,25 @@ class PgSessionStore:
             return int(str(status).rsplit(" ", 1)[-1])
         except ValueError:  # pragma: no cover - defensive
             return 0
+
+    async def produced_runs(self, session_id: str) -> list[str]:
+        """The canonical Runs that produced this session's turns, oldest first.
+
+        The session-to-Run direction, which until ADR-083026-56ee existed only
+        as a coincidence of one call site passing a Run id as an opaque turn
+        identity. Distinct, and never blank: a turn appended with no execution
+        in scope contributes nothing rather than an empty name.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT run_id FROM session_turns
+                   WHERE session_id = $1 AND run_id IS NOT NULL
+                   GROUP BY run_id ORDER BY MIN(timestamp)""",
+                session_id,
+            )
+        # `GROUP BY` rather than `DISTINCT ON`, which would have to lead its
+        # sort with `run_id` and so could not also promise oldest-first.
+        return [r["run_id"] for r in rows]
 
     async def delete_session(self, session_id: str) -> None:
         """Delete a session without interleaving with an append to that session."""
