@@ -1,10 +1,46 @@
 from __future__ import annotations
 
-from scripts.ci_merge_group_scope import LEGS, classify
+import json
+
+import pytest
+from scripts.ci_merge_group_scope import LEGS, classify, main
 
 
 def test_missing_diff_evidence_fails_closed() -> None:
     assert classify([]) == dict.fromkeys(LEGS, True)
+
+
+def test_durable_or_event_change_runs_durable_events_leg() -> None:
+    result = classify(["packages/maistro-core/src/maistro/events/bus.py"])
+    assert result["durable_events"] is True
+    assert result["postgres"] is False
+
+
+def test_attempt_change_runs_strike_ladder_leg() -> None:
+    result = classify(["packages/maistro-core/src/maistro/runs/attempt.py"])
+    assert result["strike_ladder"] is True
+
+
+def test_cli_main_prints_plain_legs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("sys.argv", ["ci_merge_group_scope.py", "uv.lock"])
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert out.splitlines() == [f"{leg}=true" for leg in LEGS]
+
+
+def test_cli_main_prints_json_legs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["ci_merge_group_scope.py", "docs/ci/MERGE-QUEUE.md", "--json"],
+    )
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["docker_build"] is True
+    assert result["postgres"] is False
 
 
 def test_shared_dependency_change_runs_every_specialized_leg() -> None:
