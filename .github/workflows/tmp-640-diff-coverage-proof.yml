@@ -53,15 +53,20 @@ jobs:
 
           claim = Path('packages/maistro-core/src/maistro/runs/consumer_claim.py')
           text = claim.read_text()
-          old = '''                """INSERT INTO canonical_attempts
-                   (attempt_id, node_run_id, ordinal, status, payload)
-                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",'''
-          new = '''                """INSERT INTO canonical_attempts
-                   (attempt_id, node_run_id, ordinal, status, payload)
-                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",'''
-          if old not in text:
-              raise SystemExit('PostgreSQL Attempt INSERT anchor not found')
-          claim.write_text(text.replace(old, new, 1))
+          needle = 'VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)'
+          positions = []
+          start = 0
+          while True:
+              found = text.find(needle, start)
+              if found < 0:
+                  break
+              positions.append(found)
+              start = found + len(needle)
+          if len(positions) != 2:
+              raise SystemExit(f'expected two six-placeholder inserts, found {len(positions)}')
+          second = positions[1]
+          text = text[:second] + 'VALUES ($1, $2, $3, $4, $5::text::jsonb)' + text[second + len(needle):]
+          claim.write_text(text)
 
           consumption = Path('packages/maistro-core/tests/runs/test_consumption.py')
           text = consumption.read_text()
