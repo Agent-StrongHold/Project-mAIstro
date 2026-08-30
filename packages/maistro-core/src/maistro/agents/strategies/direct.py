@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.quota.usage_report import reported_usage
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -19,8 +20,50 @@ if TYPE_CHECKING:
 logger = logging.getLogger("maistro.strategy.direct")
 
 
+def _counted(reported: tuple[int, int] | None) -> tuple[int, int, int]:
+    """`(input, output, reporting calls)` for one provider call.
+
+    The trailing count is what separates a call that reported zero tokens from
+    one that reported nothing: both give `(0, 0)`, and only one of them was
+    measured (#717).
+    """
+    if reported is None:
+        return 0, 0, 0
+    return reported[0], reported[1], 1
+
+
 class DirectStrategy:
     """Single LLM call. No tools. Warden-scanned response."""
+
+    async def _complete(
+        self,
+        llm: LLMClient,
+        messages: list[dict[str, Any]],
+        model: str,
+        trace: Trace | None,
+    ) -> tuple[dict[str, Any], int, int, int]:
+        """One completion, recording a span when tracing is on.
+
+        Returns the response and the turn's usage as `(input, output, reporting
+        calls)`. A direct turn is one provider call, so the count is 1 or 0 --
+        but it is a count either way, because `(0, 0, 0)` and `(0, 0, 1)` are
+        the two facts `usage.get(..., 0)` used to store identically (#717). The
+        span still takes the zero: `set_usage` counts tokens and has nowhere to
+        put an absence, the same trade `extract_usage` makes for the quota log.
+
+        Split out of `reason` for the reason `ReactStrategy._call_llm` was: the
+        trace-or-not branch doubles every statement inside it, and resolving the
+        usage in `reason` took it past the complexity ceiling.
+        """
+        if not trace:
+            response = await llm.complete(messages, model)
+            return response, *_counted(reported_usage(response))
+        with trace.span("llm_call_0") as ls:
+            ls.set_input({"model": model, "message_count": len(messages)})
+            response = await llm.complete(messages, model)
+            usage = _counted(reported_usage(response))
+            ls.set_usage(input_tokens=usage[0], output_tokens=usage[1], model=model)
+        return response, *usage
 
     async def reason(
         self,
@@ -32,22 +75,9 @@ class DirectStrategy:
         warden: Any = None,
         **kwargs: Any,
     ) -> ReasoningResult:
-        if trace:
-            with trace.span("llm_call_0") as ls:
-                ls.set_input({"model": model, "message_count": len(messages)})
-                response = await llm.complete(messages, model)
-                usage = response.get("usage", {})
-                ls.set_usage(
-                    input_tokens=usage.get("prompt_tokens", 0),
-                    output_tokens=usage.get("completion_tokens", 0),
-                    model=model,
-                )
-        else:
-            response = await llm.complete(messages, model)
-            usage = response.get("usage", {})
-
-        total_input = usage.get("prompt_tokens", 0)
-        total_output = usage.get("completion_tokens", 0)
+        response, total_input, total_output, reported_calls = await self._complete(
+            llm, messages, model, trace
+        )
 
         choices = response.get("choices", [])
         choice = choices[0] if choices else {}
@@ -67,6 +97,7 @@ class DirectStrategy:
                     done=True,
                     input_tokens=total_input,
                     output_tokens=total_output,
+                    usage_reported_calls=reported_calls,
                 )
 
         if content:
@@ -88,4 +119,5 @@ class DirectStrategy:
             done=True,
             input_tokens=total_input,
             output_tokens=total_output,
+            usage_reported_calls=reported_calls,
         )

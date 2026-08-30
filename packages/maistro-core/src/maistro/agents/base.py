@@ -725,6 +725,11 @@ class Agent:
             agent_id=self.identity.name,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
+            # How many of this turn's provider calls reported usage. The token
+            # pair above is a sum over those calls, so without the count a turn
+            # whose providers reported nothing is stored as one that cost
+            # nothing (#717).
+            usage_reported_calls=getattr(result, "usage_reported_calls", None),
             charged_microchips=int(str(charge_info.get("charged_microchips", 0))),
             pricing_version=str(charge_info.get("pricing_version", "")),
         )

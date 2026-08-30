@@ -1,4 +1,18 @@
-"""Durable persistence adapters for canonical capability Invocations."""
+"""Durable persistence adapters for canonical capability Invocations.
+
+**Unreached, and durable only in the SQLite sense.** Nothing constructs
+:class:`SqliteInvocationStore` outside tests. The container does wire a class of
+the same name -- :class:`maistro.events.invocations.SqliteInvocationStore`, a
+different store over a different table -- and both are re-exported from
+:mod:`maistro.capabilities`, so the collision is easy to read the wrong way
+round. The wired one is the events store; this one is not wired.
+
+Its table has no migration. ``capability_invocations`` is created by
+``ensure_schema`` and appears in no revision under ``alembic/versions``, so it
+does not exist in any PostgreSQL deployment and there is no PostgreSQL twin of
+this store. That is a consequence of being unreached, not an omission to fix
+separately: the migration lands with the wiring, in #55.
+"""
 
 from __future__ import annotations
 
