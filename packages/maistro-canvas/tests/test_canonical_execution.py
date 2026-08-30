@@ -64,7 +64,7 @@ async def test_admission_creates_one_scoped_run_with_stage_graph() -> None:
     assert run.status is RunStatus.QUEUED
     graph = run.graph.materialize()
     assert [(node.node_id, node.node_type) for node in graph.nodes] == [
-        ("canvas:job-1:generate", "canvas.generate")
+        ("canvas:job-1:generate", "canvas.generate"),
     ]
 
 
@@ -290,9 +290,7 @@ async def test_empty_reference_hero_short_circuits_without_fabricating_stages() 
     assert first == second == []
     assert calls == 1
     node_runs = await runs.list_node_runs(run_id)
-    assert [node_run.node_id for node_run in node_runs] == [
-        "canvas:job-empty-ref:reference.hero"
-    ]
+    assert [node_run.node_id for node_run in node_runs] == ["canvas:job-empty-ref:reference.hero"]
     attempts = await runs.list_attempts(node_runs[0].node_run_id)
     assert [attempt.status for attempt in attempts] == [AttemptStatus.COMPLETED]
     run = await runs.get_run(run_id)
