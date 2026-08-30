@@ -403,7 +403,9 @@ class TestTheScanCoversWhatItClaims:
 class TestMutationBoundaries:
     """#423. Correct behavior that mutation testing found was not constrained."""
 
-    def test_last_line_waiver_does_not_suppress_first_line_finding(self, check, workspace):
+    def test_last_line_waiver_does_not_suppress_first_line_finding(
+        self, check, workspace
+    ):
         """Kills `_is_waived`'s `index > 0` -> `index >= 0` survivor."""
         body = (
             "from thing.nope import load\n"
@@ -418,14 +420,19 @@ class TestMutationBoundaries:
         pkg = workspace / "packages" / "thing" / "src" / "thing"
         (pkg / "facade.py").write_text("import json.encoder\n", encoding="utf-8")
         assert _scan(check, workspace, "from thing.facade import json\n") == []
-        assert [f.target for f in _scan(check, workspace, "from thing.facade import encoder\n")] == [
-            "thing.facade.encoder"
-        ]
+        assert [
+            f.target
+            for f in _scan(check, workspace, "from thing.facade import encoder\n")
+        ] == ["thing.facade.encoder"]
 
-    def test_dotted_import_alias_binds_the_alias_not_the_top_level_name(self, check, workspace):
+    def test_dotted_import_alias_binds_the_alias_not_the_top_level_name(
+        self, check, workspace
+    ):
         pkg = workspace / "packages" / "thing" / "src" / "thing"
-        (pkg / "facade.py").write_text("import json.encoder as codec\n", encoding="utf-8")
+        (pkg / "facade.py").write_text(
+            "import json.encoder as codec\n", encoding="utf-8"
+        )
         assert _scan(check, workspace, "from thing.facade import codec\n") == []
-        assert [f.target for f in _scan(check, workspace, "from thing.facade import json\n")] == [
-            "thing.facade.json"
-        ]
+        assert [
+            f.target for f in _scan(check, workspace, "from thing.facade import json\n")
+        ] == ["thing.facade.json"]
