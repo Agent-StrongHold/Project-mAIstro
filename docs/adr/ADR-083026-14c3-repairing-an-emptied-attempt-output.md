@@ -21,7 +21,8 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/runs/test_attempt_result_repair.py
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
