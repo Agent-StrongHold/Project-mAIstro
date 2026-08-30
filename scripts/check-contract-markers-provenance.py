@@ -109,8 +109,12 @@ def main() -> int:
         f"{finding.as_line()}: NEW contract-marker gap absent from trusted base and not previously authorized"
         for finding in unauthorized
     )
-    failures.extend(f"{finding.as_line()}: missing from candidate ledger" for finding in candidate_new)
-    failures.extend(f"{entry}: stale candidate ledger entry must be pruned" for entry in candidate_stale)
+    failures.extend(
+        f"{finding.as_line()}: missing from candidate ledger" for finding in candidate_new
+    )
+    failures.extend(
+        f"{entry}: stale candidate ledger entry must be pruned" for entry in candidate_stale
+    )
     failures.extend(
         f"{category}: candidate category is banked without a disposition"
         for category in candidate_unexplained
