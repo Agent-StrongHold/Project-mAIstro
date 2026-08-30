@@ -1,13 +1,10 @@
 """Background schedule runner — turns due schedules into canonical Runs.
 
-Recurrence and fire semantics live in `maistro.scheduling`: this module is
-the loop that asks "what is due?" and performs the effects. It owns no cron
-dialect of its own — the matcher that used to live here indexed day-of-week
-by Python's Monday=0 convention (firing every `0`-means-Sunday schedule a day
-late) and ANDed day-of-month with day-of-week where POSIX ORs them.
-
-A fire produces a Run through the same provenanced durable path every other
-Hive DAG execution uses, so scheduled work is not a second lifecycle.
+Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
+Hive process delegates the complete evaluate -> occurrence claim -> Run admit
+-> cursor advance transaction to ``ScheduleRunAdmitter``.  The historical
+in-process path remains only as a compatibility fallback for standalone/demo
+contexts that have no core Container; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -17,18 +14,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
+from maistro.scheduling.admission import ScheduleRunAdmitter
 
 logger = logging.getLogger(__name__)
 
-# The Hive `/v1/schedules` model has no timezone column yet, so recurrence is
-# evaluated in UTC. The core definition carries a timezone, so adding the
-# column is the only remaining step to per-user local schedules.
 _DEFAULT_TIMEZONE = "UTC"
-
-# Fallback creation time for a row that predates the column. Treating such a
-# row as "created at the dawn of time" keeps it firing; treating it as new
-# would silently retire it.
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 _runner: _ScheduleRunner | None = None
@@ -39,7 +31,6 @@ def start_scheduler() -> None:
     if _runner is not None:
         return
     _runner = _ScheduleRunner()
-    # Keep a reference to the background task so it isn't garbage-collected mid-flight.
     _runner.task = asyncio.ensure_future(_runner.run())
 
 
@@ -55,23 +46,11 @@ class ScheduleNotFireable(Exception):
 
 
 async def fire_now(sid: str) -> str:
-    """Fire a schedule on demand, through the path a tick uses.
+    """Fire a schedule on demand through the compatibility execution path.
 
-    `POST /v1/schedules/{id}/run` used to stamp `last_run` and stop there: no
-    Run, no cursor, nothing counted. That is the same "receipt for work that
-    never started" the tick path carried before #231 — a schedule asserting it
-    fired with no `run_id` anywhere — and it outlived that fix because it sits
-    on the route rather than in the loop.
-
-    A manual fire is a fire: it creates a canonical Run, records the cursor,
-    and counts against `max_runs`. Raises `ScheduleNotFireable` rather than
-    half-firing, so the caller can say why.
-
-    **It advances the cursor**, which is the one real cost: occurrences owed
-    from before now are no longer backfilled, because `last_fired_at` moves to
-    now. The next *scheduled* occurrence is unaffected — `next_fire_after(now)`
-    is still it — so what is given up is bounded by the catch-up window. That
-    is the trade chosen for "run it now" meaning the schedule has run now.
+    The recurring production loop is owned by ``ScheduleRunAdmitter``.  Manual
+    fire keeps the existing immediate semantics until the product exposes a
+    first-class manual occurrence on the canonical scheduling API.
     """
     import stores
 
@@ -92,9 +71,6 @@ async def fire_now(sid: str) -> str:
     now = datetime.now(UTC)
     run_id = await runner._fire_schedule(sid, schedule, scheduled_for=now, catchup=False)
     if run_id is None:
-        # `_fire_schedule` has already logged and audited why. The cursor is
-        # deliberately not advanced: the occurrence stays owed, exactly as it
-        # does on the tick path.
         raise ScheduleNotFireable(
             f"schedule {sid} could not create a Run; its target may not be registered"
         )
@@ -115,8 +91,8 @@ class _ScheduleRunner:
         self._running = True
         self._last_check: datetime | None = None
         self._last_repair: datetime | None = None
-        # Schedules with a Run this loop started and has not yet finished.
-        # The overlap policy is only meaningful if this is answered truthfully.
+        # Compatibility fallback only.  Configured production overlap is read
+        # from the canonical Run named by Schedule.last_run_id.
         self._in_flight: set[str] = set()
         self.task: asyncio.Task[None] | None = None
 
@@ -137,11 +113,7 @@ class _ScheduleRunner:
                 logger.warning("Self-repair tick failed: %s", exc)
 
     async def _self_repair_tick(self) -> None:
-        """Run the self_repair loop on its configured cadence (SPEC-188).
-
-        Resolution is the kill-switch: a disabled slot resolves to None and
-        nothing runs. interval <= 0 disables the periodic loop entirely.
-        """
+        """Run the self_repair loop on its configured cadence (SPEC-188)."""
         from config import get_settings
 
         interval = get_settings().self_repair_interval_s
@@ -173,14 +145,12 @@ class _ScheduleRunner:
         self._last_check = now
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
-        """Project the live `/v1/schedules` row onto the canonical definition.
+        """Project the live ``/v1/schedules`` row onto the canonical definition.
 
-        The HTTP surface keeps its shape; only the semantics move. Overlap
-        defaults to SKIP so a long agent Run is never stacked on itself.
-
-        Returns None for a row with no target: a schedule that names nothing
-        to run cannot produce work, and a definition is required to say what
-        it instantiates rather than carrying an empty pointer.
+        The synthetic scope values below are retained only for the standalone
+        compatibility path.  A configured Hive replaces them with the actual
+        configured Workspace and its canonical Root Project before persisting
+        or admitting the definition.
         """
         template_id = str(getattr(schedule, "mission_template_id", "") or "")
         if not template_id:
@@ -191,59 +161,124 @@ class _ScheduleRunner:
             project_id=f"hive:schedule:{sid}",
             name=str(getattr(schedule, "name", "") or sid),
             cron=str(schedule.cron_expression),
-            # From the row now, not hardcoded. `getattr` with the same default
-            # keeps a row (or a stub) predating the column evaluating in UTC,
-            # which is exactly what it did before.
             timezone=str(getattr(schedule, "timezone", None) or _DEFAULT_TIMEZONE),
             graph_template_id=template_id,
-            # Bounded recurrence is enforced on the canonical cursor, which can
-            # only apply a bound it is told about. `None` — every row before
-            # this column — stays unbounded.
             max_runs=getattr(schedule, "max_runs", None),
-            # The row's own flag rather than a hardcoded True. `_tick` already
-            # skips a disabled row, so this only matters for the write below:
-            # `_definition_for` ends in `store.put(definition)`, and putting a
-            # hardcoded True would resurrect a schedule that `record_fire`
-            # disabled on exhaustion.
             enabled=bool(getattr(schedule, "enabled", True)),
             overlap_policy=OverlapPolicy.SKIP,
             last_fired_at=getattr(schedule, "last_run", None),
-            # Carry the row's real creation time. Without it the definition
-            # defaults to *now*, and the rule that a schedule cannot fire for
-            # occurrences predating its own existence would suppress every
-            # tick — a scheduler that never fires.
             created_at=getattr(schedule, "created_at", None) or _EPOCH,
             actor_principal_id=str(getattr(schedule, "user_id", "") or "") or None,
         )
 
     @staticmethod
-    def _canonical_store() -> Any:
-        """The Container's ScheduleStore, or None when there is no bridge.
-
-        None is a real answer here, exactly as it is for `engine.run_store`: a
-        Conductor running without the core bridge has no canonical store, and
-        the cursor then stays on the in-memory row as it did before #231 —
-        degraded, but not broken.
-        """
+    def _canonical_container() -> Any:
+        """Return the wired core Container, or None in standalone/demo tests."""
         try:
             from services.engine import get_engine
 
-            return get_engine().schedule_store
-        except Exception:  # pragma: no cover - engine unavailable in tests
+            engine = get_engine()
+            return getattr(getattr(engine, "_agent_port", None), "container", None)
+        except Exception:  # pragma: no cover - engine unavailable in isolation
             return None
 
-    async def _definition_for(self, sid: str, schedule: Any, *, store: Any) -> Schedule | None:
-        """The canonical definition to evaluate, with the durable cursor on it.
+    @staticmethod
+    def _canonical_store() -> Any:
+        """The Container's ScheduleStore, or None when there is no bridge."""
+        container = _ScheduleRunner._canonical_container()
+        return getattr(container, "schedule_store", None) if container is not None else None
 
-        The `/v1/schedules` row stays the editable surface — a changed cron or a
-        disable must take effect — so the projection is rebuilt from it every
-        tick. What comes from the store instead is the *cursor*: `last_fired_at`,
-        `last_run_id`, `runs_so_far` and `next_due_at`. Those are the fields that
-        say what has already happened, and the in-memory row is the wrong place
-        to keep them: it is lost on restart and private to one replica.
+    @staticmethod
+    def _canonical_admitter(container: Any) -> ScheduleRunAdmitter | None:
+        """Build the one production schedule admission boundary.
+
+        Attribute reads are explicit so the wiring-read fitness gate can prove
+        that these Container fields are actually consumed.
         """
+        if container is None:
+            return None
+        run_store = container.run_store
+        template_store = container.template_store
+        schedule_store = container.schedule_store
+        if run_store is None or template_store is None or schedule_store is None:
+            return None
+        return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+
+    async def _canonical_scope(self, schedule: Any, container: Any) -> tuple[str, str]:
+        """Resolve real Workspace/Project ownership for a Hive schedule.
+
+        The current product surface has no per-schedule Project selector, so a
+        schedule defaults to Hive's configured Workspace and that Workspace's
+        canonical Root Project — the same rule ordinary task admission uses.
+        Future rows may carry explicit ``workspace_id``/``project_id`` fields;
+        when present they are honored rather than overwritten.
+        """
+        from config import get_settings
+
+        workspace_id = str(
+            getattr(schedule, "workspace_id", "") or get_settings().hive_default_workspace_id
+        )
+        explicit_project = str(getattr(schedule, "project_id", "") or "")
+        if explicit_project:
+            project = await container.project_scope_store.get(explicit_project)
+            if project is None:
+                raise ValueError(f"schedule names unknown Project {explicit_project!r}")
+            if project.workspace_id != workspace_id:
+                raise ValueError("schedule Project does not belong to its Workspace")
+            return workspace_id, explicit_project
+
+        root = await container.project_scope_store.root_for_workspace(workspace_id)
+        return workspace_id, root.project_id
+
+    async def _prime_template(self, definition: Schedule, container: Any) -> None:
+        """Persist the current Hive DAG descriptor as a canonical GraphTemplate.
+
+        Reads always come from the template store afterwards.  The in-process
+        registry is only a migration source for a descriptor that has not been
+        written there yet; after that, a restart with an empty registry does not
+        erase the scheduled target.
+        """
+        template_store = container.template_store
+        existing = await template_store.get(
+            definition.graph_template_id, version=definition.template_version
+        )
+        if existing is not None:
+            if existing.workspace_id != definition.workspace_id:
+                raise ValueError(
+                    f"GraphTemplate {definition.graph_template_id!r} belongs to Workspace "
+                    f"{existing.workspace_id!r}, not {definition.workspace_id!r}"
+                )
+            return
+
+        from maistro.graph.template_adapter import descriptor_to_template
+        from services.dag_agents import get_registry
+
+        descriptor = get_registry().get(definition.graph_template_id)
+        if descriptor is None:
+            # ScheduleRunAdmitter will return the precise GraphTemplateNotFound
+            # failure and, critically, leave the occurrence owed.
+            return
+        await template_store.put(
+            descriptor_to_template(descriptor, workspace_id=definition.workspace_id)
+        )
+
+    async def _definition_for(
+        self,
+        sid: str,
+        schedule: Any,
+        *,
+        store: Any,
+        scope: tuple[str, str] | None = None,
+    ) -> Schedule | None:
+        """Return the editable definition with the durable cursor overlaid."""
         definition = self._as_definition(sid, schedule)
-        if definition is None or store is None:
+        if definition is None:
+            return None
+        if scope is not None:
+            definition = definition.model_copy(
+                update={"workspace_id": scope[0], "project_id": scope[1]}
+            )
+        if store is None:
             return definition
         recorded = await store.get(sid)
         if recorded is not None:
@@ -259,7 +294,142 @@ class _ScheduleRunner:
         await store.put(definition)
         return definition
 
+    async def _canonical_active_run(self, definition: Schedule, container: Any) -> bool:
+        """Whether the schedule's latest Run is still non-terminal."""
+        if not definition.last_run_id:
+            return False
+        run = await container.run_store.get_run(definition.last_run_id)
+        return run is not None and run.status not in TERMINAL_RUN_STATUSES
+
+    @staticmethod
+    def _project_cursor(sid: str, recorded: Schedule) -> None:
+        """Mirror canonical cursor state onto the legacy Hive response row."""
+        import stores
+
+        current = stores.schedules.get(sid)
+        if current is None:
+            return
+        stores.schedules[sid] = current.model_copy(
+            update={
+                "last_run": recorded.last_fired_at,
+                "last_run_id": recorded.last_run_id,
+                "next_run": recorded.next_due_at,
+                "enabled": recorded.enabled,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+
+    async def _audit_canonical_admission(
+        self,
+        sid: str,
+        schedule: Any,
+        admission: Any,
+        container: Any,
+    ) -> None:
+        """Keep the existing Hive audit surface while core owns admission."""
+        from routes.audit import log_audit
+
+        for run_id in admission.run_ids:
+            run = await container.run_store.get_run(run_id)
+            provenance = dict(run.provenance) if run is not None else {}
+            log_audit(
+                "schedule_fire",
+                "system",
+                target=sid,
+                detail={
+                    "name": schedule.name,
+                    "scheduled_for": provenance.get("scheduled_for"),
+                    "catchup": provenance.get("catchup", False),
+                },
+            )
+            log_audit(
+                "schedule_run",
+                "system",
+                target=sid,
+                detail={
+                    "dag_id": str(schedule.mission_template_id),
+                    "run_id": run_id,
+                    "status": run.status.value if run is not None else "unknown",
+                    "template_version": (
+                        run.graph.source_template.template_version
+                        if run is not None and run.graph.source_template is not None
+                        else None
+                    ),
+                },
+            )
+        for exc in admission.failures:
+            log_audit(
+                "schedule_run",
+                "system",
+                target=sid,
+                detail={
+                    "dag_id": str(schedule.mission_template_id),
+                    "error": type(exc).__name__,
+                },
+            )
+
+    async def _evaluate_canonical(
+        self,
+        sid: str,
+        schedule: Any,
+        *,
+        now: datetime,
+        container: Any,
+        admitter: ScheduleRunAdmitter,
+    ) -> None:
+        """Configured Hive path: one canonical scheduler authority."""
+        scope = await self._canonical_scope(schedule, container)
+        definition = await self._definition_for(
+            sid, schedule, store=container.schedule_store, scope=scope
+        )
+        if definition is None:
+            logger.debug("Schedule %s names no mission template; nothing to run", sid)
+            return
+
+        await self._prime_template(definition, container)
+        admission = await admitter.admit_due(
+            definition,
+            now=now,
+            active_run=await self._canonical_active_run(definition, container),
+        )
+
+        for skipped in admission.skipped:
+            logger.info(
+                "Schedule %s skipped occurrence %s: %s",
+                sid,
+                skipped.scheduled_for.isoformat(),
+                skipped.reason.value,
+            )
+        for occurred in admission.already_fired:
+            logger.info(
+                "Schedule %s occurrence %s was already claimed by another runner",
+                sid,
+                occurred.isoformat(),
+            )
+        for exc in admission.failures:
+            logger.warning("Schedule %s admission failed: %s", sid, exc)
+
+        await self._audit_canonical_admission(sid, schedule, admission, container)
+        recorded = await container.schedule_store.get(sid)
+        if recorded is not None:
+            self._project_cursor(sid, recorded)
+
     async def _evaluate_schedule(self, sid: str, schedule: Any, *, now: datetime) -> None:
+        container = self._canonical_container()
+        admitter = self._canonical_admitter(container)
+        if admitter is not None:
+            await self._evaluate_canonical(
+                sid,
+                schedule,
+                now=now,
+                container=container,
+                admitter=admitter,
+            )
+            return
+
+        # Standalone/demo compatibility path. Production must never reach this
+        # when the core bridge is configured; it exists so a scheduler unit can
+        # still be exercised without constructing the entire Container.
         store = self._canonical_store()
         definition = await self._definition_for(sid, schedule, store=store)
         if definition is None:
@@ -275,33 +445,16 @@ class _ScheduleRunner:
                 skipped.reason.value,
             )
 
-        # `decision.exhausted` is the engine's own answer to "does `max_runs`
-        # run out once these fires are recorded", so exhaustion is not
-        # re-derived here from a `runs_so_far` that was read once per tick and
-        # is stale for any fire after the first. It describes the batch, so it
-        # belongs on the batch's last fire — which under `OverlapPolicy.SKIP`,
-        # hardcoded in `_as_definition`, is also its only one.
         last_index = len(decision.fires) - 1
         for fire_index, fire in enumerate(decision.fires):
             self._in_flight.add(sid)
             try:
-                # `catchup` was evaluated and then dropped here. A backfill
-                # after downtime and an on-time fire mean different things, and
-                # once the Run exists there is nothing left to tell them apart
-                # (#145).
                 run_id = await self._fire_schedule(
                     sid, schedule, scheduled_for=fire.scheduled_for, catchup=fire.catchup
                 )
             finally:
                 self._in_flight.discard(sid)
             if run_id is None:
-                # Stop the batch, and leave the cursor where it is. The
-                # occurrence is still owed, and so is every one after it —
-                # advancing past a fire that produced no Run is the receipt for
-                # work that never started this issue exists to remove. Stopping
-                # rather than continuing is `ScheduleRunAdmitter`'s rule too:
-                # the cursor covers a contiguous range, so skipping one failure
-                # would either lose it or duplicate its successors.
                 return
             await self._record_fire(
                 sid,
@@ -324,11 +477,7 @@ class _ScheduleRunner:
         run_id: str,
         exhausted: bool = False,
     ) -> None:
-        """Advance the cursor, canonically when there is a store to advance.
-
-        ``exhausted`` says this fire spends the last of `max_runs`; the caller
-        gets it from `evaluate`, which is where the count is not stale.
-        """
+        """Compatibility cursor advance; configured Hive uses the admitter."""
         import stores
 
         fired_at = fire.scheduled_for
@@ -341,26 +490,15 @@ class _ScheduleRunner:
                 next_due_at=next_due_at,
                 disable=exhausted,
             )
-        # The `/v1/schedules` row keeps showing what it always showed. It is a
-        # projection now rather than the record, so it is written after the
-        # cursor it mirrors, never before.
         current = stores.schedules.get(sid)
         if current is not None:
             update: dict[str, Any] = {
                 "last_run": fired_at,
-                # The Run that claimed this occurrence, so a caller holding the
-                # schedule can reach it. `last_run` alone said only *that*
-                # something fired.
                 "last_run_id": run_id,
                 "next_run": next_due_at,
                 "updated_at": datetime.now(UTC),
             }
             if exhausted:
-                # The same disable `record_fire` just wrote canonically, on the
-                # surface a user reads. Without it the row keeps reporting
-                # `enabled: true` for a spent schedule, and — because `_tick`
-                # skips only disabled rows — the next tick would `put` that
-                # `enabled: true` straight back over the canonical disable.
                 update["enabled"] = False
                 update["next_run"] = None
             stores.schedules[sid] = current.model_copy(update=update)
@@ -380,14 +518,7 @@ class _ScheduleRunner:
         scheduled_for: datetime | None = None,
         catchup: bool = False,
     ) -> str | None:
-        """Create the occurrence's Run, and return its id, or None if it did not.
-
-        The cursor advance is the caller's, and only on a returned run_id. This
-        function used to stamp `last_run` on its first line and check whether the
-        work could happen afterwards, so an unresolvable template or a failed Run
-        creation left a schedule asserting it had fired with no `run_id` anywhere
-        — a receipt for work that never started (#231).
-        """
+        """Compatibility immediate execution path used by manual fire/tests."""
         t = datetime.now(UTC)
 
         template_id = schedule.mission_template_id
@@ -402,37 +533,16 @@ class _ScheduleRunner:
             target=sid,
             detail={
                 "name": schedule.name,
-                # The nominal occurrence, not the moment the tick noticed it,
-                # so a Run that started late is still attributable.
                 "scheduled_for": (scheduled_for or t).isoformat(),
                 "catchup": catchup,
             },
         )
 
-        # Schedule -> Run: a firing whose target is a registered DAG produces
-        # canonical durable work — the same GraphTemplate-provenanced Run path
-        # every other Hive DAG execution uses — instead of a bare audit line.
-        # Targets that don't resolve keep the historical log-only behavior
-        # (no other mission-template kind is executable yet).
         from services.dag_agents import get_registry, run_registered_dag
 
         if get_registry().get(str(template_id)) is None:
-            # `DagRegistry` is an in-process dict, so this is the normal state
-            # after a restart until something re-registers the DAG -- exactly
-            # when an operator most needs to be told (#145).
-            #
-            # Returning None now leaves the occurrence *owed*: the caller does
-            # not advance the cursor, so once the DAG is registered the fire
-            # happens. Before #231 the cursor was already advanced by the time
-            # this branch ran, and the comment here argued that was deliberate
-            # because rewinding would stampede. That reasoning was sound about
-            # rewinding and wrong about the remedy -- never advancing in the
-            # first place costs nothing, and the catch-up window (which bounds
-            # backfill to an hour by default) is what stops the stampede.
             logger.warning(
-                "Schedule %s targets mission template %s, which is not registered; "
-                "no Run was created. The in-process DAG registry is empty until "
-                "something re-registers it, which is the usual state after a restart.",
+                "Schedule %s targets mission template %s, which is not registered; no Run was created.",
                 sid,
                 template_id,
             )
@@ -452,18 +562,10 @@ class _ScheduleRunner:
                 workspace_id=scope_id,
                 project_id=scope_id,
                 user_id=user_id,
-                # On the Run, not beside it. #46 asks for schedule provenance
-                # "retained on the Run"; it lived only in the `schedule_run`
-                # audit line, so a scheduled Run was indistinguishable from one
-                # a person started. Tasks (#41) and chat turns (#131) both
-                # carry theirs on the Run; scheduling was the outlier.
                 provenance={
                     "admission_source": "schedule",
                     "schedule_id": sid,
                     "schedule_name": schedule.name,
-                    # The nominal occurrence, not the tick that noticed it, so
-                    # a Run that started late is still attributable to the
-                    # occurrence it belongs to.
                     "scheduled_for": (scheduled_for or t).isoformat(),
                     "catchup": catchup,
                 },
