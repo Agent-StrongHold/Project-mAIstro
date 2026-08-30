@@ -17,8 +17,10 @@ from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AttemptStatus,
+    CancellationCause,
     RunStatus,
 )
+from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.service import RunExecutionService
 from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import RunIntegrityError, RunStore
@@ -86,6 +88,11 @@ class CanvasCanonicalExecution:
             store=run_store,
             runtime=runtime or PythonExecutionRuntime(),
         )
+        # Canvas's own worker lease is deliberately separate from the canonical
+        # Attempt lease. If that worker disappears after exhausting the Canvas
+        # retry budget, the adapter still has to settle the stranded physical
+        # Attempt before the Run can honestly become terminal.
+        self._reconciler = AttemptLifecycleReconciler(run_store)
 
     async def admit(
         self,
@@ -199,8 +206,9 @@ class CanvasCanonicalExecution:
             )
             if active is not None:
                 # A Canvas lease was reclaimed, so this physical try is no longer
-                # the try allowed to publish. Close its canonical evidence before
-                # creating the replacement Attempt.
+                # the try allowed to publish. Runtime cancellation may have no
+                # live task after a worker loss; terminal settlement for the
+                # exhausted-retry case is handled explicitly in fail().
                 await self._service.cancel_attempt(active.attempt_id)
             attempt = await self._service.retry_node(
                 node_run.node_run_id,
@@ -236,14 +244,52 @@ class CanvasCanonicalExecution:
             await self._runs.transition_run(run_id, RunStatus.CANCELLED)
 
     async def fail(self, run_id: str, error: str) -> None:
-        """Terminalize a job whose Canvas retry budget is exhausted."""
+        """Terminalize a job whose Canvas retry budget is exhausted.
 
+        A worker can disappear while its canonical Attempt is still RUNNING. On
+        the final Canvas lease there will be no subsequent retry to fence that
+        stale Attempt, so settle it as recovered physical cancellation first.
+        The Canvas retry policy may then terminalize the Run as FAILED without
+        leaving live physical evidence underneath a terminal logical identity.
+        """
+
+        run = await self._require_run(run_id)
+        if run.status in TERMINAL_RUN_STATUSES:
+            return
+        await self._abandon_active_attempts(run_id, error)
         run = await self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
             return
         if run.status is not RunStatus.RUNNING:
             await self._resume_for_execution(run_id)
         await self._runs.transition_run(run_id, RunStatus.FAILED, error=error)
+
+    async def _abandon_active_attempts(self, run_id: str, error: str) -> None:
+        """Fence Canvas-worker-loss Attempts before terminal receipt failure."""
+
+        for node_run in await self._runs.list_node_runs(run_id):
+            attempts = await self._runs.list_attempts(node_run.node_run_id)
+            active = next(
+                (attempt for attempt in reversed(attempts) if attempt.status not in TERMINAL_ATTEMPT_STATUSES),
+                None,
+            )
+            if active is None:
+                continue
+            lease = active.execution_lease
+            if lease is None:
+                raise RunIntegrityError(
+                    f"active Canvas Attempt {active.attempt_id!r} has no execution lease"
+                )
+            terminal = await self._runs.transition_attempt(
+                active.attempt_id,
+                AttemptStatus.CANCELLED,
+                error=error,
+                fencing_token=lease.fencing_token,
+            )
+            await self._reconciler.reconcile(
+                terminal,
+                cancellation=CancellationCause.RECOVERED,
+            )
 
     async def _require_run(self, run_id: str):
         run = await self._runs.get_run(run_id)
