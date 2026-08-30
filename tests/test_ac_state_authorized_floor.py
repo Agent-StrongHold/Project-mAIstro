@@ -324,6 +324,67 @@ class TestTheMergeGroupHonoursTheSameGrant:
 
         assert gate._actual_base_regressions(base, candidate, {"design_coverage": 15.0}) != []
 
+    @pytest.mark.ac("SPEC-082926-6f49/AC-7")
+    def test_public_guard_reads_the_base_grant_before_comparing(
+        self, gate, tmp_path, monkeypatch, capsys
+    ) -> None:
+        base_report = tmp_path / "base.json"
+        candidate_report = tmp_path / "candidate.json"
+        base_report.write_text(json.dumps({"measured": True, "totals": TOTALS}))
+        candidate_report.write_text(
+            json.dumps({"measured": True, "totals": {**TOTALS, "design_coverage": 15.0}})
+        )
+        seen: list[str] = []
+
+        def authorized(base_rev: str):
+            seen.append(base_rev)
+            return {"design_coverage": 15.0}, {"design_coverage": "approved correction"}
+
+        monkeypatch.setattr(gate._impl, "authorized_floors", authorized)
+
+        assert gate._guard_actual_base(base_report, candidate_report, "base-sha") == 0
+        assert seen == ["base-sha"]
+        assert "preserves the actual measured AC-state" in capsys.readouterr().out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-7")
+    def test_public_guard_reports_the_grant_when_a_deeper_fall_is_refused(
+        self, gate, tmp_path, monkeypatch, capsys
+    ) -> None:
+        base_report = tmp_path / "base.json"
+        candidate_report = tmp_path / "candidate.json"
+        base_report.write_text(json.dumps({"measured": True, "totals": TOTALS}))
+        candidate_report.write_text(
+            json.dumps({"measured": True, "totals": {**TOTALS, "design_coverage": 12.0}})
+        )
+        monkeypatch.setattr(
+            gate._impl,
+            "authorized_floors",
+            lambda _rev: ({"design_coverage": 15.0}, {"design_coverage": "approved correction"}),
+        )
+
+        assert gate._guard_actual_base(base_report, candidate_report, "base-sha") == 1
+        out = capsys.readouterr().out
+        assert "regressed from the actual measured base base-sha" in out
+        assert "Authorized floors were applied" in out
+        assert "design_coverage@15.0" in out
+
+    @pytest.mark.ac("SPEC-082926-6f49/AC-6")
+    def test_public_guard_fails_closed_when_base_grant_provenance_is_invalid(
+        self, gate, tmp_path, monkeypatch, capsys
+    ) -> None:
+        base_report = tmp_path / "base.json"
+        candidate_report = tmp_path / "candidate.json"
+        base_report.write_text(json.dumps({"measured": True, "totals": TOTALS}))
+        candidate_report.write_text(json.dumps({"measured": True, "totals": TOTALS}))
+
+        def refuse(_rev: str):
+            raise gate._impl.RatchetProvenanceError("malformed authorization at base")
+
+        monkeypatch.setattr(gate._impl, "authorized_floors", refuse)
+
+        assert gate._guard_actual_base(base_report, candidate_report, "base-sha") == 1
+        assert "malformed authorization at base" in capsys.readouterr().out
+
 
 class TestAGrantMustSurviveTheChangeThatSpendsIt:
     @pytest.mark.ac("SPEC-082926-6f49/AC-8")
