@@ -200,6 +200,40 @@ async def test_requested_cancel_fences_active_attempt_and_cancels_logical_identi
     assert run.status is RunStatus.CANCELLED
 
 
+async def test_cancel_after_failed_attempt_terminalizes_parked_node() -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-cancel-parked",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+
+    async def fail() -> list[str]:
+        raise RuntimeError("provider 503")
+
+    with pytest.raises(RuntimeError, match="provider 503"):
+        await adapter.execute_stage(run_id, "generate", fail)
+
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    assert node_runs[0].status is RunStatus.WAITING
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [AttemptStatus.FAILED]
+
+    await adapter.cancel(run_id)
+
+    settled_node = await runs.get_node_run(node_runs[0].node_run_id)
+    assert settled_node is not None
+    assert settled_node.status is RunStatus.CANCELLED
+    attempts_after = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts_after] == [AttemptStatus.FAILED]
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.CANCELLED
+
+
 async def test_reference_operation_has_four_distinct_canonical_stages() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(
@@ -316,7 +350,7 @@ async def test_terminal_canvas_failure_settles_stranded_physical_attempt_first()
     assert settled_attempt.status is AttemptStatus.CANCELLED
     settled_node = await runs.get_node_run(node_run.node_run_id)
     assert settled_node is not None
-    assert settled_node.status is RunStatus.WAITING
+    assert settled_node.status is RunStatus.FAILED
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.FAILED
