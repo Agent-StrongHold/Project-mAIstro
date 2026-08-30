@@ -1,5 +1,6 @@
 ---
 inventory-delta:
+  packages/hive-conductor/backend/tests: +2
   packages/maistro-core/tests: +3
 ---
 # claude-m1-231-schedule-admitter-seam-781a
@@ -20,6 +21,15 @@ the schedule-admission seam (#231), all additive:
   branch behind that default, executed rather than declared: the wiring
   returns `None` for an absent template store and an admitter for a present
   one.
+
+Two more in `packages/hive-conductor/backend/tests/test_engine_service.py`,
+mirroring `episodic_store`'s existing test pair for the new
+`EngineService.schedule_admitter` passthrough property:
+
+- `test_schedule_admitter_is_none_without_a_bridge` — no `_agent_port` at all
+  (the unconfigured/stub case) reads `None`.
+- `test_schedule_admitter_exposes_the_container_seam_when_bridged` — with a
+  bridge whose `container.schedule_admitter` is set, the property returns it.
 
 Re-landing #551's seam now that #44 has unblocked #231; the actual live-scheduler
 migration remains separately blocked on `maistro.runs.consumption`'s deliberate
