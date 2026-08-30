@@ -65,10 +65,10 @@ class ScheduleAttemptExecutor:
             raise ValueError("timeout_s must be > 0")
         if lease_ttl <= timedelta(0):
             raise ValueError("lease_ttl must be positive")
-        if not isinstance(run_store, ConsumerClaimStore):
+        if not callable(getattr(run_store, "claim_consumer_run", None)):
             raise RunIntegrityError(
-                "schedule consumption requires a ConsumerClaimStore so RUNNING is backed "
-                "by recoverable physical evidence"
+                "schedule consumption requires a consumer claim capability so RUNNING is "
+                "backed by recoverable physical evidence"
             )
         resolved_runtime = runtime or PythonExecutionRuntime()
         self._runs = run_store
@@ -92,7 +92,6 @@ class ScheduleAttemptExecutor:
         it is therefore suppressed after the Attempt records it.
         """
         spec = self._single_node(run)
-        node = self._resolve(run, spec)
         inputs = self._inputs(run, spec)
         ctx = self._context(run, spec)
         deadline_at = (
@@ -111,6 +110,10 @@ class ScheduleAttemptExecutor:
         )
 
         async def _run(_work_item: Any, context: Any) -> Any:
+            # Resolve inside the physical Attempt. Constructor/wiring failure is
+            # therefore recorded as FAILED evidence and reconciles through the
+            # same canonical path as any other executor failure.
+            node = self._resolve(run, spec)
             result = await node.run(inputs, context)
             if result.status == "paused" and result.success:
                 raise ExecutionYielded(
