@@ -89,7 +89,15 @@ async def _recreate_scratch_database(url: str) -> None:
 #: The revision this suite exists to exercise. Named rather than `head` so the
 #: fixture does not silently acquire every future migration -- see the docstring
 #: below for why that is not hypothetical.
-_TARGET_REVISION = "005"
+#:
+#: Moved 005 -> 023 by #327. `PgSessionStore` no longer reads only `sessions`:
+#: every append and every purge also touches `session_turns`, which 023 creates
+#: and 005 knows nothing about, so the store stopped running against the older
+#: pin. That is the suite working -- it exercises the store against real
+#: migrations, so a store that outgrows its schema fails here rather than in a
+#: deployment. This is still a *name*, not `head`, so the objection above holds:
+#: the fixture acquires exactly the migrations up to 023 and no later one.
+_TARGET_REVISION = "023"
 
 
 def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
@@ -110,8 +118,8 @@ def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
 def migrated_url() -> str:
     """A scratch database with the revision that creates these tables applied.
 
-    That revision is `005`, not the `004_quota_sessions` this suite was written
-    against. #122 landed `005_engine_runtime_tables` first and it creates
+    That revision is `023` as of #327, and was `005` before it -- not the
+    `004_quota_sessions` this suite was written against. #122 landed `005_engine_runtime_tables` first and it creates
     `quota_usage` and `sessions` with the same shapes, so this branch's own
     migration became a duplicate that failed with `DuplicateTable` and has been
     deleted. The suite is the part worth keeping — it exercises the *stores*
@@ -125,8 +133,9 @@ def migrated_url() -> str:
 
     The target is the revision by name, not `head`. `head` moves, and a later
     migration that alters `tasks` would fail here on a `tasks` that was never
-    made. Naming the revision keeps this fixture testing the one migration whose
-    prerequisites it deliberately skipped.
+    made. Naming the revision keeps this fixture testing a chain someone chose,
+    and makes moving the pin a reviewed edit with a reason attached -- which is
+    what #327 had to do when the session store grew a second table.
 
     The rename above is exactly the drift
     `test_the_pinned_revision_is_the_one_this_suite_covers` was written to

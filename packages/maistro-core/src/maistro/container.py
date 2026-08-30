@@ -404,6 +404,13 @@ class Container:
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                # The Run names this turn for the session store, so a second
+                # Attempt under the same Run appends nothing rather than
+                # writing the user's message again (#327, ADR-083026-5fab).
+                # `None` when no Run was admitted: a container with no chat
+                # admitter has no identity to give, and an append with none is
+                # the unchanged one.
+                turn_id=run.run_id if run is not None else None,
             )
             return dispatched
 
@@ -1642,6 +1649,11 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
+    # for the same reason as `prompt_labels`: without it a database migrated
+    # only as far as 022 passes this preflight and then fails on the first
+    # identified append.
+    "session_turns",
     "prompts",
     # A prompt label is a row of its own since 022 (#328). Listed beside
     # `prompts` for the same reason the four above are listed at all: without
@@ -1942,10 +1954,24 @@ async def _wire_sqlite_backend(
         )
     conn = await aiosqlite.connect(path)
 
+    # The session store gets its own connection, because it is the only store
+    # here that holds a *transaction* across several statements (#327). A
+    # SQLite transaction belongs to its connection, not to the object that
+    # opened it: sharing one means another store's `commit()` can land between
+    # this one's `BEGIN IMMEDIATE` and its last insert -- committing half a
+    # message batch -- and a rollback here would discard that store's
+    # uncommitted work instead of only this store's (Codex, #327).
+    #
+    # For a file path the two connections are the same database. For a pathless
+    # `sqlite://` they are two in-memory databases, which is sound because
+    # nothing but this store reads `sessions` or `session_turns`, and that URL
+    # is already warned about above as non-durable.
+    session_conn = await aiosqlite.connect(path)
+
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
     sqlite_outcome_store = SqliteOutcomeStore(conn)
-    sqlite_session_store = SqliteSessionStore(conn)
+    sqlite_session_store = SqliteSessionStore(session_conn)
     await sqlite_quota_tracker.ensure_schema()
     await sqlite_learning_store.ensure_schema()
     await sqlite_outcome_store.ensure_schema()
