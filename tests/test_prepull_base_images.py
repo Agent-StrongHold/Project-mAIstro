@@ -29,6 +29,38 @@ SCRIPT = ROOT / "scripts" / "prepull-base-images.sh"
 #: only in the workflow, so a change to one without the other fails here.
 BUILT_DOCKERFILES = ("Dockerfile", "packages/hive-conductor/Dockerfile")
 
+#: The Dockerfiles `packages/hive-conductor/docker-compose.test.yml` builds
+#: (the `hive`, `api-tests` and `e2e-tests` services). This is the coverage a
+#: live develop protected push found missing: `hive-conductor-e2e` and
+#: `hive-conductor-e2e-ui` run `docker compose --build` directly, never call
+#: this script, and one failed outright on the exact registry-reset signature
+#: #204 exists to survive -- `cgr.dev/chainguard/python:latest: ... connection
+#: reset by peer`.
+COMPOSE_DOCKERFILES = (
+    "packages/hive-conductor/Dockerfile",
+    "packages/hive-conductor/tests/Dockerfile",
+    "packages/hive-conductor/tests/Dockerfile.playwright",
+)
+
+#: What each e2e job actually builds, and so what each must pre-pull -- not
+#: all of `COMPOSE_DOCKERFILES`. `hive-conductor-e2e`'s `up ... api-tests`
+#: builds api-tests and its `depends_on: hive`, never e2e-tests;
+#: `hive-conductor-e2e-ui`'s `up ... e2e-tests` builds e2e-tests and hive,
+#: never api-tests. Pre-pulling the Dockerfile the job never builds was
+#: Codex's #713 review finding: it cost time against the job's 20-minute
+#: budget and opened a registry-failure path for an image compose was never
+#: going to touch.
+JOB_DOCKERFILES = {
+    "hive-conductor-e2e": (
+        "packages/hive-conductor/Dockerfile",
+        "packages/hive-conductor/tests/Dockerfile",
+    ),
+    "hive-conductor-e2e-ui": (
+        "packages/hive-conductor/Dockerfile",
+        "packages/hive-conductor/tests/Dockerfile.playwright",
+    ),
+}
+
 _FROM_RE = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
 
 
@@ -88,6 +120,66 @@ def test_the_built_dockerfiles_are_the_ones_the_workflow_builds() -> None:
 
     for name in BUILT_DOCKERFILES:
         assert name in job, f"{name} is not built by ci.yml's docker-build job"
+
+
+def test_every_compose_from_line_is_accounted_for() -> None:
+    """No `FROM` in a compose-built Dockerfile is missed by the pre-pull step.
+
+    `docker compose --build` resolves every one of these images itself if the
+    pre-pull step falls behind, so a gap here fails silently right up until
+    the next registry blip -- which is exactly what happened live (#204).
+    """
+    pulled = set(_list(*COMPOSE_DOCKERFILES))
+
+    for name in COMPOSE_DOCKERFILES:
+        text = (ROOT / name).read_text()
+        aliases: set[str] = set()
+        for line in text.splitlines():
+            match = _FROM_RE.match(line)
+            if match is None:
+                continue
+            tokens = [t for t in match["rest"].split() if not t.startswith("--")]
+            image = tokens[0]
+            if "as" in [t.lower() for t in tokens]:
+                idx = [t.lower() for t in tokens].index("as")
+                if idx + 1 < len(tokens):
+                    aliases.add(tokens[idx + 1].lower())
+            if image.lower() == "scratch" or image.lower() in aliases:
+                continue
+            assert image in pulled, (
+                f"{name} builds on {image!r}, which the pre-pull step does not "
+                f"cover. It pulls: {sorted(pulled)}"
+            )
+
+
+@pytest.mark.parametrize("job", sorted(JOB_DOCKERFILES))
+def test_each_e2e_job_pre_pulls_exactly_what_it_builds(job: str) -> None:
+    """`JOB_DOCKERFILES[job]` above must match `ci.yml`, or this test guards nothing.
+
+    Both directions matter: missing one repeats #204 for that job: silent
+    right up until the next registry blip. Pre-pulling one the job never
+    builds repeats Codex's #713 finding: dead weight against the job's
+    timeout, and a registry failure path the job has no reason to be
+    sensitive to.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    body = workflow.split(f"\n  {job}:", 1)[1]
+    body = re.split(r"\n  \S", body, maxsplit=1)[0]
+
+    def _pulls(name: str) -> bool:
+        # A whole-token match: `tests/Dockerfile` is a substring of
+        # `tests/Dockerfile.playwright`, so plain `in` would count the latter
+        # as pre-pulling the former too.
+        return re.search(rf"(?<!\S){re.escape(name)}(?!\S)", body) is not None
+
+    assert "prepull-base-images.sh" in body, f"{job} does not pre-pull base images"
+    for name in JOB_DOCKERFILES[job]:
+        assert _pulls(name), f"{job} does not pre-pull {name}"
+    for name in COMPOSE_DOCKERFILES:
+        if name not in JOB_DOCKERFILES[job]:
+            assert not _pulls(name), (
+                f"{job} pre-pulls {name}, which it never builds — see JOB_DOCKERFILES"
+            )
 
 
 # --- the forms a Dockerfile may legally use --------------------------------
