@@ -1411,7 +1411,6 @@
         "packages/maistro-design/src/maistro_design/trust.py::unused method 'add_pattern'",
         "packages/maistro-design/src/maistro_design/trust.py::unused method 'all_records'",
         "packages/maistro-design/src/maistro_design/trust.py::unused method 'list_patterns'",
-        "packages/maistro-design/src/maistro_design/types.py::unused class 'DesignProjectNotFoundError'",
         "packages/maistro-design/src/maistro_design/types.py::unused method 'get_color'",
         "packages/maistro-design/src/maistro_design/types.py::unused method 'get_typography'",
         "packages/maistro-evolve/src/maistro_evolve/fixer_genome.py::unused method '_migrate_minimal'",

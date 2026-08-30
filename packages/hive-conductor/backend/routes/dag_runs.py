@@ -30,6 +30,32 @@ def list_runs(limit: int = 25) -> list[dict[str, Any]]:
     return store.list_runs(limit=max(1, min(limit, 100)))
 
 
+@router.get("/retention")
+def retention() -> dict[str, Any]:
+    """What this deployment keeps, and whether it keeps it across a restart.
+
+    A separate endpoint rather than a field on the list, which would change
+    that response from an array to an object and break every existing reader.
+
+    It exists because the bound was invisible: a `maxlen=100` deque behind a
+    page headed "Live DAG Runs" with a "Recent runs" sidebar, discarding the
+    101st run and every run at restart, with nothing anywhere saying so
+    (#697, and the rule #333 set for exactly this).
+
+    Declared before `/{run_id}`: FastAPI matches in definition order, so the
+    parameterised route would otherwise swallow this path and answer
+    "run not found" for it.
+    """
+    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
+
+    store = get_dag_run_store()
+    return {
+        "durable": store.is_durable,
+        "max_runs": MAX_RUNS,
+        "max_events_per_run": MAX_EVENTS_PER_RUN,
+    }
+
+
 @router.get("/{run_id}")
 def get_run(run_id: str) -> dict[str, Any]:
     store = get_dag_run_store()
