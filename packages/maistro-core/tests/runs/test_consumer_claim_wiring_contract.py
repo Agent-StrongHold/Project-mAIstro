@@ -1,4 +1,4 @@
-"""The canonical execution spine must expose the atomic consumer-claim seam (#544)."""
+"""The canonical spine exposes the atomic consumer-claim seam (#544)."""
 
 from maistro.runs.wiring import wire_execution_spine
 
