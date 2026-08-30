@@ -6,6 +6,7 @@ specialized leg must complete successfully. Merge-group candidates may use the
 reviewed path classifier to omit legs that cannot be affected, but uncertainty
 never widens the skip set: a missing or malformed scope requires every leg.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,7 +55,11 @@ def required_jobs(event_name: str, scope_json: str | None) -> set[str]:
     }
 
 
-def evaluate(event_name: str, scope_json: str | None, results: Mapping[str, str]) -> list[str]:
+def evaluate(
+    event_name: str,
+    scope_json: str | None,
+    results: Mapping[str, str],
+) -> list[str]:
     """Return findings for required jobs that did not complete successfully."""
     findings: list[str] = []
     for job_id in sorted(required_jobs(event_name, scope_json)):
