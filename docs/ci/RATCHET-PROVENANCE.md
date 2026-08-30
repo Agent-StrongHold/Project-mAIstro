@@ -21,6 +21,10 @@ candidate edit cannot authorize new debt or a newly allowed surface.
 | `check-wiring-reads.py` | `wiring-reads-baseline.json` | tolerance | direct; converted by #534 |
 | `check-vulture-baseline.py` | `vulture-baseline.json` | tolerance | direct; trusted rules and identities |
 | `check-radon-baseline.py` | `radon-baseline.json` | tolerance | direct; raises authorized at exact resulting complexity |
+| `check-citation-status.py` | `citation-baseline.json` | governance tolerance | delegated to `check-citation-status-provenance.py` |
+| `check-promotion-surface.py` | `promotion-surface-baseline.json` | security tolerance | delegated to `check-promotion-surface-provenance.py`; a newly unprotected promotion-path module needs prior authorization |
+| `check-shell-execution.py` | `shell-execution.json` | security allowlist | delegated to `check-shell-execution-provenance.py`; a new `shell=` execution identity needs prior authorization |
+| `check_contract_markers_impl.py` | `contract-markers-baseline.json` | evidence-debt tolerance | delegated to `check-contract-markers-provenance.py` |
 | `check_enumerations.py` | `enumeration-baseline.json` | tolerance | delegated to `check-enumerations-provenance.py` so mature discovery stays untouched |
 | `check-execution-lifecycles.py` | `execution-lifecycles.json` | lifecycle debt | direct; a new enum identity needs prior authorization |
 | `check-reachability.py` | `reachability-baseline.json` | tolerance | delegated to `check-reachability-provenance.py` |
@@ -43,6 +47,7 @@ on remains protected by its owning ratchet.
 | Checker | File | Decision |
 | --- | --- | --- |
 | `check-retired-guidance.py` | `retired-guidance.json` | candidate-authored specification: retiring or restoring guidance is the reviewed change itself |
+| `check-image-inventory.py` | `image-inventory.json` | candidate-authored current-tree specification: every Dockerfile must have a reviewed disposition and shipped images must name live build/scan jobs; this checker does not compare against tolerated prior state |
 | `ac_state_notes.py` / AC-state fold | per-branch AC notes and bounds | already base-folded through `ratchet_provenance`; candidate note is explicit branch evidence, not the comparison oracle |
 | `check_ac_state_impl.py` | `ac-state.json` | generated report output, not an oracle |
 | `check_ac_state_impl.py` | `reachability-baseline.json` | measurement input; a candidate cannot self-promote by deleting an unreachable module because the separately required trusted reachability ratchet rejects that deletion while the module remains unreachable |
@@ -68,6 +73,10 @@ repository provenance test.
 It structurally inventories Python scripts reading `quality/*.json`. A consumer
 must be directly base-resolved, delegated to an executed trusted adapter, or
 recorded as a deliberate candidate-authored/derived exception with a reason.
+The lightweight `Vulture Ratchet` job runs `--inventory-only`, making that
+inventory script itself a real workflow-rooted tool and catching an unclassified
+consumer before analyzer installation. The required repository test supplies the
+deeper proof below.
 
 `tests/test_ratchet_provenance_repository.py` runs that inventory and every live
 delegated adapter in the required root test suite. Adding a new ratchet therefore
@@ -82,5 +91,5 @@ measured. Authorization lives separately in
 base, so a new authorization takes effect only after it has already merged.
 
 Developer runs without a base revision remain possible and are explicitly
-labelled worktree-judged by the shared resolver; required CI supplies a trusted
-base or fails closed.
+labelled worktree-judged by the shared resolver; required monotonicity CI supplies
+a trusted base or fails closed.
