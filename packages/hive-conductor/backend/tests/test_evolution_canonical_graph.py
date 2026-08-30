@@ -9,6 +9,7 @@ import pytest
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+from maistro.graph.nodes import NodeResult
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
@@ -312,6 +313,10 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     assert len(node_runs) == 1
+    assert node_runs[0].status is RunStatus.FAILED
     attempts = await owner.run_store.list_attempts(node_runs[0].node_run_id)
     assert len(attempts) == 1
-    assert attempts[0].status is AttemptStatus.FAILED
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    physical = NodeResult.model_validate(attempts[0].result)
+    assert physical.success is False
+    assert physical.error_code == "RuntimeError"
