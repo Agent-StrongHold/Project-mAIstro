@@ -4,6 +4,22 @@
   "policy": "Classify current vulture findings by runtime discovery mechanism or declarative framework surface. New unreachable-code findings are never allowlisted and must be fixed.",
   "rules": [
     {
+      "id": "superseded-canonical-checkpoint",
+      "category": "superseded_contract",
+      "owner": "@BlakeMatthews-dev",
+      "path_regex": "packages/maistro-core/src/maistro/events/checkpoints\\.py",
+      "message_regex": "unused (function|class|method|variable|attribute)",
+      "rationale": "Unused because the contract is superseded, not because vulture cannot see the consumer: ADR-083026-ebcb records that DurableRunRecord is the canonical checkpoint of a graph execution, and nothing constructs these. Until #729 these same identities were kept off this ledger by a _CHECKPOINT_STORE_OPERATIONS tuple in events/__init__.py that referenced them solely so they would look used -- a correct signal answered by manufacturing a reference. They are recorded here instead, which is where an intentional absence belongs. Retire them with the module when #62's checkpoint convergence closes.",
+      "findings": [
+        "packages/maistro-core/src/maistro/events/checkpoints.py::unused class 'SqliteCheckpointStore'",
+        "packages/maistro-core/src/maistro/events/checkpoints.py::unused function 'checkpoint_created_event'",
+        "packages/maistro-core/src/maistro/events/checkpoints.py::unused function 'resolve_checkpoint'",
+        "packages/maistro-core/src/maistro/events/checkpoints.py::unused method 'list_run'",
+        "packages/maistro-core/src/maistro/events/checkpoints.py::unused method 'list_run'",
+        "packages/maistro-core/src/maistro/events/checkpoints.py::unused method 'list_run'"
+      ]
+    },
+    {
       "id": "fastapi-route-handler",
       "category": "framework_decorator_surface",
       "owner": "@BlakeMatthews-dev",

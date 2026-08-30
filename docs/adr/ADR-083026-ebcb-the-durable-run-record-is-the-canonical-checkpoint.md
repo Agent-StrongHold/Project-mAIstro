@@ -14,8 +14,7 @@ history:
 substrate:
   - maistro-engine#ADR-083026-a91e
 implements: []
-related:
-  - maistro-engine#ADR-083026-aba1
+related: []
 supersedes: []
 blocks: []
 blocked-by: []
