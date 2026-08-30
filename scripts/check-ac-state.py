@@ -6,8 +6,8 @@ per-change mandate. This stable entry point separates two questions that used
 to be conflated:
 
 * review time asks whether the candidate regresses from the trusted bound;
-  an improvement is useful evidence, but it is not a reason to rewrite branch
-  bookkeeping; and
+  on the canonical queued ``develop`` path an improvement is useful evidence,
+  but it is not a reason to rewrite branch bookkeeping; and
 * merge time asks whether the exact candidate preserves the *actual measured
   state* of the immutable base it is about to replace.
 
@@ -20,6 +20,8 @@ lock the per-branch note scheme was meant to remove.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -47,44 +49,126 @@ _PROTECTED_PUSH_REFS = {
     "refs/heads/main",
 }
 _BASE_MEASUREMENT = "AC_STATE_BASE_MEASUREMENT"
+_CANONICAL_REPOSITORY = "Agent-StrongHold/Project-mAIstro"
+_CANONICAL_REVIEW_BASE = "develop"
 
 # Review-time exactness used to make every improvement a required bookkeeping
 # edit. The merge-group guard below now measures the actual immutable base, so
 # it is the stronger oracle: a later PR cannot spend an improvement because the
 # next merge group re-measures develop itself. Keep the implementation's policy
-# available for merge-group diagnostics, but make review-time slack
-# informational rather than a branch mutation requirement.
+# everywhere except the one CI path whose repository ruleset has a proven live
+# merge queue. Local and synthetic callers stay conservative by default.
 _ORIGINAL_SLACK_POLICY = _impl._slack_this_run_enforces
 
 
-def _review_slack_policy(improvements: list[str]) -> list[str]:
-    """Do not serialize contributors merely because the measurement improved.
+def _canonical_develop_pr_ci() -> bool:
+    """Whether this is the proven queued review path, not merely a PR-shaped run.
 
-    A pull request still fails on regressions. Improvements are made durable at
-    the merge serialization point by `_guard_actual_base`, which measures the
-    actual base tree rather than trusting a candidate-authored note. Requiring a
-    note here adds no safety and is exactly the rebase/re-bank tax this project
-    is removing.
+    The live repository ruleset is the deployment proof: ``develop`` has strict
+    required-status freshness and an active SQUASH merge queue. These environment
+    facts scope the relaxed review policy to that exact deployment. Local tests,
+    forks, synthetic invocations, and other branches retain the implementation's
+    conservative exact-banking rule.
     """
+    return (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+        and os.environ.get("GITHUB_REPOSITORY") == _CANONICAL_REPOSITORY
+        and os.environ.get("GITHUB_BASE_REF") == _CANONICAL_REVIEW_BASE
+    )
+
+
+def _candidate_note_fold_weakening() -> list[str]:
+    """Any way this worktree weakens trusted notes beyond an authorized correction.
+
+    No-rebank means a measured improvement does not have to be copied into a
+    fresh note. It does *not* mean the candidate may edit inherited evidence
+    downward. Compare note fold to note fold before ignoring measurement slack:
+    strengthening is fine, weakening is not, except to a floor already lowered
+    by a reviewed authorization at the trusted base.
+    """
+    bound = _impl.ac_state_notes.bounds()
+    floors, _reasons = _impl.authorized_floors(bound.base_sha)
+    candidate = dict(_impl._banked().counters)
+    trusted = _impl._lowered(bound.counters, floors)
+    missing = [name for name in (*_impl.RATCHETED, *_impl.FLOORED) if name not in candidate]
+    if missing:
+        return [f"candidate note fold omits bounded counter {name}" for name in missing]
+    regressions, _improvements = _impl._compare(trusted, candidate)
+    return regressions
+
+
+def _review_slack_policy(improvements: list[str]) -> list[str]:
+    """Ignore safe review slack only where merge serialization is authoritative."""
     if not improvements:
         return []
-    if os.environ.get("GITHUB_EVENT_NAME") == "merge_group":
+
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    relaxes_slack = event == "merge_group" or _canonical_develop_pr_ci()
+    if not relaxes_slack:
         return _ORIGINAL_SLACK_POLICY(improvements)
+
+    weakening = _candidate_note_fold_weakening()
+    if weakening:
+        print("FAIL: candidate AC-state notes weaken the trusted base fold\n")
+        for line in weakening:
+            print(f"  - {line}")
+        print(
+            "\nMeasured improvement slack cannot authorize edits to inherited note evidence. "
+            "Restore the inherited fold or use an already-reviewed floor correction."
+        )
+        # Keep the implementation's existing non-empty failure channel. The
+        # dedicated diagnostic above says why this slack is intentionally not
+        # ignored instead of misclassifying the note mutation as measurement
+        # noise.
+        return improvements
+
+    if event == "merge_group":
+        return _ORIGINAL_SLACK_POLICY(improvements)
+
     print(
         "review-time AC-state improvement observed; no bank is required.\n"
-        "The merge-group actual-base guard re-measures the immutable develop base "
-        "and owns monotonicity, so branch notes are not a synchronization requirement.\n  "
+        "The live develop merge queue serializes the exact candidate, and its "
+        "actual-base guard re-measures the immutable develop base. Branch notes "
+        "are therefore not a synchronization requirement for measurement slack.\n  "
         + "\n  ".join(improvements)
     )
     return []
 
 
+def _rewrite_relaxed_success(output: str) -> str:
+    """Do not claim exact equality on a path that may intentionally accept slack."""
+    exact = (
+        f"OK: {len(_impl.RATCHETED)} debt counters sit exactly on their ceilings and "
+        f"{len(_impl.FLOORED)} progress counter sits exactly on its floor "
+    )
+    bounded = (
+        f"OK: {len(_impl.RATCHETED)} debt counters satisfy their ceilings and "
+        f"{len(_impl.FLOORED)} progress counter satisfies its floor "
+    )
+    return output.replace(exact, bounded)
+
+
+def _call_with_output_policy(callable_: Any, *args: Any, **kwargs: Any) -> Any:
+    """Rewrite only the success wording on paths where slack may be informational."""
+    if os.environ.get("GITHUB_EVENT_NAME") != "merge_group" and not _canonical_develop_pr_ci():
+        return callable_(*args, **kwargs)
+
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        result = callable_(*args, **kwargs)
+    output = _rewrite_relaxed_success(captured.getvalue())
+    if output:
+        print(output, end="")
+    return result
+
+
 def _with_review_slack(callable_: Any, *args: Any, **kwargs: Any) -> Any:
-    """Run an implementation entry point with review-time slack informational."""
+    """Run an implementation entry point with the scoped review policy installed."""
     previous = _impl._slack_this_run_enforces
     _impl._slack_this_run_enforces = _review_slack_policy
     try:
-        return callable_(*args, **kwargs)
+        return _call_with_output_policy(callable_, *args, **kwargs)
     finally:
         _impl._slack_this_run_enforces = previous
 
@@ -94,7 +178,7 @@ def _run_impl(argv: list[str]) -> int:
 
 
 def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
-    """Public ratchet surface with the same no-rebank review policy as the CLI."""
+    """Public ratchet surface with the same scoped policy as the CLI."""
     return int(_with_review_slack(_impl.ratchet, totals, measured, bank))
 
 
