@@ -9,11 +9,20 @@ import pytest
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
-from maistro_canvas.canvas.canonical_execution import CanvasCanonicalExecution, canonical_run_id
+from maistro_canvas.canvas.canonical_execution import (
+    CanvasCanonicalExecution,
+    canonical_run_id,
+)
 from maistro_canvas.canvas.executor import CanvasExecutor
 from maistro_canvas.canvas.runner import CanvasJobRunner
 from maistro_canvas.protocols import ImageData
-from maistro_canvas.types import CanvasRecord, GenerationJobRecord, JobAction, JobStatus, LayerRecord
+from maistro_canvas.types import (
+    CanvasRecord,
+    GenerationJobRecord,
+    JobAction,
+    JobStatus,
+    LayerRecord,
+)
 
 pytestmark = pytest.mark.asyncio
 
