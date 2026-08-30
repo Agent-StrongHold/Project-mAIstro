@@ -38,6 +38,7 @@ ac-modules:
   AC-6: '@tool/check_ac_state_impl'
   AC-7: '@tool/check_ac_state_impl'
   AC-8: '@tool/check_ac_state_impl'
+  AC-9: '@tool/check_ac_state_impl'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -125,6 +126,51 @@ What the exact comparison still enforces is that the measurement **is** the
 authorized value: below it is a regression the grant does not cover, above it
 is slack that must be banked. A grant is not a floor a branch may sit anywhere
 under.
+
+**A grant corrects the inherited record; it is not a cap (#691).** The exact
+comparison used to read against the *worktree fold* with the grant applied on
+top. Both halves of that were wrong together. The worktree fold carries the
+merged notes the grant exists to disown, so it re-asserts the very number the
+grant just declared wrong; and `min` on top then pulled the target back to the
+granted value. A change measuring above the grant was told it held unbanked
+slack, and banking — the remedy the gate printed — could not move a fold that
+`max` already pinned to the stale note.
+
+Nor could the grant be retired to escape. `_stale_grants` fires once the fold
+is at or below the grant; `_removed_binding_grants` refuses removal while the
+fold is above it. Those are complementary conditions on the same pair, so
+exactly one held at all times and the grant could never leave. `develop`
+accepted one `design_coverage` value and refused every other, in both
+directions, until this was corrected.
+
+So the exact comparison is read against **the worktree fold as the grants
+correct it, then raised by the notes this change adds or rewrites**. The fold
+stays: it is the only thing that sees an inherited note a change *weakened*.
+Rewriting the bound-holding note from 20 to 15 while still measuring 20 leaves
+the base comparison happy — that half reads the measurement, not the notes —
+and would silently lower the floor for everyone after the merge. The `min` was
+the whole of the cap; raising by the fresh notes is what lets banking move the
+target again.
+
+A note counts as fresh when the base has none by that name, or has one saying
+something different. Where there is no grant `min` is the identity and the
+fresh notes are a subset of the fold, so the comparison is unchanged.
+
+That admits the case which matters most in practice — a change landing
+*between* the grant and the stale fold. A grant exists precisely because the
+inherited fold is too high, so the interesting branches do not clear it at all.
+Under the old rule every one of them was unmergeable.
+
+The regression half is unchanged and keeps every grant, because that is the one
+asking whether a fall was permitted. It stays folded at the base, where nothing
+in the worktree can reach it, so raising the exact target to a banked value
+buys no permission to regress: below the grant is still a fall the grant does
+not cover.
+
+One consequence is deliberate. A grant does not remove the stale notes, so the
+fold stays above it and neither `_stale_grants` nor `_removed_binding_grants`
+will ever release the grant. It is permanent for as long as those notes are —
+which is honest, because the record it corrects is still there.
 
 ### The alternative considered, and why not
 
@@ -216,4 +262,14 @@ Feature: A corrected measurement can lower an AC-state floor
     Given a landed grant that is lowering the floor for this change
     When the change also removes it from the authorization file
     Then the run fails and says the grant has to stay
+
+  @AC-9
+  Scenario: A grant permits a fall without capping a later rise
+    Given a landed grant below the folded floor
+    When a later change measures above the grant and banks that measurement
+    Then the run passes
+    And the same measurement left unbanked still fails as slack
+    And a measurement between the grant and the folded floor passes once banked
+    And a measurement below the grant still fails however this tree is banked
+    And an inherited note this change weakened is still reported as slack
 ```
