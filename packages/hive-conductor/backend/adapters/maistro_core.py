@@ -123,6 +123,7 @@ class MaistroCoreBridge:
         from services.secrets import maistro_llm_api_key
 
         from maistro.agents.factory import create_agents
+        from maistro.config.database import resolve_database_url
         from maistro.container import create_container
         from maistro.types.config import AgentConfig
 
@@ -140,6 +141,18 @@ class MaistroCoreBridge:
             # default Workspace and a core that did not would then disagree
             # about where unscoped Runs live, silently.
             workspace_id=settings.hive_default_workspace_id,
+            # Without this the container took the ephemeral branch and built
+            # in-memory stores, however the deployment was configured -- the
+            # bridge constructs `AgentConfig` directly, so it never passed
+            # through `config.loader`, which is the only other caller that
+            # resolves this. Binding the container's outcome store as "durable"
+            # while it was in-memory is what made the omission visible (#696).
+            #
+            # `resolve_database_url` rather than a new Hive setting: it is the
+            # one answer to "which database" for every caller, and it already
+            # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
+            # file passes.
+            database_url=resolve_database_url(),
         )
 
         self._container = await create_container(config)

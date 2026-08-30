@@ -508,6 +508,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # `docker compose --build` here resolves the same cgr.dev/chainguard
+      # base image docker-build's prepull already protects (#204) -- but this
+      # job never calls that script, so its compose build has zero registry
+      # retry. Observed live: this exact job failed a develop protected push
+      # on "cgr.dev/.../python:latest: ... read: connection reset by peer",
+      # the identical signature prepull-base-images.sh's own header quotes.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: >-
+          scripts/prepull-base-images.sh
+          packages/hive-conductor/Dockerfile
+          packages/hive-conductor/tests/Dockerfile
+          packages/hive-conductor/tests/Dockerfile.playwright
       - name: Run PM workflow Playwright UI e2e against a live hive-conductor
         timeout-minutes: 14
         working-directory: packages/hive-conductor
@@ -542,6 +554,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # Same gap, same fix as hive-conductor-e2e-ui above: this job's
+      # `docker compose --build` gets zero registry retry today.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: >-
+          scripts/prepull-base-images.sh
+          packages/hive-conductor/Dockerfile
+          packages/hive-conductor/tests/Dockerfile
+          packages/hive-conductor/tests/Dockerfile.playwright
       - name: Run PM workflow e2e against a live hive-conductor
         working-directory: packages/hive-conductor
         run: |

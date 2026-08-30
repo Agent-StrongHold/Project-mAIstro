@@ -80,6 +80,10 @@ def store(conn: FakeConnection) -> PgOutcomeStore:
     return PgOutcomeStore(FakePool(conn))
 
 
+#: A fixed recording time, so the insert tuple is assertable.
+RECORDED_AT = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+
 def make_outcome(**overrides: Any) -> Outcome:
     defaults: dict[str, Any] = {
         "request_id": "req-1",
@@ -105,6 +109,13 @@ def make_outcome(**overrides: Any) -> Outcome:
         "output_tokens": 50,
         "charged_microchips": 10,
         "pricing_version": "v1",
+        # Pinned rather than left to `now()`: `record` writes this column now,
+        # so the insert tuple below asserts on it, and a default would make the
+        # assertion a moving target. It used to be omitted from the INSERT
+        # entirely, letting the column's server default decide when an outcome
+        # happened while the in-memory and SQLite twins honoured the caller —
+        # so every time-windowed read answered a different question here (#696).
+        "created_at": RECORDED_AT,
     }
     defaults.update(overrides)
     return Outcome(**defaults)
@@ -167,6 +178,7 @@ async def test_record_inserts_with_all_fields_and_returns_id(
         "down",
         "wrong file",
         42.5,
+        RECORDED_AT,
     )
 
 
