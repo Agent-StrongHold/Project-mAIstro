@@ -113,13 +113,21 @@ class EpisodicStore(Protocol):
         self,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
         team_id: str | None = None,
         org_id: str | None = None,
         project_id: str | None = None,
         min_weight: float = 0.0,
         limit: int = 50,
     ) -> list[EpisodicMemory]:
-        """Scope-filtered memories at or above min_weight, no content matching."""
+        """Scope-filtered memories at or above min_weight, no content matching.
+
+        `user_id` is one of the scope axes root CLAUDE.md decision 7 / ADR-068
+        names (global -> org -> team -> user -> agent -> session), and
+        `retrieve` above has always accepted it. It was missing here, so a
+        caller that wanted the scoped set *without* content matching -- which is
+        what a reranker wants -- could not express a user scope at all (#622).
+        """
         ...
 
 
@@ -255,15 +263,31 @@ class ContextAssemblyPolicy(Protocol):
         """Pinned project constraints text. Always included; drives KV cache key."""
         ...
 
-    async def layer1(self, run_id: str, agent_id: str, session_id: str) -> str:
-        """Active task context: high-confidence episodic memories scoped to this agent."""
+    async def layer1(
+        self,
+        run_id: str,
+        agent_id: str,
+        session_id: str,
+        query: str = "",
+        budget_tokens: int | None = None,
+    ) -> str:
+        """Active task context: high-confidence episodic memories scoped to this agent.
+
+        `query` and `budget_tokens` were added by #622. Without a query no
+        implementation of this protocol can rank by relevance, so "high
+        confidence" could only ever mean "above a weight floor, in store order";
+        without the budget here, packing happens on joined text, where a whole
+        memory is no longer a unit and ADR-091's always-include band cannot be
+        honoured. Both default so an existing caller keeps its behaviour: no
+        query means no ranking, and no budget means unbounded, not zero.
+        """
         ...
 
     async def layer2(self, session_id: str, budget_tokens: int) -> str:
         """Compressed conversation history (SPEC-189 rolling window)."""
         ...
 
-    async def layer3(self, project_id: str, n: int = 20) -> str:
+    async def layer3(self, project_id: str, n: int = 20, budget_tokens: int | None = None) -> str:
         """Project changelog: recent Outcome records + WISDOM-tier episodic memories."""
         ...
 
@@ -278,6 +302,7 @@ class ContextAssemblyPolicy(Protocol):
         agent_id: str,
         session_id: str,
         budget_tokens: int,
+        query: str = "",
     ) -> str:
         """Concatenate layers 0-4 in order, respecting budget_tokens total."""
         ...

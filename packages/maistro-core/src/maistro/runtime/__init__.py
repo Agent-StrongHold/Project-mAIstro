@@ -3,6 +3,7 @@
 from maistro.runtime.execution import (
     EventSink,
     ExecutionCallable,
+    ExecutionPaused,
     ExecutionRuntime,
     PythonExecutionRuntime,
     RuntimeDeadlineExceeded,
@@ -14,6 +15,7 @@ from maistro.runtime.execution import (
 __all__ = [
     "EventSink",
     "ExecutionCallable",
+    "ExecutionPaused",
     "ExecutionRuntime",
     "PythonExecutionRuntime",
     "RuntimeDeadlineExceeded",

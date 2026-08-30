@@ -197,8 +197,7 @@ class EngineService:
             self._capabilities = default_capability_registry()
 
         try:
-            import stores
-
+            from services import settings_store
             from services.capabilities_wiring import wire_capabilities
             from services.foundation import get_foundation
 
@@ -209,7 +208,7 @@ class EngineService:
 
             wire_capabilities(
                 self._capabilities,
-                settings_model=stores.settings,
+                settings_model=settings_store.current(),
                 config=settings,
                 vault=vault,
             )

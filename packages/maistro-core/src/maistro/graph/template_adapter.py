@@ -16,6 +16,7 @@ from typing import Any
 
 from maistro.graph.dag_registry import DagAgentDescriptor
 from maistro.graph.definitions import Edge, GraphTemplate, Node
+from maistro.graph.import_provenance import SOURCE_IMPORT_PROVENANCE, import_provenance
 
 _NODE_OWN_KEYS = {"id", "kind", "node_type", "name", "config", "parameters", "inputs", "outputs"}
 _EDGE_OWN_KEYS = {"id", "edge_id", "from_node", "from_role", "to_node", "to_role", "condition"}
@@ -80,23 +81,42 @@ def snapshot_to_template(
     entry = _str_of(snapshot.get("entry_node"), snapshot.get("entry"))
     if entry:
         metadata["entry_node"] = entry
-    identity: dict[str, str] = {}
-    resolved_template_id = _str_of(template_id, snapshot.get("id"))
-    if resolved_template_id:
-        identity["template_id"] = resolved_template_id
-    return GraphTemplate(
-        **identity,
-        workspace_id=workspace_id,
-        version=version,
-        name=_str_of(snapshot.get("name"), snapshot.get("id")),
-        description=_str_of(snapshot.get("description")),
-        nodes=[_node_from_raw(dict(raw)) for raw in snapshot.get("nodes", [])],
-        edges=[
+    # AC-10's second example. The agent half has recorded where it came from
+    # since #525/#526; this half recorded nothing, so a projected DAG was
+    # indistinguishable from a canonically authored GraphTemplate and no
+    # audit could trace a Run back to the legacy definition behind it.
+    # Hashed over the snapshot as received, before any of the key-splitting
+    # above, so the digest names the source rather than this projection's
+    # reading of it.
+    metadata[SOURCE_IMPORT_PROVENANCE] = import_provenance(
+        snapshot,
+        source_format="dag_snapshot",
+        source_definition="DAGFile",
+        source_name=_str_of(snapshot.get("name"), snapshot.get("id")),
+    )
+    # Every field named, and `template_id` passed conditionally rather than
+    # splatted from a `dict[str, str]`. A splat tells a type checker that any
+    # keyword might receive a `str`, so every narrowly-typed field on
+    # GraphTemplate reports as possibly-wrong -- which is how adding
+    # `saved_from` and then `lifecycle` each made this call site newly
+    # unverifiable without anyone touching it. The dict was buying one
+    # optional argument at the cost of checking all of them.
+    fields: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "version": version,
+        "name": _str_of(snapshot.get("name"), snapshot.get("id")),
+        "description": _str_of(snapshot.get("description")),
+        "nodes": [_node_from_raw(dict(raw)) for raw in snapshot.get("nodes", [])],
+        "edges": [
             _edge_from_raw(dict(raw), index)
             for index, raw in enumerate(snapshot.get("edges", []), start=1)
         ],
-        metadata=metadata,
-    )
+        "metadata": metadata,
+    }
+    resolved_template_id = _str_of(template_id, snapshot.get("id"))
+    if resolved_template_id:
+        return GraphTemplate(template_id=resolved_template_id, **fields)
+    return GraphTemplate(**fields)
 
 
 def descriptor_to_template(

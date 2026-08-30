@@ -24,11 +24,17 @@ from maistro.graph.execution_state import (
     GraphExecutionState,
     thaw_json_value,
 )
-from maistro.graph.nodes.base import BaseNode, NodeContext, NodeResult
+from maistro.graph.nodes.base import (
+    HUMAN_PAUSE_REASONS,
+    BaseNode,
+    NodeContext,
+    NodeResult,
+)
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
     transition_node_run,
+    transition_path,
     transition_run,
 )
 from maistro.runs.model import (
@@ -38,11 +44,16 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.store import RunIntegrityError, RunStore
 
 from .protocol import DurableRunStore
+from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
 NodeResolver = Callable[[str, Graph], BaseNode[Any, Any]]
+
+#: Ceiling on a node's declared retry budget (#548). See `_visit_budget`.
+MAX_NODE_VISITS = 8
 
 _DEPTH_INCREMENTING_KINDS = frozenset({"agent.synth_dag", "agent.spawn_harness"})
 _PREDICATE_NAMESPACE_ALIASES = {
@@ -96,6 +107,149 @@ async def _checkpoint(
     return await store.update(_replace_record(record, version=record.version + 1, **updates))
 
 
+def _require_admitted(run_id: str | None) -> str:
+    """Refuse to bootstrap a Run the caller did not admit.
+
+    `run_store` without a `run_id` used to mean "create one here". It cannot:
+    the create and the first traversal checkpoint are two writes to two stores,
+    and a crash between them leaves a canonical Run RUNNING that no durable
+    record can resume and no sweep will notice. Admission is where Run identity
+    is created, in one durable operation, and #251's consumer tick is what
+    picks up the QUEUED Run it leaves behind.
+    """
+    if run_id is None:
+        raise RunIntegrityError(
+            "durable graph execution against the canonical RunStore requires an "
+            "admitted run_id; admission owns Run identity"
+        )
+    return run_id
+
+
+async def _adopt_admitted_run(
+    graph: Graph,
+    *,
+    run_store: RunStore,
+    run_id: str,
+) -> Run:
+    """Take the already-admitted Run as authority, and start it.
+
+    The canonical path consumes a Run rather than creating one. Creating it
+    here and checkpointing afterwards is a cross-store bootstrap with no
+    recovery: a crash between the two leaves a canonical Run RUNNING with no
+    traversal state to resume it from, and nothing to notice. Admission is the
+    durable operation that owns Run identity, and a Run it left QUEUED is
+    recoverable by the canonical consumer tick precisely because it is still
+    QUEUED.
+
+    A pinned `run_id` is an authority binding, not permission to reuse an
+    identity. The Graph, workspace and Project on the admitted Run are checked
+    against the ones supplied here, before any physical work: executing a
+    different Graph under someone else's Run would attach its NodeRuns and
+    Attempts to work nobody asked for, and the Run would then describe an
+    execution that never happened.
+
+    The Run is moved to RUNNING before the first frontier, because a node that
+    runs while its canonical parent still says QUEUED is physical work no
+    consumer of the spine can see is happening.
+    """
+    admitted = await run_store.get_run(run_id)
+    if admitted is None:
+        raise RunIntegrityError(
+            f"pinned run_id {run_id!r} is not on the canonical spine; "
+            "durable graph execution consumes an admitted Run"
+        )
+    if admitted.graph.content_hash != graph.content_hash:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} was admitted for a different Graph; "
+            "the supplied Graph does not match the admitted snapshot"
+        )
+    if admitted.workspace_id != graph.workspace_id or admitted.project_id != graph.project_id:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} is scoped to "
+            f"{admitted.workspace_id!r}/{admitted.project_id!r}, not "
+            f"{graph.workspace_id!r}/{graph.project_id!r}"
+        )
+    if admitted.status is RunStatus.RUNNING:
+        return admitted
+    for step in transition_path(admitted.status, RunStatus.RUNNING):
+        admitted = await run_store.transition_run(run_id, step)
+    return admitted
+
+
+async def _canonical_spine(
+    record: DurableRunRecord,
+    run_store: RunStore | None,
+) -> RunStore | None:
+    """Return the canonical store only when it actually holds this Run.
+
+    Resolved once, at the top of a walk, rather than re-asked at each site.
+    A record persisted before the convergence carries a Run the canonical
+    store never saw, so minting its NodeRuns there would attach them to
+    nothing; taking the pre-convergence path for it is what lets old records
+    keep running instead of failing on resume.
+    """
+    if run_store is None:
+        return None
+    return run_store if await run_store.get_run(record.run_id) is not None else None
+
+
+async def _adoptable_node_run(
+    known: frozenset[str],
+    node_id: str,
+    *,
+    record: DurableRunRecord,
+    run_store: RunStore,
+) -> NodeRun | None:
+    """Find a canonical NodeRun this record lost before it could checkpoint.
+
+    The canonical create and the traversal checkpoint are two writes to two
+    stores. A crash between them leaves a NodeRun the spine holds and the
+    aggregate does not, and minting a second one for the same visit would make
+    the Run describe physical work twice. Adoption is what makes the retry
+    idempotent: the identity already exists, so the record takes it rather than
+    replacing it.
+    """
+    orphans = [
+        node_run
+        for node_run in await run_store.list_node_runs(record.run_id)
+        if node_run.node_run_id not in known
+        and node_run.node_id == node_id
+        and node_run.status not in TERMINAL_RUN_STATUSES
+    ]
+    return orphans[-1] if orphans else None
+
+
+async def _new_node_run(
+    record: DurableRunRecord,
+    node_id: str,
+    *,
+    ordinal: int,
+    run_store: RunStore | None,
+    known: frozenset[str] = frozenset(),
+) -> NodeRun:
+    """Obtain a frontier NodeRun, from the canonical store when there is one.
+
+    The second of #44's three construction sites (ADR-082826-d9f5). The store
+    allocates the ordinal from the NodeRuns it already holds for the Run, which
+    is the same count the record keeps, so the aggregate's "consecutive in
+    persistence order" invariant holds either way -- with a `run_store` every
+    NodeRun of the Run is minted there, so the two counts cannot drift.
+    """
+    if run_store is None:
+        node_run = NodeRun(run_id=record.run_id, node_id=node_id, ordinal=ordinal)
+        node_run = transition_node_run(node_run, RunStatus.QUEUED)
+        return transition_node_run(node_run, RunStatus.RUNNING)
+    adopted = await _adoptable_node_run(known, node_id, record=record, run_store=run_store)
+    canonical = (
+        adopted
+        if adopted is not None
+        else await run_store.create_node_run(record.run_id, node_id=node_id)
+    )
+    for step in transition_path(canonical.status, RunStatus.RUNNING):
+        canonical = await run_store.transition_node_run(canonical.node_run_id, step)
+    return canonical
+
+
 def _new_run(
     graph: Graph,
     *,
@@ -105,13 +259,14 @@ def _new_run(
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> Run:
-    """Create the canonical Run and initial GraphExecutionState for a graph launch.
+    """Mint the canonical Run in memory for a graph launch.
 
-    `provenance` is merged over the executor's own marker rather than
-    replacing it, so a caller records *why* the Run exists without erasing
-    *how* it ran. `executor` stays first so a caller cannot accidentally
-    reassign it -- a Run that claims a different executor than the one that
-    walked it would make the field worse than absent.
+    The pre-convergence path, kept for callers with no canonical store wired
+    (`run_store=None`). `provenance` is merged over the executor's own marker
+    rather than replacing it, so a caller records *why* the Run exists without
+    erasing *how* it ran. `executor` stays first so a caller cannot
+    accidentally reassign it -- a Run that claims a different executor than the
+    one that walked it would make the field worse than absent.
     """
     values: dict[str, object] = {
         "workspace_id": graph.workspace_id,
@@ -140,6 +295,8 @@ async def run_durable_graph(
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    blackboard_metadata: Mapping[str, Any] | None = None,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Start and execute a durable graph from its canonical entry frontier.
 
@@ -153,27 +310,41 @@ async def run_durable_graph(
     linkage survives only in an audit line beside the Run rather than on it
     (#145).
     """
-    run = _new_run(
-        graph,
-        run_id=run_id,
-        actor_principal_id=actor_principal_id,
-        parent_run_id=parent_run_id,
-        parent_node_run_id=parent_node_run_id,
-        provenance=provenance,
-    )
+    if run_store is not None:
+        # The converged path (#44): the store owns the identity, and this
+        # consumes it rather than creating a second one.
+        run = await _adopt_admitted_run(
+            graph,
+            run_store=run_store,
+            run_id=_require_admitted(run_id),
+        )
+    else:
+        run = _new_run(
+            graph,
+            run_id=run_id,
+            actor_principal_id=actor_principal_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance=provenance,
+        )
     state = GraphExecutionState(
         run_id=run.run_id,
         active_node_ids=(_entry_node(graph),),
         blackboard_snapshot={
             "task_objective": graph.name,
-            "metadata": {},
+            "metadata": dict(blackboard_metadata or {}),
             "node_annotations": {},
         },
         metadata={"initial_inputs": dict(inputs or {}), "hitl_answers": {}},
     )
     record = DurableRunRecord(run=run, graph_state=state, version=1)
     await store.create(record)
-    return await _walk(record, store=store, node_resolver=node_resolver)
+    return await _walk(
+        record,
+        store=store,
+        node_resolver=node_resolver,
+        run_store=run_store,
+    )
 
 
 async def resume_durable_graph(
@@ -181,6 +352,7 @@ async def resume_durable_graph(
     *,
     store: DurableRunStore,
     node_resolver: NodeResolver,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Resume execution of a previously persisted durable graph run."""
     record = await store.get(run_id)
@@ -199,7 +371,12 @@ async def resume_durable_graph(
     if run.status is not RunStatus.RUNNING:
         run = transition_run(run, RunStatus.RUNNING)
     record = await _checkpoint(record, store=store, run=run, resume_at=None)
-    return await _walk(record, store=store, node_resolver=node_resolver)
+    return await _walk(
+        record,
+        store=store,
+        node_resolver=node_resolver,
+        run_store=run_store,
+    )
 
 
 async def _walk(
@@ -208,9 +385,11 @@ async def _walk(
     store: DurableRunStore,
     node_resolver: NodeResolver,
     max_steps: int = 256,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Execute one persisted frontier per step until pause or terminal state."""
     graph = record.run.graph.materialize()
+    spine = await _canonical_spine(record, run_store)
     steps = 0
 
     while record.graph_state.active_node_ids and steps < max_steps:
@@ -226,12 +405,14 @@ async def _walk(
                 error_code="UnknownNode",
                 error_message=f"node_id={unknown!r} not present in Graph",
                 store=store,
+                run_store=spine,
             )
 
         record, node_runs = await _ensure_frontier_node_runs(
             record,
             frontier,
             store=store,
+            run_store=spine,
         )
         items = await _execute_frontier(
             record,
@@ -241,10 +422,13 @@ async def _walk(
             node_resolver=node_resolver,
         )
         record = await _fold_frontier(record, graph, items, store=store)
+        await mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
 
-    return await _finish_walk(record, store=store, max_steps=max_steps)
+    record = await _finish_walk(record, store=store, max_steps=max_steps)
+    await mirror_lifecycle(record, run_store=spine)
+    return record
 
 
 async def _execute_frontier(
@@ -586,6 +770,90 @@ async def _checkpoint_next_frontier(
     )
 
 
+def _visit_budget(spec: GraphNode) -> int:
+    """How many times this node may be attempted, from its own policy.
+
+    One by default, which is exactly today's behaviour: a graph that says
+    nothing about retries gets none. It is a node policy rather than an
+    executor setting because whether work is safe to repeat is a property of
+    the work -- a node with an external side effect and a node calling a tool
+    that can fail do not want the same answer, and one executor-wide number
+    would have to be wrong for one of them.
+
+    A non-positive or unparseable value is one try, not zero: refusing to run
+    the node at all is a stranger reading of "retries" than declining to repeat
+    it, and a typo in a policy must not silently skip work. The ceiling is not
+    a tuning knob -- a graph asking for a thousand tries has a bug, and
+    honouring it would turn one node into an unbounded loop inside a frontier
+    nothing else can see past.
+    """
+    try:
+        declared = int(spec.policies.get("max_attempts", 1))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(declared, MAX_NODE_VISITS))
+
+
+def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) -> bool:
+    """Whether this failed node has a try left, and is the kind that earns one.
+
+    A retry here is the node's **next visit** -- a new NodeRun, with its own
+    Attempt -- not a second Attempt under the one that just completed. The
+    distinction is the whole reason the Attempt firewall refuses to redispatch
+    a completed Attempt: completion means the physical work ran, side effects
+    and all. A node that ran and did not succeed is a *logical* failure, and
+    asking for it again is asking for another visit.
+
+    Transport failures never reach this decision. A 429 or a 5xx is the call
+    not landing rather than the work failing, and `maistro.resilience`
+    classifies and retries those beneath the Attempt, where repeating is safe
+    because nothing was accomplished yet.
+    """
+    visits = prior_state.visit_counts.get(item.node_id, 0)
+    return visits < _visit_budget(item.spec)
+
+
+def first_exhausted_failure(
+    prior_state: GraphExecutionState, failures: tuple[_FrontierItem, ...]
+) -> _FrontierItem | None:
+    """The failure with no visit left, if any -- the one that fails the Run.
+
+    All or nothing, deliberately. One node in a frontier with no budget left
+    fails the Run now rather than after its neighbours have spent theirs --
+    the Run is going to fail either way, and the extra work would be spent on
+    a result nobody will read.
+
+    Shared by both folds rather than written twice. Two spellings of "may this
+    node be tried again" is the shape of defect #44 exists to remove, at the
+    scale of one rule: they would agree today and diverge on whichever budget
+    question is asked next.
+    """
+    return next((item for item in failures if not _may_revisit_after(prior_state, item)), None)
+
+
+async def _fold_failures(
+    record: DurableRunRecord,
+    failures: tuple[_FrontierItem, ...],
+    *,
+    store: DurableRunStore,
+) -> DurableRunRecord:
+    """Fail the Run, or send back the nodes whose own policy says try again."""
+    exhausted = first_exhausted_failure(record.graph_state, failures)
+    if exhausted is not None:
+        return await _mark_failed(
+            record,
+            error_code=exhausted.result.error_code or "NodeFailure",
+            error_message=exhausted.result.error_message or f"node {exhausted.node_id} failed",
+            store=store,
+        )
+    return await _checkpoint_next_frontier(
+        record,
+        tuple(item.node_id for item in failures),
+        (),
+        store=store,
+    )
+
+
 async def _fold_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -600,13 +868,7 @@ async def _fold_frontier(
         record = _maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:
-        first = failures[0]
-        return await _mark_failed(
-            record,
-            error_code=first.result.error_code or "NodeFailure",
-            error_message=first.result.error_message or f"node {first.node_id} failed",
-            store=store,
-        )
+        return await _fold_failures(record, failures, store=store)
 
     halt_reason = _blackboard_halt_reason(record)
     if halt_reason is not None:
@@ -656,10 +918,7 @@ def _dedupe(values: Iterable[str]) -> tuple[str, ...]:
 
 def _is_human_pause(result: NodeResult) -> bool:
     """Return whether a node result represents a human-in-the-loop pause."""
-    return str((result.metadata or {}).get("paused_reason") or "") in {
-        "awaiting_human_answer",
-        "awaiting_human_approval",
-    }
+    return str((result.metadata or {}).get("paused_reason") or "") in HUMAN_PAUSE_REASONS
 
 
 def _pause_entry(result: NodeResult) -> dict[str, object]:
@@ -734,6 +993,7 @@ async def _ensure_frontier_node_runs(
     frontier: tuple[str, ...],
     *,
     store: DurableRunStore,
+    run_store: RunStore | None = None,
 ) -> tuple[DurableRunRecord, tuple[NodeRun, ...]]:
     """Resume or create one canonical running NodeRun per frontier member."""
     node_runs = list(record.node_runs)
@@ -755,13 +1015,13 @@ async def _ensure_frontier_node_runs(
             selected.append(node_run)
             continue
 
-        node_run = NodeRun(
-            run_id=record.run_id,
-            node_id=node_id,
+        node_run = await _new_node_run(
+            record,
+            node_id,
             ordinal=len(node_runs) + 1,
+            run_store=run_store,
+            known=frozenset(item.node_run_id for item in node_runs),
         )
-        node_run = transition_node_run(node_run, RunStatus.QUEUED)
-        node_run = transition_node_run(node_run, RunStatus.RUNNING)
         node_runs.append(node_run)
         selected.append(node_run)
         visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
@@ -1042,10 +1302,9 @@ def _merge_frontier_blackboards(
 
 
 def _actually_spawned(kind: str, result: NodeResult) -> bool:
-    """Return whether a node result represents a successful synthetic spawn."""
+    """Return whether a node result represents a synthetic spawn that was dispatched."""
     if kind == "agent.synth_dag":
-        output = result.output
-        return bool(getattr(output, "success", True)) or bool(getattr(output, "dispatched", False))
+        return bool(getattr(result.output, "dispatched", False))
     return True
 
 
@@ -1091,6 +1350,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         dag_id=record.run.graph.graph_id,
         node_id=node_id,
         user_id=record.run.actor_principal_id,
+        workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         blackboard=blackboard,
         metadata={
@@ -1199,8 +1459,15 @@ async def _mark_failed(
     error_code: str,
     error_message: str,
     store: DurableRunStore,
+    run_store: RunStore | None = None,
 ) -> DurableRunRecord:
-    """Terminalize the parent Run and reconcile unfinished NodeRuns after failure."""
+    """Terminalize the parent Run and reconcile unfinished NodeRuns after failure.
+
+    Mirrors here rather than at the call site because this is a terminal exit
+    the walk does not come back from: a Run left RUNNING on the spine because
+    its graph failed is work nothing will ever recover, since recovery only
+    looks at what the store says is still open.
+    """
     record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
     error = f"{error_code}: {error_message}"[:512]
@@ -1208,12 +1475,14 @@ async def _mark_failed(
         raise ValueError(f"cannot fail run in status {run.status!r}")
     run = transition_run(run, RunStatus.FAILED, error=error)
     state = _replace_state(record.graph_state, active_node_ids=())
-    return await _checkpoint(
+    failed = await _checkpoint(
         record,
         store=store,
         run=run,
         graph_state=state,
     )
+    await mirror_lifecycle(failed, run_store=run_store)
+    return failed
 
 
 __all__ = ["NodeResolver", "resume_durable_graph", "run_durable_graph"]

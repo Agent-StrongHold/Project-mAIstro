@@ -17,7 +17,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -53,6 +53,7 @@ class NodeContext(BaseModel):
     node_run_id: str = ""
     attempt_id: str = ""
     user_id: str | None = None
+    workspace_id: str | None = None
     project_id: str | None = None
     # blackboard kept as Any so we don't force a circular import on
     # maistro.graph.types; in practice this is GraphBlackboard.
@@ -73,7 +74,14 @@ class NodeResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     success: bool
-    output: dict[str, Any] | BaseModel | None = None
+    #: ``SerializeAsAny`` because the union member is bare ``BaseModel``, which
+    #: declares no fields. Without it Pydantic serializes a typed output through
+    #: that empty declared schema and the node's own fields are dropped -- so a
+    #: persisted Attempt said the node produced nothing (#566). Duck-typed
+    #: serialization writes the runtime model's real fields instead. Reading a
+    #: record back gives the mapping, not the original class: the envelope never
+    #: recorded which model it was, and inventing one here would be a guess.
+    output: dict[str, Any] | SerializeAsAny[BaseModel] | None = None
     latency_ms: int = 0
     error_code: str | None = None  # http status / exception class / "timeout"
     error_message: str | None = None
@@ -202,6 +210,57 @@ class _NodePaused(Exception):
         self.resume_at = resume_at
         self.metadata = metadata or {}
         super().__init__(reason)
+
+
+#: Every ``paused_reason`` a node in this package passes to :func:`pause_until`,
+#: mapped to who is owed the next action.
+#:
+#: A pause reason is a cross-module contract, not a node-local string: the node
+#: writes it and two *other* modules read it back to decide whether a person or
+#: the system is waited on. One table here, beside the function that carries
+#: the reason, is what lets those readers agree by construction instead of by
+#: both being edited on the same day.
+#:
+#: They previously held two hand-written allowlists which agreed on two reasons
+#: and omitted the rest, so `human.review_and_edit` and `human.delegate_to_role`
+#: parked as "the system will retry" on both paths: a prompt nobody can see,
+#: indistinguishable from a provider being down. A second literal set is a
+#: second thing to forget, and the reason it got forgotten is that nothing
+#: failed when it was.
+#:
+#: A reason absent from this table is not a new feature but an unclassified
+#: one -- the readers fall back to WAITING and nothing says whether that was
+#: the intent. A structural test over the node package's calls is what turns
+#: that silent default into a failing one.
+PAUSE_AWAITING_HUMAN_ANSWER = "awaiting_human_answer"
+PAUSE_AWAITING_HUMAN_APPROVAL = "awaiting_human_approval"
+PAUSE_AWAITING_HUMAN_REVIEW = "awaiting_human_review"
+PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
+PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
+PAUSE_AWAITING_HARNESS = "awaiting_harness"
+PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
+
+#: Who each pause waits on. "human" means a person owes the next action and the
+#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
+#: WAITING. Every reason states its own answer, so adding a pausing node is a
+#: question a reviewer sees rather than a default nobody chose.
+PAUSE_REASON_OWNERS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: "human",
+    PAUSE_AWAITING_HUMAN_APPROVAL: "human",
+    PAUSE_AWAITING_HUMAN_REVIEW: "human",
+    PAUSE_AWAITING_ROLE_DELEGATE: "human",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_HARNESS: "system",
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+}
+
+#: The reasons a *person* is owed an action, derived from the table above so
+#: the two can never disagree. Both readers -- the durable graph executor's
+#: `_is_human_pause` and the schedule consumer's yield disposition -- import
+#: this rather than spelling the set themselves.
+HUMAN_PAUSE_REASONS = frozenset(
+    reason for reason, owner in PAUSE_REASON_OWNERS.items() if owner == "human"
+)
 
 
 def pause_until(

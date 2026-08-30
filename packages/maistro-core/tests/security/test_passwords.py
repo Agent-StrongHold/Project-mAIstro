@@ -147,3 +147,142 @@ class TestAnUnknownAccountCostsWhatAKnownOneCosts:
         passwords.equal_cost_verify("x", None)
         for guess in ["", "password", "x", passwords._DECOY_HASH or ""]:
             assert passwords.verify_password(guess, passwords._DECOY_HASH or "") is False
+
+
+class TestBcryptIsOptionalAndItsAbsenceIsADenial:
+    """bcrypt is `maistro-core[bcrypt]`, so its absence is a supported state.
+
+    It was previously installed only because `hive-conductor` happened to pin
+    it; `maistro-core` imports it and declared nothing, so any other consumer
+    with a pre-Argon2id column was verifying against a module nothing had
+    promised to install (#514). Making the ownership explicit also makes the
+    absent case real, and `verify_password` caught only `(ValueError,
+    TypeError)` — so a `ModuleNotFoundError` escaped the function and reached
+    the login route as a 500 rather than a denial.
+
+    A 500 on a *correct* password is not merely untidy: it is an oracle. The
+    caller learns the stored hash is legacy, which a denial does not tell them.
+    """
+
+    _LEGACY = "$2b$12$hmpbR.C6bkLEJ4d9PYzoqOthlZNKk.WOSjXnLxHpC0Y3S6sgdYfPq"
+
+    def _without_bcrypt(self, monkeypatch):
+        """Hide bcrypt from the import system, whatever is installed here."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name == "bcrypt":
+                raise ModuleNotFoundError("No module named 'bcrypt'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", blocked)
+        monkeypatch.delitem(__import__("sys").modules, "bcrypt", raising=False)
+
+    def test_a_correct_legacy_password_is_denied_rather_than_raising(self, monkeypatch) -> None:
+        """The password is right, so this is the case that used to raise."""
+        from maistro.security.passwords import verify_password
+
+        self._without_bcrypt(monkeypatch)
+
+        assert verify_password("testpass", self._LEGACY) is False
+
+    def test_the_denial_says_which_extra_is_missing(self, monkeypatch, caplog) -> None:
+        """Fail-closed and silent is indistinguishable, to the person locked
+        out, from a wrong password. The log is the only place the difference
+        can be recovered."""
+        import logging
+
+        from maistro.security.passwords import verify_password
+
+        self._without_bcrypt(monkeypatch)
+        with caplog.at_level(logging.ERROR, logger="maistro.security.passwords"):
+            verify_password("testpass", self._LEGACY)
+
+        assert "maistro-core[bcrypt]" in caplog.text
+
+    def test_argon2_verification_is_unaffected(self, monkeypatch) -> None:
+        """The control. bcrypt's absence must not touch the current algorithm,
+        which is the one every non-legacy account uses."""
+        from maistro.security.passwords import hash_password, verify_password
+
+        stored = hash_password("correct horse battery")
+        self._without_bcrypt(monkeypatch)
+
+        assert verify_password("correct horse battery", stored) is True
+        assert verify_password("wrong", stored) is False
+
+
+class TestEveryDenialCostsTheSame:
+    """#366's oracle, and the corner of it #514 reopened (#667).
+
+    `equal_cost_verify` spends a decoy Argon2 verification when no account
+    exists, so an unknown username cannot be told from a known one by response
+    time. #514's `ImportError` guard returned *before* spending anything, so a
+    third cost appeared: a legacy bcrypt row in a deployment without the extra
+    denied in ~0 ms while both other paths cost ~88 ms. That points at exactly
+    the accounts whose hashes have never been migrated.
+
+    Asserted as "a verification was performed", not as elapsed time. Wall-clock
+    on a shared CI runner is not a stable assertion, and the property that
+    matters is the work done rather than any particular duration.
+    """
+
+    _LEGACY = "$2b$12$hmpbR.C6bkLEJ4d9PYzoqOthlZNKk.WOSjXnLxHpC0Y3S6sgdYfPq"
+
+    def _count_decoy_spends(self, monkeypatch) -> list[int]:
+        """Record each decoy verification, without paying for it."""
+        import maistro.security.passwords as passwords
+
+        spends: list[int] = []
+        real = passwords._spend_decoy_verification
+
+        def counted(plain: str) -> None:
+            spends.append(1)
+            real(plain)
+
+        monkeypatch.setattr(passwords, "_spend_decoy_verification", counted)
+        return spends
+
+    def test_an_unknown_account_spends_a_verification(self, monkeypatch) -> None:
+        """The control: the behaviour #366 established, still in place."""
+        from maistro.security.passwords import equal_cost_verify
+
+        spends = self._count_decoy_spends(monkeypatch)
+
+        assert equal_cost_verify("anything", None) is False
+        assert spends == [1]
+
+    def test_a_legacy_hash_with_no_bcrypt_spends_one_too(self, monkeypatch) -> None:
+        """The regression. Without this the denial is free, and free is a
+        different answer from the two that cost."""
+        import builtins
+
+        import maistro.security.passwords as passwords
+
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name == "bcrypt":
+                raise ModuleNotFoundError("No module named 'bcrypt'")
+            return real_import(name, *args, **kwargs)
+
+        spends = self._count_decoy_spends(monkeypatch)
+        monkeypatch.setattr(builtins, "__import__", blocked)
+        monkeypatch.delitem(__import__("sys").modules, "bcrypt", raising=False)
+
+        assert passwords.equal_cost_verify("testpass", self._LEGACY) is False
+        assert spends == [1]
+
+    def test_a_verifiable_account_spends_no_decoy(self, monkeypatch) -> None:
+        """The decoy is the substitute for real work, never an addition to it.
+        Spending both would double the cost of every ordinary login."""
+        from maistro.security.passwords import equal_cost_verify, hash_password
+
+        stored = hash_password("correct horse battery")
+        spends = self._count_decoy_spends(monkeypatch)
+
+        assert equal_cost_verify("correct horse battery", stored) is True
+        assert equal_cost_verify("wrong", stored) is False
+        assert spends == []

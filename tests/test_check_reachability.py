@@ -92,15 +92,22 @@ def test_module_becoming_reachable_fails_until_the_baseline_is_pruned(
     that is no longer true is retained slack: it would silently absorb a later
     module going unreachable, and the gate would say nothing. Failing here
     costs one line — delete the stale entry — and the message says which.
+
+    The stale entry has to be a module the graph *does* know, or this asserts
+    the wrong branch: a name the walk cannot resolve is unresolvable, not
+    newly reachable, and #651 gave the two separate reports.
     """
     unreachable, _ = check.unreachable_modules()
+    stale = "maistro.container"
+    assert stale not in unreachable, "the stand-in must be a genuinely reachable module"
+
     grown = tmp_path / "baseline.json"
-    grown.write_text(json.dumps({"unreachable": [*unreachable, "maistro.nonexistent_module"]}))
+    grown.write_text(json.dumps({"unreachable": [*unreachable, stale]}))
     monkeypatch.setattr(check, "BASELINE", grown)
 
     assert check.main() == 1
     out = capsys.readouterr().out
-    assert "maistro.nonexistent_module" in out
+    assert stale in out
     assert "must shrink" in out
 
 
@@ -269,6 +276,7 @@ def _tooling_tree(tmp_path, *, workflow: str, **scripts: str):
 
 
 def _unreachable_tooling(check, tmp_path) -> list[str]:
+    """The unreachable tooling *identities*, which is what the baseline stores."""
     unreachable, _ = check.unreachable_modules(
         root=tmp_path, flat_apps=(), static_roots=(), dynamic_roots=()
     )
@@ -293,7 +301,7 @@ def test_a_script_no_workflow_runs_is_reported(check, tmp_path):
         gate="print('hi')\n",
         orphan="print('nobody runs me')\n",
     )
-    assert _unreachable_tooling(check, tree) == ["scripts/orphan.py"]
+    assert _unreachable_tooling(check, tree) == ["@tool/orphan"]
 
 
 @pytest.mark.ac("ADR-082526-aef8/AC-3")
@@ -337,7 +345,7 @@ def test_an_import_from_an_unreached_script_does_not_rescue_it(check, tmp_path):
         orphan="import friend\n\nfriend.go()\n",
         friend="def go():\n    return 1\n",
     )
-    assert _unreachable_tooling(check, tree) == ["scripts/friend.py", "scripts/orphan.py"]
+    assert _unreachable_tooling(check, tree) == ["@tool/friend", "@tool/orphan"]
 
 
 @pytest.mark.ac("ADR-082526-aef8/AC-5")
@@ -345,7 +353,7 @@ def test_tooling_entries_are_in_the_committed_baseline(check):
     """The real tree: the ratchet covers tooling like any other module."""
     unreachable, _ = check.unreachable_modules()
     baseline = set(json.loads(BASELINE.read_text())["unreachable"])
-    tooling = {name for name in unreachable if name.startswith("scripts/")}
+    tooling = {name for name in unreachable if name.startswith("@tool/")}
     assert tooling, "tooling should be in the graph at all"
     assert tooling <= baseline, sorted(tooling - baseline)
 
@@ -353,5 +361,5 @@ def test_tooling_entries_are_in_the_committed_baseline(check):
 def test_the_gate_scripts_themselves_are_reachable(check):
     """A gate CI runs must never read as dead — that would be the alarm failing."""
     unreachable, _ = check.unreachable_modules()
-    for gate in ("check-reachability.py", "check-ac-state.py", "check-wiring-reads.py"):
-        assert f"scripts/{gate}" not in unreachable
+    for gate in ("check-reachability", "check-ac-state", "check-wiring-reads"):
+        assert f"@tool/{gate}" not in unreachable

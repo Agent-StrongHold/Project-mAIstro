@@ -1,716 +1,706 @@
 {
- "$schema_note": "Ratchet baseline for scripts/check-radon-baseline.py (SPEC-264). Entries are keyed by qualified name, not line number, so unrelated code motion doesn't trip the gate. CI fails on a finding not listed here, or on a listed finding whose complexity increases beyond the recorded value. Shrink this file as hotspots are refactored; never grow it except via reviewed PR.",
- "generated_from": "radon cc packages/maistro-core/src -j (2026-06-29)",
- "entries": [
-  {
-   "key": "packages/maistro-core/src/maistro/agents/base.py::Agent._handle_traced",
-   "path": "packages/maistro-core/src/maistro/agents/base.py",
-   "line": 284,
-   "name": "_handle_traced",
-   "classname": "Agent",
-   "rank": "C",
-   "complexity": 17,
-   "rationale": "Renamed from Agent.handle when H9 split the try/except/finally wrapper out into handle(); the 19 split into 17 here plus 10 in the new handle() wrapper, so this entry is the larger half rather than a net reduction. Still a Phase 18 code-health hotspot tracked under SPEC-264 - the ratchet is now set at 17."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/context_builder.py::ContextBuilder",
-   "path": "packages/maistro-core/src/maistro/agents/context_builder.py",
-   "line": 66,
-   "name": "ContextBuilder",
-   "classname": null,
-   "rank": "C",
-   "complexity": 14,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/context_builder.py::ContextBuilder.build",
-   "path": "packages/maistro-core/src/maistro/agents/context_builder.py",
-   "line": 69,
-   "name": "build",
-   "classname": "ContextBuilder",
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/pm_fleet.py::build_task_description",
-   "path": "packages/maistro-core/src/maistro/agents/pm_fleet.py",
-   "line": 131,
-   "name": "build_task_description",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven",
-   "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
-   "line": 248,
-   "name": "_run_browser_driven",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::run_pm_task",
-   "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
-   "line": 489,
-   "name": "run_pm_task",
-   "classname": null,
-   "rank": "C",
-   "complexity": 16,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/spawner/spawner.py::Spawner._apply_recipe",
-   "path": "packages/maistro-core/src/maistro/agents/spawner/spawner.py",
-   "line": 97,
-   "name": "_apply_recipe",
-   "classname": "Spawner",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/spawner/spawner.py::Spawner._build_prompts",
-   "path": "packages/maistro-core/src/maistro/agents/spawner/spawner.py",
-   "line": 188,
-   "name": "_build_prompts",
-   "classname": "Spawner",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/store.py::InMemoryAgentStore.import_gitagent",
-   "path": "packages/maistro-core/src/maistro/agents/store.py",
-   "line": 198,
-   "name": "import_gitagent",
-   "classname": "InMemoryAgentStore",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py::BuildersLearningStrategy._run_pr_diagnostics",
-   "path": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py",
-   "line": 207,
-   "name": "_run_pr_diagnostics",
-   "classname": "BuildersLearningStrategy",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/strategies/direct.py::DirectStrategy",
-   "path": "packages/maistro-core/src/maistro/agents/strategies/direct.py",
-   "line": 22,
-   "name": "DirectStrategy",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/work_items.py::apply_clarifying_answers",
-   "path": "packages/maistro-core/src/maistro/agents/work_items.py",
-   "line": 166,
-   "name": "apply_clarifying_answers",
-   "classname": null,
-   "rank": "C",
-   "complexity": 18,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/agents/work_items.py::suggest_work_item",
-   "path": "packages/maistro-core/src/maistro/agents/work_items.py",
-   "line": 121,
-   "name": "suggest_work_item",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
-   "path": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py",
-   "line": 87,
-   "name": "_norm_docker",
-   "classname": null,
-   "rank": "C",
-   "complexity": 17,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/classifier/engine.py::ClassifierEngine.classify",
-   "path": "packages/maistro-core/src/maistro/classifier/engine.py",
-   "line": 54,
-   "name": "classify",
-   "classname": "ClassifierEngine",
-   "rank": "C",
-   "complexity": 17,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/codebase/python_parser.py::parse_python_module",
-   "path": "packages/maistro-core/src/maistro/codebase/python_parser.py",
-   "line": 37,
-   "name": "parse_python_module",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/codebase/violations.py::_check_concrete_imports_where_protocol_exists",
-   "path": "packages/maistro-core/src/maistro/codebase/violations.py",
-   "line": 23,
-   "name": "_check_concrete_imports_where_protocol_exists",
-   "classname": null,
-   "rank": "C",
-   "complexity": 12,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.get_stats",
-   "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-   "line": 151,
-   "name": "get_stats",
-   "classname": "CredentialPool",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.select",
-   "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-   "line": 73,
-   "name": "select",
-   "classname": "CredentialPool",
-   "rank": "C",
-   "complexity": 17,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/credentials/rotation.py::execute_with_pool",
-   "path": "packages/maistro-core/src/maistro/credentials/rotation.py",
-   "line": 48,
-   "name": "execute_with_pool",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/events/bus.py::TriggerCondition",
-   "path": "packages/maistro-core/src/maistro/events/bus.py",
-   "line": 48,
-   "name": "TriggerCondition",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/events/handlers.py::ntfy_action",
-   "path": "packages/maistro-core/src/maistro/events/handlers.py",
-   "line": 178,
-   "name": "ntfy_action",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/dag_registry.py::DagRegistry.register",
-   "path": "packages/maistro-core/src/maistro/graph/dag_registry.py",
-   "line": 50,
-   "name": "register",
-   "classname": "DagRegistry",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/dag_validator.py::_validate_edge_endpoints",
-   "path": "packages/maistro-core/src/maistro/graph/dag_validator.py",
-   "line": 149,
-   "name": "_validate_edge_endpoints",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/dag_validator.py::_validate_schema_compatibility",
-   "path": "packages/maistro-core/src/maistro/graph/dag_validator.py",
-   "line": 244,
-   "name": "_validate_schema_compatibility",
-   "classname": null,
-   "rank": "C",
-   "complexity": 19,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_beam",
-   "path": "packages/maistro-core/src/maistro/graph/node.py",
-   "line": 452,
-   "name": "_execute_beam",
-   "classname": "NodeRun",
-   "rank": "C",
-   "complexity": 16,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_single",
-   "path": "packages/maistro-core/src/maistro/graph/node.py",
-   "line": 310,
-   "name": "_execute_single",
-   "classname": "NodeRun",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/node.py::_blackboard_prefix",
-   "path": "packages/maistro-core/src/maistro/graph/node.py",
-   "line": 119,
-   "name": "_blackboard_prefix",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
-   "line": 60,
-   "name": "JiraPollNode",
-   "classname": null,
-   "rank": "C",
-   "complexity": 16,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode._execute",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
-   "line": 75,
-   "name": "_execute",
-   "classname": "JiraPollNode",
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::_fetch_subtask_statuses",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py",
-   "line": 132,
-   "name": "_fetch_subtask_statuses",
-   "classname": null,
-   "rank": "C",
-   "complexity": 12,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-   "line": 59,
-   "name": "LlmSummarizeNode",
-   "classname": null,
-   "rank": "C",
-   "complexity": 19,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-   "line": 73,
-   "name": "_execute",
-   "classname": "LlmSummarizeNode",
-   "rank": "C",
-   "complexity": 18,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py",
-   "line": 35,
-   "name": "TransformFilterByTypeNode",
-   "classname": null,
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode._execute",
-   "path": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py",
-   "line": 49,
-   "name": "_execute",
-   "classname": "TransformFilterByTypeNode",
-   "rank": "C",
-   "complexity": 14,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/optimizer.py::GraphOptimizer.extract_signal",
-   "path": "packages/maistro-core/src/maistro/graph/optimizer.py",
-   "line": 100,
-   "name": "extract_signal",
-   "classname": "GraphOptimizer",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/run.py::GraphRun._execute",
-   "path": "packages/maistro-core/src/maistro/graph/run.py",
-   "line": 276,
-   "name": "_execute",
-   "classname": "GraphRun",
-   "rank": "C",
-   "complexity": 20,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/integrations/ntfy.py::NtfyClient.send",
-   "path": "packages/maistro-core/src/maistro/integrations/ntfy.py",
-   "line": 49,
-   "name": "send",
-   "classname": "NtfyClient",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/episodic/retrieval.py::ScoredEpisodicRetrieval.retrieve",
-   "path": "packages/maistro-core/src/maistro/memory/episodic/retrieval.py",
-   "line": 40,
-   "name": "retrieve",
-   "classname": "ScoredEpisodicRetrieval",
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/learnings/embeddings.py::HybridLearningStore.find_relevant",
-   "path": "packages/maistro-core/src/maistro/memory/learnings/embeddings.py",
-   "line": 115,
-   "name": "find_relevant",
-   "classname": "HybridLearningStore",
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/learnings/extractor.py::ToolCorrectionExtractor",
-   "path": "packages/maistro-core/src/maistro/memory/learnings/extractor.py",
-   "line": 57,
-   "name": "ToolCorrectionExtractor",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/learnings/extractor.py::ToolCorrectionExtractor.extract_corrections",
-   "path": "packages/maistro-core/src/maistro/memory/learnings/extractor.py",
-   "line": 60,
-   "name": "extract_corrections",
-   "classname": "ToolCorrectionExtractor",
-   "rank": "C",
-   "complexity": 12,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/learnings/promoter.py::LearningPromoter._check_with_gate",
-   "path": "packages/maistro-core/src/maistro/memory/learnings/promoter.py",
-   "line": 73,
-   "name": "_check_with_gate",
-   "classname": "LearningPromoter",
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/learnings/store.py::InMemoryLearningStore.find_relevant",
-   "path": "packages/maistro-core/src/maistro/memory/learnings/store.py",
-   "line": 60,
-   "name": "find_relevant",
-   "classname": "InMemoryLearningStore",
-   "rank": "C",
-   "complexity": 14,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_experience_context",
-   "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
-   "line": 94,
-   "name": "get_experience_context",
-   "classname": "InMemoryOutcomeStore",
-   "rank": "C",
-   "complexity": 12,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_task_completion_rate",
-   "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
-   "line": 54,
-   "name": "get_task_completion_rate",
-   "classname": "InMemoryOutcomeStore",
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/memory/scopes.py::matches_scope",
-   "path": "packages/maistro-core/src/maistro/memory/scopes.py",
-   "line": 27,
-   "name": "matches_scope",
-   "classname": null,
-   "rank": "C",
-   "complexity": 20,
-   "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md"
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/persistence/__init__.py::run_migrations",
-   "path": "packages/maistro-core/src/maistro/persistence/__init__.py",
-   "line": 37,
-   "name": "run_migrations",
-   "classname": null,
-   "rank": "C",
-   "complexity": 12,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/persistence/pg_agents.py::_coerce_row",
-   "path": "packages/maistro-core/src/maistro/persistence/pg_agents.py",
-   "line": 243,
-   "name": "_coerce_row",
-   "classname": null,
-   "rank": "C",
-   "complexity": 14,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/persistence/pg_outcomes.py::PgOutcomeStore.get_task_completion_rate",
-   "path": "packages/maistro-core/src/maistro/persistence/pg_outcomes.py",
-   "line": 49,
-   "name": "get_task_completion_rate",
-   "classname": "PgOutcomeStore",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/persistence/sqlite_audit.py::SqliteAuditLog.get_entries",
-   "path": "packages/maistro-core/src/maistro/persistence/sqlite_audit.py",
-   "line": 69,
-   "name": "get_entries",
-   "classname": "SqliteAuditLog",
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py::SqliteOutcomeStore.get_task_completion_rate",
-   "path": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py",
-   "line": 80,
-   "name": "get_task_completion_rate",
-   "classname": "SqliteOutcomeStore",
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/resilience/classifier.py::_classify_by_message_patterns",
-   "path": "packages/maistro-core/src/maistro/resilience/classifier.py",
-   "line": 223,
-   "name": "_classify_by_message_patterns",
-   "classname": null,
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/resilience/classifier.py::_classify_by_status",
-   "path": "packages/maistro-core/src/maistro/resilience/classifier.py",
-   "line": 389,
-   "name": "_classify_by_status",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py::DemoCookieAuthProvider.authenticate",
-   "path": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py",
-   "line": 35,
-   "name": "authenticate",
-   "classname": "DemoCookieAuthProvider",
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/auth_jwt.py::JWTAuthProvider._get_jwks_client",
-   "path": "packages/maistro-core/src/maistro/security/auth_jwt.py",
-   "line": 131,
-   "name": "_get_jwks_client",
-   "classname": "JWTAuthProvider",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/gate.py::Gate",
-   "path": "packages/maistro-core/src/maistro/security/gate.py",
-   "line": 30,
-   "name": "Gate",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/gate.py::Gate.process_input",
-   "path": "packages/maistro-core/src/maistro/security/gate.py",
-   "line": 48,
-   "name": "process_input",
-   "classname": "Gate",
-   "rank": "C",
-   "complexity": 17,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/rate_limiter.py::InMemoryRateLimiter.check",
-   "path": "packages/maistro-core/src/maistro/security/rate_limiter.py",
-   "line": 36,
-   "name": "check",
-   "classname": "InMemoryRateLimiter",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/redact.py::redact",
-   "path": "packages/maistro-core/src/maistro/security/redact.py",
-   "line": 105,
-   "name": "redact",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/sentinel/policy.py::Sentinel.authorize",
-   "path": "packages/maistro-core/src/maistro/security/sentinel/policy.py",
-   "line": 87,
-   "name": "authorize",
-   "classname": "Sentinel",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/security/trust_boundary.py::check_permission",
-   "path": "packages/maistro-core/src/maistro/security/trust_boundary.py",
-   "line": 73,
-   "name": "check_permission",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/sessions/search.py::search_sessions",
-   "path": "packages/maistro-core/src/maistro/sessions/search.py",
-   "line": 53,
-   "name": "search_sessions",
-   "classname": null,
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/skills/marketplace.py::SkillMarketplace.install",
-   "path": "packages/maistro-core/src/maistro/skills/marketplace.py",
-   "line": 147,
-   "name": "install",
-   "classname": "SkillMarketplace",
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Security remediation added a salvage pass to the install path: fix_content() then a re-scan of the repaired text, with distinct rejections for unfixable findings and for residual CRITICALs. Each added branch is a refusal to persist content that has not been re-verified, so the complexity is the control itself. Tracked under SPEC-264 with the rest of the C-rank backlog."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/skills/parser.py::parse_skill_file",
-   "path": "packages/maistro-core/src/maistro/skills/parser.py",
-   "line": 76,
-   "name": "parse_skill_file",
-   "classname": null,
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/tools/atlassian/client.py::AtlassianMCPClient._parse_confluence_page",
-   "path": "packages/maistro-core/src/maistro/tools/atlassian/client.py",
-   "line": 382,
-   "name": "_parse_confluence_page",
-   "classname": "AtlassianMCPClient",
-   "rank": "C",
-   "complexity": 13,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/tools/browser/client.py::BrowserClient._parse_search_output",
-   "path": "packages/maistro-core/src/maistro/tools/browser/client.py",
-   "line": 220,
-   "name": "_parse_search_output",
-   "classname": "BrowserClient",
-   "rank": "C",
-   "complexity": 14,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/tools/git/github.py::_project_pr",
-   "path": "packages/maistro-core/src/maistro/tools/git/github.py",
-   "line": 75,
-   "name": "_project_pr",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/graph/executor.py::execute_with_resilience",
-   "path": "packages/maistro-core/src/maistro/graph/executor.py",
-   "line": 46,
-   "name": "execute_with_resilience",
-   "classname": null,
-   "rank": "C",
-   "complexity": 17,
-   "note": "graph resilience wrapper; landed via #262 merge before the checker was wired into CI"
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/runs/model.py::_freeze_evidence_value",
-   "path": "packages/maistro-core/src/maistro/runs/model.py",
-   "line": 79,
-   "name": "_freeze_evidence_value",
-   "classname": null,
-   "rank": "C",
-   "complexity": 11,
-   "rationale": "AttemptResult immutable-evidence normalization introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
-  },
-  {
-   "key": "packages/maistro-core/src/maistro/runs/model.py::evidence_values_equal",
-   "path": "packages/maistro-core/src/maistro/runs/model.py",
-   "line": 97,
-   "name": "evidence_values_equal",
-   "classname": null,
-   "rank": "C",
-   "complexity": 15,
-   "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
-  }
- ]
+  "$schema_note": "Ratchet baseline for scripts/check-radon-baseline.py (SPEC-264). Entries are keyed by qualified name, not line number, so unrelated code motion doesn't trip the gate. CI fails on a finding not listed here, or on a listed finding whose complexity increases beyond the recorded value. Shrink this file as hotspots are refactored; never grow it except via reviewed PR.",
+  "generated_from": "radon cc packages/maistro-core/src -j (2026-06-29)",
+  "entries": [
+    {
+      "key": "packages/maistro-core/src/maistro/agents/base.py::Agent._handle_traced",
+      "path": "packages/maistro-core/src/maistro/agents/base.py",
+      "line": 284,
+      "name": "_handle_traced",
+      "classname": "Agent",
+      "rank": "C",
+      "complexity": 17,
+      "rationale": "Renamed from Agent.handle when H9 split the try/except/finally wrapper out into handle(); the 19 split into 17 here plus 10 in the new handle() wrapper, so this entry is the larger half rather than a net reduction. Still a Phase 18 code-health hotspot tracked under SPEC-264 - the ratchet is now set at 17."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/context_builder.py::ContextBuilder",
+      "path": "packages/maistro-core/src/maistro/agents/context_builder.py",
+      "line": 66,
+      "name": "ContextBuilder",
+      "classname": null,
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/context_builder.py::ContextBuilder.build",
+      "path": "packages/maistro-core/src/maistro/agents/context_builder.py",
+      "line": 69,
+      "name": "build",
+      "classname": "ContextBuilder",
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/pm_fleet.py::build_task_description",
+      "path": "packages/maistro-core/src/maistro/agents/pm_fleet.py",
+      "line": 131,
+      "name": "build_task_description",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven",
+      "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
+      "line": 248,
+      "name": "_run_browser_driven",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::run_pm_task",
+      "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
+      "line": 489,
+      "name": "run_pm_task",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/spawner/spawner.py::Spawner._apply_recipe",
+      "path": "packages/maistro-core/src/maistro/agents/spawner/spawner.py",
+      "line": 97,
+      "name": "_apply_recipe",
+      "classname": "Spawner",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/spawner/spawner.py::Spawner._build_prompts",
+      "path": "packages/maistro-core/src/maistro/agents/spawner/spawner.py",
+      "line": 188,
+      "name": "_build_prompts",
+      "classname": "Spawner",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/store.py::InMemoryAgentStore.import_gitagent",
+      "path": "packages/maistro-core/src/maistro/agents/store.py",
+      "line": 198,
+      "name": "import_gitagent",
+      "classname": "InMemoryAgentStore",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py::BuildersLearningStrategy._run_pr_diagnostics",
+      "path": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py",
+      "line": 207,
+      "name": "_run_pr_diagnostics",
+      "classname": "BuildersLearningStrategy",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/strategies/direct.py::DirectStrategy",
+      "path": "packages/maistro-core/src/maistro/agents/strategies/direct.py",
+      "line": 22,
+      "name": "DirectStrategy",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/work_items.py::apply_clarifying_answers",
+      "path": "packages/maistro-core/src/maistro/agents/work_items.py",
+      "line": 166,
+      "name": "apply_clarifying_answers",
+      "classname": null,
+      "rank": "C",
+      "complexity": 18,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/agents/work_items.py::suggest_work_item",
+      "path": "packages/maistro-core/src/maistro/agents/work_items.py",
+      "line": 121,
+      "name": "suggest_work_item",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py",
+      "line": 87,
+      "name": "_norm_docker",
+      "classname": null,
+      "rank": "C",
+      "complexity": 17,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/classifier/engine.py::ClassifierEngine.classify",
+      "path": "packages/maistro-core/src/maistro/classifier/engine.py",
+      "line": 54,
+      "name": "classify",
+      "classname": "ClassifierEngine",
+      "rank": "C",
+      "complexity": 17,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/codebase/python_parser.py::parse_python_module",
+      "path": "packages/maistro-core/src/maistro/codebase/python_parser.py",
+      "line": 37,
+      "name": "parse_python_module",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/codebase/violations.py::_check_concrete_imports_where_protocol_exists",
+      "path": "packages/maistro-core/src/maistro/codebase/violations.py",
+      "line": 23,
+      "name": "_check_concrete_imports_where_protocol_exists",
+      "classname": null,
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.get_stats",
+      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
+      "line": 151,
+      "name": "get_stats",
+      "classname": "CredentialPool",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.select",
+      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
+      "line": 73,
+      "name": "select",
+      "classname": "CredentialPool",
+      "rank": "C",
+      "complexity": 17,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/credentials/rotation.py::execute_with_pool",
+      "path": "packages/maistro-core/src/maistro/credentials/rotation.py",
+      "line": 48,
+      "name": "execute_with_pool",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/events/bus.py::TriggerCondition",
+      "path": "packages/maistro-core/src/maistro/events/bus.py",
+      "line": 48,
+      "name": "TriggerCondition",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/events/handlers.py::ntfy_action",
+      "path": "packages/maistro-core/src/maistro/events/handlers.py",
+      "line": 178,
+      "name": "ntfy_action",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/dag_registry.py::DagRegistry.register",
+      "path": "packages/maistro-core/src/maistro/graph/dag_registry.py",
+      "line": 50,
+      "name": "register",
+      "classname": "DagRegistry",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/dag_validator.py::_validate_edge_endpoints",
+      "path": "packages/maistro-core/src/maistro/graph/dag_validator.py",
+      "line": 149,
+      "name": "_validate_edge_endpoints",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/dag_validator.py::_validate_schema_compatibility",
+      "path": "packages/maistro-core/src/maistro/graph/dag_validator.py",
+      "line": 244,
+      "name": "_validate_schema_compatibility",
+      "classname": null,
+      "rank": "C",
+      "complexity": 19,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_beam",
+      "path": "packages/maistro-core/src/maistro/graph/node.py",
+      "line": 452,
+      "name": "_execute_beam",
+      "classname": "NodeRun",
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_single",
+      "path": "packages/maistro-core/src/maistro/graph/node.py",
+      "line": 310,
+      "name": "_execute_single",
+      "classname": "NodeRun",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/node.py::_blackboard_prefix",
+      "path": "packages/maistro-core/src/maistro/graph/node.py",
+      "line": 119,
+      "name": "_blackboard_prefix",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
+      "line": 60,
+      "name": "JiraPollNode",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode._execute",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
+      "line": 75,
+      "name": "_execute",
+      "classname": "JiraPollNode",
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::_fetch_subtask_statuses",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py",
+      "line": 132,
+      "name": "_fetch_subtask_statuses",
+      "classname": null,
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
+      "line": 59,
+      "name": "LlmSummarizeNode",
+      "classname": null,
+      "rank": "C",
+      "complexity": 19,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
+      "line": 73,
+      "name": "_execute",
+      "classname": "LlmSummarizeNode",
+      "rank": "C",
+      "complexity": 18,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py",
+      "line": 35,
+      "name": "TransformFilterByTypeNode",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode._execute",
+      "path": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py",
+      "line": 49,
+      "name": "_execute",
+      "classname": "TransformFilterByTypeNode",
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/optimizer.py::GraphOptimizer.extract_signal",
+      "path": "packages/maistro-core/src/maistro/graph/optimizer.py",
+      "line": 100,
+      "name": "extract_signal",
+      "classname": "GraphOptimizer",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/run.py::GraphRun._execute",
+      "path": "packages/maistro-core/src/maistro/graph/run.py",
+      "line": 276,
+      "name": "_execute",
+      "classname": "GraphRun",
+      "rank": "C",
+      "complexity": 20,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/integrations/ntfy.py::NtfyClient.send",
+      "path": "packages/maistro-core/src/maistro/integrations/ntfy.py",
+      "line": 49,
+      "name": "send",
+      "classname": "NtfyClient",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/learnings/embeddings.py::HybridLearningStore.find_relevant",
+      "path": "packages/maistro-core/src/maistro/memory/learnings/embeddings.py",
+      "line": 115,
+      "name": "find_relevant",
+      "classname": "HybridLearningStore",
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/learnings/extractor.py::ToolCorrectionExtractor",
+      "path": "packages/maistro-core/src/maistro/memory/learnings/extractor.py",
+      "line": 57,
+      "name": "ToolCorrectionExtractor",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/learnings/extractor.py::ToolCorrectionExtractor.extract_corrections",
+      "path": "packages/maistro-core/src/maistro/memory/learnings/extractor.py",
+      "line": 60,
+      "name": "extract_corrections",
+      "classname": "ToolCorrectionExtractor",
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/learnings/promoter.py::LearningPromoter._check_with_gate",
+      "path": "packages/maistro-core/src/maistro/memory/learnings/promoter.py",
+      "line": 73,
+      "name": "_check_with_gate",
+      "classname": "LearningPromoter",
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/learnings/store.py::InMemoryLearningStore.find_relevant",
+      "path": "packages/maistro-core/src/maistro/memory/learnings/store.py",
+      "line": 60,
+      "name": "find_relevant",
+      "classname": "InMemoryLearningStore",
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_experience_context",
+      "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
+      "line": 94,
+      "name": "get_experience_context",
+      "classname": "InMemoryOutcomeStore",
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_task_completion_rate",
+      "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
+      "line": 54,
+      "name": "get_task_completion_rate",
+      "classname": "InMemoryOutcomeStore",
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/memory/scopes.py::matches_scope",
+      "path": "packages/maistro-core/src/maistro/memory/scopes.py",
+      "line": 27,
+      "name": "matches_scope",
+      "classname": null,
+      "rank": "C",
+      "complexity": 20,
+      "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md"
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/persistence/__init__.py::run_migrations",
+      "path": "packages/maistro-core/src/maistro/persistence/__init__.py",
+      "line": 37,
+      "name": "run_migrations",
+      "classname": null,
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/persistence/pg_agents.py::_coerce_row",
+      "path": "packages/maistro-core/src/maistro/persistence/pg_agents.py",
+      "line": 243,
+      "name": "_coerce_row",
+      "classname": null,
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/persistence/pg_outcomes.py::PgOutcomeStore.get_task_completion_rate",
+      "path": "packages/maistro-core/src/maistro/persistence/pg_outcomes.py",
+      "line": 49,
+      "name": "get_task_completion_rate",
+      "classname": "PgOutcomeStore",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/persistence/sqlite_audit.py::SqliteAuditLog.get_entries",
+      "path": "packages/maistro-core/src/maistro/persistence/sqlite_audit.py",
+      "line": 69,
+      "name": "get_entries",
+      "classname": "SqliteAuditLog",
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py::SqliteOutcomeStore.get_task_completion_rate",
+      "path": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py",
+      "line": 80,
+      "name": "get_task_completion_rate",
+      "classname": "SqliteOutcomeStore",
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/resilience/classifier.py::_classify_by_message_patterns",
+      "path": "packages/maistro-core/src/maistro/resilience/classifier.py",
+      "line": 223,
+      "name": "_classify_by_message_patterns",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/resilience/classifier.py::_classify_by_status",
+      "path": "packages/maistro-core/src/maistro/resilience/classifier.py",
+      "line": 389,
+      "name": "_classify_by_status",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py::DemoCookieAuthProvider.authenticate",
+      "path": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py",
+      "line": 35,
+      "name": "authenticate",
+      "classname": "DemoCookieAuthProvider",
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/auth_jwt.py::JWTAuthProvider._get_jwks_client",
+      "path": "packages/maistro-core/src/maistro/security/auth_jwt.py",
+      "line": 131,
+      "name": "_get_jwks_client",
+      "classname": "JWTAuthProvider",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/gate.py::Gate",
+      "path": "packages/maistro-core/src/maistro/security/gate.py",
+      "line": 30,
+      "name": "Gate",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/gate.py::Gate.process_input",
+      "path": "packages/maistro-core/src/maistro/security/gate.py",
+      "line": 48,
+      "name": "process_input",
+      "classname": "Gate",
+      "rank": "C",
+      "complexity": 17,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/rate_limiter.py::InMemoryRateLimiter.check",
+      "path": "packages/maistro-core/src/maistro/security/rate_limiter.py",
+      "line": 36,
+      "name": "check",
+      "classname": "InMemoryRateLimiter",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/redact.py::redact",
+      "path": "packages/maistro-core/src/maistro/security/redact.py",
+      "line": 105,
+      "name": "redact",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/sentinel/policy.py::Sentinel.authorize",
+      "path": "packages/maistro-core/src/maistro/security/sentinel/policy.py",
+      "line": 87,
+      "name": "authorize",
+      "classname": "Sentinel",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/security/trust_boundary.py::check_permission",
+      "path": "packages/maistro-core/src/maistro/security/trust_boundary.py",
+      "line": 73,
+      "name": "check_permission",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/sessions/search.py::search_sessions",
+      "path": "packages/maistro-core/src/maistro/sessions/search.py",
+      "line": 53,
+      "name": "search_sessions",
+      "classname": null,
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/skills/marketplace.py::SkillMarketplace.install",
+      "path": "packages/maistro-core/src/maistro/skills/marketplace.py",
+      "line": 147,
+      "name": "install",
+      "classname": "SkillMarketplace",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Security remediation added a salvage pass to the install path: fix_content() then a re-scan of the repaired text, with distinct rejections for unfixable findings and for residual CRITICALs. Each added branch is a refusal to persist content that has not been re-verified, so the complexity is the control itself. Tracked under SPEC-264 with the rest of the C-rank backlog."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/skills/parser.py::parse_skill_file",
+      "path": "packages/maistro-core/src/maistro/skills/parser.py",
+      "line": 76,
+      "name": "parse_skill_file",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/tools/atlassian/client.py::AtlassianMCPClient._parse_confluence_page",
+      "path": "packages/maistro-core/src/maistro/tools/atlassian/client.py",
+      "line": 382,
+      "name": "_parse_confluence_page",
+      "classname": "AtlassianMCPClient",
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/tools/browser/client.py::BrowserClient._parse_search_output",
+      "path": "packages/maistro-core/src/maistro/tools/browser/client.py",
+      "line": 220,
+      "name": "_parse_search_output",
+      "classname": "BrowserClient",
+      "rank": "C",
+      "complexity": 14,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/tools/git/github.py::_project_pr",
+      "path": "packages/maistro-core/src/maistro/tools/git/github.py",
+      "line": 75,
+      "name": "_project_pr",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/executor.py::execute_with_resilience",
+      "path": "packages/maistro-core/src/maistro/graph/executor.py",
+      "line": 46,
+      "name": "execute_with_resilience",
+      "classname": null,
+      "rank": "C",
+      "complexity": 17,
+      "note": "graph resilience wrapper; landed via #262 merge before the checker was wired into CI"
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/runs/model.py::_freeze_evidence_value",
+      "path": "packages/maistro-core/src/maistro/runs/model.py",
+      "line": 79,
+      "name": "_freeze_evidence_value",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "AttemptResult immutable-evidence normalization introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/runs/model.py::evidence_values_equal",
+      "path": "packages/maistro-core/src/maistro/runs/model.py",
+      "line": 97,
+      "name": "evidence_values_equal",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
+    }
+  ]
 }

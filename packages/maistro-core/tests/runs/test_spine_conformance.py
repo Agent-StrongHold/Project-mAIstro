@@ -236,6 +236,35 @@ async def test_a_terminal_run_records_its_outcome(spine: Any) -> None:
     assert reloaded.finished_at is not None
 
 
+async def test_non_terminal_run_stats_counts_open_runs_and_finds_the_oldest(spine: Any) -> None:
+    """The recovery tick's visibility pair (#462/#338), one answer per backend.
+
+    Relative to a baseline rather than absolute, because the PostgreSQL leg
+    shares its tables across the suite: "my open Run is counted and my settled
+    one is not" is this test's to assert; "how many exist in total" is not.
+    """
+    store, _workspace, _project_id = spine
+    baseline_count, _ = await store.non_terminal_run_stats()
+
+    first = await _run(spine)
+    second = await _run(spine)
+    await store.transition_run(second.run_id, RunStatus.QUEUED)
+    await store.transition_run(second.run_id, RunStatus.RUNNING)
+    await store.transition_run(second.run_id, RunStatus.COMPLETED)
+
+    count, oldest = await store.non_terminal_run_stats()
+    assert count == baseline_count + 1  # `second` settled; only `first` stays open
+    assert oldest is not None
+    assert oldest <= first.created_at
+
+
+async def test_non_terminal_run_stats_on_an_empty_store_is_zero_and_ageless(
+    memory_spine: Any,
+) -> None:
+    store, _workspace, _project_id = memory_spine
+    assert await store.non_terminal_run_stats() == (0, None)
+
+
 async def test_transitioning_an_unknown_run_raises(spine: Any) -> None:
     store, _workspace, _project_id = spine
 

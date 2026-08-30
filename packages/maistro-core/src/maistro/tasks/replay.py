@@ -35,7 +35,15 @@ def _apply(
     elif checkpoint.kind is CheckpointKind.TOOL_CALL_DONE:
         open_tool_calls.discard(payload["call_id"])
     elif checkpoint.kind in _WAVE_STATUS_BY_KIND:
-        wave_status[payload["wave_id"]] = _WAVE_STATUS_BY_KIND[checkpoint.kind]
+        # A `state` key marks the ensemble's *task-level* fan-out and completion
+        # markers, which describe the whole task and carry `wave_ids`, plural.
+        # Both halves of ADR-056 shipped without being run against each other,
+        # so folding the checkpoints the ensemble actually writes raised
+        # KeyError on `wave_id` (#624). A task-level marker contributes no
+        # per-wave status; the per-wave records beside it carry that, and one
+        # with neither key is still malformed and still raises.
+        if "state" not in payload:
+            wave_status[payload["wave_id"]] = _WAVE_STATUS_BY_KIND[checkpoint.kind]
     elif checkpoint.kind is CheckpointKind.APPROVAL_GATE_RAISED:
         pending_approval_gates.add(payload["gate_id"])
     elif checkpoint.kind is CheckpointKind.APPROVAL_GATE_ANSWERED:
