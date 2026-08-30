@@ -436,3 +436,21 @@ class TestMutationBoundaries:
         assert [
             f.target for f in _scan(check, workspace, "from thing.facade import json\n")
         ] == ["thing.facade.json"]
+
+    def test_collect_continues_after_type_checking_block(self, check, workspace):
+        pkg = workspace / "packages" / "thing" / "src" / "thing"
+        (pkg / "facade.py").write_text(
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    Hidden = int\n\n"
+            "REAL = 1\n",
+            encoding="utf-8",
+        )
+        assert _scan(check, workspace, "from thing.facade import REAL\n") == []
+
+    def test_import_scan_continues_after_type_checking_block(self, check, workspace):
+        body = (
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    from thing.real import Widget\n\n"
+            "from thing.nope import load\n"
+        )
+        assert [f.target for f in _scan(check, workspace, body)] == ["thing.nope"]
