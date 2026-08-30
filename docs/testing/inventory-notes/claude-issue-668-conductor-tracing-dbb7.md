@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +4
+  packages/hive-conductor/backend/tests: +6
 ---
 # claude-issue-668-conductor-tracing-dbb7
 
-Four added, none removed, none rewritten, all in
+Six added, none removed, none rewritten, all in
 `tests/test_telemetry_reports_its_own_absence.py`.
 
 Two are the pair the change exists for: no endpoint stays **silent** (the
@@ -27,3 +27,17 @@ the body.
 Replacing the `logger.error` with `pass` fails exactly the second and third and
 leaves the other two passing, which is the check that the report is doing the
 work rather than sitting beside it.
+
+Two more came from the diff-coverage gate, and the reason they were missing is
+worth writing down: **CI does not install the observability extra** — which is
+the whole point of it being an extra — so every test above takes the
+ImportError branch and the code *after* those imports is unreachable in that
+environment. Nothing was wrong with the tests; the packages simply are not
+there.
+
+So the last two install a minimal stub of the five names `_init_tracer`
+imports. One proves the path that is the reason for all of this: with the
+packages present, a tracer is built, and quietly. The other proves a setup
+failure — a bad endpoint, a refused exporter — is reported as its own thing and
+*not* as a missing package, because telling an operator to install something
+they already have sends them after the wrong problem.

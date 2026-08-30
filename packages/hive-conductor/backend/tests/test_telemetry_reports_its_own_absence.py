@@ -89,3 +89,82 @@ def test_tracing_stays_a_no_op_when_it_cannot_start(monkeypatch) -> None:
         ctx["output"] = "still runs"
 
     assert ctx == {"output": "still runs"}
+
+
+def _stub_opentelemetry(monkeypatch, *, resource_raises: bool = False) -> object:
+    """Install a minimal OpenTelemetry surface, so both post-import paths run.
+
+    CI does not install the observability extra -- that is the whole point of it
+    being an extra -- so every test above takes the ImportError branch and the
+    code *after* the imports is unreachable there. Stubbing the five names
+    `_init_tracer` imports is what lets the setup path be exercised at all.
+    """
+    import sys
+    import types
+
+    class _Tracer:
+        pass
+
+    tracer = _Tracer()
+
+    class _Resource:
+        @staticmethod
+        def create(_attrs: dict[str, Any]) -> object:
+            if resource_raises:
+                raise RuntimeError("the exporter refused this configuration")
+            return object()
+
+    class _Provider:
+        def __init__(self, resource: object) -> None:
+            self.resource = resource
+
+        def add_span_processor(self, _processor: object) -> None:
+            return None
+
+    trace_mod = types.ModuleType("opentelemetry.trace")
+    trace_mod.set_tracer_provider = lambda _p: None  # type: ignore[attr-defined]
+    trace_mod.get_tracer = lambda _name: tracer  # type: ignore[attr-defined]
+
+    root = types.ModuleType("opentelemetry")
+    root.trace = trace_mod  # type: ignore[attr-defined]
+
+    modules = {
+        "opentelemetry": root,
+        "opentelemetry.trace": trace_mod,
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter": types.ModuleType("x"),
+        "opentelemetry.sdk.resources": types.ModuleType("r"),
+        "opentelemetry.sdk.trace": types.ModuleType("t"),
+        "opentelemetry.sdk.trace.export": types.ModuleType("e"),
+    }
+    modules["opentelemetry.exporter.otlp.proto.http.trace_exporter"].OTLPSpanExporter = (  # type: ignore[attr-defined]
+        lambda **_kw: object()
+    )
+    modules["opentelemetry.sdk.resources"].Resource = _Resource  # type: ignore[attr-defined]
+    modules["opentelemetry.sdk.trace"].TracerProvider = _Provider  # type: ignore[attr-defined]
+    modules["opentelemetry.sdk.trace.export"].BatchSpanProcessor = lambda _e: object()  # type: ignore[attr-defined]
+
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return tracer
+
+
+def test_a_configured_endpoint_with_the_packages_builds_a_tracer(monkeypatch) -> None:
+    """The path that is the reason for all of this: it works, and quietly."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel.example.com")
+    tracer = _stub_opentelemetry(monkeypatch)
+
+    assert telemetry._init_tracer() is tracer
+
+
+def test_a_setup_failure_is_reported_as_its_own_thing(monkeypatch, caplog) -> None:
+    """A bad endpoint or a refused exporter is not a missing package, and
+    telling an operator to install something they already have would send them
+    after the wrong problem."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel.example.com")
+    _stub_opentelemetry(monkeypatch, resource_raises=True)
+
+    with caplog.at_level(logging.ERROR, logger="hive.telemetry"):
+        assert telemetry._init_tracer() is None
+
+    assert "could not be initialised" in caplog.text
+    assert "not installed" not in caplog.text
