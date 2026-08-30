@@ -150,29 +150,31 @@ jobs:
       # images cold on a fresh runner.
       - uses: docker/setup-buildx-action@v3
 
+      # `docker/build-push-action` exposes GitHub's runtime cache-auth
+      # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally
+      # before invoking buildx; a raw `docker buildx build` in a `run:` step
+      # does not have them, so every `type=gha` cache reference below would
+      # silently fail to authenticate and build with no cache (Codex, #684).
+      # Docker's own documented fix: https://docs.docker.com/build/cache/backends/gha/#authentication
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      # Buildx's own driver has its own image store, isolated from the host
+      # daemon -- no prepull step protects these fetches, so each build
+      # retries itself via buildx-build-retry.sh (Codex, #683).
       - name: Build hive-conductor image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: packages/hive-conductor/Dockerfile
-          tags: hive-conductor:pr-${{ env.CANDIDATE_TAG }}
-          build-args: |
-            VITE_POC_MODE=pm
-            VITE_BASE_PATH=/pm/
-          push: false
-          load: true
-          cache-from: type=gha,scope=hive-conductor
-          cache-to: type=gha,scope=hive-conductor,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f packages/hive-conductor/Dockerfile
+          -t "hive-conductor:pr-${CANDIDATE_TAG}"
+          --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/
+          --load --cache-from type=gha,scope=hive-conductor
+          --cache-to type=gha,scope=hive-conductor,mode=max .
       - name: Build maistro-engine image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          tags: maistro-engine:pr-${{ env.CANDIDATE_TAG }}
-          push: false
-          load: true
-          cache-from: type=gha,scope=engine
-          cache-to: type=gha,scope=engine,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile -t "maistro-engine:pr-${CANDIDATE_TAG}"
+          --load --cache-from type=gha,scope=engine
+          --cache-to type=gha,scope=engine,mode=max .
 
       # The two images the inventory (quality/image-inventory.json) records as
       # DISTRIBUTED. Neither was built or scanned here before #346 -- including
@@ -181,26 +183,18 @@ jobs:
       # could go near-zero-CVE is not the same as being clean; it is the
       # opposite, and it went unmeasured because nothing enumerated the images.
       - name: Build maistro-engine-research image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.research
-          tags: maistro-engine-research:pr-${{ env.CANDIDATE_TAG }}
-          push: false
-          load: true
-          cache-from: type=gha,scope=engine-research
-          cache-to: type=gha,scope=engine-research,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}"
+          --load --cache-from type=gha,scope=engine-research
+          --cache-to type=gha,scope=engine-research,mode=max .
 
       - name: Build maistro-rsi-runner image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.rsi-runner
-          tags: maistro-rsi-runner:pr-${{ env.CANDIDATE_TAG }}
-          push: false
-          load: true
-          cache-from: type=gha,scope=rsi-runner
-          cache-to: type=gha,scope=rsi-runner,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
+          --load --cache-from type=gha,scope=rsi-runner
+          --cache-to type=gha,scope=rsi-runner,mode=max .
 
       - name: Verify live Python packages supersede base-image SBOM inventory
         run: |

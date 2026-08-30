@@ -31,13 +31,13 @@ tests:
 source:
   - scripts/ac_state_notes.py
 ac-modules:
-  AC-1: ac_state_notes
-  AC-2: ac_state_notes
-  AC-3: ac_state_notes
-  AC-4: ac_state_notes
-  AC-5: ac_state_notes
-  AC-6: ac_state_notes
-  AC-7: ac_state_notes
+  AC-1: '@tool/ac_state_notes'
+  AC-2: '@tool/ac_state_notes'
+  AC-3: '@tool/ac_state_notes'
+  AC-4: '@tool/ac_state_notes'
+  AC-5: '@tool/ac_state_notes'
+  AC-6: '@tool/ac_state_notes'
+  AC-7: '@tool/ac_state_notes'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'

@@ -136,6 +136,7 @@ class Conduit:
         auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
+        turn_id: str | None = None,
     ) -> dict[str, Any]:
         last_user_msg = ""
         for msg in reversed(messages):
@@ -213,6 +214,10 @@ class Conduit:
                 auth=auth,
                 session_id=session_id,
                 classified_task_type=intent.task_type,
+                # Carried, not interpreted. The pipeline does not know what a
+                # turn identity means; the agent is where the session is
+                # written, so it is where the identity has to arrive (#327).
+                turn_id=turn_id,
             )
         except Exception:
             # Logged and re-raised, not turned into an answer.

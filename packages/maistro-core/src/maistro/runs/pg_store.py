@@ -75,6 +75,9 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    outcome_embeds_attempt,
+    repaired_accepted_outcome,
+    require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
@@ -466,6 +469,7 @@ class PgRunStore:
         status: RunStatus,
         *,
         limit: int = 100,
+        offset: int = 0,
         project_id: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -474,9 +478,16 @@ class PgRunStore:
         diverging on query surface; oldest-first so a bounded consumer tick
         drains a backlog fairly. Non-terminal payloads are never offloaded to
         the archive, so the rows read back whole.
+
+        A caller that needs to see *every* row eventually, rather than only the
+        oldest page, passes ``offset`` and walks it: the resume tick does, because
+        its filter is applied after the query and a standing prefix of ineligible
+        rows would otherwise hide everything behind it forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
         sql = "SELECT payload FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
         params: list[object] = [status.value]
         if project_id is not None:
@@ -484,6 +495,8 @@ class PgRunStore:
             params.append(project_id)
         sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
         params.append(limit)
+        sql += f" OFFSET ${len(params) + 1}"
+        params.append(offset)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [Run.model_validate(decode_payload(row["payload"])) for row in rows]
@@ -775,6 +788,39 @@ class PgRunStore:
                 attempt, target, at=at, result=result, error=error, metrics=metrics
             )
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
+        return updated
+
+    async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:
+        """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
+
+        The twin of `InMemoryRunStore.repair_attempt_result`; see the protocol
+        for why both copies move in one operation (ADR-083026-14c3). Both rows
+        are locked and written inside one transaction, so a concurrent reader
+        never sees the Attempt repaired and its accepted outcome not.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            require_repairable_attempt(attempt)
+            updated = attempt.model_copy(update={"result": result})
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
+
+            node_run = NodeRun.model_validate(
+                await self._locked(conn, "canonical_node_runs", "node_run_id", attempt.node_run_id)
+            )
+            if outcome_embeds_attempt(node_run, attempt_id):
+                assert node_run.accepted_outcome is not None  # narrowed above
+                repaired = node_run.model_copy(
+                    update={
+                        "accepted_outcome": repaired_accepted_outcome(
+                            node_run.accepted_outcome, updated
+                        )
+                    }
+                )
+                await self._write(
+                    conn, "canonical_node_runs", "node_run_id", node_run.node_run_id, repaired
+                )
         return updated
 
     # ── internals ─────────────────────────────────────────────────

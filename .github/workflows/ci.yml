@@ -611,28 +611,41 @@ jobs:
       # warm-start from whatever a develop-targeted run already built.
       - uses: docker/setup-buildx-action@v3
 
+      # `docker/build-push-action` exposes GitHub's runtime cache-auth
+      # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally
+      # before invoking buildx; a raw `docker buildx build` in a `run:` step
+      # does not have them. Without this, every `--cache-from`/`--cache-to
+      # type=gha` below fails to authenticate and BuildKit silently falls
+      # back to no cache -- the build still succeeds, so nothing here goes
+      # red, but the whole point of this job's caching quietly stops working
+      # (Codex, #684). This is Docker's own documented fix for exactly this
+      # gap: https://docs.docker.com/build/cache/backends/gha/#authentication
+      - uses: crazy-max/ghaction-github-runtime@v3
+
       # Fetch the base images first, retrying (#204). This job used to fail on a
       # registry reset before touching a line of repository content — a red
       # required check that nobody could re-run, because the GitHub App gets
       # `403 Resource not accessible by integration` on `rerun-failed-jobs`.
       #
-      # Only the fetch is retried. A genuine build failure still fails on its
-      # first attempt below, so this buys reliability without hiding breakage.
-      # The image list is parsed from the Dockerfiles rather than written here,
-      # so it cannot drift from what is actually built.
+      # Only the fetch is retried here. A genuine build failure still fails on
+      # its first attempt below, so this buys reliability without hiding
+      # breakage. The image list is parsed from the Dockerfiles rather than
+      # written here, so it cannot drift from what is actually built.
+      #
+      # This protects only classic/daemon-BuildKit builds. The buildx-driven
+      # builds below run in setup-buildx-action's own `docker-container`
+      # driver -- an isolated builder with its own image store the host
+      # daemon's retried pull never reaches -- so they carry their own retry
+      # via buildx-build-retry.sh instead (Codex, #683).
       - name: Pre-pull base images (retry transient registry faults)
         run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
 
       - name: Build maistro-engine (cached)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          tags: maistro-engine:test
-          push: false
-          load: true
-          cache-from: type=gha,scope=engine
-          cache-to: type=gha,scope=engine,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile -t maistro-engine:test
+          --load --cache-from type=gha,scope=engine
+          --cache-to type=gha,scope=engine,mode=max .
       - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
         shell: bash
         run: |
@@ -716,15 +729,11 @@ jobs:
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
       - name: Build hive-conductor (cached)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: packages/hive-conductor/Dockerfile
-          tags: hive-conductor:ci
-          push: false
-          load: true
-          cache-from: type=gha,scope=hive-conductor
-          cache-to: type=gha,scope=hive-conductor,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f packages/hive-conductor/Dockerfile -t hive-conductor:ci
+          --load --cache-from type=gha,scope=hive-conductor
+          --cache-to type=gha,scope=hive-conductor,mode=max .
       # The static gate above reads the ignore files. This one builds the
       # actual RSI runner from a context carrying canary secrets and proves
       # none is in any layer -- because the question is what Docker did, not
@@ -871,25 +880,17 @@ jobs:
       # second `docker build` would and costs nothing.
       - run: docker tag maistro-engine:test maistro-engine:ci
       - name: Build maistro-engine-research (cached)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.research
-          tags: maistro-engine-research:ci
-          push: false
-          load: true
-          cache-from: type=gha,scope=engine-research
-          cache-to: type=gha,scope=engine-research,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile.research -t maistro-engine-research:ci
+          --load --cache-from type=gha,scope=engine-research
+          --cache-to type=gha,scope=engine-research,mode=max .
       - name: Build maistro-rsi-runner (cached)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.rsi-runner
-          tags: maistro-rsi-runner:ci
-          push: false
-          load: true
-          cache-from: type=gha,scope=rsi-runner
-          cache-to: type=gha,scope=rsi-runner,mode=max
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile.rsi-runner -t maistro-rsi-runner:ci
+          --load --cache-from type=gha,scope=rsi-runner
+          --cache-to type=gha,scope=rsi-runner,mode=max .
 
   workflow-lint:
     runs-on: ubuntu-latest

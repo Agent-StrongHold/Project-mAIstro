@@ -164,6 +164,7 @@ async def wire_execution_spine(
     intents: IntentRegistry | None = None,
     pg_pool: Any = None,
     archive_store: ArchiveStore | None = None,
+    prime: bool = True,
 ) -> tuple[
     ProjectScopeStore,
     RunStore,
@@ -280,7 +281,14 @@ async def wire_execution_spine(
     # the docstring above true for the case every deployment has. Workspaces a
     # submission names later (#158) are built on first use, because they do not
     # exist yet at startup.
-    await admitter.admitter_for(workspace_id)
+    #
+    # `prime=False` is for a caller that only reads. Priming *writes* -- it
+    # creates the Root Project, and on SQLite the schemas besides -- so a
+    # read-only tool wired through here mutated the database it was only meant
+    # to inspect (Codex, #690). The default is unchanged, because every
+    # deployment that submits work needs the Root before it does.
+    if prime:
+        await admitter.admitter_for(workspace_id)
     return (
         project_scope_store,
         run_store,
