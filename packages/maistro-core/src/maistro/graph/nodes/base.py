@@ -17,7 +17,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -78,10 +78,22 @@ class NodeResult(BaseModel):
     #: declares no fields. Without it Pydantic serializes a typed output through
     #: that empty declared schema and the node's own fields are dropped -- so a
     #: persisted Attempt said the node produced nothing (#566). Duck-typed
-    #: serialization writes the runtime model's real fields instead. Reading a
-    #: record back gives the mapping, not the original class: the envelope never
-    #: recorded which model it was, and inventing one here would be a guess.
-    output: dict[str, Any] | SerializeAsAny[BaseModel] | None = None
+    #: serialization writes the runtime model's real fields instead.
+    #:
+    #: ``JsonValue`` *beside* ``dict[str, Any]``, not instead of it. The write
+    #: side accepts every ``BaseModel``, and a ``RootModel`` serializes to its
+    #: root -- a list, or a bare scalar -- which a dict-only branch could not
+    #: read back. But ``JsonValue`` alone narrows the write side: a mapping
+    #: Pydantic can serialize without it already being JSON, say
+    #: ``{"created_at": datetime.now(UTC)}``, then falls past both branches into
+    #: the model one and raises from Pydantic's internals. The dict branch keeps
+    #: those callers; ``JsonValue`` adds the shapes a serialized root model
+    #: takes. Order matters: dict first, so a mapping never reaches the rest.
+    #:
+    #: Reading a record back gives the JSON value, not the original class: the
+    #: envelope never recorded which model it was, and inventing one would be a
+    #: guess.
+    output: dict[str, Any] | JsonValue | SerializeAsAny[BaseModel] | None = None
     latency_ms: int = 0
     error_code: str | None = None  # http status / exception class / "timeout"
     error_message: str | None = None
