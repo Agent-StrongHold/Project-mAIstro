@@ -35,12 +35,21 @@ description: >-
 #    minor releases apart, split across jobs, neither chosen by anyone. 0.12.5
 #    is what seventeen of the twenty usages already installed and passed on.
 #
-# Change either value HERE and nowhere else. scripts/check-uv-setup.py fails
-# the build if a workflow calls astral-sh/setup-uv directly, if this file drops
-# below the pinned action release, or if the uv version stops being exact.
+# 3. MANAGED PYTHON CACHE — this is a build-latency fix, not a correctness fix.
+#
+#    Several required workflows run `uv python install 3.12`. setup-uv keeps
+#    managed Python installations out of its Actions cache by default, so each
+#    fresh hosted runner downloads the same CPython archive again even when the
+#    dependency cache is a hit. v10.0.1 exposes `cache-python: true` precisely
+#    for this case; keep it here so every workflow using the wrapper benefits.
+#
+# Change the pinned action/version HERE and nowhere else. scripts/check-uv-setup.py
+# fails the build if a workflow calls astral-sh/setup-uv directly, if this file
+# drops below the pinned action release, or if the uv version stops being exact.
 runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@v10.0.1
       with:
         version: "0.12.5"
+        cache-python: "true"
