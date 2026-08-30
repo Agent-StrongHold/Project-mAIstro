@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "default_window": "retain until the named retirement condition is proven",
+    "persisted_strategies": [
+      "dual-read",
+      "schema-migration",
+      "translation-adapter",
+      "version-negotiation"
+    ],
+    "non_persisted_strategies": [
+      "import-alias",
+      "translation-adapter",
+      "version-negotiation"
+    ]
+  },
+  "canonical_surface": [
+    {
+      "identity": "workspaces/model.py::Workspace",
+      "required_fields": ["workspace_id", "name"]
+    },
+    {
+      "identity": "workspaces/model.py::WorkspaceMembership",
+      "required_fields": ["workspace_id", "user_id", "role"]
+    },
+    {
+      "identity": "projects/scope.py::Project",
+      "required_fields": ["project_id", "workspace_id", "name", "parent_project_id", "is_root"]
+    },
+    {
+      "identity": "graph/definitions.py::Graph",
+      "required_fields": ["graph_id", "workspace_id", "project_id"]
+    },
+    {
+      "identity": "runs/model.py::Run",
+      "required_fields": ["run_id", "workspace_id", "project_id", "graph", "status"]
+    },
+    {
+      "identity": "runs/model.py::NodeRun",
+      "required_fields": ["node_run_id", "run_id", "node_id", "ordinal", "status"]
+    },
+    {
+      "identity": "runs/model.py::Attempt",
+      "required_fields": ["attempt_id", "node_run_id", "ordinal", "status"]
+    },
+    {
+      "identity": "events/envelope.py::EventEnvelope",
+      "required_fields": ["event_id", "workspace_id"]
+    }
+  ],
+  "compatibility_aliases": [
+    {
+      "identity": "builders/dag.py::GraphSpec=GraphConfig",
+      "scope": "python-import",
+      "persisted_data": false,
+      "strategy": "import-alias",
+      "migration": "Import GraphConfig directly; GraphSpec is non-authoritative compatibility only.",
+      "deprecation_window": "until #35 retirement evidence proves supported importers no longer use GraphSpec",
+      "owner": "#35",
+      "removal_condition": "Behavioral parity and importer migration are proven before the alias is deleted.",
+      "release_note": "Removal is a breaking import-contract change and must be called out in release notes."
+    },
+    {
+      "identity": "types/config.py::MaistroConfig=AgentConfig",
+      "scope": "python-import",
+      "persisted_data": false,
+      "strategy": "import-alias",
+      "migration": "Import AgentConfig directly; MaistroConfig is non-authoritative compatibility only.",
+      "deprecation_window": "until #35 retirement evidence proves supported importers no longer use MaistroConfig",
+      "owner": "#35",
+      "removal_condition": "Behavioral parity and importer migration are proven before the alias is deleted.",
+      "release_note": "Removal is a breaking import-contract change and must be called out in release notes."
+    },
+    {
+      "identity": "types/errors.py::MaistroError=AgentError",
+      "scope": "python-import",
+      "persisted_data": false,
+      "strategy": "import-alias",
+      "migration": "Import AgentError directly; MaistroError is non-authoritative compatibility only.",
+      "deprecation_window": "until #35 retirement evidence proves supported importers no longer use MaistroError",
+      "owner": "#35",
+      "removal_condition": "Behavioral parity and importer migration are proven before the alias is deleted.",
+      "release_note": "Removal is a breaking import-contract change and must be called out in release notes."
+    },
+    {
+      "identity": "types/errors.py::StrongholdError=AgentError",
+      "scope": "python-import",
+      "persisted_data": false,
+      "strategy": "import-alias",
+      "migration": "Import AgentError directly; StrongholdError is non-authoritative compatibility only.",
+      "deprecation_window": "until #35 retirement evidence proves supported importers no longer use StrongholdError",
+      "owner": "#35",
+      "removal_condition": "Behavioral parity and importer migration are proven before the alias is deleted.",
+      "release_note": "Removal is a breaking import-contract change and must be called out in release notes."
+    },
+    {
+      "identity": "workspaces/model.py::WorkspaceMember=WorkspaceMembership",
+      "scope": "python-import",
+      "persisted_data": false,
+      "strategy": "import-alias",
+      "migration": "Import WorkspaceMembership directly; WorkspaceMember is non-authoritative compatibility only.",
+      "deprecation_window": "until #35 retirement evidence proves supported importers no longer use WorkspaceMember",
+      "owner": "#35",
+      "removal_condition": "Behavioral parity and importer migration are proven before the alias is deleted.",
+      "release_note": "Removal is a breaking import-contract change and must be called out in release notes."
+    }
+  ]
+}
