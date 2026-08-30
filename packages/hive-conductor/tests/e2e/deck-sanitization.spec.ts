@@ -69,15 +69,12 @@ createRoot(document.getElementById("root")!).render(<DeckBuilder />);
     format: "iife",
     jsx: "automatic",
     define: { "process.env.NODE_ENV": '"test"' },
-    // The entry lives under /tmp, while npm dependencies live under /tests.
-    // Explicitly name that search root rather than relying on cwd resolution.
     nodePaths: ["/tests/node_modules"],
     logLevel: "silent",
   });
 
   server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/v1/chat/complete") {
-      // Drain the request so keep-alive behaves like a normal HTTP endpoint.
       for await (const _chunk of request) {
         // body intentionally ignored; the browser path is what this spec owns
       }
@@ -133,6 +130,17 @@ async function generate(reply: string): Promise<void> {
   await expect(prompt).toHaveValue("");
 }
 
+async function putCaretAtEnd(locator: ReturnType<Page["locator"]>): Promise<void> {
+  await locator.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+}
+
 function expectNoExecutableMarkup(html: string, allowTrustedDocumentMeta = false): void {
   expect(html).not.toMatch(
     /<\s*(?:script|iframe|form|img|object|embed|link|base|foreignObject|use|a)\b/i,
@@ -164,9 +172,6 @@ test.afterAll(async () => {
 
 test("model-authored HTML/SVG is sanitized before preview and presentation render", async () => {
   await loadFresh();
-  // Unindexed generated slides intentionally append under the existing Deck contract.
-  // Target the active first slide explicitly so this test proves the sanitizer without
-  // changing that product behavior or inspecting the untouched blank slide.
   const hostile = `<slide index="1">
     <h1>Safe deck content</h1>
     <script>window.__deckPwned = 1</script>
@@ -209,22 +214,50 @@ test("model-authored HTML/SVG is sanitized before preview and presentation rende
   expect(attackerRequests).toEqual([]);
 });
 
-test("contentEditable changes and exported HTML cross the same sanitizer boundary", async () => {
+test("rich paste and drop are sanitized before browser insertion, then export stays safe", async () => {
   await loadFresh();
   const preview = page.locator('[contenteditable="true"]');
   await expect(preview).toBeVisible();
-
-  await preview.evaluate(
-    (element, attacker) => {
-      element.innerHTML = `<h2>Edited safely</h2><img src="http://${attacker}/edit" onerror="window.__deckPwned=5"><svg><foreignObject><script>window.__deckPwned=6</script></foreignObject><rect width="10" height="10" fill="#fff"></rect></svg>`;
-    },
-    ATTACKER,
-  );
   await preview.focus();
-  await page.keyboard.press("Tab");
+  await putCaretAtEnd(preview);
+
+  const pasteHostile = `<h2>Edited safely</h2><img src="http://${ATTACKER}/paste" onerror="window.__deckPwned=5"><svg><foreignObject><script>window.__deckPwned=6</script></foreignObject><rect width="10" height="10" fill="#fff"></rect></svg>`;
+  const pastePrevented = await preview.evaluate((element, payload) => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/html", payload);
+    transfer.setData("text/plain", "Edited safely");
+    return !element.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }));
+  }, pasteHostile);
+
+  expect(pastePrevented).toBe(true);
   await expect(preview).toContainText("Edited safely");
   await expect(preview.locator("img, foreignObject, script")).toHaveCount(0);
   expectNoExecutableMarkup(await preview.innerHTML());
+  expect(attackerRequests).toEqual([]);
+
+  await putCaretAtEnd(preview);
+  const dropHostile = `<strong>Dropped safely</strong><iframe src="http://${ATTACKER}/drop"></iframe><a href="javascript:window.__deckPwned=8">bad</a>`;
+  const dropPrevented = await preview.evaluate((element, payload) => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/html", payload);
+    transfer.setData("text/plain", "Dropped safely");
+    transfer.setData("text/uri-list", "http://attacker.invalid/navigate");
+    return !element.dispatchEvent(new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }));
+  }, dropHostile);
+
+  expect(dropPrevented).toBe(true);
+  await expect(preview).toContainText("Dropped safely");
+  await expect(preview.locator("iframe, a")).toHaveCount(0);
+  expectNoExecutableMarkup(await preview.innerHTML());
+  expect(attackerRequests).toEqual([]);
 
   // The title used to be interpolated raw into the exported <title> element.
   await page.locator("input").first().fill('</title><script>window.__deckPwned=7</script><title>');
@@ -233,6 +266,7 @@ test("contentEditable changes and exported HTML cross the same sanitizer boundar
   const exported = await readDownload(await downloadPromise);
 
   expect(exported).toContain("Edited safely");
+  expect(exported).toContain("Dropped safely");
   expect(exported).toContain("&lt;/title&gt;");
   expectNoExecutableMarkup(exported, true);
   expect(
