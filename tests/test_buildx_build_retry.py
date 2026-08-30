@@ -113,6 +113,37 @@ def test_attempts_is_configurable_and_one_attempt_never_retries(
     assert count.read_text().strip() == "1"
 
 
+@pytest.mark.parametrize("bad_attempts", ["0", "-1", "not-a-number"])
+def test_a_non_positive_attempts_count_errors_instead_of_silently_succeeding(
+    tmp_path: Path, bad_attempts: str
+) -> None:
+    """A `for` loop bounded by a non-positive ATTEMPTS runs zero times: the
+    script would fall off the end with no explicit exit, which is success --
+    reporting a build step green without docker ever having been invoked."""
+    bin_dir, _log, count = _stub_docker(tmp_path, fail_count=0)
+    result = _run(
+        bin_dir,
+        ["--", "-f", "Dockerfile", "-t", "x", "."],
+        env={"BUILDX_RETRY_ATTEMPTS": bad_attempts},
+    )
+    assert result.returncode == 2
+    assert "::error::" in result.stderr
+    assert count.read_text().strip() == "0"
+
+
+def test_an_empty_attempts_value_falls_back_to_the_default_rather_than_erroring(
+    tmp_path: Path,
+) -> None:
+    """`${VAR:-default}` substitutes on unset OR empty; an explicitly empty
+    `BUILDX_RETRY_ATTEMPTS=` is not malformed input, just an unset one."""
+    bin_dir, _log, count = _stub_docker(tmp_path, fail_count=0)
+    result = _run(
+        bin_dir, ["--", "-f", "Dockerfile", "-t", "x", "."], env={"BUILDX_RETRY_ATTEMPTS": ""}
+    )
+    assert result.returncode == 0
+    assert count.read_text().strip() == "1"
+
+
 @pytest.mark.parametrize("ci_yml_or_security_yml", ["ci.yml", "security.yml"])
 def test_every_workflow_call_site_passes_the_separator(
     ci_yml_or_security_yml: str,
