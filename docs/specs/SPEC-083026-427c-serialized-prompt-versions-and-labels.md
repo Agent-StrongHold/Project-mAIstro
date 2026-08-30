@@ -103,10 +103,11 @@ Feature: Prompt versions and labels are written once, together, and only forward
 
   @AC-7
   Scenario: The database refuses a duplicate version or a forked label
-    Given a PostgreSQL prompt store
-    When a second row is written for an existing name and version
-    Or a label for one name is pointed at two versions at once
+    Given a PostgreSQL prompt store holding two versions of a name
+    When a writer bypasses the manager and writes a second row at an existing version
     Then the database rejects the write
+    And it rejects a label pointed at a second version just as it does
+    And it rejects a label naming a version that does not exist
 
   @AC-8
   Scenario: The SQLite twin stores the same shape

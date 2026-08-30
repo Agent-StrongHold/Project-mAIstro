@@ -85,6 +85,10 @@ EXPECTED_TABLES = frozenset(
         "node_templates",
         "orgs",
         "outcomes",
+        # A version and the label pointing at it were one row until 022; a
+        # version may carry several labels, which that shape had no room for
+        # (#328).
+        "prompt_labels",
         "prompts",
         "quota_usage",
         # Schedule definitions and their fire cursors (016). Durable so that a

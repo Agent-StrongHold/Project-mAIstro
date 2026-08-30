@@ -21,7 +21,8 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/persistence/test_prompt_store_conformance.py
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'

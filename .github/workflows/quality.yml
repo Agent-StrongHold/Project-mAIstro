@@ -517,6 +517,34 @@ jobs:
     name: Quality gate (Pillars 1–4, 7, 8)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # A real PostgreSQL, because the acceptance-state ratchet below runs the
+    # marked tests and `ac_outcome_plugin` counts a *skip* as not-passing --
+    # deliberately, since a skip proves nothing about whether a criterion
+    # holds. Without a server, every criterion whose evidence needs one is
+    # unprovable here, which silently excluded the entire durable-store layer
+    # from the acceptance mandate: the tests existed, passed in the `postgres`
+    # job, and could never raise design coverage (#328).
+    #
+    # pg18 alone rather than the 17/18 matrix `ci.yml` runs. This job asks
+    # whether the criteria are proven, not whether they hold on every supported
+    # major; the compatibility question is the matrix's and stays there.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -803,6 +831,13 @@ jobs:
       # violation be paid for by an unrelated legacy fix. Legacy stays on the
       # ceilings either way.
       #
+      # The ratchet's own tests read this database. Applying the chain here
+      # rather than trusting the `postgres` job's copy keeps this job
+      # self-contained: it is a required check and must not depend on another
+      # job's side effects.
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
       # `--mandate` needs the immutable candidate base. A push has none, so a
       # push gets the ratchet alone; PR and merge-group candidates get mandate.
       - name: acceptance-state ratchet + mandate
