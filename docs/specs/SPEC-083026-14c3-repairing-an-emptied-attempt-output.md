@@ -39,6 +39,8 @@ ac-modules:
   AC-6: maistro.runs.store
   AC-7: maistro.runs.repair
   AC-8: maistro.runs.repair
+  AC-9: maistro.runs.repair
+  AC-10: maistro.cli._repair
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -60,7 +62,20 @@ the same defect one level up, a partial sweep presented as a complete one.
 
 AC-4 through AC-6 are the store method, held against every backend. AC-6 is the
 invariant `validate_accepted_outcome_against_attempt()` enforces, and the reason
-the method does both writes rather than offering two.
+the method does both writes rather than offering two — in one transaction, since
+two commits are two chances to stop between them and leave exactly the
+disagreement the invariant refuses.
+
+AC-9 and AC-10 are two more bounds the sweep has to state, both found in review
+(Codex, #690). AC-9 is the scope it was *given*: `--workspace-id` chose which
+store to wire and nothing more, so the sweep listed globally and naming one
+Workspace surveyed — and with `--apply` rewrote — every other tenant's records
+in the same database. AC-10 is the scope it cannot reach: once a terminal Run's
+payload is offloaded, `PgRunStore.list_by_status` skips it, because it selects
+`payload IS NOT NULL`. A cold record holding this very loss is therefore
+invisible and no larger `--limit` reveals it. Both are reported rather than
+tolerated, for AC-1's reason — a clean report over records the sweep could not
+read is the withdrawn version's defect wearing different clothes.
 
 ## Acceptance Criteria
 
@@ -119,4 +134,18 @@ Feature: Repairing an emptied Attempt output
     When the survey runs
     Then it reports how many runs it examined
     And it states that it stopped at its limit
+
+  @AC-9
+  Scenario: A sweep confined to one Workspace touches no other
+    Given damaged Attempts in two Workspaces of one database
+    When the survey names one of them and the repair is applied
+    Then only that Workspace's Attempt is rewritten
+    And the other is still found by a sweep that asks for it
+
+  @AC-10
+  Scenario: The sweep states the records it could not read
+    Given a deployment whose terminal payloads may be archived
+    When the survey runs
+    Then it states that archived runs were not examined
+    And it states it on a clean sweep as well as a dirty one
 ```

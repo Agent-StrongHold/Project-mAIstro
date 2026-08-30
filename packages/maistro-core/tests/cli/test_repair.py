@@ -124,7 +124,7 @@ class TestSurveyIsTheDefault:
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
         monkeypatch.delenv("DB_HOST", raising=False)
 
-        attempt_outputs()
+        attempt_outputs(workspace_id="workspace-1")
 
         printed = capsys.readouterr().out
         assert "No Attempt holds an emptied output" in printed
@@ -187,7 +187,7 @@ class TestApplyIsTheOnlyThingThatWrites:
         monkeypatch.delenv("DB_HOST", raising=False)
         asyncio.run(self._emptied_turn(db))
 
-        attempt_outputs()
+        attempt_outputs(workspace_id="workspace-1")
 
         printed = capsys.readouterr().out
         assert "1 repairable" in printed
@@ -195,7 +195,7 @@ class TestApplyIsTheOnlyThingThatWrites:
         assert "Repaired" not in printed
 
         # And nothing was written: the same survey still finds it.
-        attempt_outputs()
+        attempt_outputs(workspace_id="workspace-1")
         assert "1 repairable" in capsys.readouterr().out
 
     @pytest.mark.ac("SPEC-083026-14c3/AC-4")
@@ -207,11 +207,11 @@ class TestApplyIsTheOnlyThingThatWrites:
         monkeypatch.delenv("DB_HOST", raising=False)
         asyncio.run(self._emptied_turn(db))
 
-        attempt_outputs(apply=True)
+        attempt_outputs(apply=True, workspace_id="workspace-1")
         assert "Repaired 1 Attempt(s)." in capsys.readouterr().out
 
         # The end state an operator checks: the survey now finds nothing.
-        attempt_outputs()
+        attempt_outputs(workspace_id="workspace-1")
         assert "No Attempt holds an emptied output" in capsys.readouterr().out
 
 
@@ -236,12 +236,18 @@ class TestThePostgresBranchOpensAPool:
 
             return _Pool()
 
+        async def _fake_release_pool(pool: Any) -> bool:
+            seen["released"] = pool
+            return True
+
         async def _fake_wire(conn: Any, **kwargs: Any) -> tuple[Any, ...]:
             seen["conn"] = conn
             seen["pool"] = kwargs.get("pg_pool")
+            seen["prime"] = kwargs.get("prime")
             return (object(), object(), object(), object(), object(), object())
 
         monkeypatch.setattr(persistence, "get_pool", _fake_get_pool)
+        monkeypatch.setattr(persistence, "release_pool", _fake_release_pool)
         monkeypatch.setattr(wiring, "wire_execution_spine", _fake_wire)
 
         _store, closer = asyncio.run(
@@ -253,4 +259,80 @@ class TestThePostgresBranchOpensAPool:
         assert seen["conn"] is None
         assert seen["pool"] is not None
         assert seen["dsn"].startswith("postgres")
-        assert seen["closed"] is True
+        # Released, never closed. `get_pool` hands back a registry-shared pool
+        # and counts its users, so closing it outright would drop the
+        # connections under any other user in the process and leave a dead pool
+        # registered for the next caller (Codex, #690).
+        assert seen["released"] is seen["pool"]
+        assert "closed" not in seen
+
+        # And the survey never primes: priming writes.
+        assert seen["prime"] is False
+
+
+class TestTheSweepStatesWhatItCouldNotRead:
+    """Codex, #690. Two bounds, and only one of them a re-run can lift.
+
+    An archived Run's payload is offloaded and `PgRunStore.list_by_status`
+    selects `payload IS NOT NULL`, so a cold record holding the very loss this
+    command repairs is invisible to the sweep and no `--limit` reveals it.
+    Reporting a clean pass over records it could not read is the false clean
+    bill of health the withdrawn repair gave — the defect this command exists
+    to not repeat — so the bound is printed every time, beside the count.
+    """
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-10")
+    def test_the_archive_bound_is_printed_beside_the_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "spine.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+        monkeypatch.delenv("DB_HOST", raising=False)
+
+        attempt_outputs(workspace_id="workspace-1")
+
+        printed = capsys.readouterr().out
+        assert "Archived runs are not examined" in printed
+        # Stated even on a clean sweep — that is the case it exists for.
+        assert "No Attempt holds an emptied output" in printed
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-7")
+    def test_the_survey_names_the_workspace_it_confined_itself_to(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "spine.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+        monkeypatch.delenv("DB_HOST", raising=False)
+
+        attempt_outputs(workspace_id="tenant-a")
+
+        assert "in workspace 'tenant-a'" in capsys.readouterr().out
+
+
+class TestASurveyDoesNotPrimeTheSpine:
+    """Codex, #690. `wire_execution_spine` creates the Root Project eagerly, so
+    a command promising "Without this, nothing is written" wrote to the
+    database it was only asked to read. Repair never creates work — it rewrites
+    records that already exist — so it wires with `prime=False` on both
+    backends."""
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-7")
+    def test_the_sqlite_branch_wires_without_priming(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import maistro.runs.wiring as wiring
+
+        seen: dict[str, Any] = {}
+
+        async def _fake_wire(conn: Any, **kwargs: Any) -> tuple[Any, ...]:
+            seen["prime"] = kwargs.get("prime")
+            return (object(), object(), object(), object(), object(), object())
+
+        monkeypatch.setattr(wiring, "wire_execution_spine", _fake_wire)
+
+        _store, closer = asyncio.run(
+            _open_store(f"sqlite:///{tmp_path / 'spine.db'}", "workspace-1")
+        )
+        asyncio.run(closer())
+
+        assert seen["prime"] is False

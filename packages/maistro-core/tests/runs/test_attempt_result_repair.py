@@ -323,3 +323,164 @@ class TestACappedSweepSaysSo:
         assert found.truncated_statuses == ()
         assert found.complete
         assert found.runs_examined == 1
+
+
+class TestAnEmptyLogicalRecordIsNotASecondCopy:
+    """Codex, #690. A node that genuinely returned `{}` leaves
+    `NodeRun.result == {}` beside the Attempt's `{"output": {}}`. Those compare
+    *unequal* — one is a projection, the other an envelope — so equality alone
+    called the record repairable, wrote `{}` back unchanged, and reported the
+    same Attempt on every sweep after that: a finding no operator could clear.
+    """
+
+    @pytest.mark.parametrize("empty", [{}, None])
+    @pytest.mark.ac("SPEC-083026-14c3/AC-3")
+    async def test_an_empty_node_result_carries_no_evidence(self, spine: Any, empty: Any) -> None:
+        _run, node_run, attempt = await _accepted_emptied_attempt(spine, node_result=empty)
+
+        assert classify(attempt, node_run).disposition is Disposition.NO_SECOND_COPY
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-3")
+    async def test_the_sweep_does_not_offer_to_repair_it(self, spine: Any) -> None:
+        """The property that matters to an operator: it is reported with its
+        reason, and `--apply` writes nothing, so the next sweep says the same."""
+        store, _workspace, _project_id = spine
+        await _accepted_emptied_attempt(spine, node_result={})
+
+        found = await survey(store)
+        assert found.repairable == ()
+        assert await repair(store, found.findings) == ()
+
+
+class TestTheSweepStaysInsideItsWorkspace:
+    """Codex, #690. `--workspace-id` only chose which store to wire; the sweep
+    itself listed globally, so naming one Workspace surveyed — and with
+    `--apply` repaired — every other tenant's records in the same database.
+
+    Built on one in-memory store with two real Workspaces rather than through
+    the `spine` fixture: the store refuses a Project that belongs to another
+    Workspace, which is the invariant that makes two genuine Workspaces the
+    only honest way to pose the question. The filter itself is in `survey`, so
+    it is backend-independent and one store is the right scope for it.
+    """
+
+    @staticmethod
+    async def _emptied_run_in(store: Any, workspace: str, project_id: str) -> Any:
+        run = await store.create_run(_graph(workspace, project_id))
+        node_run = await store.create_node_run(run.run_id, node_id="node-1")
+        await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        attempt = await _finished_attempt(store, node_run, EMPTIED)
+        await store.transition_node_run(
+            node_run.node_run_id,
+            RunStatus.COMPLETED,
+            result=RECOVERED,
+            accepted_outcome=AcceptedNodeOutcome(
+                node_run_id=node_run.node_run_id,
+                attempt_result=AttemptResult.from_attempt(attempt),
+                logical_status=RunStatus.COMPLETED,
+                result=RECOVERED,
+            ),
+        )
+        return run
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-9")
+    async def test_another_workspace_is_neither_surveyed_nor_repaired(self) -> None:
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        projects = InMemoryProjectScopeStore()
+        store = InMemoryRunStore(project_store=projects)
+        runs = {}
+        for name in ("tenant-a", "tenant-b"):
+            root = await projects.create_root(name)
+            project = await projects.create(
+                workspace_id=name, parent_project_id=root.project_id, name="Durable"
+            )
+            runs[name] = await self._emptied_run_in(store, name, project.project_id)
+
+        confined = await survey(store, workspace_id="tenant-a")
+
+        assert confined.workspace_id == "tenant-a"
+        assert confined.runs_examined == 1
+        assert {f.run_id for f in confined.repairable} == {runs["tenant-a"].run_id}
+        # Both are damaged; only one is in scope. An unscoped sweep sees two.
+        assert len((await survey(store)).repairable) == 2
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-9")
+    async def test_applying_in_one_workspace_leaves_the_other_untouched(self) -> None:
+        """The half that makes it a data-safety property rather than a display
+        one: `--apply` on tenant-a must not rewrite tenant-b's Attempt."""
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        projects = InMemoryProjectScopeStore()
+        store = InMemoryRunStore(project_store=projects)
+        for name in ("tenant-a", "tenant-b"):
+            root = await projects.create_root(name)
+            project = await projects.create(
+                workspace_id=name, parent_project_id=root.project_id, name="Durable"
+            )
+            await self._emptied_run_in(store, name, project.project_id)
+
+        applied = await repair(store, (await survey(store, workspace_id="tenant-a")).findings)
+
+        assert len(applied) == 1
+        # tenant-b's Attempt is still emptied, so an unscoped sweep still finds it.
+        assert len((await survey(store)).repairable) == 1
+        assert (await survey(store, workspace_id="tenant-a")).repairable == ()
+
+
+class TestTheSqliteRepairCommitsBothCopiesTogether:
+    """Codex, #690. `_update_payload` commits as it goes, so writing the
+    Attempt and its NodeRun through it was two transactions. Stopping between
+    them leaves `Attempt.result` disagreeing with
+    `accepted_outcome.attempt_result` — the state
+    `validate_accepted_outcome_against_attempt` refuses, and the one this
+    method exists to prevent. The write lock does not close it: it serializes
+    writers, and readers do not take it.
+    """
+
+    @pytest.mark.ac("SPEC-083026-14c3/AC-6")
+    async def test_one_flush_carries_both_payloads(self) -> None:
+        import aiosqlite
+
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.sqlite_store import SqliteRunStore
+
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root("tenant")
+        project = await projects.create(
+            workspace_id="tenant", parent_project_id=root.project_id, name="Durable"
+        )
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            store = SqliteRunStore(conn, project_store=projects)
+            await store.ensure_schema()
+            spine = (store, "tenant", project.project_id)
+            _run, node_run, attempt = await _accepted_emptied_attempt(spine)
+
+            flushes = 0
+            staged_at_flush: list[int] = []
+            original = store._flush
+
+            async def _counting_flush() -> None:
+                nonlocal flushes
+                flushes += 1
+                staged_at_flush.append(len(store._pending))
+                await original()
+
+            store._flush = _counting_flush  # type: ignore[method-assign]
+            repaired = await store.repair_attempt_result(
+                attempt.attempt_id, result={**EMPTIED, "output": RECOVERED}
+            )
+
+            # One commit, carrying both rows — not one commit each.
+            assert flushes == 1
+            assert staged_at_flush == [2]
+            # And the spine agrees with itself afterwards, which is the point.
+            validate_accepted_outcome_against_attempt(
+                (await store.get_node_run(node_run.node_run_id)).accepted_outcome, repaired
+            )
+        finally:
+            await conn.close()
