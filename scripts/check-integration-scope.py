@@ -63,13 +63,22 @@ def evaluate(
     scope_json: str | None,
     results: Mapping[str, str],
 ) -> list[str]:
-    """Return findings for required checks that did not complete successfully."""
+    """Return findings for specialized checks whose evidence is unacceptable."""
+    required = required_checks(event_name, scope_json)
     findings: list[str] = []
-    for check_name in sorted(required_checks(event_name, scope_json)):
+    for check_name in sorted(required):
         result = results.get(check_name)
         if result != "success":
             finding = f"{check_name}: required but result was {result or '<missing>'}"
             findings.append(finding)
+
+    # Out-of-scope jobs are allowed to be absent or explicitly skipped. If one
+    # nevertheless executes, its verdict still matters: workflow/classifier
+    # drift must not let a real failure disappear behind the scope decision.
+    for check_name in sorted(set(results) - required):
+        result = results[check_name]
+        if result not in {"success", "skipped"}:
+            findings.append(f"{check_name}: out of scope but result was {result}")
     return findings
 
 
