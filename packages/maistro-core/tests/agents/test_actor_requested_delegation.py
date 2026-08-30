@@ -88,9 +88,7 @@ async def test_available_sub_agent_is_not_forced_without_actor_request() -> None
     """
     sub_strategy = _Strategy(ReasoningResult(response="sub should not run", done=True))
     sub_agent = _agent(name="sub", strategy=sub_strategy)
-    coordinator_strategy = _Strategy(
-        ReasoningResult(response="coordinator answered", done=True)
-    )
+    coordinator_strategy = _Strategy(ReasoningResult(response="coordinator answered", done=True))
     coordinator = _agent(
         name="coordinator",
         strategy=coordinator_strategy,
