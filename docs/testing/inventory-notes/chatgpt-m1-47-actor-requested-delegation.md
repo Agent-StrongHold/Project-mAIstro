@@ -12,23 +12,24 @@ The production behavior already has the right shape. `Agent.handle()` asks the c
 
 ## Implementation plan
 
-1. Add one discriminating test beside the existing `TestHandleDelegation` coverage in `packages/maistro-core/tests/agents/test_base.py`.
+1. Add one isolated behavioral test in `packages/maistro-core/tests/agents/test_actor_requested_delegation.py`, leaving the shared agent test module untouched.
 2. Configure a coordinator with an available sub-agent, `delegation_mode="sub_agents"`, and `sub_agents=("sub",)`.
 3. Make the coordinator strategy return an ordinary completed response with no `delegate_to` request.
 4. Assert the coordinator answer is returned and the sub-agent strategy was never invoked.
-5. Keep the existing explicit-delegation tests as the positive half: when the strategy names `delegate_to`, the resolved target is invoked and its answer is returned.
+5. Keep the existing explicit-delegation tests in `test_base.py` as the positive half: when the strategy names `delegate_to`, the resolved target is invoked and its answer is returned.
 
-No production code change is expected unless the test disproves the current reading.
+The negative-path test passed by construction of the existing production behavior, so no production code change is required.
 
 ## Collision boundary
 
 Owned by this branch:
 
-- `packages/maistro-core/tests/agents/test_base.py`, limited to the delegation behavior test block.
+- `packages/maistro-core/tests/agents/test_actor_requested_delegation.py`, a new one-test behavioral proof.
 - this inventory note.
 
 Explicitly outside the boundary:
 
+- existing shared agent implementation and test files;
 - canonical `RunStore`, `NodeRun`, `Attempt`, durable graph execution, and consumer/recovery code;
 - `agent.delegate_remote`, A2A transport, guest peer registration, and child-Run admission already implemented under #147/#559;
 - Hive/Conductor state, scheduler, task backend, and production Workspace routing;
@@ -39,4 +40,4 @@ This keeps the change independent of the current execution-consumer, Conductor d
 
 ## Completion evidence
 
-The issue can close when the new negative-path test passes beside the existing positive-path delegation tests. Together they prove delegation is available but is selected by the actor's reasoning result, not imposed merely because a decomposition target exists.
+The new negative-path test pairs with the existing positive-path delegation tests. Together they prove delegation is available but is selected by the actor's reasoning result, not imposed merely because a decomposition target exists.
