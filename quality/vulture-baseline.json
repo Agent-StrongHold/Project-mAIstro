@@ -565,6 +565,7 @@
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'executions_failed'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'executions_started'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'executions_timed_out'",
+        "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'executions_yielded'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'implementation'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'max_rss_bytes'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'peak_concurrency'",

@@ -93,6 +93,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "event_loop_lag_ms_max": max(lag_samples, default=0.0),
         "executions_completed": after.executions_completed,
         "executions_failed": after.executions_failed,
+        "executions_yielded": after.executions_yielded,
         "executions_cancelled": after.executions_cancelled,
         "executions_timed_out": after.executions_timed_out,
     }
