@@ -89,12 +89,10 @@ def main() -> int:
         for identity in unauthorized
     )
     failures.extend(
-        f"{identity}: current exception missing from candidate ledger"
-        for identity in candidate_new
+        f"{identity}: current exception missing from candidate ledger" for identity in candidate_new
     )
     failures.extend(
-        f"{identity}: stale candidate ledger entry must be pruned"
-        for identity in candidate_stale
+        f"{identity}: stale candidate ledger entry must be pruned" for identity in candidate_stale
     )
 
     if failures:
