@@ -1,0 +1,66 @@
+name: tmp-pr744-parallel-fix
+
+on:
+  push:
+    branches:
+      - chatgpt/m1-734-builders-canonical-runs
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: ${{ !contains(github.event.head_commit.message, '[parallel-fixed]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-734-builders-canonical-runs
+      - name: Apply exact Builders parity fix and remove helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('packages/maistro-core/src/maistro/builders/canonical_execution.py')
+          text = source.read_text()
+          old = '''                Edge(
+                    from_node=_stage_node_id(dependency),
+                    to_node=_stage_node_id(node.name),
+                    condition="route == 'proceed'" if predecessor.gate is not None else None,
+                )'''
+          new = '''                Edge(
+                    from_node=_stage_node_id(dependency),
+                    to_node=_stage_node_id(node.name),
+                    condition="route == 'proceed'" if predecessor.gate is not None else None,
+                    metadata={"parallel": True, "builders_dependency": True},
+                )'''
+          if old not in text:
+              raise SystemExit('dependency edge fragment not found')
+          text = text.replace(old, new, 1)
+          old = '            edges.append(Edge(from_node=_START_NODE_ID, to_node=_stage_node_id(root.name)))'
+          new = '''            edges.append(
+                Edge(
+                    from_node=_START_NODE_ID,
+                    to_node=_stage_node_id(root.name),
+                    metadata={"parallel": True, "builders_root": True},
+                )
+            )'''
+          if old not in text:
+              raise SystemExit('root edge fragment not found')
+          source.write_text(text.replace(old, new, 1))
+
+          test = Path('packages/maistro-core/tests/builders/test_canonical_execution.py')
+          text = test.read_text()
+          old = '    assert getattr(canonical_run, "canonical_run_id") == record.run_id'
+          new = '    assert canonical_run.canonical_run_id == record.run_id'
+          if old not in text:
+              raise SystemExit('B009 test fragment not found')
+          test.write_text(text.replace(old, new, 1))
+          PY
+          rm .github/workflows/tmp-pr744-parallel-fix.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add packages/maistro-core/src/maistro/builders/canonical_execution.py packages/maistro-core/tests/builders/test_canonical_execution.py .github/workflows/tmp-pr744-parallel-fix.yml
+          git commit -m 'Preserve Builders ready-wave fan-out (#734) [parallel-fixed]'
+          git push origin HEAD:chatgpt/m1-734-builders-canonical-runs
