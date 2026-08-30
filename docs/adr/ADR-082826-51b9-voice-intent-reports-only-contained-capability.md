@@ -20,10 +20,10 @@ blocked-by: []
 contracts:
   - boundary
 ac-modules:
-  AC-1: routes.voice
-  AC-2: routes.voice
-  AC-3: routes.voice
-  AC-4: routes.voice
+  AC-1: '@flat/hive-conductor/routes.voice'
+  AC-2: '@flat/hive-conductor/routes.voice'
+  AC-3: '@flat/hive-conductor/routes.voice'
+  AC-4: '@flat/hive-conductor/routes.voice'
 tests:
   - packages/hive-conductor/backend/tests/test_voice_intent_contract.py
   - packages/hive-conductor/backend/tests/test_m0_tool_containment.py
