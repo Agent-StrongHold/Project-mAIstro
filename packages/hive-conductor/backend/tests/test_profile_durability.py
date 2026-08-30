@@ -807,3 +807,37 @@ class TestATooldCallMissingItsArgumentsSaysSo:
         profile_store.configure(_persisted(records))
         assert "error" in await _tool_profile_delete(args, "u-1")
         assert records.documents == {}, "a malformed call must not write"
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    async def test_profile_delete_reports_a_write_that_did_not_land(self) -> None:
+        """Deleting a field is a write, and it fails the same way setting one
+        does. Answering `deleted: True` for a delete nothing kept is the same
+        lie as `updated: True` for an unlanded set."""
+        from services.chat_completion import _tool_profile_delete
+
+        records = ForgetfulRecords()
+        records.documents[(STORE_NAME, "u-1")] = json.dumps(
+            {"schema_version": 1, "user_id": "u-1", "preferences": {"name": "Blake"}}
+        )
+        profile_store.configure(_persisted(records))
+        result = await _tool_profile_delete({"field": "name"}, "u-1")
+        assert "error" in result
+        assert result.get("deleted") is not True
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-2")
+    async def test_the_model_curation_tool_reports_a_write_that_did_not_land(self) -> None:
+        from services.chat_completion import _tool_favorite_model
+
+        profile_store.configure(_persisted(ForgetfulRecords()))
+        result = await _tool_favorite_model({"model": "gemini-3-flash", "action": "add"}, "u-1")
+        assert "error" in result
+        assert result.get("updated") is not True
+
+    @pytest.mark.ac("SPEC-083026-ef62/AC-4")
+    async def test_the_model_curation_tool_needs_a_model(self) -> None:
+        from services.chat_completion import _tool_favorite_model
+
+        records = FakeRecords()
+        profile_store.configure(_persisted(records))
+        assert "error" in await _tool_favorite_model({"action": "add"}, "u-1")
+        assert records.documents == {}, "a malformed call must not write"

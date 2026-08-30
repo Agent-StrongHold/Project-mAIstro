@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +70
+  packages/hive-conductor/backend/tests: +73
 ---
 # claude-issue-699-durable-profile-6700
 
@@ -40,7 +40,7 @@ They cover the six criteria of SPEC-083026-ef62:
   that a non-OK response is treated as a failure, and that something renders
   from it. Not the wording and not the styling.
 
-## The Codex review, +29 more
+## The Codex review, +32 more
 
 Five findings, all real, all fixed — and the diff-coverage gate was red on the
 same lines, because the branches Codex named were the ones no test entered.
@@ -63,6 +63,13 @@ same lines, because the branches Codex named were the ones no test entered.
   and every `memory://` deployment runs on.
 - **AC-6, +2 (in place)** — the panel checks `r.ok` before treating a response
   as a profile, and saves one field rather than the document.
+- **+3 after the first CI round.** The diff-coverage gate measures against the
+  PR's *recorded* base, not current `develop`, so the diff CI sees is larger
+  than the one a local `--base origin/develop` produces — and it named two
+  branches my local check had not: `_tool_profile_delete` and
+  `_tool_favorite_model` reporting a write that did not land. Both are covered
+  now, along with the curation tool's missing-model guard. Verify against
+  `--base <the PR's base sha>`, not `origin/develop`.
 
 ## Mutations run
 
