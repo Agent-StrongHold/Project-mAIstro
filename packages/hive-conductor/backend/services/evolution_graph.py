@@ -382,7 +382,13 @@ def _build_graph(*, workspace_id: str, project_id: str, population: Any, config:
                 condition="has_battles == True",
             )
         )
-        edges.append(Edge(from_node=pair_plan_id, to_node=final_id))
+        edges.append(
+            Edge(
+                from_node=pair_plan_id,
+                to_node=final_id,
+                condition="has_battles == False",
+            )
+        )
 
     for index, battle_id in enumerate(battle_node_ids):
         if index + 1 < len(battle_node_ids):
@@ -393,7 +399,13 @@ def _build_graph(*, workspace_id: str, project_id: str, population: Any, config:
                     condition="has_more == True",
                 )
             )
-        edges.append(Edge(from_node=battle_id, to_node=final_id))
+        edges.append(
+            Edge(
+                from_node=battle_id,
+                to_node=final_id,
+                condition="has_more == False",
+            )
+        )
 
     entry = evaluation_node_ids[0] if evaluation_node_ids else pair_plan_id or final_id
     return Graph(
