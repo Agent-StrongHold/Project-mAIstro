@@ -187,9 +187,7 @@ def registry_errors(registry: dict[str, Any]) -> list[str]:
     extra_legacy = sorted(legacy_paths - frozen_set)
     missing_legacy = sorted(frozen_set - legacy_paths)
     if extra_legacy:
-        errors.append(
-            "new legacy shared aggregate(s) are forbidden: " + ", ".join(extra_legacy)
-        )
+        errors.append("new legacy shared aggregate(s) are forbidden: " + ", ".join(extra_legacy))
     if missing_legacy:
         errors.append(
             "frozen legacy path(s) are no longer classified legacy; remove them from "
@@ -213,11 +211,7 @@ def discover_quality_json(root: Path, registry: dict[str, Any]) -> set[str]:
 
 def coverage_errors(registry: dict[str, Any], paths: set[str]) -> list[str]:
     """Require each discovered state file to match exactly one surface."""
-    surfaces = [
-        surface
-        for surface in registry.get("surfaces", [])
-        if isinstance(surface, dict)
-    ]
+    surfaces = [surface for surface in registry.get("surfaces", []) if isinstance(surface, dict)]
     errors: list[str] = []
     for path in sorted(paths):
         matches = [
@@ -228,9 +222,7 @@ def coverage_errors(registry: dict[str, Any], paths: set[str]) -> list[str]:
         if not matches:
             errors.append(f"unclassified quality state: {path}")
         elif len(matches) > 1:
-            errors.append(
-                f"quality state matches multiple surfaces: {path}: {', '.join(matches)}"
-            )
+            errors.append(f"quality state matches multiple surfaces: {path}: {', '.join(matches)}")
 
     for surface in surfaces:
         surface_id = str(surface.get("id", "<unnamed>"))
@@ -238,9 +230,7 @@ def coverage_errors(registry: dict[str, Any], paths: set[str]) -> list[str]:
             if _has_glob(pattern):
                 continue
             if pattern not in paths:
-                errors.append(
-                    f"registered exact path does not exist: {surface_id}: {pattern}"
-                )
+                errors.append(f"registered exact path does not exist: {surface_id}: {pattern}")
     return errors
 
 
@@ -288,15 +278,13 @@ def base_registry(root: Path, explicit_base: str | None = None) -> dict[str, Any
         readable = _git(["cat-file", "-e", f"{commit}^{{tree}}"], root=root)
         if readable.returncode != 0:
             raise BranchIndependenceError(
-                f"base commit {commit} cannot be read: "
-                f"{(readable.stderr or exists.stderr).strip()}"
+                f"base commit {commit} cannot be read: {(readable.stderr or exists.stderr).strip()}"
             )
         return None
     shown = _git(["show", object_name], root=root)
     if shown.returncode != 0:
         raise BranchIndependenceError(
-            f"registry exists at base {commit[:12]} but cannot be read: "
-            f"{shown.stderr.strip()}"
+            f"registry exists at base {commit[:12]} but cannot be read: {shown.stderr.strip()}"
         )
     try:
         raw = json.loads(shown.stdout)
