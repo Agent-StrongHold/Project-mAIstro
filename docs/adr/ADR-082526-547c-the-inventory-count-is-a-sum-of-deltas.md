@@ -17,11 +17,11 @@ contracts:
 tests:
   - tests/test_check_suite_inventory.py
 ac-modules:
-  AC-1: scripts/check-suite-inventory.py
-  AC-2: scripts/check-suite-inventory.py
-  AC-3: scripts/check-suite-inventory.py
-  AC-4: scripts/check-suite-inventory.py
-  AC-5: scripts/check-suite-inventory.py
+  AC-1: '@tool/check-suite-inventory'
+  AC-2: '@tool/check-suite-inventory'
+  AC-3: '@tool/check-suite-inventory'
+  AC-4: '@tool/check-suite-inventory'
+  AC-5: '@tool/check-suite-inventory'
 history:
   - status: Proposed
     date: 2026-08-25

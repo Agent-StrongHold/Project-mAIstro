@@ -285,14 +285,23 @@ def _completion_claims(
     )
 
 
-def _report_unresolvable_anchors(specs: list[dict[str, Any]]) -> bool:
-    """Print every anchor that resolves to nothing. True when the gate must fail."""
-    unresolvable = unresolvable_anchors(specs, load_module_universe())
+def _report_unresolvable_anchors(specs: list[dict[str, Any]], adrs: list[dict[str, Any]]) -> bool:
+    """Print every anchor that resolves to nothing. True when the gate must fail.
+
+    Both document kinds, and `adrs` has no default on purpose. #631 built this
+    gate and walked specs alone, which left 49 of 279 ADR anchors unchecked --
+    graded on the same ladder, folded into the same floor, and read by nothing.
+    A parameter that can be omitted is a parameter the next caller omits, which
+    is the shape of the defect this closes (#653).
+    """
+    universe = load_module_universe()
+    unresolvable = [("spec", *row) for row in unresolvable_anchors(specs, universe)]
+    unresolvable += [("adr", *row) for row in unresolvable_anchors(adrs, universe)]
     if not unresolvable:
         return False
     print("FAIL: ac-modules anchors that name no module the reachability graph knows\n")
-    for file, ac_id, module in unresolvable:
-        print(f"  {file}\n      {ac_id}: {module!r}")
+    for kind, file, ac_id, module in unresolvable:
+        print(f"  {kind} {file}\n      {ac_id}: {module!r}")
     print(
         "\nAn anchor is a claim that something runs this criterion's code. A name the "
         "graph\nhas never heard of cannot support that claim, and used to clear the top "
@@ -304,9 +313,14 @@ def _report_unresolvable_anchors(specs: list[dict[str, Any]]) -> bool:
 
 
 def unresolvable_anchors(
-    specs: list[dict[str, Any]], universe: set[str]
+    documents: list[dict[str, Any]], universe: set[str]
 ) -> list[tuple[str, str, str]]:
     """Every `ac-modules` anchor that names no module the graph knows.
+
+    Takes documents of either kind. Specs hold their criteria under `criteria`
+    and ADRs under `own_detail`, so the walk goes through `_criteria_of` rather
+    than naming one key -- the same divergence that cost the mandate three
+    review findings, and here it cost the gate half its corpus (#653).
 
     An empty universe means the graph could not be loaded; reporting every
     anchor as unresolvable then would be a gate failing for its own reason
@@ -315,8 +329,8 @@ def unresolvable_anchors(
     if not universe:
         return []
     found: list[tuple[str, str, str]] = []
-    for spec in specs:
-        for criterion in spec["criteria"]:
+    for document in documents:
+        for criterion in _criteria_of(document):
             module = criterion.get("module")
             # `None` is *unannotated*, which the rung already handles by
             # stopping at `passing`. An empty string is not that: it is an
@@ -327,7 +341,7 @@ def unresolvable_anchors(
             if module is None:
                 continue
             if module not in universe:
-                found.append((spec["file"], criterion["id"], module))
+                found.append((document["file"], criterion["id"], module))
     return found
 
 
@@ -2043,7 +2057,7 @@ def main(argv: list[str]) -> int:
     # the old rung read it as `reachable` because it checked membership in the
     # *unreachable* set. Failing here rather than scoring it keeps the number
     # the ratchet floors on made of criteria something actually resolves (#631).
-    if _report_unresolvable_anchors(specs):
+    if _report_unresolvable_anchors(specs, adrs):
         return 1
 
     # Criteria live in specs AND in the ADRs that carry their own scenarios;
