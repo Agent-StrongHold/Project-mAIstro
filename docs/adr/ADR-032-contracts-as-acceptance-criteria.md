@@ -86,7 +86,21 @@ Every test names both axes via `pytest.mark`:
 def test_x(): ...
 ```
 
-Front-matter `contracts:` and `tests:` fields list which contract kinds an ADR/spec covers and the test paths that prove them. The registry CI cross-checks that an ADR claiming `contracts: [behavioral]` has at least one `pytest.mark.contract("behavioral")` test in its `tests:` list.
+Front-matter `contracts:` and `tests:` fields list which contract kinds an ADR/spec covers and the test paths that prove them. `scripts/check-contract-markers.py` enforces the cross-check: an ADR claiming `contracts: [behavioral]` must have at least one `pytest.mark.contract("behavioral")` test in its `tests:` list.
+
+That sentence stood here for a long time describing a check nothing performed. The marker was registered in `pyproject.toml`, so it never warned, and 228 uses conveyed an enforcement that did not exist (#345). It is enforced now, as a ledger: every claim unevidenced at the time it was written is recorded with a reason, a *new* unevidenced claim fails, and a fixed one must shrink the ledger.
+
+Three things the gate settles that this ADR previously left ambiguous:
+
+- **The axis is `boundary | behavioral | cross-service`**, hyphenated. `pyproject.toml` spelled the third `cross_service` while this ADR's own example and every front-matter entry used the hyphen; a validator cannot inherit that ambiguity, so the spelling the data uses wins. A marker argument outside the axis fails.
+- **A document declaring `contracts:` with no `tests:` is vacuous, not proven.** The cross-check is phrased against the `tests:` list, so with no list it had nothing to check. Those are recorded in their own category rather than passing silently.
+- **Evidence must be a test pytest would collect.** A `contract` marker on a fixture, a helper, a nested function, or a method of a class pytest does not collect is never executed, so it proves nothing — the same reason a statically skipped test proves nothing. Top-level `test_*` functions and `test_*` methods of `Test*` classes count; nothing else does.
+
+- **A module-level `pytestmark` is evidence.** pytest applies it to every test the module collects, so a kind declared there is carried by each of them. Reading only decorators missed those files entirely, including one in this repository whose marker named no kind at all.
+
+- **A `tests:` entry may be a path or a node ID.** `docs/adr/ADR-000-template.md` documents the entry as `path/to/test_file.py::test_func`, so that form is the sanctioned one and must resolve. A node ID is answered by the test it names, not by the file around it: a document pointing at one test is claiming *that* test is the evidence, and proving it from a marker elsewhere in the file would evidence the wrong thing.
+
+- **A statically skipped test is not evidence.** A `@pytest.mark.skip`/`skipif` on a marked test means the marker claims something that cannot run. A test that skips at *runtime* is invisible to a static reader and is not claimed to be caught; `scripts/check-ac-state.py` owns the "did it actually pass" question by running the suite.
 
 ### 5. Quality bar — mutation testing
 

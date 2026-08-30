@@ -58,6 +58,7 @@ from maistro.runs.wiring import (
     wire_execution_spine,
     wire_node_template_store,
 )
+from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
@@ -203,6 +204,13 @@ class Container:
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
     schedule_store: ScheduleStore = None  # type: ignore[assignment]
+    #: The seam that turns a due schedule into canonical Runs (#231). Built
+    #: here rather than by each caller for the reason `task_admitter` and
+    #: `chat_admitter` are: a producer that constructs its own admitter is a
+    #: producer with its own idea of what admission means, which is what the
+    #: canonical spine exists to stop. `None` when there is no template store,
+    #: because an admitter that cannot resolve a template cannot admit.
+    schedule_admitter: ScheduleRunAdmitter | None = None
     #: Delegation dependencies (#147). Read by `build_node_resolver`, which is
     #: what makes them admissible under ADR-082426-6201 — that ADR retired
     #: `a2a_broker` for having no reader, and check-wiring-reads.py enforces the
@@ -1063,6 +1071,27 @@ class Container:
         )
 
 
+def _wire_schedule_admission(
+    run_store: RunStore,
+    template_store: GraphTemplateStore | None,
+    schedule_store: ScheduleStore,
+) -> ScheduleRunAdmitter | None:
+    """The third admitter, from the three stores the spine already wired.
+
+    Until now `ScheduleRunAdmitter` had no production caller at all — #251
+    found it admitting Runs nothing executed, and the other half of that gap
+    is that nothing constructed it either, so the live scheduler grew its own
+    create-and-advance logic instead (#231).
+
+    A function rather than an inline conditional because `create_container` is
+    already at the complexity ceiling: one more branch in it is one more thing
+    that has to be read to answer any other question about the wiring.
+    """
+    if template_store is None:
+        return None
+    return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -1203,6 +1232,7 @@ async def create_container(
         pg_pool=pg_pool,
     )
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
+    schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -1409,6 +1439,7 @@ async def create_container(
         node_template_store=node_template_store,
         graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
+        schedule_admitter=schedule_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,

@@ -721,6 +721,14 @@ jobs:
                 || github.event.before }}
         run: uv run python scripts/check-wiring-reads.py
 
+      # ADR-032 says the registry cross-checks a document's declared contract
+      # kinds against `@pytest.mark.contract` on the tests it lists. Nothing
+      # consumed the marker, so 228 uses carried an enforcement that did not
+      # exist (#345). A ledger rather than a plain assertion: the check fails
+      # on a *new* unevidenced claim, and a fixed one must shrink the ledger.
+      - name: contract marker ledger (ADR-032's cross-check, enforced)
+        run: uv run python scripts/check-contract-markers.py
+
       # The reachability ratchet says *how much* is unwired; the convergence
       # matrix says *who owns what* and which subsystem each unreachable module
       # belongs to. It is the M0 planning surface (#28), so it is checked rather
