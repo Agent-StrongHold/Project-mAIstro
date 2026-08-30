@@ -1,6 +1,6 @@
 """Migration-parity tests for Canvas product behavior.
 
-These tests intentionally span the current Canvas domain/lifecycle seam.  They
+These tests intentionally span the current Canvas domain/lifecycle seam. They
 pin behavior that must survive when the private generation-job lifecycle moves
 to canonical Run/NodeRun/Attempt execution.
 """
@@ -52,6 +52,11 @@ class _FailOnceExecutor:
         if self.calls == 1:
             raise RuntimeError("transient provider failure")
         job.result_paths = ["artifacts/canvas-7/layer-3/final.png"]
+
+
+class _AlwaysFailExecutor:
+    async def _execute_claimed(self, job: GenerationJobRecord) -> None:
+        raise RuntimeError("503 provider internals: upstream-token=do-not-expose")
 
 
 @pytest.mark.asyncio
@@ -113,6 +118,37 @@ async def test_retry_preserves_one_logical_generation_job_and_domain_request() -
     assert reloaded.result_paths == ["artifacts/canvas-7/layer-3/final.png"]
     assert reloaded.leased_by is None
     assert reloaded.lease_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_background_runner_terminal_failure_preserves_sanitized_error_contract() -> None:
+    """The production runner must not expose raw provider exception details."""
+
+    job = GenerationJobRecord(
+        id="job-fail",
+        layer_id="layer-3",
+        canvas_id="canvas-7",
+        action=JobAction.GENERATE,
+        status=JobStatus.PENDING,
+        model_id="draft-model",
+        prompt="a castle",
+        max_attempts=1,
+    )
+    store = _SingleJobStore(job)
+    runner = CanvasJobRunner(  # type: ignore[arg-type]
+        store=store,
+        executor=_AlwaysFailExecutor(),
+    )
+
+    assert await runner.tick_once() is True
+
+    failed = store.reload()
+    assert failed.status == JobStatus.FAILED
+    assert failed.attempts == 1
+    assert failed.error_message == (
+        "Generation failed: provider service temporarily unavailable."
+    )
+    assert "upstream-token" not in failed.error_message
 
 
 def test_layer_retry_and_upgrade_preserve_canvas_domain_state_and_image_history() -> None:
