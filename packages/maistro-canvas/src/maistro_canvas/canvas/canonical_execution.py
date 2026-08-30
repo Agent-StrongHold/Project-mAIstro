@@ -17,9 +17,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.graph.definitions import Graph, Node
-from maistro.graph.durable_runs import DurableRunRecord, run_durable_graph
+from maistro.graph.durable_runs import (
+    DurableRunRecord,
+    resume_durable_graph,
+    run_durable_graph,
+)
 from maistro.graph.nodes.base import BaseNode, NodeContext, NodeResult
-from maistro.runs.model import RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
 from maistro_canvas.canvas.executor import _sanitise_error
 from maistro_canvas.types import GenerationJobRecord, JobStatus
@@ -68,7 +72,9 @@ class _GenerationNode(BaseNode[_GenerationInput, _GenerationOutput]):
     input_schema: ClassVar[type[BaseModel]] = _GenerationInput
     output_schema: ClassVar[type[BaseModel]] = _GenerationOutput
     display_name: ClassVar[str] = "Execute Canvas generation"
-    description: ClassVar[str] = "Run one Canvas provider generation under canonical Attempt evidence."
+    description: ClassVar[str] = (
+        "Run one Canvas provider generation under canonical Attempt evidence."
+    )
     idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = True
 
@@ -145,7 +151,9 @@ def _latest_physical_error(record: DurableRunRecord) -> str:
         except (TypeError, ValueError):
             continue
         if not result.success:
-            return result.error_message or "Generation failed: provider error. Please try again."
+            return result.error_message or (
+                "Generation failed: provider error. Please try again."
+            )
     return "Generation failed: provider error. Please try again."
 
 
@@ -240,32 +248,46 @@ class CanvasCanonicalExecution:
         *,
         executor: CanvasExecutor,
     ) -> DurableRunRecord:
-        """Execute an admitted Canvas Run and refresh the Canvas receipt projection."""
+        """Execute or recover a Canvas Run and refresh the receipt projection."""
         run_id = canonical_run_id(job)
         if run_id is None:
             run_id = await self.admit(job)
+
+        existing_record = await self._durable_store.get(run_id)
+        if existing_record is not None and existing_record.run.status in TERMINAL_RUN_STATUSES:
+            _project_receipt(job, existing_record)
+            return existing_record
 
         graph = _canonical_graph(
             job,
             workspace_id=self._workspace_id,
             project_id=self._project_id,
         )
-        provenance = {
-            "admission_source": _ADMISSION_SOURCE,
-            "product": "canvas",
-            "canvas_job_id": job.id,
-            "canvas_id": job.canvas_id,
-            "layer_id": job.layer_id,
-        }
-        record = await run_durable_graph(
-            graph,
-            store=self._durable_store,
-            node_resolver=_resolver(executor=executor, job=job),
-            actor_principal_id=self._actor_principal_id,
-            run_id=run_id,
-            provenance=provenance,
-            run_store=self._run_store,
-        )
+        resolver = _resolver(executor=executor, job=job)
+        if existing_record is not None:
+            record = await resume_durable_graph(
+                run_id,
+                store=self._durable_store,
+                node_resolver=resolver,
+                run_store=self._run_store,
+            )
+        else:
+            provenance = {
+                "admission_source": _ADMISSION_SOURCE,
+                "product": "canvas",
+                "canvas_job_id": job.id,
+                "canvas_id": job.canvas_id,
+                "layer_id": job.layer_id,
+            }
+            record = await run_durable_graph(
+                graph,
+                store=self._durable_store,
+                node_resolver=resolver,
+                actor_principal_id=self._actor_principal_id,
+                run_id=run_id,
+                provenance=provenance,
+                run_store=self._run_store,
+            )
         _project_receipt(job, record)
         return record
 
