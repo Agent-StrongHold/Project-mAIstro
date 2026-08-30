@@ -25,7 +25,10 @@ def test_canonical_develop_pr_improvement_is_informational(monkeypatch, capsys):
     _canonical_develop_ci(monkeypatch)
     monkeypatch.setattr(gate, "_candidate_note_fold_weakening", lambda: [])
 
-    assert gate._review_slack_policy(["design_coverage: 31.7, floor still says 31.2"]) == []
+    assert (
+        gate._review_slack_policy(["design_coverage: 31.7, floor still says 31.2"])
+        == []
+    )
 
     out = capsys.readouterr().out
     assert "no bank is required" in out
@@ -50,7 +53,9 @@ def test_imported_or_synthetic_pr_keeps_conservative_banking(monkeypatch):
     assert seen == [["x"]]
 
 
-def test_candidate_note_weakening_is_not_excused_as_measurement_slack(monkeypatch, capsys):
+def test_candidate_note_weakening_is_not_excused_as_measurement_slack(
+    monkeypatch, capsys
+):
     _canonical_develop_ci(monkeypatch)
     monkeypatch.setattr(
         gate,
