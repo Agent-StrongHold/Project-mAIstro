@@ -1,0 +1,31 @@
+name: temporary #640 sync develop
+
+on:
+  push:
+    paths:
+      - .github/workflows/tmp-640-sync-develop.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+          fetch-depth: 0
+      - name: Merge current develop without hiding conflicts
+        run: |
+          set -euo pipefail
+          git fetch origin develop
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if ! git merge --no-commit --no-ff origin/develop; then
+            git status --short
+            exit 1
+          fi
+          git rm .github/workflows/tmp-640-sync-develop.yml
+          git commit -m 'merge: refresh #640 onto current develop'
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
