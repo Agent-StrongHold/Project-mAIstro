@@ -305,24 +305,24 @@ def _resolver(
     return resolve
 
 
-def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
-    """Refresh the compatibility receipt from canonical execution evidence."""
-    run.canonical_run_id = record.run_id
-    latest_by_stage: dict[str, Any] = {}
+def _latest_stage_runs(record: DurableRunRecord) -> dict[str, Any]:
+    latest: dict[str, Any] = {}
     for node_run in record.node_runs:
         name = _stage_name(node_run.node_id)
         if name is not None:
-            latest_by_stage[name] = node_run
+            latest[name] = node_run
+    return latest
 
-    failed_stage = next(
-        (
-            _stage_name(node_run.node_id)
-            for node_run in reversed(record.node_runs)
-            if node_run.status is RunStatus.FAILED and _stage_name(node_run.node_id) is not None
-        ),
-        None,
-    )
 
+def _failed_stage(record: DurableRunRecord) -> str | None:
+    for node_run in reversed(record.node_runs):
+        name = _stage_name(node_run.node_id)
+        if name is not None and node_run.status is RunStatus.FAILED:
+            return name
+    return None
+
+
+def _project_run_status(run: Any, record: DurableRunRecord, failed_stage: str | None) -> None:
     if record.run.status is RunStatus.COMPLETED:
         run.status = "completed"
     elif failed_stage is not None:
@@ -330,25 +330,34 @@ def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
     else:
         run.status = record.run.status.value
 
+
+def _project_stage(run: Any, stage: Any, node_run: Any, failed_stage: str | None) -> None:
+    if stage.name in run.skipped_stages:
+        stage.status = _stage_status("skipped")
+    elif node_run is None:
+        stage.status = _stage_status("pending")
+    elif node_run.status is RunStatus.COMPLETED:
+        stage.status = _stage_status("completed")
+    elif node_run.status is RunStatus.RUNNING:
+        stage.status = _stage_status("running")
+    elif node_run.status in {
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+        RunStatus.TIMED_OUT,
+    }:
+        stage.status = _stage_status("failed")
+        if stage.name == failed_stage:
+            stage.error = run.failed_stage_error or str(node_run.error or "")
+
+
+def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
+    """Refresh the compatibility receipt from canonical execution evidence."""
+    run.canonical_run_id = record.run_id
+    latest_by_stage = _latest_stage_runs(record)
+    failed_stage = _failed_stage(record)
+    _project_run_status(run, record, failed_stage)
     for stage in run.stages:
-        if stage.name in run.skipped_stages:
-            stage.status = _stage_status("skipped")
-            continue
-        node_run = latest_by_stage.get(stage.name)
-        if node_run is None:
-            stage.status = _stage_status("pending")
-        elif node_run.status is RunStatus.COMPLETED:
-            stage.status = _stage_status("completed")
-        elif node_run.status is RunStatus.RUNNING:
-            stage.status = _stage_status("running")
-        elif node_run.status in {
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-            RunStatus.TIMED_OUT,
-        }:
-            stage.status = _stage_status("failed")
-            if stage.name == failed_stage:
-                stage.error = run.failed_stage_error or str(node_run.error or "")
+        _project_stage(run, stage, latest_by_stage.get(stage.name), failed_stage)
 
 
 def _stage_status(value: str) -> Any:
@@ -408,6 +417,9 @@ class CanonicalGraphPipelineExecutor:
             initial_status=RunStatus.QUEUED,
         )
         run.canonical_run_id = admitted.run_id
+        # Compatibility projection only. Canonical Run/NodeRun/Attempt remain
+        # authoritative for lifecycle; legacy hooks may still inspect this receipt.
+        run.status = "running"
         record = await run_durable_graph(
             canonical,
             store=self._durable_store,
