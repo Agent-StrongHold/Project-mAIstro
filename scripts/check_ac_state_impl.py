@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import importlib.util
 import json
 import os
@@ -1168,6 +1169,20 @@ def _report_stale_grants(stale: list[str]) -> None:
     )
 
 
+def _report_removed_grants(removed: list[str]) -> None:
+    if not removed:
+        return
+    print("\nFAIL: authorized floor(s) spent by this change and deleted by it\n")
+    for line in removed:
+        print(f"  - {line}")
+    print(
+        "\nThe grant is the record. Permission is read at the base, so removing "
+        "it here\nstill lets the fall land -- and leaves the next run looking at a "
+        "number nobody\ncan account for. Prune a grant once the notes have "
+        "overtaken it, not before."
+    )
+
+
 def _exact_target(bound: Any, measured: bool) -> tuple[dict[str, float], str | None]:
     """The counters the exact comparison is read against, or why it cannot be.
 
@@ -1332,12 +1347,32 @@ def authorized_floors(base: str | None) -> tuple[dict[str, float], dict[str, str
     # that stand the ratchet up on a synthetic history would ask the real one
     # for a SHA it has never seen.
     root = ac_state_notes.ROOT
-    granted = prov.load_authorizations(
-        AUTHORIZATION_RATCHET,
-        path=root / "quality" / "ratchet-authorizations.json",
-        base=base,
-        root=root,
-    )
+    path = root / "quality" / "ratchet-authorizations.json"
+    # The helper reads `(loaded.get(ratchet) or {})`, so a section that is a
+    # list comes back as "no grants" rather than as a refusal -- silently
+    # ignoring a file somebody wrote and expects to be enforced. The shape is
+    # checked here, at the base revision the permission is read from.
+    _require_grant_section(prov.resolve_baseline(path, base=base, root=root).loads(default={}))
+    try:
+        granted = prov.load_authorizations(
+            AUTHORIZATION_RATCHET,
+            path=path,
+            base=base,
+            root=root,
+        )
+    except (AttributeError, TypeError) as exc:
+        # `"ac-state": []`, or an entry whose record is a scalar, reaches the
+        # helper's `.items()` / `.get()` as an AttributeError. Translated here
+        # rather than fixed there: the helper is shared with the wiring ratchet,
+        # and tightening it would change that gate's behaviour in a change that
+        # is not about it. A malformed grant must refuse, and a traceback is not
+        # a refusal -- it is a crash, and the two read differently in a log.
+        raise RatchetProvenanceError(
+            "ratchet-authorizations.json: the "
+            f"{AUTHORIZATION_RATCHET!r} section is malformed -- it must be an "
+            "object mapping `<counter>@<value>` to a record with an owner, an "
+            f"issue and a reason ({type(exc).__name__}: {exc})"
+        ) from exc
     floors: dict[str, float] = {}
     reasons: dict[str, str] = {}
     for entry, reason in granted.items():
@@ -1358,6 +1393,93 @@ def authorized_floors(base: str | None) -> tuple[dict[str, float], dict[str, str
             ) from exc
         reasons[counter] = reason
     return floors, reasons
+
+
+def _require_grant_section(payload: object) -> None:
+    """Refuse a grants file whose own section is the wrong shape.
+
+    Absent is "no grants" and passes. Present but not an object is a malformed
+    file, and the two must not answer the same -- a file somebody wrote and
+    expects to be enforced should not be read as an empty one.
+    """
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise RatchetProvenanceError(
+            f"ratchet-authorizations.json is malformed -- it must be a JSON object, "
+            f"not {type(payload).__name__}"
+        )
+    section = payload.get(AUTHORIZATION_RATCHET)
+    if section is None or isinstance(section, dict):
+        return
+    raise RatchetProvenanceError(
+        f"ratchet-authorizations.json: the {AUTHORIZATION_RATCHET!r} section is "
+        f"malformed -- it must be an object mapping `<counter>@<value>` to a "
+        f"record, not {type(section).__name__}"
+    )
+
+
+def candidate_grants() -> dict[str, float]:
+    """The floors this change's *own* authorization file names, if any.
+
+    Permission is a base question and stays one: `authorized_floors` answers
+    "may this fall land". This answers a different one -- "does the file in
+    front of me still say so" -- and the two must not be read from the same
+    revision (#662 review).
+
+    Reading stale-ness from the base made pruning impossible: once the notes
+    folded to a grant's value, every later run failed on a spent grant that the
+    base still carried, including the run whose only change was to remove it.
+    Reading permission from the candidate would reopen self-approval. Each
+    question gets the revision it is actually about.
+    """
+    path = ac_state_notes.ROOT / "quality" / "ratchet-authorizations.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        section = payload.get(AUTHORIZATION_RATCHET) if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RatchetProvenanceError(
+            f"ratchet-authorizations.json: the {AUTHORIZATION_RATCHET!r} section in "
+            f"the working tree could not be read ({type(exc).__name__}: {exc})"
+        ) from exc
+    # One shape check for both revisions, so the candidate and the base cannot
+    # come to different conclusions about the same file.
+    _require_grant_section(payload)
+
+    floors: dict[str, float] = {}
+    for entry in section or {}:
+        counter, _, raw = str(entry).partition("@")
+        with contextlib.suppress(ValueError):
+            floors[counter] = float(raw)
+    return floors
+
+
+def _removed_binding_grants(
+    counters: dict[str, float],
+    floors: dict[str, float],
+    present: dict[str, float],
+) -> list[str]:
+    """Grants this change is spending that it also deletes (#662 review).
+
+    Permission comes from the base, so a candidate could consume a landed grant
+    and remove it in the same commit: the fall lands, and the owner, issue and
+    reason that justified it are gone from the file afterwards. The next run
+    then sees the old folded floor with nothing authorizing it and fails, with
+    no record of why the number moved.
+
+    A grant that is *binding* -- one actually lowering the comparison -- has to
+    survive the change that uses it. A spent one may go; that is the pruning
+    `_stale_grants` asks for.
+    """
+    return [
+        f"{counter}@{floor}: this change spends that authorization and removes it. "
+        "A grant that is still lowering the floor has to stay, or the fall lands "
+        "with no record of who permitted it"
+        for counter, floor in sorted(floors.items())
+        if counter in counters and counters[counter] > floor and present.get(counter) != floor
+    ]
 
 
 def _lowered(counters: dict[str, float], floors: dict[str, float]) -> dict[str, float]:
@@ -1578,12 +1700,21 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     # A landed grant may lower a floor the fold cannot (#662). Read at the
     # base, like the fold itself, so the change being judged did not write its
     # own permission.
+    # Two revisions, two questions. `floors` is permission and comes from the
+    # base; `present` is bookkeeping about the file this change actually ships.
+    # Reading stale-ness from the base made pruning impossible -- once the notes
+    # folded to a grant's value, the run whose only change removed that grant
+    # failed on the base's copy of it (#662 review). Both refuse the same way,
+    # so both sit inside the same guard: a malformed file is a failed gate, not
+    # a traceback, whichever revision it is malformed in.
     try:
         floors, reasons = authorized_floors(bound.base_sha)
+        present = candidate_grants()
     except RatchetProvenanceError as exc:
         print(f"FAIL: {exc}")
         return 1
-    stale = _stale_grants(bound.counters, floors)
+    stale = _stale_grants(bound.counters, present)
+    removed = _removed_binding_grants(bound.counters, floors, present)
 
     # Both comparisons, because both fold with `max`. The worktree fold carries
     # every note in the candidate tree -- including the merged branch's note
@@ -1600,9 +1731,10 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     exact_regressions, improvements = _compare(_lowered(target, floors), totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
     improvements = _slack_this_run_enforces(improvements)
-    if regressions or improvements or stale:
+    if regressions or improvements or stale or removed:
         _report_movement(regressions, improvements, bound)
         _report_stale_grants(stale)
+        _report_removed_grants(removed)
         return 1
     for counter, floor in sorted(floors.items()):
         print(f"authorized floor: {counter} may fall to {floor} — {reasons[counter]}")

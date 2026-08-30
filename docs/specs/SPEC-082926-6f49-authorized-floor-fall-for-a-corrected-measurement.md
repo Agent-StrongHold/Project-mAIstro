@@ -36,6 +36,8 @@ ac-modules:
   AC-4: '@tool/check_ac_state_impl'
   AC-5: '@tool/check_ac_state_impl'
   AC-6: '@tool/check_ac_state_impl'
+  AC-7: '@tool/check_ac_state_impl'
+  AC-8: '@tool/check_ac_state_impl'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -91,6 +93,21 @@ helper already enforces for the wiring ratchet, reused rather than reinvented.
 number, and not the next one. A bare `design_coverage` key would be an open
 season on the floor for as long as it sat in the file.
 
+**Both comparisons, including the one the merge queue makes.**
+`check-ac-state.py` measures the actual base revision in a merge group and
+compares it to the candidate independently of any note. That comparison has to
+apply the same grant, or the fall passes every check on the branch and is then
+rejected by the queue — working everywhere except the one place it has to work.
+
+**Permission is a base question; bookkeeping is a candidate one.** They are
+different questions and must be read from different revisions. Stale-ness read
+from the base made pruning unfollowable: once the notes overtook a grant, every
+later run failed on it, *including the run whose only change removed it*.
+Conversely, a binding grant must still be present in the candidate — permission
+is read at the base, so a change could otherwise spend a grant and delete it in
+the same commit, landing the fall and leaving the next run with a number nobody
+can account for.
+
 **Only a floor moves, and only downward.** `min(folded, granted)`: a grant
 naming a value the fold is already below raises nothing, and is reported stale
 rather than silently ignored. A grant naming a debt ceiling is refused
@@ -134,7 +151,11 @@ pass. A grant moves exactly the number under review and leaves the rest folding.
 - A grant persists after the fall lands, because the fold still holds the old
   note's higher value, so it keeps doing work rather than becoming inert
   immediately. It is pruned when the notes themselves fold to its value or
-  below, which `_stale_grants` enforces rather than leaving to memory.
+  below, which `_stale_grants` enforces rather than leaving to memory — read
+  from the candidate file, so the pruning change is one that can actually pass.
+- The authorization file is now read at two revisions, which is one more moving
+  part than a single read. It is the minimum: a single revision either makes
+  self-approval possible or makes pruning impossible, and neither is acceptable.
 - A second reader of `ratchet-authorizations.json` means two ratchets now
   depend on its shape. That is the cost of not building a second grant file.
 
@@ -180,7 +201,19 @@ Feature: A corrected measurement can lower an AC-state floor
 
   @AC-6
   Scenario: A malformed grant is refused rather than ignored
-    Given a grant naming a debt ceiling, or omitting the value it lowers to
+    Given a grant naming a debt ceiling, omitting its value, or a malformed section
     When the ratchet runs
     Then the run fails and names what is wrong with the grant
+
+  @AC-7
+  Scenario: The comparison against the actual measured base honours the grant
+    Given an authorized fall and a measurement of the actual base revision
+    When the base and the candidate are compared
+    Then the fall is not reported as a regression from that base
+
+  @AC-8
+  Scenario: A change may not spend a grant and delete it
+    Given a landed grant that is lowering the floor for this change
+    When the change also removes it from the authorization file
+    Then the run fails and says the grant has to stay
 ```
