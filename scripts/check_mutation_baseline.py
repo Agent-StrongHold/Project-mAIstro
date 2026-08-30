@@ -150,9 +150,7 @@ def _write_scheduler_candidate(
         raise ValueError("scheduler telemetry not found beside aggregate mutation rows")
     telemetry = mutation_ratchet.read_telemetry(telemetry_path)
     prov.require_measurement(telemetry, ratchet=RATCHET, what="mutation telemetry rows")
-    report = mutation_ratchet.evaluate(
-        telemetry, trusted_baseline, trusted_history, floor=FLOOR
-    )
+    report = mutation_ratchet.evaluate(telemetry, trusted_baseline, trusted_history, floor=FLOOR)
     candidate = mutation_ratchet.baseline_candidate(telemetry, trusted_baseline, floor=FLOOR)
     baseline_path.write_text(
         json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
