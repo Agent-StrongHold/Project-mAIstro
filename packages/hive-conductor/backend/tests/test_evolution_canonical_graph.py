@@ -368,9 +368,7 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
 
 
 @pytest.mark.asyncio
-async def test_recovered_evaluation_node_run_reuses_published_score_without_reevaluation() -> (
-    None
-):
+async def test_recovered_evaluation_node_run_reuses_published_score_without_reevaluation() -> None:
     class _MustNotRunHarness(_Harness):
         def __init__(self) -> None:
             self.calls = 0
