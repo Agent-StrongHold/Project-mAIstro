@@ -7,6 +7,7 @@ Jira/Confluence via stored credentials, and can take real actions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -1422,14 +1423,23 @@ async def _tool_run_workflow(
     if goal:
         dag_data = {**dag_data, "description": goal}
 
+    # Minted before the `try`, so the failure branch can always name the run
+    # it is finishing rather than risking an unbound local.
+    exec_id = str(uuid4())
+    # The `try` below covers the event and history writes that follow the
+    # execution as well as the execution itself, so a failing `append_event` --
+    # a full or closed writer queue, say -- used to reach the failure branch
+    # and mark a DAG that had completed as `failed` (Codex, #703). This records
+    # whether the graph itself finished, so only that decides the status.
+    executed = False
     try:
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        exec_id = str(uuid4())
         store = get_dag_run_store()
         await store.start_run(run_id=exec_id)
         result = await execute_dag(dag_data, user_id=user_id)
+        executed = True
 
         # Store events
         for nid, nr in result.get("node_results", {}).items():
@@ -1474,6 +1484,15 @@ async def _tool_run_workflow(
         except Exception as e:
             score_result = {"score": 0, "error": str(e)[:100]}
 
+        # This producer called `start_run` and never finished it, so a run
+        # launched from chat sat at `running` for the life of the process --
+        # and now that starts are durable, it would sit there across restarts
+        # too (Codex, #697). Suppressed for the same reason the run route
+        # suppresses its own: the DAG already produced a result, and the
+        # answer the caller gets must not depend on the history write.
+        with contextlib.suppress(Exception):
+            await store.finish_run(exec_id, status="completed", result=result)
+
         return {
             "run_id": exec_id,
             "dag_id": dag_id,
@@ -1488,6 +1507,28 @@ async def _tool_run_workflow(
             },
         }
     except Exception as e:
+        # The failure branch has to finish the run too, or a chat-launched DAG
+        # that failed is indistinguishable from one still running.
+        #
+        # `executed` decides the status, not where the exception was caught:
+        # a graph that completed and then tripped over a bookkeeping write is
+        # a completed run whose history is incomplete, and calling it failed
+        # tells the reader the opposite of what happened.
+        status = "completed" if executed else "failed"
+        with contextlib.suppress(Exception):
+            from services.dag_run_store import get_dag_run_store
+
+            await get_dag_run_store().finish_run(exec_id, status=status)
+        if executed:
+            logger.warning(
+                "dag_run_bookkeeping_failed run_id=%s dag_id=%s", exec_id, dag_id, exc_info=True
+            )
+            return {
+                "run_id": exec_id,
+                "dag_id": dag_id,
+                "status": "completed",
+                "warning": f"the run completed; recording it did not: {e}",
+            }
         return {"error": f"DAG execution failed: {e}"}
 
 
