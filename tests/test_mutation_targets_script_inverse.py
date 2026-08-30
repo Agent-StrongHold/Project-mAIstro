@@ -14,7 +14,9 @@ SCRIPT = ROOT / "scripts" / "mutation_targets.py"
 
 @pytest.fixture(scope="module")
 def mutation_targets():
-    spec = importlib.util.spec_from_file_location("_mutation_targets_script_inverse", SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "_mutation_targets_script_inverse", SCRIPT
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
