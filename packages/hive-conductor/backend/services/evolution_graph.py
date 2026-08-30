@@ -40,7 +40,9 @@ class _EvaluateInput(BaseModel):
 
 
 class _EvaluateOutput(BaseModel):
-    genome_id: str
+    # Deliberately omit genome_id. Canonical predecessor outputs override a
+    # successor's static inputs, so emitting it would make evaluation N+1
+    # inherit evaluation N's genome instead of its own Graph parameter.
     benchmarks: dict[str, float] = Field(default_factory=dict)
     evaluation_run_id: str
     evaluation_node_run_id: str
@@ -52,11 +54,27 @@ class _IgnoreInput(BaseModel):
 
 
 class _PairPlanOutput(BaseModel):
+    # The selected order is execution state, not Evolve domain state. Carry it
+    # in the canonical NodeRun result so process recovery never depends on an
+    # in-memory random shuffle surviving.
+    pairs: list[tuple[str, str]] = Field(default_factory=list)
+    pair_index: int = 0
     pair_count: int
     has_battles: bool
 
 
+class _BattleInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pairs: list[tuple[str, str]]
+    pair_index: int = 0
+
+
 class _BattleOutput(BaseModel):
+    # Re-emit the plan and cursor so every next battle can reconstruct its work
+    # exclusively from its persisted immediate-predecessor result.
+    pairs: list[tuple[str, str]] = Field(default_factory=list)
+    pair_index: int
     genome_a_id: str
     genome_b_id: str
     benchmarks: list[str] = Field(default_factory=list)
@@ -76,11 +94,7 @@ def _append_execution_ref(genome: Any, ctx: NodeContext) -> None:
         "node_run_id": ctx.node_run_id,
         "attempt_id": ctx.attempt_id,
     }
-    if not any(
-        item.get("attempt_id") == ctx.attempt_id
-        for item in refs
-        if isinstance(item, dict)
-    ):
+    if not any(item.get("attempt_id") == ctx.attempt_id for item in refs if isinstance(item, dict)):
         refs.append(ref)
 
 
@@ -124,7 +138,6 @@ async def _evaluate_one(
     published = _published_evaluation_ref(genome, ctx.node_run_id)
     if published is not None:
         return _EvaluateOutput(
-            genome_id=genome.id,
             benchmarks=dict(genome.eval_scores),
             evaluation_run_id=published["run_id"],
             evaluation_node_run_id=published["node_run_id"],
@@ -137,11 +150,7 @@ async def _evaluate_one(
     # NodeRun/Attempt and re-evaluates the last committed genome rather than
     # folding over a partial failed score.
     working = deepcopy(genome)
-    results = await cycle.harness.evaluate_genome(
-        working,
-        config.target_benchmarks,
-        llm_call,
-    )
+    results = await cycle.harness.evaluate_genome(working, config.target_benchmarks, llm_call)
     for result in results:
         cycle._fold_score(
             working,
@@ -161,7 +170,6 @@ async def _evaluate_one(
     working.updated_at = datetime.now(UTC).isoformat()
     population.add(working)
     return _EvaluateOutput(
-        genome_id=working.id,
         benchmarks=dict(working.eval_scores),
         evaluation_run_id=ctx.run_id,
         evaluation_node_run_id=ctx.node_run_id,
@@ -176,14 +184,7 @@ class _EvaluateNode(BaseNode[_EvaluateInput, _EvaluateOutput]):
     display_name: ClassVar[str] = "Evaluate Evolve genome"
     description: ClassVar[str] = "Evaluate one genome and record canonical execution provenance."
 
-    def __init__(
-        self,
-        *,
-        cycle: Any,
-        population: Any,
-        config: Any,
-        llm_call: Any,
-    ) -> None:
+    def __init__(self, *, cycle: Any, population: Any, config: Any, llm_call: Any) -> None:
         self._cycle = cycle
         self._population = population
         self._config = config
@@ -200,38 +201,35 @@ class _EvaluateNode(BaseNode[_EvaluateInput, _EvaluateOutput]):
         )
 
 
-class _BattlePlan:
-    """Choose tournament pairs only after evaluation NodeRuns have settled."""
+class _TournamentWork:
+    """Apply tournament domain semantics from canonical persisted work inputs."""
 
     def __init__(self, *, cycle: Any, population: Any) -> None:
         self._cycle = cycle
         self._population = population
-        self._pairs: list[tuple[str, str]] | None = None
-        self._cursor = 0
 
     def prepare(self) -> _PairPlanOutput:
-        if self._pairs is None:
-            scored = [
-                genome for genome in self._population.list_all() if genome.eval_scores
-            ]
-            shuffled = list(scored)
-            random.shuffle(shuffled)
-            self._pairs = [
-                (shuffled[index].id, shuffled[index + 1].id)
-                for index in range(0, len(shuffled) - 1, 2)
-            ]
-        return _PairPlanOutput(pair_count=len(self._pairs), has_battles=bool(self._pairs))
+        scored = [genome for genome in self._population.list_all() if genome.eval_scores]
+        shuffled = list(scored)
+        random.shuffle(shuffled)
+        pairs = [
+            (shuffled[index].id, shuffled[index + 1].id)
+            for index in range(0, len(shuffled) - 1, 2)
+        ]
+        return _PairPlanOutput(
+            pairs=pairs,
+            pair_index=0,
+            pair_count=len(pairs),
+            has_battles=bool(pairs),
+        )
 
-    def next(self) -> _BattleOutput:
-        if self._pairs is None:
-            raise RuntimeError("tournament pair plan was not prepared")
-        if self._cursor >= len(self._pairs):
+    def run_pair(self, inputs: _BattleInput) -> _BattleOutput:
+        if inputs.pair_index < 0 or inputs.pair_index >= len(inputs.pairs):
             raise RuntimeError(
-                "tournament graph requested a battle after the pair plan was exhausted"
+                "tournament graph requested a battle outside its persisted pair plan"
             )
 
-        genome_a_id, genome_b_id = self._pairs[self._cursor]
-        self._cursor += 1
+        genome_a_id, genome_b_id = inputs.pairs[inputs.pair_index]
         genome_a = self._population.get(genome_a_id)
         genome_b = self._population.get(genome_b_id)
         if genome_a is None or genome_b is None:
@@ -247,11 +245,14 @@ class _BattlePlan:
                 score_b=genome_b.eval_scores[benchmark],
             )
 
+        next_index = inputs.pair_index + 1
         return _BattleOutput(
+            pairs=list(inputs.pairs),
+            pair_index=next_index,
             genome_a_id=genome_a.id,
             genome_b_id=genome_b.id,
             benchmarks=common,
-            has_more=self._cursor < len(self._pairs),
+            has_more=next_index < len(inputs.pairs),
         )
 
 
@@ -260,36 +261,33 @@ class _PairPlanNode(BaseNode[_IgnoreInput, _PairPlanOutput]):
     input_schema: ClassVar[type[BaseModel]] = _IgnoreInput
     output_schema: ClassVar[type[BaseModel]] = _PairPlanOutput
     display_name: ClassVar[str] = "Plan Evolve tournament pairs"
-    description: ClassVar[str] = "Freeze this cycle's scored tournament pair ordering."
+    description: ClassVar[str] = "Persist this cycle's scored tournament pair ordering."
 
-    def __init__(self, plan: _BattlePlan) -> None:
-        self._plan = plan
+    def __init__(self, tournament_work: _TournamentWork) -> None:
+        self._tournament_work = tournament_work
 
     async def _execute(self, inputs: _IgnoreInput, ctx: NodeContext) -> _PairPlanOutput:
-        return self._plan.prepare()
+        return self._tournament_work.prepare()
 
 
-class _BattleNode(BaseNode[_IgnoreInput, _BattleOutput]):
+class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
     kind: ClassVar[str] = _BATTLE_KIND
-    input_schema: ClassVar[type[BaseModel]] = _IgnoreInput
+    input_schema: ClassVar[type[BaseModel]] = _BattleInput
     output_schema: ClassVar[type[BaseModel]] = _BattleOutput
     display_name: ClassVar[str] = "Run Evolve tournament pair"
-    description: ClassVar[str] = "Record one selected tournament pair as canonical work."
+    description: ClassVar[str] = "Record one persisted tournament pair as canonical work."
 
-    def __init__(self, plan: _BattlePlan) -> None:
-        self._plan = plan
+    def __init__(self, tournament_work: _TournamentWork) -> None:
+        self._tournament_work = tournament_work
 
-    async def _execute(self, inputs: _IgnoreInput, ctx: NodeContext) -> _BattleOutput:
-        return self._plan.next()
+    async def _execute(self, inputs: _BattleInput, ctx: NodeContext) -> _BattleOutput:
+        return self._tournament_work.run_pair(inputs)
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
     refs: list[dict[str, str]] = []
     seen: set[str] = set()
-    for parent_id in (
-        getattr(genome, "parent_a_id", None),
-        getattr(genome, "parent_b_id", None),
-    ):
+    for parent_id in (getattr(genome, "parent_a_id", None), getattr(genome, "parent_b_id", None)):
         if not parent_id:
             continue
         parent = population.get(parent_id)
@@ -323,12 +321,7 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
             population.add(genome)
 
 
-async def _finalize_cycle(
-    cycle: Any,
-    population: Any,
-    config: Any,
-    llm_call: Any,
-) -> _FinalizeOutput:
+async def _finalize_cycle(cycle: Any, population: Any, config: Any, llm_call: Any) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle."""
     from maistro_evolve.population import IslandPopulation, migrate_islands
 
@@ -346,13 +339,7 @@ async def _finalize_cycle(
 
     island_size_cap = max(1, config.population_size // config.island_count)
     for island_id in island_pop.all_islands():
-        cycle._breed_island(
-            island_pop,
-            island_id,
-            population,
-            config,
-            island_size_cap,
-        )
+        cycle._breed_island(island_pop, island_id, population, config, island_size_cap)
 
     await cycle._self_improve_top(population, config, llm_call)
     for genome in population.list_all():
@@ -373,10 +360,7 @@ async def _finalize_cycle(
             genome.harness_params["source_evaluation_runs"] = refs
             population.add(genome)
 
-    return _FinalizeOutput(
-        population_size=len(population.list_all()),
-        new_genome_ids=new_ids,
-    )
+    return _FinalizeOutput(population_size=len(population.list_all()), new_genome_ids=new_ids)
 
 
 class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
@@ -386,14 +370,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
     display_name: ClassVar[str] = "Finalize Evolve cycle"
     description: ClassVar[str] = "Compute fitness, breed, improve, and migrate domain state."
 
-    def __init__(
-        self,
-        *,
-        cycle: Any,
-        population: Any,
-        config: Any,
-        llm_call: Any,
-    ) -> None:
+    def __init__(self, *, cycle: Any, population: Any, config: Any, llm_call: Any) -> None:
         self._cycle = cycle
         self._population = population
         self._config = config
@@ -417,13 +394,7 @@ def _evaluation_ids(population: Any, config: Any) -> list[str]:
     return [genome.id for genome in unevaluated[: config.eval_batch_size]]
 
 
-def _build_graph(
-    *,
-    workspace_id: str,
-    project_id: str,
-    population: Any,
-    config: Any,
-) -> Graph:
+def _build_graph(*, workspace_id: str, project_id: str, population: Any, config: Any) -> Graph:
     evaluation_ids = _evaluation_ids(population, config)
     nodes: list[Node] = []
     edges: list[Edge] = []
@@ -444,46 +415,23 @@ def _build_graph(
     battle_slots = len(population.list_all()) // 2
     pair_plan_id = "evolve-plan-pairs" if battle_slots else None
     if pair_plan_id is not None:
-        nodes.append(
-            Node(
-                node_id=pair_plan_id,
-                node_type=_PAIR_KIND,
-                name="Plan tournament pairs",
-            )
-        )
+        nodes.append(Node(node_id=pair_plan_id, node_type=_PAIR_KIND, name="Plan tournament pairs"))
 
     battle_node_ids: list[str] = []
     for index in range(1, battle_slots + 1):
         node_id = f"evolve-battle-{index}"
         battle_node_ids.append(node_id)
-        nodes.append(
-            Node(
-                node_id=node_id,
-                node_type=_BATTLE_KIND,
-                name=f"Tournament pair {index}",
-            )
-        )
+        nodes.append(Node(node_id=node_id, node_type=_BATTLE_KIND, name=f"Tournament pair {index}"))
 
     final_id = "evolve-finalize"
-    nodes.append(
-        Node(
-            node_id=final_id,
-            node_type=_FINALIZE_KIND,
-            name="Finalize cycle",
-        )
-    )
+    nodes.append(Node(node_id=final_id, node_type=_FINALIZE_KIND, name="Finalize cycle"))
 
     for left, right in pairwise(evaluation_node_ids):
         edges.append(Edge(from_node=left, to_node=right))
 
     after_evaluations = pair_plan_id or final_id
     if evaluation_node_ids:
-        edges.append(
-            Edge(
-                from_node=evaluation_node_ids[-1],
-                to_node=after_evaluations,
-            )
-        )
+        edges.append(Edge(from_node=evaluation_node_ids[-1], to_node=after_evaluations))
 
     if pair_plan_id is not None:
         edges.append(
@@ -525,30 +473,16 @@ def _build_graph(
         name="Evolve cycle",
         nodes=nodes,
         edges=edges,
-        metadata={
-            "entry_node": entry,
-            "execution_owner": "canonical_run",
-            "product": "evolve",
-        },
+        metadata={"entry_node": entry, "execution_owner": "canonical_run", "product": "evolve"},
     )
 
 
 def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
-    plan = _BattlePlan(cycle=cycle, population=population)
-    evaluate = _EvaluateNode(
-        cycle=cycle,
-        population=population,
-        config=config,
-        llm_call=llm_call,
-    )
-    pair_plan = _PairPlanNode(plan)
-    battle = _BattleNode(plan)
-    finalize = _FinalizeNode(
-        cycle=cycle,
-        population=population,
-        config=config,
-        llm_call=llm_call,
-    )
+    tournament_work = _TournamentWork(cycle=cycle, population=population)
+    evaluate = _EvaluateNode(cycle=cycle, population=population, config=config, llm_call=llm_call)
+    pair_plan = _PairPlanNode(tournament_work)
+    battle = _BattleNode(tournament_work)
+    finalize = _FinalizeNode(cycle=cycle, population=population, config=config, llm_call=llm_call)
 
     def resolve(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
         spec = next((item for item in graph.nodes if item.node_id == node_id), None)
@@ -592,11 +526,7 @@ async def run_canonical_evolution_cycle(
     from maistro_evolve.cycle import EvolutionCycle
 
     owner = container or _engine_container()
-    if (
-        owner.run_store is None
-        or owner.graph_run_store is None
-        or owner.project_scope_store is None
-    ):
+    if owner.run_store is None or owner.graph_run_store is None or owner.project_scope_store is None:
         raise RuntimeError("Evolve canonical execution spine is unavailable (#51)")
 
     workspace_id = str(owner.config.workspace_id)
@@ -628,12 +558,7 @@ async def run_canonical_evolution_cycle(
     return await run_durable_graph(
         graph,
         store=owner.graph_run_store,
-        node_resolver=_resolver(
-            cycle=cycle,
-            population=population,
-            config=config,
-            llm_call=llm_call,
-        ),
+        node_resolver=_resolver(cycle=cycle, population=population, config=config, llm_call=llm_call),
         actor_principal_id=actor_principal_id,
         run_id=admitted.run_id,
         provenance=provenance,
