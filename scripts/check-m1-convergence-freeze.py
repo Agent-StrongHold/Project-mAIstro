@@ -255,11 +255,14 @@ def new_shared_owner_violations(
         if not matched:
             continue
         local = _product_local_concepts(current[name])
-        if any(_owner_allows(module, owners[concept]) for concept in matched):
+        unauthorized = [
+            concept
+            for concept in matched
+            if not _owner_allows(module, owners[concept]) and concept not in local
+        ]
+        if not unauthorized:
             continue
-        if any(concept in local for concept in matched):
-            continue
-        concept_list = ", ".join(sorted(matched))
+        concept_list = ", ".join(sorted(unauthorized))
         failures.append(
             f"{module}::{name}: new shared-owner-shaped type overlaps {concept_list}. "
             "Define canonical shared types in the ontology owner, or document a domain "
