@@ -1,0 +1,81 @@
+name: temporary #544 running claim proof
+
+on:
+  push:
+    branches: [chatgpt/m1-544-consumer-claim-recovery]
+    paths: [.github/workflows/tmp-544-running-claim.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Make physical claim RUNNING atomically
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one match in {path}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          claim = "packages/maistro-core/src/maistro/runs/consumer_claim.py"
+          replace(
+              claim,
+              "from maistro.runs.lifecycle import renewed_lease, transition_node_run, transition_run\n",
+              "from maistro.runs.lifecycle import (\n    renewed_lease,\n    transition_attempt,\n    transition_node_run,\n    transition_run,\n)\n",
+          )
+          replace(
+              claim,
+              "from maistro.runs.model import Attempt, ExecutionLease, NodeRun, Run, RunStatus\n",
+              "from maistro.runs.model import (\n    Attempt,\n    AttemptStatus,\n    ExecutionLease,\n    NodeRun,\n    Run,\n    RunStatus,\n)\n",
+          )
+          replace(
+              claim,
+              "    attempt = Attempt.model_validate(\n        {**attempt.model_dump(mode=\"python\"), \"execution_lease\": lease}\n    )\n    return ConsumerClaim(\n",
+              "    attempt = Attempt.model_validate(\n        {**attempt.model_dump(mode=\"python\"), \"execution_lease\": lease}\n    )\n    attempt = transition_attempt(attempt, AttemptStatus.RUNNING)\n    return ConsumerClaim(\n",
+          )
+
+          execution = "packages/maistro-core/src/maistro/runs/execution.py"
+          replace(
+              execution,
+              "        if attempt.status is not AttemptStatus.CREATED:\n            raise RunIntegrityError(\"execute_claimed requires a CREATED Attempt\")\n        lease = attempt.execution_lease\n        if lease is None:\n            raise RunIntegrityError(\"claimed Attempt is missing its execution lease\")\n        token = lease.fencing_token\n        attempt = await self._store.transition_attempt(\n            attempt.attempt_id,\n            AttemptStatus.RUNNING,\n            fencing_token=token,\n        )\n",
+              "        lease = attempt.execution_lease\n        if lease is None:\n            raise RunIntegrityError(\"claimed Attempt is missing its execution lease\")\n        token = lease.fencing_token\n        if attempt.status is AttemptStatus.CREATED:\n            attempt = await self._store.transition_attempt(\n                attempt.attempt_id,\n                AttemptStatus.RUNNING,\n                fencing_token=token,\n            )\n        elif attempt.status is not AttemptStatus.RUNNING:\n            raise RunIntegrityError(\"execute_claimed requires an active Attempt\")\n",
+          )
+
+          tests = "packages/maistro-core/tests/runs/test_consumer_claim_recovery.py"
+          replace(
+              tests,
+              "    assert attempt.status is AttemptStatus.CREATED\n    assert attempt.execution_lease is not None\n",
+              "    assert attempt.status is AttemptStatus.RUNNING\n    persisted = await container.run_store.get_attempt(attempt.attempt_id)\n    assert persisted is not None and persisted.status is AttemptStatus.RUNNING\n    assert attempt.execution_lease is not None\n",
+          )
+          p = Path(tests)
+          text = p.read_text()
+          if "test_normal_tick_completes_the_exact_claimed_attempt" not in text:
+              text += '''\n\nasync def test_normal_tick_completes_the_exact_claimed_attempt() -> None:\n    _EligibleNode.calls = 0\n    container = await _container()\n    run_id = await _admit(container, workspace="exact-claimed-attempt")\n    assert await container.execute_admitted_runs(limit=1) == 1\n    (node_run,) = await container.run_store.list_node_runs(run_id)\n    attempts = await container.run_store.list_attempts(node_run.node_run_id)\n    assert len(attempts) == 1\n    assert attempts[0].status is AttemptStatus.COMPLETED\n    assert attempts[0].execution_lease is not None\n    run = await container.run_store.get_run(run_id)\n    assert run is not None and run.status is RunStatus.COMPLETED\n    assert _EligibleNode.calls == 1\n'''
+              p.write_text(text)
+      - name: Focused verification
+        run: |
+          uv sync --locked --extra dev
+          uv run ruff format packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run ruff check packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run pytest packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_recovery_events.py -q
+      - name: Commit verified fix and remove temporary workflow
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/tmp-544-running-claim.yml
+          git add packages/maistro-core/src/maistro/runs/consumer_claim.py packages/maistro-core/src/maistro/runs/execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          git diff --cached --check
+          git commit -m "fix: make consumer physical claim atomically running"
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
