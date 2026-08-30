@@ -128,6 +128,7 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import maistro_evolve.cycle as cycle_module
+
     from services.evolution_graph import run_canonical_evolution_cycle
 
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
@@ -196,6 +197,7 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import maistro_evolve.cycle as cycle_module
+
     from services.evolution_graph import run_canonical_evolution_cycle
 
     class _NoResultHarness(_Harness):
