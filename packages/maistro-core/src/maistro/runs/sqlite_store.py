@@ -45,6 +45,9 @@ from maistro.runs.store import (
     StaleExecutionFence,
     admit_in_state,
     is_purgeable,
+    outcome_embeds_attempt,
+    repaired_accepted_outcome,
+    require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
@@ -793,6 +796,44 @@ class SqliteRunStore:
                 updated.status.value,
                 json_of(updated),
             )
+            return updated
+
+    async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:
+        """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
+
+        The twin of `InMemoryRunStore.repair_attempt_result`; see the protocol
+        for why both copies move in one operation (ADR-083026-14c3). Both
+        writes happen under the store's own write serialization, so a reader
+        cannot observe the Attempt repaired and its accepted outcome not.
+        """
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            require_repairable_attempt(attempt)
+            updated = attempt.model_copy(update={"result": result})
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                updated.status.value,
+                json_of(updated),
+            )
+            node_run = await self.get_node_run(attempt.node_run_id)
+            if node_run is not None and outcome_embeds_attempt(node_run, attempt_id):
+                assert node_run.accepted_outcome is not None  # narrowed above
+                repaired = node_run.model_copy(
+                    update={
+                        "accepted_outcome": repaired_accepted_outcome(
+                            node_run.accepted_outcome, updated
+                        )
+                    }
+                )
+                await self._update_payload(
+                    "canonical_node_runs",
+                    "node_run_id",
+                    node_run.node_run_id,
+                    repaired.status.value,
+                    json_of(repaired),
+                )
             return updated
 
     @staticmethod

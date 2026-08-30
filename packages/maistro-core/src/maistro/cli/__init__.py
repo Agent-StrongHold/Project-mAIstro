@@ -31,6 +31,7 @@ from maistro.cli._archive import app as _archive_app  # noqa: E402
 from maistro.cli._builders import app as _builders_app  # noqa: E402
 from maistro.cli._install import app as _install_app  # noqa: E402
 from maistro.cli._launch import app as _launch_app  # noqa: E402
+from maistro.cli._repair import app as _repair_app  # noqa: E402
 from maistro.cli._sandbox import app as _sandbox_app  # noqa: E402
 from maistro.cli._security import app as _security_app  # noqa: E402
 from maistro.cli._upgrade import app as _upgrade_app  # noqa: E402
@@ -43,6 +44,7 @@ app.add_typer(_approvals_app, name="approvals")
 app.add_typer(_security_app, name="security")
 app.add_typer(_archive_app, name="archive")
 app.add_typer(_sandbox_app, name="sandbox")
+app.add_typer(_repair_app, name="repair")
 
 
 def main() -> None:
