@@ -1,0 +1,30 @@
+---
+inventory-delta:
+  tests/: +7
+---
+# claude-status-update-7dlw7z-205b
+
+<!-- Say what moved and why, not just how much. The count alone hides
+     compensating changes; that is the case these notes exist for. -->
+
+`tests/test_buildx_build_retry.py` — 7 node IDs for `scripts/buildx-build-retry.sh`
+(Codex's #683 review finding: `docker/setup-buildx-action`'s default driver
+runs BuildKit in its own container with its own image store, isolated from
+the host daemon `prepull-base-images.sh` retries pulls into for #204 — so a
+buildx-driven build's base-image fetch carried none of that retry protection,
+reopening the exact failure #204 closed). Seven distinct test functions, none
+parametrised except the workflow-contract check, which runs once per file
+(ci.yml, security.yml) via `@pytest.mark.parametrize`, so the node count runs
+one ahead of the function count.
+
+A stub `docker` on PATH stands in for the real thing (no daemon in this
+sandbox, and the point is the retry/backoff/exit-code contract, not Docker
+itself): clean success on the first attempt, a transient failure that
+retries and then succeeds, a persistent failure that exhausts the default
+two attempts and reports `::error::` clearly, and `BUILDX_RETRY_ATTEMPTS=1`
+disabling retry entirely. The last test reads both workflow files directly
+and asserts every real `scripts/buildx-build-retry.sh` invocation carries the
+`--` sentinel separating the script's own arguments from the passed-through
+`docker buildx build` ones — a call missing it would silently swallow its
+first real flag as the (rejected) sentinel position instead of building
+anything.
