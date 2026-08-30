@@ -22,6 +22,7 @@
     "@flat/hive-conductor/services.ui_climb_vm",
     "@flat/hive-conductor/services.ui_hill_climber",
     "@tool/ac_state_notes",
+    "@tool/build-evidence",
     "@tool/check-autonomous-merge",
     "@tool/check-branch-independence",
     "@tool/check_assertion_quality",

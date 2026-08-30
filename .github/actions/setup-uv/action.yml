@@ -72,3 +72,15 @@ runs:
           requirements-dev-tools.txt
           packages/hive-conductor/backend/requirements.txt
           packages/maistro-turing/backend/requirements.txt
+    - name: Record content-addressed setup evidence
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p .build-evidence
+        python3 scripts/build-evidence.py \
+          --input uv.lock \
+          --input pyproject.toml \
+          --input .github/actions/setup-uv/action.yml \
+          --command "uv setup 0.12.5" \
+          --tool "uv=0.12.5" \
+          --out .build-evidence/setup-uv.json

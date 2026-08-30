@@ -18,10 +18,10 @@ contracts:
 tests:
   - tests/test_ac_outcome_plugin.py
 ac-modules:
-  AC-1: scripts/ac_outcome_plugin.py
-  AC-2: scripts/ac_outcome_plugin.py
-  AC-3: scripts/ac_outcome_plugin.py
-  AC-4: scripts/ac_outcome_plugin.py
+  AC-1: '@tool/ac_outcome_plugin'
+  AC-2: '@tool/ac_outcome_plugin'
+  AC-3: '@tool/ac_outcome_plugin'
+  AC-4: '@tool/ac_outcome_plugin'
 history:
   - status: Proposed
     date: 2026-08-25

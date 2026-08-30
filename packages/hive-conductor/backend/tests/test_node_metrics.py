@@ -284,15 +284,26 @@ def test_filter_window_cutoff_excludes_old_observations(isolated_store: Any) -> 
 # --- aggregate math ------------------------------------------------------
 
 
-def test_aggregate_empty_returns_zeros() -> None:
+def test_aggregate_empty_reports_nothing_measured() -> None:
+    """Counts are zero; measures are absent.
+
+    `tokens_in_total` used to be `0` here and for every unmeasured
+    observation, which is the same number a genuinely free run would report.
+    `None` is the honest answer to "how many tokens", and `tokens_measured`
+    is how a reader tells the two apart (#698).
+    """
     from services.node_metrics_store import NodeMetricsStore
 
     store = NodeMetricsStore()
     agg = store.aggregate(window_seconds=3600)
     assert agg["count"] == 0
     assert agg["success_rate"] == 0.0
-    assert agg["latency_ms_p50"] == 0
-    assert agg["tokens_in_total"] == 0
+    assert agg["latency_ms_p50"] is None
+    assert agg["latency_ms_p95"] is None
+    assert agg["latency_ms_p99"] is None
+    assert agg["tokens_measured"] == 0
+    assert agg["tokens_in_total"] is None
+    assert agg["cost_usd_total"] is None
 
 
 def test_aggregate_percentiles(isolated_store: Any) -> None:
@@ -370,11 +381,17 @@ def test_aggregate_single_observation_percentile_is_identity() -> None:
     assert agg["latency_ms_p99"] == 42
 
 
-def test_percentile_returns_zero_for_empty_list() -> None:
-    """Direct call to _percentile defensive check."""
+def test_percentile_is_absent_for_an_empty_list() -> None:
+    """Was `== 0`, and that zero was a real defect.
+
+    `topology_compare` normalizes p95 with `invert=True`, so a variant nobody
+    timed reported a p95 of zero and ranked as the fastest in the comparison —
+    the same "unmeasured read as best" this change removes one layer down
+    (Codex, #698).
+    """
     from services.node_metrics_store import _percentile
 
-    assert _percentile([], 50) == 0
+    assert _percentile([], 50) is None
 
 
 # --- list_observations --------------------------------------------------
@@ -438,8 +455,11 @@ def test_record_run_completion_ingests_every_node(isolated_store: Any) -> None:
     assert by_id["n1"]["node_kind"] == "jira.poll"
     assert by_id["n1"]["latency_ms"] == 150
     # Invocation/resource metrics move onto Attempt in the next spine slice.
-    assert by_id["n1"]["tokens_in"] == 0
-    assert by_id["n1"]["tokens_out"] == 0
+    # Absent until then, not zero: a canonical run recorded as costing nothing
+    # would outrank a measured one on the optimizer's cost term (#698).
+    assert by_id["n1"]["tokens_in"] is None
+    assert by_id["n1"]["tokens_out"] is None
+    assert by_id["n1"]["cost_usd"] is None
     assert by_id["n3"]["phase"] == "FAILED"
 
 

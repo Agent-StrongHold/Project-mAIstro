@@ -306,6 +306,18 @@ class DesignProjectNotFoundError(DesignError):
     code = "DESIGN_PROJECT_NOT_FOUND"
 
 
+class DesignScopeError(DesignError):
+    """Raised when a project names no scope, or names one the caller is not in.
+
+    `org` is a soft scope axis (ADR-068), so nothing in the database resolves it
+    to an owner -- which is exactly why the store has to. Migration 003's
+    foreign key looked like this guard and was not: it asked whether the org was
+    a row in a table nothing writes, and so refused every value (#326).
+    """
+
+    code = "DESIGN_SCOPE_ERROR"
+
+
 class IncompatibleDesignSystemError(DesignError):
     code = "INCOMPATIBLE_DESIGN_SYSTEM"
 

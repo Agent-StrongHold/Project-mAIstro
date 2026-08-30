@@ -13,10 +13,12 @@ from typing import Any
 
 import yaml
 
-from maistro.personas.schema import EvalSpec, PersonaTemplate
+from maistro.personas.schema import EvalSpec, PersonaTemplate, PersonaTemplateSource
 from maistro.personas.vocabulary import evaluate
 
 DEFAULT_TEMPLATES_DIR = Path(__file__).parent / "templates"
+PERSONA_TEMPLATE_YAML = "persona_template_yaml"
+LEGACY_DEPARTMENT_YAML = "legacy_department_yaml"
 
 
 @dataclass(frozen=True)
@@ -64,12 +66,47 @@ class RubricEval:
         )
 
 
+def _source_format(data: dict[str, Any]) -> str:
+    """Classify the raw shape before PersonaTemplate normalizes it.
+
+    The legacy marker is deliberately the same structural condition the schema
+    uses for its compatibility normalization. Looking at the normalized model
+    afterwards would erase the fact we need to preserve for migration.
+    """
+
+    if "id" not in data and "department" in data:
+        return LEGACY_DEPARTMENT_YAML
+    return PERSONA_TEMPLATE_YAML
+
+
 def load_template(path: str | Path) -> PersonaTemplate:
-    """Load and validate one template YAML file."""
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    """Load one template YAML and attach loader-attested source provenance."""
+    source_path = Path(path)
+    data = yaml.safe_load(source_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"Template {path} is not a YAML mapping")
-    return PersonaTemplate(**data)
+    provenance = PersonaTemplateSource(
+        source_format=_source_format(data),
+        source_locator=str(source_path),
+    )
+    # Treat these as an attestation contract, not merely fields we happen to
+    # populate. An empty observed format or locator means the loader cannot
+    # prove where the normalized reusable definition came from.
+    if not provenance.source_format or not provenance.source_locator:
+        raise RuntimeError("Persona template source attestation is incomplete")
+
+    # Provenance is evidence produced by the loader, not template content. A
+    # source may contain this key because it was hand-edited or came from an
+    # older exporter, but it cannot self-assert what format/location produced
+    # the normalized object and cannot break parsing with a malformed value.
+    template_data = dict(data)
+    template_data.pop("source_provenance", None)
+    template = PersonaTemplate(**template_data).model_copy(update={"source_provenance": provenance})
+    # Read the attached field back rather than assuming model_copy accepted it:
+    # downstream migration code relies on this evidence being present.
+    if template.source_provenance != provenance:
+        raise RuntimeError("Persona template source attestation was not retained")
+    return template
 
 
 def load_evals(path: str | Path) -> list[RubricEval]:
