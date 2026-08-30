@@ -12,7 +12,10 @@ import sys
 
 import structlog
 
-from maistro.observability.correlation import execution_context_processor
+from maistro.observability.correlation import (
+    execution_context_processor,
+    install_log_correlation,
+)
 from maistro.security.log_redaction import install_log_redaction, structlog_redact_processor
 
 
@@ -72,4 +75,8 @@ def configure_logging(*, debug: bool = False, json_output: bool = True) -> None:
     # above never sees them. Handler wrapping is what covers httpx's request
     # lines and any traceback uvicorn prints. Must come after basicConfig —
     # there are no handlers to wrap before it.
+    # Before redaction, so the redacting formatter it installs wraps this one
+    # and sees the correlated line. Both are formatter wrappers over the same
+    # handlers, and the outer one is the one that gets the last word (#707).
+    install_log_correlation()
     install_log_redaction()

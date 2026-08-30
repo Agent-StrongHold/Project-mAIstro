@@ -32,6 +32,7 @@ shared between two collaborators; this one is ambient identity.
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Iterator, MutableMapping
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, replace
@@ -128,6 +129,26 @@ def bind_execution_context(**ids: str | None) -> Iterator[ExecutionContext]:
         _CONTEXT.reset(token)
 
 
+@contextlib.contextmanager
+def detached_execution_context() -> Iterator[ExecutionContext]:
+    """Run a block with no execution in scope.
+
+    For work that is *about* an execution without being part of one — a
+    publisher draining a transactional outbox is the case this exists for. It
+    runs on whatever thread the scheduler gave it, potentially inside some
+    unrelated Attempt, and an event staged hours earlier must not acquire that
+    Attempt's ids on its way to the store (Codex, #707).
+
+    `bind_execution_context` cannot express this: it is additive by design, so
+    it can add an id and never take one away.
+    """
+    token = _CONTEXT.set(EMPTY)
+    try:
+        yield EMPTY
+    finally:
+        _CONTEXT.reset(token)
+
+
 def execution_context_processor(
     _logger: Any,
     _method_name: str,
@@ -142,3 +163,54 @@ def execution_context_processor(
     for name, value in current_execution_context().as_log_fields().items():
         event_dict.setdefault(name, value)
     return event_dict
+
+
+class CorrelatingFormatter(logging.Formatter):
+    """Append the active execution ids to a stdlib log line.
+
+    `execution_context_processor` covers structlog, and structlog is not what
+    most of this codebase logs through: `logging.getLogger(...)` is used
+    throughout the agent strategies and the graph code that runs *inside*
+    Attempts, and `logging.basicConfig` installs a plain stdlib formatter rather
+    than routing those records through structlog. So the ids reached the lines
+    least likely to need them and missed the warnings and errors raised from
+    inside an execution (Codex, #707).
+
+    Appended to the formatted line rather than injected as a `%`-field: the
+    stdlib format string is `%(message)s`, and a record attribute nothing
+    renders is a value nobody sees. Appending changes the shape of a line only
+    when there is something to say.
+    """
+
+    def __init__(self, inner: logging.Formatter) -> None:
+        super().__init__()
+        self._inner = inner
+
+    def format(self, record: logging.LogRecord) -> str:
+        formatted = self._inner.format(record)
+        fields = current_execution_context().as_log_fields()
+        if not fields:
+            return formatted
+        suffix = " ".join(f"{name}={value}" for name, value in fields.items())
+        return f"{formatted} [{suffix}]"
+
+
+def install_log_correlation(logger_names: tuple[str, ...] = ("",)) -> int:
+    """Wrap the formatter of every handler on `logger_names`. Returns how many.
+
+    Same shape and the same caveat as `install_log_redaction`, which this sits
+    inside: handlers added *after* this call are not covered, so it runs last in
+    whatever configures logging. Idempotent — a handler already wrapped is
+    skipped, so calling `configure_logging` twice does not double the suffix.
+
+    The root logger by default, because the point is the modules that never
+    named a logger of their own.
+    """
+    wrapped = 0
+    for name in logger_names:
+        for handler in logging.getLogger(name).handlers:
+            if isinstance(handler.formatter, CorrelatingFormatter):
+                continue
+            handler.setFormatter(CorrelatingFormatter(handler.formatter or logging.Formatter()))
+            wrapped += 1
+    return wrapped
