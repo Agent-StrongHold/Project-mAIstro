@@ -673,12 +673,12 @@ class Container:
         admitted canonical work nobody would ever execute.
 
         Eligibility is `executable_by_consumer`: QUEUED, an allowlisted
-        admission source, one registered node. The claim is the QUEUED→RUNNING
-        lifecycle transition itself — the transition table is the mutex, so a
-        concurrent tick's loser skips instead of double-executing. A Run whose
-        node then fails is parked by the reconciler (the recovery
-        disposition's WAITING row), never silently retried by the next tick.
+        admission source, one registered node. Claiming atomically persists the
+        RUNNING Run, RUNNING NodeRun, and a leased CREATED Attempt; the Run row
+        is the cross-process mutex and the Attempt lease is the recovery proof.
+        A node failure is parked by the reconciler and never silently retried.
         """
+        from maistro.runs.consumer_claim import ConsumerClaimLost
         from maistro.runs.consumption import (
             ScheduleAttemptExecutor,
             consumer_owns,
@@ -729,17 +729,16 @@ class Container:
                 if not executable_by_consumer(run):
                     continue
                 try:
-                    claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-                except Exception:
-                    # Another tick won the claim, or the Run moved on. Not ours.
+                    await executor.execute(run)
+                except ConsumerClaimLost:
+                    # Another tick won the atomic Run + NodeRun + Attempt claim.
                     continue
-                try:
-                    await executor.execute(claimed)
                 except Exception:
+                    # Any execution that got past claim owns leased physical
+                    # evidence, so ordinary recovery owns a process loss here.
                     logger.warning(
                         "admitted Run %s failed during consumption", run.run_id, exc_info=True
                     )
-                    await self._settle_unstarted_consumption(run.run_id)
                 executed += 1
                 if executed >= limit:
                     break
@@ -760,27 +759,6 @@ class Container:
             logger.warning("unresolvable Run %s could not be settled", run_id, exc_info=True)
             return
         logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
-
-    async def _settle_unstarted_consumption(self, run_id: str) -> None:
-        """Terminalize a claimed Run whose execution never left a record behind.
-
-        `ScheduleAttemptExecutor` handles the ordinary failure — the Attempt
-        records it and the reconciler parks. Reaching here means execution
-        failed *before* any NodeRun existed (an infrastructure error), and a
-        claimed RUNNING Run with no physical record would otherwise sit
-        indistinguishable from a process that died. With a NodeRun present the
-        parked/derived state is already the answer and this must not rewrite it.
-        """
-        try:
-            if await self.run_store.list_node_runs(run_id):
-                return
-            await self.run_store.transition_run(
-                run_id,
-                RunStatus.FAILED,
-                error="consumption_error",
-            )
-        except Exception:
-            logger.warning("claimed Run %s could not be settled", run_id, exc_info=True)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
         """List the durable trigger definitions backing the reactor loop."""
