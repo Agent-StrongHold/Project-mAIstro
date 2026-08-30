@@ -48,6 +48,14 @@ MAX_SSE_QUEUE = 200
 #: route already applies to the copy it puts in each event.
 MAX_RESULT_CHARS = 2000
 
+#: The budget across every node result in one run. `MAX_RESULT_CHARS` bounds
+#: one node; a DAG may have any number of them, so without this the record is
+#: unbounded in the dimension that actually grows. 50x the per-node cap: a run
+#: whose first twenty-five nodes each produced a full-length answer has already
+#: told a reader what happened, and the untruncated text of every node is in
+#: that run's events under their own cap.
+MAX_RESULT_CHARS_PER_RUN = 50 * MAX_RESULT_CHARS
+
 
 def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
     """A run result with its node responses truncated to `MAX_RESULT_CHARS`.
@@ -62,9 +70,18 @@ def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(node_results, dict):
         return result
     trimmed = {}
+    spent = 0
     for node_id, node in node_results.items():
         if isinstance(node, dict) and isinstance(node.get("response"), str):
-            node = {**node, "response": node["response"][:MAX_RESULT_CHARS]}
+            # Per node AND in total. `UpdateDAGBody.nodes` is an unconstrained
+            # list, so a per-node cap alone bounds nothing: a 500-node DAG
+            # still writes a megabyte per run, and the "bounded record"
+            # guarantee this store documents would not have been enforced
+            # (Codex, #703).
+            room = max(0, min(MAX_RESULT_CHARS, MAX_RESULT_CHARS_PER_RUN - spent))
+            response = node["response"][:room]
+            spent += len(response)
+            node = {**node, "response": response}
         trimmed[node_id] = node
     return {**result, "node_results": trimmed}
 
@@ -205,12 +222,23 @@ class DagRunStore:
         return self._records is not None
 
     def reload(self) -> None:
-        """Re-read the records store. The seam a stale replica needs.
+        """Re-read the records store, refreshing its own cache first.
 
-        Public because the freshness limit above is real: this store caches,
-        so a process that was already running when another wrote does not see
-        the write until it reloads.
+        The refresh is the whole point and it was missing: `JsonStore.values()`
+        returns `_data`, which is filled from persistence once by
+        `initialize()` and never read through again, so a `reload()` that only
+        re-walked `values()` re-processed this replica's own cache and could
+        not see another replica's write at all (Codex, #703). `initialize()` is
+        the JsonStore's read-through, so it runs first.
+
+        Public because the freshness limit above is real: this store caches, so
+        a process that was already running when another wrote does not see the
+        write until it reloads.
         """
+        records = self._records
+        refresh = getattr(records, "initialize", None)
+        if callable(refresh):
+            refresh()
         self.load()
 
     def load(self) -> None:

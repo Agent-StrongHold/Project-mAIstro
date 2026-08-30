@@ -381,3 +381,250 @@ class TestLoweringTheBoundRemovesTheRows:
 
         assert len(records) == 2
         assert sorted(r["id"] for r in records.values()) == ["r2", "r3"]
+
+
+class SharedPersistence:
+    """The rows two replicas share. Stands in for `PersistedStore`."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, str] = {}
+
+
+class CachingRecords(FakeRecords):
+    """A `JsonStore` as it really behaves: a cache over shared rows.
+
+    `FakeRecords` above holds its own dict, so two run stores built on one
+    instance share a cache — which is not what two replicas have, and is why
+    the first version of the stale-reader test passed against a `reload()`
+    that never read through (Codex, #703). This one keeps the rows outside and
+    fills `_data` only in `initialize()`, exactly as `JsonStore` does.
+    """
+
+    def __init__(self, shared: SharedPersistence) -> None:
+        super().__init__()
+        self._shared = shared
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self._shared.rows[key] = self._data[key]
+
+    def pop(self, key: str, *default: Any) -> Any:
+        self._shared.rows.pop(key, None)
+        return super().pop(key, *default)
+
+    def initialize(self) -> None:
+        self._data.update(self._shared.rows)
+
+
+class TestAReloadReadsThroughToTheRows:
+    """`JsonStore.values()` returns `_data`, filled from persistence once by
+    `initialize()` and never read through again. A `reload()` that only
+    re-walked `values()` re-processed this replica's own cache, so the seam
+    documented as "what a stale replica needs" could not actually see another
+    replica's write.
+    """
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-1")
+    async def test_a_reload_sees_a_write_made_by_another_replica(self) -> None:
+        shared = SharedPersistence()
+        writer = DagRunStore(records=CachingRecords(shared))
+        reader = DagRunStore(records=CachingRecords(shared))
+        assert reader.list_runs() == []
+
+        await writer.start_run(run_id="r-1", dag_id="d-1")
+
+        assert reader.list_runs() == [], "still stale until it reloads"
+        reader.reload()
+        assert [r["id"] for r in reader.list_runs()] == ["r-1"]
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-1")
+    async def test_a_reload_over_a_store_with_no_refresh_still_reloads(self) -> None:
+        """`initialize` is optional on the records object: the in-process
+        default has no persistence to read through to, and a `reload()` that
+        required one would raise instead of no-opping."""
+        store = DagRunStore(records=FakeRecords())
+        await store.start_run(run_id="r-1", dag_id="d-1")
+        store.reload()
+        assert [r["id"] for r in store.list_runs()] == ["r-1"]
+
+
+class TestTheRecordIsBoundedAcrossNodesToo:
+    """A per-node cap bounds one node. `UpdateDAGBody.nodes` is an
+    unconstrained list, so without a total budget a large enough DAG still
+    writes a multi-megabyte record and the bound the store documents is not
+    one (Codex, #703).
+    """
+
+    @staticmethod
+    def _result(nodes: int, chars: int) -> dict[str, Any]:
+        return {"node_results": {f"n{i}": {"response": "x" * chars} for i in range(nodes)}}
+
+    @staticmethod
+    def _bounded(result: dict[str, Any]) -> dict[str, Any]:
+        from services.dag_run_store import _bounded
+
+        return _bounded(result)
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-5")
+    def test_the_total_is_bounded_however_many_nodes_there_are(self) -> None:
+        from services.dag_run_store import MAX_RESULT_CHARS_PER_RUN
+
+        trimmed = self._bounded(self._result(nodes=500, chars=5000))
+        total = sum(len(n["response"]) for n in trimmed["node_results"].values())
+        assert total <= MAX_RESULT_CHARS_PER_RUN
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-5")
+    def test_every_node_is_still_present_after_the_budget_runs_out(self) -> None:
+        """Truncated, not dropped: which nodes ran is the shape a reader of the
+        history wants, and losing it to save characters loses the answer."""
+        trimmed = self._bounded(self._result(nodes=500, chars=5000))
+        assert len(trimmed["node_results"]) == 500
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-5")
+    def test_a_small_run_is_not_touched_by_the_total(self) -> None:
+        from services.dag_run_store import MAX_RESULT_CHARS
+
+        trimmed = self._bounded(self._result(nodes=3, chars=100))
+        assert all(len(n["response"]) == 100 for n in trimmed["node_results"].values())
+        trimmed = self._bounded(self._result(nodes=3, chars=MAX_RESULT_CHARS + 50))
+        assert all(len(n["response"]) == MAX_RESULT_CHARS for n in trimmed["node_results"].values())
+
+
+class TestABookkeepingFailureIsNotAnExecutionFailure:
+    """The `try` in `_tool_run_workflow` covers the event and history writes
+    that follow the execution. A failing `append_event` reached the failure
+    branch and marked a DAG that had completed as `failed`, which tells the
+    reader the opposite of what happened (Codex, #703).
+    """
+
+    @staticmethod
+    def _source() -> str:
+        return (_BACKEND / "services/chat_completion.py").read_text()
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    def test_the_status_comes_from_whether_the_graph_ran(self) -> None:
+        source = self._source()
+        body = source[source.index("async def _tool_run_workflow") :]
+        body = body[: body.index("async def _tool_analyze_dashboard")]
+        assert "executed = True" in body
+        assert 'status = "completed" if executed else "failed"' in body
+        assert "finish_run(exec_id, status=status)" in body
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    def test_the_flag_is_set_immediately_after_the_execution(self) -> None:
+        """Before the event loop, not after it: everything between them is the
+        bookkeeping whose failure must not change the verdict."""
+        source = self._source()
+        body = source[source.index("async def _tool_run_workflow") :]
+        body = body[: body.index("async def _tool_analyze_dashboard")]
+        ran = body.index("result = await execute_dag(")
+        flagged = body.index("executed = True")
+        appended = body.index("await store.append_event(")
+        assert ran < flagged < appended
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    def test_a_completed_run_whose_recording_failed_says_both(self) -> None:
+        source = self._source()
+        body = source[source.index("async def _tool_run_workflow") :]
+        body = body[: body.index("async def _tool_analyze_dashboard")]
+        assert '"status": "completed"' in body
+        assert '"warning"' in body, "the caller is told the history is incomplete"
+        assert "dag_run_bookkeeping_failed" in body, "and so is the operator"
+
+
+class TestTheChatProducerDrivenEndToEnd:
+    """The source assertions above say the branch is written; these run it.
+
+    `_tool_run_workflow` reaches the durable store, the eval judge and the
+    graph runner, so it is driven with those three replaced — the point is
+    which status the producer decides on, not what any of them returns.
+    """
+
+    @staticmethod
+    def _install(monkeypatch: Any, store: Any, *, events_fail: bool, exec_fails: bool) -> None:
+        import services.dag_run_store as run_store_module
+        import services.graph_runner as graph_runner_module
+        import stores
+
+        stores.dags["d-1"] = {"id": "d-1", "nodes": [], "edges": []}
+        monkeypatch.setattr(run_store_module, "get_dag_run_store", lambda: store)
+
+        async def _execute(dag_data: Any, **kwargs: Any) -> dict[str, Any]:
+            if exec_fails:
+                raise RuntimeError("the graph itself blew up")
+            return {"node_results": {"n1": {"role": "worker", "response": "done"}}}
+
+        monkeypatch.setattr(graph_runner_module, "execute_dag", _execute)
+
+        if events_fail:
+
+            async def _boom(*a: Any, **k: Any) -> None:
+                raise RuntimeError("the writer queue is closed")
+
+            monkeypatch.setattr(store, "append_event", _boom)
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    async def test_a_clean_run_finishes_completed(self, monkeypatch: Any) -> None:
+        from services.chat_completion import _tool_run_workflow
+
+        store = DagRunStore(records=FakeRecords())
+        self._install(monkeypatch, store, events_fail=False, exec_fails=False)
+        answer = await _tool_run_workflow({"dag_id": "d-1"}, "u-1", None)
+        assert answer["status"] == "completed"
+        assert store.get_run(answer["run_id"])["status"] == "completed"
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    async def test_a_run_whose_recording_failed_is_still_completed(self, monkeypatch: Any) -> None:
+        """The defect: the `try` covers the event writes, so a failing
+        `append_event` used to mark a DAG that had finished as `failed`."""
+        from services.chat_completion import _tool_run_workflow
+
+        store = DagRunStore(records=FakeRecords())
+        self._install(monkeypatch, store, events_fail=True, exec_fails=False)
+        answer = await _tool_run_workflow({"dag_id": "d-1"}, "u-1", None)
+        assert answer["status"] == "completed"
+        assert "warning" in answer, "and the caller is told the history is incomplete"
+        assert store.get_run(answer["run_id"])["status"] == "completed"
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    async def test_a_run_that_did_not_execute_is_failed(self, monkeypatch: Any) -> None:
+        from services.chat_completion import _tool_run_workflow
+
+        store = DagRunStore(records=FakeRecords())
+        self._install(monkeypatch, store, events_fail=False, exec_fails=True)
+        answer = await _tool_run_workflow({"dag_id": "d-1"}, "u-1", None)
+        assert "error" in answer
+        assert [r["status"] for r in store.list_runs()] == ["failed"]
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    async def test_an_unknown_dag_is_refused_before_a_run_is_started(
+        self, monkeypatch: Any
+    ) -> None:
+        from services.chat_completion import _tool_run_workflow
+
+        store = DagRunStore(records=FakeRecords())
+        self._install(monkeypatch, store, events_fail=False, exec_fails=False)
+        answer = await _tool_run_workflow({"dag_id": "nope"}, "u-1", None)
+        assert "error" in answer
+        assert store.list_runs() == [], "no history row for a run that never began"
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-2")
+    async def test_a_failing_eval_judge_does_not_change_the_run_status(
+        self, monkeypatch: Any
+    ) -> None:
+        """The scorer is commentary on a run, not part of it. Its failure has
+        the same standing as a failed event write: the graph still ran."""
+        import services.eval_judge as eval_judge_module
+        from services.chat_completion import _tool_run_workflow
+
+        store = DagRunStore(records=FakeRecords())
+        self._install(monkeypatch, store, events_fail=False, exec_fails=False)
+
+        async def _boom(*a: Any, **k: Any) -> dict[str, Any]:
+            raise RuntimeError("the judge is unavailable")
+
+        monkeypatch.setattr(eval_judge_module, "score_run", _boom)
+        answer = await _tool_run_workflow({"dag_id": "d-1"}, "u-1", None)
+        assert answer["status"] == "completed"
+        assert answer["score"] == 0
+        assert store.get_run(answer["run_id"])["status"] == "completed"
