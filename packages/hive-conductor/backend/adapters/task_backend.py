@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
@@ -209,7 +210,14 @@ class MaistroServerTaskBackend:
     ) -> None:
         self._base = base_url.rstrip("/")
         self._key = api_key or ""
-        self._workspace_scope_key = workspace_scope_key or ""
+        # Production compose supplies a service-only proof key to both Hive and
+        # maistro-server. Explicit constructor injection keeps focused tests and
+        # non-compose deployments deterministic.
+        self._workspace_scope_key = (
+            workspace_scope_key
+            if workspace_scope_key is not None
+            else os.getenv("WORKSPACE_SCOPE_KEY", "")
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
