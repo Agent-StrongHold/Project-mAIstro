@@ -13,7 +13,16 @@ them.
 Run records are durable: the store mirrors every mutation into
 `stores.dag_runs`, the same `JsonStore` registry that already backs
 missions, DAG definitions and dashboard layouts, so a run survives a
-restart and is readable from another replica (#697).
+restart (#697).
+
+**Restart durability, not live multi-replica freshness.** `JsonStore` is a
+process cache filled once at `initialize()`; it does not read through on
+every access, and neither does this store. A replica that starts after a
+write sees it; a replica already running does not, until it reloads.
+That is true of every family in `stores.py`, not a property of run
+history, so the honest scope is stated here rather than claimed away --
+`reload()` is the seam an operator or a future read-through has to use
+(Codex, #697).
 
 SSE subscribers are not, and cannot be. A subscriber is an
 `asyncio.Queue` belonging to one open HTTP connection in one process;
@@ -35,6 +44,29 @@ from typing import Any
 MAX_RUNS = 100
 MAX_EVENTS_PER_RUN = 200
 MAX_SSE_QUEUE = 200
+#: Longest response text kept in a stored run record, matching the cap the run
+#: route already applies to the copy it puts in each event.
+MAX_RESULT_CHARS = 2000
+
+
+def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A run result with its node responses truncated to `MAX_RESULT_CHARS`.
+
+    Truncated rather than dropped: the outcome shape is what a reader of the
+    history wants, and the full text is already in the run's events under the
+    same cap.
+    """
+    if not result:
+        return result
+    node_results = result.get("node_results")
+    if not isinstance(node_results, dict):
+        return result
+    trimmed = {}
+    for node_id, node in node_results.items():
+        if isinstance(node, dict) and isinstance(node.get("response"), str):
+            node = {**node, "response": node["response"][:MAX_RESULT_CHARS]}
+        trimmed[node_id] = node
+    return {**result, "node_results": trimmed}
 
 
 @dataclass
@@ -87,7 +119,14 @@ class DagRun:
         )
 
     def to_record(self) -> dict[str, Any]:
-        """The stored form: everything `from_record` needs, and nothing else."""
+        """The stored form: everything `from_record` needs, and nothing else.
+
+        `result` is stored as a summary, not verbatim. `execute_dag` returns
+        every node's full response, and the route already truncates the copy it
+        puts in each event to `MAX_RESULT_CHARS` -- so persisting the raw result
+        would grow the SQLite state without bound and retain more output than
+        the history API ever exposes (Codex, #697).
+        """
         return {
             "id": self.id,
             "started_at": self.started_at,
@@ -95,7 +134,7 @@ class DagRun:
             "finished_at": self.finished_at,
             "dag_id": self.dag_id,
             "status": self.status,
-            "result": self.result,
+            "result": _bounded(self.result),
             "canonical_run_id": self.canonical_run_id,
             "events": [asdict(ev) for ev in self.events],
         }
@@ -165,6 +204,15 @@ class DagRunStore:
         """
         return self._records is not None
 
+    def reload(self) -> None:
+        """Re-read the records store. The seam a stale replica needs.
+
+        Public because the freshness limit above is real: this store caches,
+        so a process that was already running when another wrote does not see
+        the write until it reloads.
+        """
+        self.load()
+
     def load(self) -> None:
         """Rehydrate the working set from the records store, newest last.
 
@@ -178,6 +226,15 @@ class DagRunStore:
         runs = [DagRun.from_record(raw) for raw in self._records.values()]
         runs.sort(key=lambda r: r.started_at)
         keep = runs[-self._order.maxlen :] if self._order.maxlen else runs
+        # The rows that did not survive the bound go too. A store holding more
+        # than `max_runs` -- after the bound is lowered, say -- would otherwise
+        # keep them forever: dropped from the working set on every load, never
+        # deleted, and permanently above the retention the API advertises
+        # (Codex, #697).
+        kept = {run.id for run in keep}
+        for run in runs:
+            if run.id not in kept:
+                self._forget(run.id)
         self._runs = {run.id: run for run in keep}
         self._order = deque((run.id for run in keep), maxlen=self._order.maxlen)
 

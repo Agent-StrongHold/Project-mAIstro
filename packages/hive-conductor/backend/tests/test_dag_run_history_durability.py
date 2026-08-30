@@ -26,6 +26,7 @@ if str(_BACKEND) not in sys.path:
 
 from services.dag_run_store import (  # noqa: E402
     MAX_EVENTS_PER_RUN,
+    MAX_RESULT_CHARS,
     MAX_RUNS,
     DagRun,
     DagRunStore,
@@ -89,13 +90,39 @@ class TestARunSurvivesTheProcess:
         assert [e["capability"] for e in detail["events"]] == ["parse"]
 
     @pytest.mark.ac("SPEC-083026-2601/AC-1")
-    async def test_a_second_reader_of_the_same_records_sees_the_same_history(self) -> None:
-        """The multi-replica half. One store writes, another only ever reads."""
+    async def test_a_reader_started_after_the_write_sees_it(self) -> None:
+        """A process that starts after a write sees it. That is the claim.
+
+        Named for what it proves. It was called "a second reader sees the same
+        history", which reads as live multi-replica freshness -- and that is
+        not what this delivers: `JsonStore` is a process cache filled once at
+        `initialize()`, so a replica that was *already running* does not see
+        another's write until it reloads (Codex, #697).
+        """
         records = FakeRecords()
         writer = DagRunStore(records=records)
         await writer.start_run(run_id="r1", dag_id="d1")
 
         reader = DagRunStore(records=records)
+
+        assert [r["id"] for r in reader.list_runs()] == ["r1"]
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-1")
+    async def test_a_running_reader_is_stale_until_it_reloads(self) -> None:
+        """The limit, asserted rather than left for a reader to discover.
+
+        `reload()` is the seam. Writing this as a passing test rather than a
+        caveat is what stops the next change from assuming freshness it does
+        not have.
+        """
+        records = FakeRecords()
+        reader = DagRunStore(records=records)
+        writer = DagRunStore(records=records)
+        await writer.start_run(run_id="r1", dag_id="d1")
+
+        assert reader.list_runs() == []
+
+        reader.reload()
 
         assert [r["id"] for r in reader.list_runs()] == ["r1"]
 
@@ -288,3 +315,69 @@ class TestTheCanonicalIdentityHasSomewhereToGo:
         await store.start_run(run_id="r1")
 
         assert store.list_runs()[0]["canonical_run_id"] == ""
+
+
+class TestTheStoredRecordIsBounded:
+    """`execute_dag` returns every node's full response; the record must not."""
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
+    async def test_a_long_response_is_truncated_in_the_record(self) -> None:
+        """The run route caps the copy it puts in each event at the same length.
+
+        Without this the result went in verbatim, so a hundred runs of a DAG
+        with verbose nodes could grow the SQLite state without bound -- and
+        retain more output than the history API ever exposes (Codex, #697).
+        """
+        records = FakeRecords()
+        store = DagRunStore(records=records)
+        await store.start_run(run_id="r1")
+        await store.finish_run(
+            "r1",
+            status="completed",
+            result={"node_results": {"n1": {"response": "x" * (MAX_RESULT_CHARS + 500)}}},
+        )
+
+        (stored,) = records.values()
+
+        assert len(stored["result"]["node_results"]["n1"]["response"]) == MAX_RESULT_CHARS
+
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
+    async def test_the_rest_of_the_result_survives(self) -> None:
+        """Truncated, not dropped: the outcome shape is what a reader wants."""
+        records = FakeRecords()
+        store = DagRunStore(records=records)
+        await store.start_run(run_id="r1")
+        await store.finish_run(
+            "r1",
+            status="completed",
+            result={"cycles": 3, "node_results": {"n1": {"success": True, "response": "ok"}}},
+        )
+
+        (stored,) = records.values()
+
+        assert stored["result"]["cycles"] == 3
+        assert stored["result"]["node_results"]["n1"]["success"] is True
+        assert stored["result"]["node_results"]["n1"]["response"] == "ok"
+
+
+class TestLoweringTheBoundRemovesTheRows:
+    @pytest.mark.ac("SPEC-083026-2601/AC-3")
+    async def test_records_beyond_the_bound_are_deleted_on_load(self) -> None:
+        """A store already over `max_runs` must come back down and stay down.
+
+        The truncating slice dropped runs from the working set and left their
+        rows, so the backing history stayed permanently above the retention the
+        API advertises -- re-dropped on every load, never deleted (Codex, #697).
+        """
+        records = FakeRecords()
+        seeded = DagRunStore(max_runs=5, records=records)
+        for i in range(4):
+            run = await seeded.start_run(run_id=f"r{i}")
+            run.started_at = float(i)
+            seeded._persist(run)
+        assert len(records) == 4
+
+        DagRunStore(max_runs=2, records=records)
+
+        assert len(records) == 2
+        assert sorted(r["id"] for r in records.values()) == ["r2", "r3"]

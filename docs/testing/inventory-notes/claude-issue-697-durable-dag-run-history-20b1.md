@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +14
+  packages/hive-conductor/backend/tests: +18
 ---
 # claude-issue-697-durable-dag-run-history-20b1
 

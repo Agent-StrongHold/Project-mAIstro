@@ -58,6 +58,21 @@ neither the success nor the failure branch ever called `finish_run`, so
 
 ADR-083026-12f7 records the decisions.
 
+## What durability this delivers, and what it does not
+
+**Restart durability, not live multi-replica freshness.** `JsonStore` is a
+process cache filled once at `initialize()`; it does not read through on every
+access. A replica that starts after a write sees it; a replica already running
+does not, until it reloads.
+
+That is true of every family in `stores.py` — missions, DAG definitions,
+dashboard layouts — so it is a property of the Conductor's persistence layer
+rather than of run history. Stated here, and pinned by a passing test, because
+the first version of this spec said "a second replica reading the same store
+returns the same run history", which reads as a freshness guarantee this does
+not make. `reload()` is the seam a stale reader, or a future read-through, has
+to use.
+
 ## Decision
 
 Run records are persisted through `stores.dag_runs`, part of the same
@@ -70,6 +85,17 @@ Two rules are load-bearing and non-obvious:
 **Eviction removes the record too.** A row outliving the working set would come
 back on the next load and re-expand history past the bound the deque exists to
 hold.
+
+**A record dropped by the bound is deleted, on eviction and on load alike.**
+A store that already holds more than `max_runs` — after the bound is lowered,
+say — would otherwise re-drop the same rows from its working set on every load
+and never remove them, staying permanently above the retention the API
+advertises.
+
+**A stored result is bounded.** `execute_dag` returns every node's full
+response; the route already truncates the copy it puts in each event. Persisting
+the result verbatim would grow the state without limit and retain more output
+than the history API exposes.
 
 **A reload restores order from `started_at`.** `_order` is a bounded deque
 whose eviction must drop the *oldest* run; rebuilt in a store's iteration
@@ -89,7 +115,7 @@ nothing".
 ## Consequences
 
 ### Positive
-- History survives a restart and is readable from a second replica.
+- History survives a restart, and a process started after a write sees it.
 - A completed run is reported completed, a failed one failed.
 - The bound is stated where a client can read it.
 
@@ -111,8 +137,14 @@ Feature: DAG run history is durable, bounded on purpose, and reports what it hol
     Given a run with its events and outcome, written to a records store
     When a new store is built on the same records
     Then the run, its status and its events are all readable
-    And a second reader of the same records sees the same history
     And a store built without records keeps history process-local instead
+
+  @AC-1
+  Scenario: A reader already running is stale until it reloads
+    Given a reader built before another writer records a run
+    When the reader lists its runs
+    Then the new run is absent
+    And it appears once the reader reloads
 
   @AC-2
   Scenario: A finished run reports its outcome
