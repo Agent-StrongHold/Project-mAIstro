@@ -234,6 +234,39 @@ async def test_reference_operation_has_four_distinct_canonical_stages() -> None:
     assert run.status is RunStatus.COMPLETED
 
 
+async def test_empty_reference_hero_short_circuits_without_fabricating_stages() -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-empty-ref",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="reference",
+        actor_principal_id="user-1",
+    )
+    calls = 0
+
+    async def no_hero() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    first = await adapter.execute_stage(run_id, "reference.hero", no_hero)
+    second = await adapter.execute_stage(run_id, "reference.hero", no_hero)
+
+    assert first == second == []
+    assert calls == 1
+    node_runs = await runs.list_node_runs(run_id)
+    assert [node_run.node_id for node_run in node_runs] == [
+        "canvas:job-empty-ref:reference.hero"
+    ]
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [AttemptStatus.COMPLETED]
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    assert run.result == []
+
+
 async def test_completed_stage_reuses_attempt_evidence_without_reexecuting_provider() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(
