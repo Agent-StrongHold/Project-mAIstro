@@ -207,11 +207,7 @@ class CanvasCanonicalExecution:
         else:
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (
-                    item
-                    for item in reversed(attempts)
-                    if item.status not in TERMINAL_ATTEMPT_STATUSES
-                ),
+                (item for item in reversed(attempts) if item.status not in TERMINAL_ATTEMPT_STATUSES),
                 None,
             )
             if active is not None:
@@ -250,11 +246,7 @@ class CanvasCanonicalExecution:
         for node_run in await self._runs.list_node_runs(run_id):
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (
-                    item
-                    for item in reversed(attempts)
-                    if item.status not in TERMINAL_ATTEMPT_STATUSES
-                ),
+                (item for item in reversed(attempts) if item.status not in TERMINAL_ATTEMPT_STATUSES),
                 None,
             )
             if active is not None:
