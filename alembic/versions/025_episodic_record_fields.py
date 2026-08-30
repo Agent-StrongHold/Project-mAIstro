@@ -1,6 +1,6 @@
 """The four `EpisodicMemory` fields `episodic_memories` never had.
 
-Revision ID: 025_episodic_record_fields
+Revision ID: 025
 Revises: 024
 Create Date: 2026-08-30
 
@@ -16,6 +16,11 @@ ADR-083026-a322 makes the store durable, and a store cannot write a field the
 table cannot hold. All four land with defaults rather than a backfill because
 there is nothing to backfill: the table has never held a row.
 
+The revision id is the bare number, like 023 and 024 before it. The docker
+smoke in `ci.yml` asserts the head `version_num` matches `^[0-9a-f]+$`, so a
+descriptive suffix -- `025_episodic_record_fields`, the shape 010 and 011
+use -- fails that grep the moment it becomes head.
+
 The index is for the read `list_by_scope` performs -- scope, then a weight
 floor, ordered by weight. `ix_episodic_org_scope` from 001 covers the first two
 columns and stops there, so the weight bound and the ordering were both work
@@ -26,7 +31,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "025_episodic_record_fields"
+revision = "025"
 down_revision = "024"
 branch_labels = None
 depends_on = None
