@@ -294,7 +294,7 @@ def _resolver(
         for name, node in stages.items()
     }
 
-    def resolve(node_id: str, canonical_graph: Graph) -> BaseNode[Any, Any]:
+    def resolve(node_id: str, _canonical_graph: Graph) -> BaseNode[Any, Any]:
         if node_id == _START_NODE_ID:
             return start
         name = _stage_name(node_id)
@@ -352,7 +352,6 @@ def _project_stage(run: Any, stage: Any, node_run: Any, failed_stage: str | None
 
 def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
     """Refresh the compatibility receipt from canonical execution evidence."""
-    run.canonical_run_id = record.run_id
     latest_by_stage = _latest_stage_runs(record)
     failed_stage = _failed_stage(record)
     _project_run_status(run, record, failed_stage)
@@ -430,7 +429,7 @@ class CanonicalGraphPipelineExecutor:
                 budget=budget,
             ),
             actor_principal_id=self._actor_principal_id,
-            run_id=admitted.run_id,
+            run_id=run.canonical_run_id,
             provenance=provenance,
             run_store=self._run_store,
         )
