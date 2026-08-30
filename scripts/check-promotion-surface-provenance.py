@@ -36,7 +36,9 @@ def _tolerated(payload: object) -> dict[str, str]:
     if not isinstance(payload, dict):
         return {}
     values = payload.get("tolerated")
-    return {str(key): str(value) for key, value in values.items()} if isinstance(values, dict) else {}
+    return (
+        {str(key): str(value) for key, value in values.items()} if isinstance(values, dict) else {}
+    )
 
 
 def main() -> int:
@@ -101,9 +103,7 @@ def main() -> int:
             )
         return 1
 
-    print(
-        f"OK: {len(closure)} promotion-path module(s), no candidate-approved tolerance expansion"
-    )
+    print(f"OK: {len(closure)} promotion-path module(s), no candidate-approved tolerance expansion")
     return 0
 
 
