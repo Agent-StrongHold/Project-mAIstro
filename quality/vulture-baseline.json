@@ -669,6 +669,7 @@
         "packages/maistro-core/src/maistro/cli/_install.py::unused function 'install_main'",
         "packages/maistro-core/src/maistro/cli/_launch.py::unused function 'launch_server'",
         "packages/maistro-core/src/maistro/cli/_launch.py::unused function 'launch_tui'",
+        "packages/maistro-core/src/maistro/cli/_repair.py::unused function 'attempt_outputs'",
         "packages/maistro-core/src/maistro/cli/_sandbox.py::unused function 'sandbox_status'",
         "packages/maistro-core/src/maistro/cli/_security.py::unused function 'purge_sessions'",
         "packages/maistro-core/src/maistro/cli/_security.py::unused function 'rotate_credential_key'",
