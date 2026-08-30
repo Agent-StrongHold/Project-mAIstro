@@ -163,6 +163,7 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     assert [item.node_id for item in node_runs] == [
         "evolve-evaluate-1",
         "evolve-evaluate-2",
+        "evolve-plan-pairs",
         "evolve-battle-1",
         "evolve-finalize",
     ]
@@ -223,7 +224,7 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
     )
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     battle_runs = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
-    # The first slot discovers there are no actual pairs and routes straight to
-    # finalization; later preallocated slots never become execution records.
-    assert len(battle_runs) == 1
-    assert battle_runs[0].result["executed"] is False
+    assert battle_runs == []
+    plan_runs = [item for item in node_runs if item.node_id == "evolve-plan-pairs"]
+    assert len(plan_runs) == 1
+    assert plan_runs[0].result["pair_count"] == 0
