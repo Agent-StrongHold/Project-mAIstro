@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import random
+from itertools import pairwise
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -366,7 +367,7 @@ def _build_graph(*, workspace_id: str, project_id: str, population: Any, config:
     final_id = "evolve-finalize"
     nodes.append(Node(node_id=final_id, node_type=_FINALIZE_KIND, name="Finalize cycle"))
 
-    for left, right in zip(evaluation_node_ids, evaluation_node_ids[1:]):
+    for left, right in pairwise(evaluation_node_ids):
         edges.append(Edge(from_node=left, to_node=right))
 
     after_evaluations = pair_plan_id or final_id
