@@ -1,0 +1,91 @@
+name: temporary #640 diff coverage proof
+
+on:
+  push:
+    paths:
+      - .github/workflows/tmp-640-diff-coverage-proof.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d maistro_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MAISTRO_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/maistro_test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/maistro_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: 0.12.5
+      - name: Patch focused evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          consumption = Path('packages/maistro-core/tests/runs/test_consumption.py')
+          text = consumption.read_text()
+          anchor = 'from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE\n'
+          if 'from maistro.runs.store import run_cursor_key\n' not in text:
+              text = text.replace(anchor, anchor + 'from maistro.runs.store import run_cursor_key\n', 1)
+          old = '''    limited = await store.list_by_status(status, limit=1)\n    assert [run.run_id for run in limited] == [older.run_id]\n\n    scoped = await store.list_by_status(status, limit=10, project_id=project_id)\n'''
+          new = '''    limited = await store.list_by_status(status, limit=1)\n    assert [run.run_id for run in limited] == [older.run_id]\n\n    continued = await store.list_by_status(\n        status, limit=10, after=run_cursor_key(limited[0])\n    )\n    assert [run.run_id for run in continued] == [newer.run_id]\n\n    scoped = await store.list_by_status(status, limit=10, project_id=project_id)\n'''
+          if old not in text:
+              raise SystemExit('pagination anchor not found')
+          text = text.replace(old, new, 1)
+          if 'test_schedule_executor_requires_physical_claim_capability' not in text:
+              text += '''\n\nasync def test_schedule_executor_requires_physical_claim_capability() -> None:\n    from maistro.runs.consumption import ScheduleAttemptExecutor\n    from maistro.runs.store import InMemoryRunStore, RunIntegrityError\n\n    with pytest.raises(RunIntegrityError, match="consumer claim capability"):\n        ScheduleAttemptExecutor(InMemoryRunStore())\n'''
+          consumption.write_text(text)
+
+          execution = Path('packages/maistro-core/tests/runs/test_execution.py')
+          text = execution.read_text()
+          if 'test_execute_claimed_rejects_attempt_without_lease' not in text:
+              text += '''\n\n@pytest.mark.asyncio\nasync def test_execute_claimed_rejects_attempt_without_lease() -> None:\n    from maistro.runs.store import RunIntegrityError\n\n    store, _run_id, node_run_id = await _node_run()\n    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())\n    attempt = Attempt(node_run_id=node_run_id, ordinal=1, runtime_id="test")\n\n    async def executor(_work: Any, _context: Any) -> None:\n        return None\n\n    with pytest.raises(RunIntegrityError, match="missing its execution lease"):\n        await service.execute_claimed(attempt, None, None, executor=executor)\n\n\n@pytest.mark.asyncio\nasync def test_execute_claimed_rejects_terminal_attempt() -> None:\n    from datetime import timedelta\n\n    from maistro.runs.store import RunIntegrityError\n\n    store, _run_id, node_run_id = await _node_run()\n    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())\n    attempt = await store.create_attempt(\n        node_run_id,\n        runtime_id="test",\n        lease_holder="test",\n        lease_ttl=timedelta(seconds=30),\n    )\n    terminal = Attempt.model_validate(\n        {**attempt.model_dump(mode="python"), "status": AttemptStatus.COMPLETED}\n    )\n\n    async def executor(_work: Any, _context: Any) -> None:\n        return None\n\n    with pytest.raises(RunIntegrityError, match="requires an active Attempt"):\n        await service.execute_claimed(terminal, None, None, executor=executor)\n'''
+          execution.write_text(text)
+
+          recovery = Path('packages/maistro-core/tests/runs/test_consumer_claim_recovery.py')
+          text = recovery.read_text()
+          if 'test_postgres_claim_is_atomic_running_evidence' not in text:
+              text += '''\n\nasync def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> None:\n    if pg_pool is None:\n        import pytest\n\n        pytest.skip("MAISTRO_TEST_PG_DSN is not set")\n\n    from maistro.projects.pg_scope_store import PgProjectScopeStore\n    from maistro.runs.consumer_claim import ClaimingPgRunStore\n\n    workspace = "postgres-consumer-claim"\n    projects = PgProjectScopeStore(pg_pool)\n    root = await projects.create_root(workspace)\n    project = await projects.create(\n        workspace_id=workspace,\n        parent_project_id=root.project_id,\n        name="claim",\n    )\n    store = ClaimingPgRunStore(pg_pool, project_store=projects)\n    graph = Graph(\n        workspace_id=workspace,\n        project_id=project.project_id,\n        name="postgres claim",\n        nodes=[Node(node_id="n0", node_type=_EligibleNode.kind)],\n    )\n    run = await store.create_run(\n        graph,\n        provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},\n        initial_status=RunStatus.QUEUED,\n    )\n    claim = await store.claim_consumer_run(\n        run.run_id,\n        node_id="n0",\n        runtime_id="postgres-test",\n        executor_id=SCHEDULE_EXECUTOR_ID,\n        lease_ttl=timedelta(seconds=5),\n    )\n\n    persisted_run = await store.get_run(run.run_id)\n    persisted_node = await store.get_node_run(claim.node_run.node_run_id)\n    persisted_attempt = await store.get_attempt(claim.attempt.attempt_id)\n    assert persisted_run is not None and persisted_run.status is RunStatus.RUNNING\n    assert persisted_node is not None and persisted_node.status is RunStatus.RUNNING\n    assert persisted_attempt is not None and persisted_attempt.status is AttemptStatus.RUNNING\n    assert persisted_attempt.execution_lease is not None\n'''
+          recovery.write_text(text)
+          PY
+      - name: Install
+        run: uv sync --locked --extra dev
+      - name: Migrate PostgreSQL
+        run: uv run alembic upgrade head
+      - name: Format and lint
+        run: |
+          uv run ruff format packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          uv run ruff check packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+      - name: Focused tests
+        run: |
+          uv run pytest packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py -q
+      - name: Commit proof
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/tmp-640-diff-coverage-proof.yml
+          git add packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py
+          git commit -m 'test: close #640 diff coverage evidence gaps'
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
