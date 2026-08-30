@@ -30,19 +30,36 @@ jobs:
   exact-debt-ledger:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Every trusted ratchet in this job judges the candidate against the
+      # revision this event is actually changing from. This matters for stacked
+      # PRs and merge groups: falling back to origin/develop would blame the
+      # child for debt introduced by its parent, while a shallow checkout would
+      # make the shared resolver fall back to the candidate worktree entirely.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && github.event.pull_request.base.sha
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.event.before }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Trusted-base resolution uses git merge-base and git show. A depth-1
+          # PR checkout has no readable oracle and must never silently become a
+          # candidate-tree comparison.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
-      - name: Require explicit ratchet provenance policy
-        run: python scripts/check-ratchet-provenance.py --inventory-only
-      - name: Install pinned analyzer
-        run: uv pip install --system vulture==2.16
+      - name: Restore locked repository environment
+        run: uv sync --locked --all-extras
+      - name: Require enforced ratchet provenance policy
+        run: uv run python scripts/check-ratchet-provenance.py
       - name: Require exact reviewed Vulture identities
         run: >-
-          python scripts/check-vulture-baseline.py
+          uv run python scripts/check-vulture-baseline.py
           packages/*/src
           --min-confidence 60
           --exclude '*/third_party/*'
