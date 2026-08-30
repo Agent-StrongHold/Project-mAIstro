@@ -9,6 +9,7 @@ Covers:
 - run_loop: successful init then graceful stop
 - run_loop: _run_one_cycle exception captured into _last_cycle_error
 - _run_one_cycle: dispatches to canonical graph runner + increments counter
+- _run_one_cycle: failed canonical Run is surfaced and not counted as a cycle
 - _build_llm_call: no settings -> None; with settings -> callable
 - _build_llm_call inner call: posts to base_url + parses content
 - status: returns running, cycle_count, canonical run id, population, error, tournament
@@ -223,6 +224,7 @@ def test_run_one_cycle_dispatches_canonical_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.evolution_graph as evolution_graph
+    from maistro.runs.model import RunStatus
     from services.evolution import _EvolutionService
 
     captured: dict[str, Any] = {}
@@ -236,7 +238,10 @@ def test_run_one_cycle_dispatches_canonical_graph(
 
     async def _canonical(**kwargs: Any) -> Any:
         captured.update(kwargs)
-        return SimpleNamespace(run_id="canonical-evolve-run")
+        return SimpleNamespace(
+            run_id="canonical-evolve-run",
+            run=SimpleNamespace(status=RunStatus.COMPLETED, error=None),
+        )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
 
@@ -252,6 +257,39 @@ def test_run_one_cycle_dispatches_canonical_graph(
     assert captured["tournament"] is s._tournament
     assert captured["actor_principal_id"] == "user-1"
     assert captured["cycle_number"] == 1
+
+
+def test_run_one_cycle_does_not_count_failed_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+    from maistro.runs.model import RunStatus
+    from services.evolution import _EvolutionService
+
+    class _StubPop:
+        def list_all(self) -> list[Any]:
+            return [1]
+
+    class _StubTour:
+        pass
+
+    async def _canonical(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            run_id="failed-evolve-run",
+            run=SimpleNamespace(status=RunStatus.FAILED, error="evaluation failed"),
+        )
+
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+
+    s = _EvolutionService()
+    s._population = _StubPop()
+    s._tournament = _StubTour()
+
+    with pytest.raises(RuntimeError, match="failed-evolve-run.*evaluation failed"):
+        asyncio.run(s._run_one_cycle())
+
+    assert s.cycle_count == 0
+    assert s.last_run_id == "failed-evolve-run"
 
 
 # --- _build_llm_call ----------------------------------------------------
