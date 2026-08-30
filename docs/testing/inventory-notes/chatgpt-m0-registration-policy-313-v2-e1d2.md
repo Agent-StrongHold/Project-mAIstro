@@ -1,8 +1,27 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +19
+  packages/hive-conductor/backend/tests: +20
 ---
 # chatgpt-m0-registration-policy-313-v2-e1d2
+
+## Update: +1 more (19 -> 20)
+
+#313's own acceptance criteria require "concurrent first-user attempts
+create exactly one owner" and tests covering "concurrent bootstrap".
+`RegistrationPolicyMiddleware` already serializes `POST /v1/setup/complete`
+behind `_SETUP_COMPLETE_LOCK` for exactly this, but every existing test in
+`test_setup_guard.py` calls `complete_setup()` directly as a plain function
+-- bypassing the middleware, and so never exercising that lock at all.
+Added `test_concurrent_first_run_requests_create_exactly_one_owner`, which
+drives the real ASGI app with two genuinely concurrent requests via
+`httpx.AsyncClient` + `asyncio.gather` (a synchronous `TestClient` used from
+two threads deadlocks on its single-portal transport instead of racing) and
+slows password hashing to force the two requests to overlap inside the
+check-then-write window the lock exists to close. Verified as a real
+regression test by temporarily removing the lock: both requests then
+returned 200, creating two owners, three times in a row; with the lock
+restored, exactly one request succeeds and the other gets 409. No existing
+node ID moved or was removed.
 
 ## Update: +11 more (8 -> 19)
 

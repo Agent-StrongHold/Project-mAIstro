@@ -50,6 +50,70 @@ def test_second_complete_setup_is_rejected_and_creds_unchanged() -> None:
     assert stores.users["admin"].username != "attacker"
 
 
+async def test_concurrent_first_run_requests_create_exactly_one_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two requests racing POST /v1/setup/complete on a fresh instance must
+    not both create an owner (#313's own AC: "concurrent first-user attempts
+    create exactly one owner").
+
+    The other tests in this module call `complete_setup()` directly, which
+    never exercises `RegistrationPolicyMiddleware`'s `_SETUP_COMPLETE_LOCK` --
+    the thing that is actually supposed to close this race. This one drives
+    the real ASGI app through `httpx.AsyncClient` so the lock is on the call
+    path, with two truly concurrent in-process requests via `asyncio.gather`
+    (a synchronous `TestClient` used from two threads deadlocks on its
+    single-portal transport rather than exercising the race), and slows
+    password hashing so the two requests reliably overlap inside the
+    check-then-write window the lock exists to serialize.
+    """
+    import asyncio
+    import time
+
+    import httpx
+    import stores
+    from main import app
+    from models.schemas import HiveUser
+    from services.model_store import ModelStore
+
+    import maistro.security.passwords as passwords_mod
+
+    fresh_users = ModelStore("users", HiveUser)
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+
+    real_hash = passwords_mod.hash_password
+
+    def slow_hash(password: str) -> str:
+        time.sleep(0.15)
+        return real_hash(password)
+
+    monkeypatch.setattr(passwords_mod, "hash_password", slow_hash)
+
+    async def attempt(client: httpx.AsyncClient, name: str) -> int:
+        response = await client.post(
+            "/v1/setup/complete",
+            json={
+                "hardware_preset": "auto",
+                "admin_username": name,
+                "admin_password": "s3cret-admin",
+                "user_username": f"{name}-user",
+                "user_password": "s3cret-user",
+            },
+        )
+        return response.status_code
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        results = await asyncio.gather(attempt(client, "first"), attempt(client, "second"))
+
+    assert sorted(results) == [200, 409], results
+    # Exactly one owner exists, and it is whichever request actually won --
+    # not a mix of the two requests' fields.
+    assert stores.users["admin"].username in ("first", "second")
+    assert stores.users["user"].username == f"{stores.users['admin'].username}-user"
+
+
 def test_first_run_setup_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     """First-run setup (no users yet) must still succeed and create accounts."""
     import stores
