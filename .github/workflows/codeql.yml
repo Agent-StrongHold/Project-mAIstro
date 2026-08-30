@@ -19,6 +19,16 @@ on:
   schedule:
     - cron: '34 19 * * 4'
 
+# Every other workflow with a `pull_request:` trigger cancels a superseded
+# run; this one didn't, so a second push to a main-targeted PR ran a second
+# full 3-language matrix alongside the one the new push already obsoleted.
+# `push` (a protected-branch build) and `schedule` (the weekly run) are
+# deliberately excluded from cancellation -- neither is superseded by
+# anything, and canceling either would drop coverage rather than dedupe it.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
