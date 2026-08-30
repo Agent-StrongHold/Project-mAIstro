@@ -80,9 +80,7 @@ class TestAnAppendWithoutAnIdentityIsUnchanged:
         # messages must not perturb it: an identified batch between two
         # unidentified ones stays in the middle.
         await session_store.append_messages("s", [{"role": "user", "content": "first"}])
-        await session_store.append_messages(
-            "s", [{"role": "user", "content": "second"}], "turn-1"
-        )
+        await session_store.append_messages("s", [{"role": "user", "content": "second"}], "turn-1")
         await session_store.append_messages("s", [{"role": "user", "content": "third"}])
 
         history = await session_store.get_history("s")
@@ -159,9 +157,7 @@ class TestDeletingASessionForgetsItsTurns:
     markers, or its first turn vanishes."""
 
     @pytest.mark.ac("SPEC-083026-5fab/AC-6")
-    async def test_a_recreated_session_accepts_the_same_identity(
-        self, session_store: Any
-    ) -> None:
+    async def test_a_recreated_session_accepts_the_same_identity(self, session_store: Any) -> None:
         await session_store.append_messages("s", TURN, "turn-1")
         await session_store.delete_session("s")
 
@@ -225,8 +221,7 @@ class TestTheMarkerAndTheMessagesCommitTogether:
 
         assert await pg_pool.fetchval("SELECT count(*) FROM sessions WHERE session_id = 's'") == 0
         assert (
-            await pg_pool.fetchval("SELECT count(*) FROM session_turns WHERE session_id = 's'")
-            == 0
+            await pg_pool.fetchval("SELECT count(*) FROM session_turns WHERE session_id = 's'") == 0
         )
 
         await store.append_messages("s", TURN, "turn-1")
