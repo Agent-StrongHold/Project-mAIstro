@@ -120,8 +120,13 @@ def correlated(event: EventEnvelope) -> EventEnvelope:
         for name in _CORRELATABLE_FIELDS
         if not getattr(event, name) and (value := getattr(context, name))
     }
-    if not event.correlation_id and context.run_id:
-        overlay["correlation_id"] = context.run_id
+    # The *effective* run, not the ambient one. An event a producer stamped with
+    # run B while run A was ambient keeps `run_id=B` -- and a `correlation_id` of
+    # A would make the stored envelope disagree with itself, so a correlation
+    # query for B would miss the very event that names it (Codex, #707).
+    effective_run = event.run_id or overlay.get("run_id", "")
+    if not event.correlation_id and effective_run:
+        overlay["correlation_id"] = effective_run
     if not overlay:
         return event
     return replace(event, **overlay)

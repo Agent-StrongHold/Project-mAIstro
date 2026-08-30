@@ -29,6 +29,19 @@ SCRIPT = ROOT / "scripts" / "prepull-base-images.sh"
 #: only in the workflow, so a change to one without the other fails here.
 BUILT_DOCKERFILES = ("Dockerfile", "packages/hive-conductor/Dockerfile")
 
+#: The Dockerfiles `packages/hive-conductor/docker-compose.test.yml` builds
+#: (the `hive`, `api-tests` and `e2e-tests` services), and so the ones
+#: `hive-conductor-e2e`/`hive-conductor-e2e-ui` must pre-pull. This is the
+#: coverage a live develop protected push found missing: those two jobs run
+#: `docker compose --build` directly, never call this script, and one failed
+#: outright on the exact registry-reset signature #204 exists to survive --
+#: `cgr.dev/chainguard/python:latest: ... connection reset by peer`.
+COMPOSE_DOCKERFILES = (
+    "packages/hive-conductor/Dockerfile",
+    "packages/hive-conductor/tests/Dockerfile",
+    "packages/hive-conductor/tests/Dockerfile.playwright",
+)
+
 _FROM_RE = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
 
 
@@ -88,6 +101,53 @@ def test_the_built_dockerfiles_are_the_ones_the_workflow_builds() -> None:
 
     for name in BUILT_DOCKERFILES:
         assert name in job, f"{name} is not built by ci.yml's docker-build job"
+
+
+def test_every_compose_from_line_is_accounted_for() -> None:
+    """No `FROM` in a compose-built Dockerfile is missed by the pre-pull step.
+
+    `docker compose --build` resolves every one of these images itself if the
+    pre-pull step falls behind, so a gap here fails silently right up until
+    the next registry blip -- which is exactly what happened live (#204).
+    """
+    pulled = set(_list(*COMPOSE_DOCKERFILES))
+
+    for name in COMPOSE_DOCKERFILES:
+        text = (ROOT / name).read_text()
+        aliases: set[str] = set()
+        for line in text.splitlines():
+            match = _FROM_RE.match(line)
+            if match is None:
+                continue
+            tokens = [t for t in match["rest"].split() if not t.startswith("--")]
+            image = tokens[0]
+            if "as" in [t.lower() for t in tokens]:
+                idx = [t.lower() for t in tokens].index("as")
+                if idx + 1 < len(tokens):
+                    aliases.add(tokens[idx + 1].lower())
+            if image.lower() == "scratch" or image.lower() in aliases:
+                continue
+            assert image in pulled, (
+                f"{name} builds on {image!r}, which the pre-pull step does not "
+                f"cover. It pulls: {sorted(pulled)}"
+            )
+
+
+@pytest.mark.parametrize("job", ["hive-conductor-e2e-ui", "hive-conductor-e2e"])
+def test_the_compose_dockerfiles_are_the_ones_each_e2e_job_pre_pulls(job: str) -> None:
+    """`COMPOSE_DOCKERFILES` above must match both e2e jobs in `ci.yml`.
+
+    Both jobs run `docker compose --build` against the same three Dockerfiles
+    (`docker-compose.test.yml`'s `hive`, `api-tests` and `e2e-tests` services),
+    so both must pre-pull all three or the untested one repeats #204.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    body = workflow.split(f"\n  {job}:", 1)[1]
+    body = re.split(r"\n  \S", body, maxsplit=1)[0]
+
+    assert "prepull-base-images.sh" in body, f"{job} does not pre-pull base images"
+    for name in COMPOSE_DOCKERFILES:
+        assert name in body, f"{job} does not pre-pull {name}"
 
 
 # --- the forms a Dockerfile may legally use --------------------------------

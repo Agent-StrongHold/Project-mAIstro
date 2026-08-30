@@ -29,6 +29,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import check_ac_state_impl as _impl  # noqa: E402
+from ci_base_revision import BaseRevisionError, resolve_base_revision_from_env  # noqa: E402
 
 # Preserve the public module surface: unit tests and local callers historically
 # load scripts/check-ac-state.py by path and call helpers such as `ratchet`.
@@ -44,17 +45,6 @@ _PROTECTED_PUSH_REFS = {
 _BASE_MEASUREMENT = "AC_STATE_BASE_MEASUREMENT"
 
 
-def _event_payload() -> dict[str, Any]:
-    path = os.environ.get("GITHUB_EVENT_PATH")
-    if not path:
-        return {}
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _protected_push() -> bool:
     return (
         os.environ.get("GITHUB_EVENT_NAME") == "push"
@@ -66,23 +56,9 @@ def _needs_actual_base() -> bool:
     return os.environ.get("GITHUB_EVENT_NAME") == "merge_group" or _protected_push()
 
 
-def _actual_base_revision() -> str | None:
+def _actual_base_revision() -> str:
     """The immutable revision this synthetic/protected result replaces."""
-    event = os.environ.get("GITHUB_EVENT_NAME")
-    payload = _event_payload()
-    if event == "merge_group":
-        env_base = os.environ.get("MANDATE_BASE_SHA")
-        if env_base:
-            return env_base
-        merge_group = payload.get("merge_group")
-        if isinstance(merge_group, dict):
-            base = merge_group.get("base_sha")
-            return base if isinstance(base, str) and base else None
-        return None
-    if _protected_push():
-        before = payload.get("before")
-        return before if isinstance(before, str) and before and set(before) != {"0"} else None
-    return None
+    return resolve_base_revision_from_env()
 
 
 def _out_path(argv: list[str]) -> Path:
@@ -328,9 +304,10 @@ def main(argv: list[str]) -> int:
     if os.environ.get(_BASE_MEASUREMENT) == "1" or not _needs_actual_base():
         return _impl.main(argv)
 
-    base_rev = _actual_base_revision()
-    if not base_rev:
-        print("FAIL: this run requires an immutable AC-state base revision, but none was available")
+    try:
+        base_rev = _actual_base_revision()
+    except BaseRevisionError as exc:
+        print(f"FAIL: this run requires an immutable AC-state base revision: {exc}")
         return 1
 
     with tempfile.TemporaryDirectory(prefix="maistro-ac-guard-") as tmp:

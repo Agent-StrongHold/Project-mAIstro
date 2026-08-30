@@ -25,12 +25,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.feedback_service import get_outcome_store
+from services.feedback_service import collect_thumbs
 from services.node_metrics_store import (
     NodeObservation,
-)
-from services.node_metrics_store import (
-    _aggregate as _ms_aggregate,
 )
 from services.node_metrics_store import (
     get_store as _metrics_store,
@@ -69,11 +66,21 @@ class VariantBucket:
         return self.succeeded / self.count if self.count else 0.0
 
     @property
-    def p95_latency(self) -> int:
+    def p95_latency(self) -> int | None:
+        """The bucket's p95, or None when nothing in it was timed.
+
+        `None` rather than `0`: the scoring below inverts latency, so a bucket
+        that reported zero because nobody measured it outranked every bucket
+        with real numbers — the same "unmeasured read as best" defect this
+        change exists to remove, one layer up (Codex, #698).
+        """
         if not self.observations:
-            return 0
-        agg = _ms_aggregate(self.observations)
-        return int(agg["latency_ms_p95"])
+            return None
+        # Through the store's own summarizer rather than the module-private
+        # `_aggregate` this used to import (#698).
+        agg = _metrics_store().summarize(self.observations)
+        p95 = agg["latency_ms_p95"]
+        return int(p95) if p95 is not None else None
 
     @property
     def thumb_down_rate(self) -> float:
@@ -99,7 +106,7 @@ def _bucket_observations(
     return buckets
 
 
-def _fold_in_thumbs(
+async def _fold_in_thumbs(
     buckets: dict[str, VariantBucket],
     *,
     dag_id: str,
@@ -107,22 +114,25 @@ def _fold_in_thumbs(
 ) -> None:
     """For each Outcome with a thumb in scope of this DAG, attribute to
     the bucket whose label matches the outcome's `node_id` (only valid
-    when group_by='node_id' — otherwise thumbs aren't bucket-scoped)."""
+    when group_by='node_id' — otherwise thumbs aren't bucket-scoped).
+
+    Reads through `feedback_service.collect_thumbs`, which is the same
+    aggregation the optimizer uses. Both used to keep their own copy of this
+    loop over the store's private `_outcomes` list, so they could disagree
+    about what a thumb counts for, and both went blind against a durable
+    store (#696).
+
+    A run-level thumb has no `node_id` and lands under `"(unset)"`, the label
+    this comparison has always given it.
+    """
     if group_by != "node_id":
         return
-    store = get_outcome_store()
-    for o in getattr(store, "_outcomes", []):
-        if dag_id and getattr(o, "dag_id", "") and o.dag_id != dag_id:
-            continue
-        if not getattr(o, "thumb", ""):
-            continue
-        label = o.node_id or "(unset)"
+    for node_id, counts in (await collect_thumbs(dag_id)).items():
+        label = node_id or "(unset)"
         if label not in buckets:
             buckets[label] = VariantBucket(label=label)
-        if o.thumb == "up":
-            buckets[label].thumb_up += 1
-        elif o.thumb == "down":
-            buckets[label].thumb_down += 1
+        buckets[label].thumb_up += counts["up"]
+        buckets[label].thumb_down += counts["down"]
 
 
 def _normalize(values: list[float], invert: bool = True) -> list[float]:
@@ -141,6 +151,27 @@ def _normalize(values: list[float], invert: bool = True) -> list[float]:
     return out
 
 
+def _normalize_measured(values: list[float | None], invert: bool = True) -> list[float]:
+    """Normalize over the values that exist, and give the absent ones 0.5.
+
+    A bucket nobody timed cannot be compared on speed. Scoring it 1.0 says it
+    was the fastest and scoring it 0.0 says it was the slowest; both are claims
+    the data does not support, and the first is what let an unmeasured variant
+    win a comparison outright (Codex, #698). The midpoint is the only value
+    that neither rewards nor penalizes the absence, and the row carries
+    `latency_measured: false` so a reader is not left to infer it from a score.
+
+    When nothing at all was measured every bucket gets 0.5, which makes the
+    latency term constant and lets success rate and thumbs decide — the same
+    thing `_normalize` already does for a set with no variation.
+    """
+    measured = [v for v in values if v is not None]
+    if not measured:
+        return [0.5 for _ in values]
+    scale = dict(zip(measured, _normalize(measured, invert=invert), strict=False))
+    return [0.5 if v is None else scale[v] for v in values]
+
+
 def _composite(
     success_rates: list[float],
     norm_latency: list[float],
@@ -154,7 +185,7 @@ def _composite(
     ]
 
 
-def compare_variants(
+async def compare_variants(
     dag_id: str,
     *,
     group_by: str = "model_used",
@@ -190,23 +221,26 @@ def compare_variants(
     if group_by not in ALLOWED_GROUP_FIELDS:
         raise ValueError(f"group_by must be one of {ALLOWED_GROUP_FIELDS!r}, got {group_by!r}")
 
-    obs = _metrics_store()._filter(
+    obs = _metrics_store().observations(
         dag_id=dag_id,
         window_seconds=window_seconds,
         now=now,
     )
     buckets = _bucket_observations(obs, group_by)
-    _fold_in_thumbs(buckets, dag_id=dag_id, group_by=group_by)
+    await _fold_in_thumbs(buckets, dag_id=dag_id, group_by=group_by)
 
     if not buckets:
         return {"dag_id": dag_id, "group_by": group_by, "variants": [], "winner": ""}
 
     labels = list(buckets.keys())
     success_rates = [buckets[label].success_rate for label in labels]
-    p95s = [float(buckets[label].p95_latency) for label in labels]
+    p95s: list[float | None] = [
+        None if buckets[label].p95_latency is None else float(buckets[label].p95_latency)
+        for label in labels
+    ]
     thumbs_down = [buckets[label].thumb_down_rate for label in labels]
 
-    norm_lat = _normalize(p95s, invert=True)
+    norm_lat = _normalize_measured(p95s, invert=True)
     norm_thumb = _normalize(thumbs_down, invert=True)
     composite = _composite(success_rates, norm_lat, norm_thumb)
 
@@ -219,7 +253,8 @@ def compare_variants(
                 "count": b.count,
                 "succeeded": b.succeeded,
                 "success_rate": round(success_rates[i], 4),
-                "p95_latency_ms": int(p95s[i]),
+                "p95_latency_ms": None if p95s[i] is None else int(p95s[i]),
+                "latency_measured": buckets[lbl].p95_latency is not None,
                 "thumb_up": b.thumb_up,
                 "thumb_down": b.thumb_down,
                 "thumb_down_rate": round(thumbs_down[i], 4),

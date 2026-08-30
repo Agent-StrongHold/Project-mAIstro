@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import io
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,9 @@ from maistro.observability.correlation import (
     ExecutionContext,
     bind_execution_context,
     current_execution_context,
+    detached_execution_context,
     execution_context_processor,
+    install_log_correlation,
 )
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -465,3 +469,102 @@ class TestOneCorrelationVocabulary:
     def test_an_imported_bare_call_is_detected_too(self) -> None:
         source = "from structlog.contextvars import bind_contextvars\nbind_contextvars(x=1)"
         assert _called_names(ast.parse(source)) & _BANNED == {"bind_contextvars"}
+
+
+# ─── The four Codex findings ──────────────────────────────────────────────────
+
+
+class TestADetachedScopeNamesNoExecution:
+    """`bind_execution_context` is additive by design and cannot take an id
+    away. Work that is *about* an execution without being part of one needs
+    exactly that."""
+
+    def test_a_detached_scope_hides_the_surrounding_execution(self) -> None:
+        with bind_execution_context(run_id="r-1", attempt_id="a-1"), detached_execution_context():
+            assert current_execution_context() == EMPTY
+
+    def test_the_surrounding_execution_returns_afterwards(self) -> None:
+        with bind_execution_context(run_id="r-1"):
+            with detached_execution_context():
+                pass
+            assert current_execution_context().run_id == "r-1"
+
+    def test_a_binding_inside_a_detached_scope_starts_from_nothing(self) -> None:
+        with (
+            bind_execution_context(run_id="outer", attempt_id="a-outer"),
+            detached_execution_context(),
+            bind_execution_context(run_id="inner"),
+        ):
+            seen = current_execution_context()
+        assert seen.run_id == "inner"
+        assert seen.attempt_id == ""
+
+
+class TestCorrelationIdFollowsTheEventsOwnRun:
+    def test_an_event_about_another_run_correlates_to_that_run(self) -> None:
+        """The producer stamped run B while run A was ambient. A `correlation_id`
+        of A makes the envelope disagree with itself, and a correlation query
+        for B misses the event that names B."""
+        with bind_execution_context(run_id="ambient-a"):
+            event = correlated(EventEnvelope(type="x", workspace_id="ws-1", run_id="named-b"))
+        assert event.run_id == "named-b"
+        assert event.correlation_id == "named-b"
+
+    def test_an_event_with_no_run_of_its_own_correlates_to_the_ambient_one(self) -> None:
+        with bind_execution_context(run_id="ambient-a"):
+            event = correlated(EventEnvelope(type="x", workspace_id="ws-1"))
+        assert event.run_id == event.correlation_id == "ambient-a"
+
+    def test_no_run_anywhere_leaves_the_correlation_id_alone(self) -> None:
+        with bind_execution_context(session_id="s-1"):
+            event = correlated(EventEnvelope(type="x", workspace_id="ws-1"))
+        assert event.correlation_id == ""
+
+
+class TestAStdlibLogLineCarriesTheIds:
+    """`logging.getLogger(...)` is what most of this codebase logs through, and
+    `basicConfig` does not route those records through structlog."""
+
+    @staticmethod
+    def _emit(**bind: str) -> str:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger = logging.getLogger("maistro.test.correlation")
+        logger.handlers = [handler]
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        install_log_correlation(("maistro.test.correlation",))
+        try:
+            with bind_execution_context(**bind):
+                logger.warning("node failed")
+        finally:
+            logger.handlers = []
+        return stream.getvalue().strip()
+
+    def test_the_ids_are_appended_to_the_line(self) -> None:
+        line = self._emit(run_id="r-1", attempt_id="a-1")
+        assert line.startswith("node failed ")
+        assert "run_id=r-1" in line
+        assert "attempt_id=a-1" in line
+
+    def test_a_line_outside_any_execution_is_unchanged(self) -> None:
+        assert self._emit() == "node failed"
+
+    def test_wrapping_twice_does_not_double_the_suffix(self) -> None:
+        """`configure_logging` can be called more than once in a process."""
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger = logging.getLogger("maistro.test.correlation.twice")
+        logger.handlers = [handler]
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        assert install_log_correlation(("maistro.test.correlation.twice",)) == 1
+        assert install_log_correlation(("maistro.test.correlation.twice",)) == 0
+        try:
+            with bind_execution_context(run_id="r-1"):
+                logger.warning("once")
+        finally:
+            logger.handlers = []
+        assert stream.getvalue().strip().count("run_id=r-1") == 1

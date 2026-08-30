@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+
 if TYPE_CHECKING:
     from datetime import datetime
 
@@ -211,6 +213,30 @@ class OutcomeStore(Protocol):
         limit: int = 50,
     ) -> list[Outcome]:
         """List recent outcomes for admin inspection."""
+        ...
+
+    async def list_thumbs(
+        self,
+        *,
+        dag_id: str = "",
+        days: int = THUMB_WINDOW_DAYS,
+        limit: int = THUMB_LIMIT,
+        org_id: str = "",
+    ) -> list[Outcome]:
+        """Outcomes carrying a thumb, most recent first.
+
+        The optimizer's user-satisfaction signal. It exists as a protocol
+        method because the only reader used to be
+        `getattr(store, "_outcomes", [])` -- a private list that
+        `InMemoryOutcomeStore` has and the two durable stores do not, so
+        wiring a durable store would have emptied the signal and raised
+        nothing (#696).
+
+        `dag_id` scoping keeps the reader's original rule: a thumb whose own
+        `dag_id` is empty matches every DAG. Those are thumbs recorded before
+        the attribution wire existed, and dropping them would discard real
+        user feedback to tidy a filter.
+        """
         ...
 
 

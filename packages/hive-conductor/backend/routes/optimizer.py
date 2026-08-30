@@ -54,7 +54,7 @@ async def trigger_optimizer(
     mutations are proposed."""
     actor = _user_id(request)
     try:
-        result = run_optimizer(dag_id, actor=actor, apply_auto=apply_auto)
+        result = await run_optimizer(dag_id, actor=actor, apply_auto=apply_auto)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
