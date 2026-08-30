@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
-from hypothesis import HealthCheck, settings
+from hypothesis import HealthCheck, Phase, settings
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 
@@ -24,10 +25,20 @@ def test_active_hypothesis_profile_matches_pytest_mode(pytestconfig) -> None:
     assert active.print_blob is True
 
     if nightly:
+        assert active.phases == (
+            Phase.explicit,
+            Phase.reuse,
+            Phase.generate,
+            Phase.target,
+            Phase.shrink,
+        )
+        assert active.deadline is None
         assert isinstance(active.database, DirectoryBasedExampleDatabase)
         assert active.derandomize is False
         assert active.suppress_health_check == ()
     else:
+        assert active.phases == (Phase.explicit, Phase.generate, Phase.shrink)
+        assert active.deadline == timedelta(seconds=60)
         assert active.database is None
         assert active.derandomize is True
         assert HealthCheck.too_slow in active.suppress_health_check
