@@ -24,6 +24,7 @@
     "@tool/ac_state_notes",
     "@tool/build-evidence",
     "@tool/check-autonomous-merge",
+    "@tool/check-branch-independence",
     "@tool/check_assertion_quality",
     "@tool/check_mutation_baseline",
     "@tool/generate_repo_tasks",
