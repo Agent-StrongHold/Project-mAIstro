@@ -168,3 +168,17 @@ def test_a_setup_failure_is_reported_as_its_own_thing(monkeypatch, caplog) -> No
 
     assert "could not be initialised" in caplog.text
     assert "not installed" not in caplog.text
+
+
+def test_a_repeated_setup_failure_is_also_reported_only_once(monkeypatch, caplog) -> None:
+    """The same restraint as the missing-package report, and for the same
+    reason: `_init_tracer` runs on every traced call, so a provider that keeps
+    refusing would otherwise write a line per LLM request."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel.example.com")
+    _stub_opentelemetry(monkeypatch, resource_raises=True)
+
+    with caplog.at_level(logging.ERROR, logger="hive.telemetry"):
+        for _ in range(4):
+            assert telemetry._init_tracer() is None
+
+    assert caplog.text.count("could not be initialised") == 1

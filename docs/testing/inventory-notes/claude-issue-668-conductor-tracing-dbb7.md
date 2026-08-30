@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +6
+  packages/hive-conductor/backend/tests: +7
 ---
 # claude-issue-668-conductor-tracing-dbb7
 
-Six added, none removed, none rewritten, all in
+Seven added, none removed, none rewritten, all in
 `tests/test_telemetry_reports_its_own_absence.py`.
 
 Two are the pair the change exists for: no endpoint stays **silent** (the
@@ -41,3 +41,8 @@ packages present, a tracer is built, and quietly. The other proves a setup
 failure — a bad endpoint, a refused exporter — is reported as its own thing and
 *not* as a missing package, because telling an operator to install something
 they already have sends them after the wrong problem.
+
+The seventh closes the last branch arc: a *repeated* setup failure is reported
+once too. Same restraint as the missing-package report and for the same reason
+—  runs on every traced call, so a provider that keeps refusing
+would otherwise write a line per LLM request.
