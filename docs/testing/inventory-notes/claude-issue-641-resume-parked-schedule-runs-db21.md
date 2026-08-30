@@ -1,11 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +33
+  packages/maistro-core/tests: +39
 ---
 # claude-issue-641-resume-parked-schedule-runs-db21
 
-Thirty-three added, one **rewritten**, none removed — twenty-seven for the
-change itself and six more from a second Codex round, described at the end. All in
+Thirty-nine added, one **rewritten**, none removed — twenty-seven for the
+change itself, six from a second Codex round, and six for the store-protocol
+change that round required. The last two groups are described at the end. All in
 `tests/runs/test_parked_run_resume.py`, the suite for SPEC-082926-a44e.
 
 Three of the twelve pin the classification table itself, and six exercise the
@@ -99,3 +100,20 @@ case is the one that looked sufficient and was not.
   and is the only one of the six that catches that third fix.
 
 Confirmed by mutation: reverting each fix fails exactly the case that names it.
+
+## Six more, for `list_by_status`'s new `offset`
+
+The rotating scan needed `offset` across the `RunStore` protocol and all three
+backends, and the diff-coverage gate caught the guard clause bare in every one
+of them. `test_consumption.py` gains one case on the existing `spine` fixture,
+parametrized over two statuses and three backends: `offset` walks pages in
+order, past the end is empty rather than an error, and a negative offset
+raises.
+
+Matched on the message rather than the exception type. `limit` raises
+`ValueError` from the same method, so a bare catch passes whichever guard
+fired — and the two are not interchangeable here. Refused rather than clamped
+because SQLite reads a negative `OFFSET` as no offset at all while PostgreSQL
+raises: leaving it to the backend would make one call mean two different
+things, and the caller is a cursor, where silently starting from the beginning
+again is precisely the bug the offset was added to prevent.

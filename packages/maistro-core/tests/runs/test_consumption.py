@@ -241,7 +241,12 @@ async def test_list_by_status_offset_walks_past_the_first_page(
     assert [run.run_id for run in first_page] == [older.run_id]
     assert [run.run_id for run in second_page] == [newer.run_id]
     assert past_the_end == []
-    with pytest.raises(ValueError):
+    # Matched on the message, not just the type: `limit` raises `ValueError`
+    # here too, so a bare catch passes whichever guard fired. Refused rather
+    # than clamped because SQLite reads a negative OFFSET as no offset at all
+    # while PostgreSQL raises -- and the caller is a cursor, where silently
+    # starting from the beginning again is the bug the offset exists to stop.
+    with pytest.raises(ValueError, match="offset must not be negative"):
         await store.list_by_status(status, limit=10, offset=-1)
 
 
