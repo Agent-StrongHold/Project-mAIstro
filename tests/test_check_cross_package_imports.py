@@ -255,7 +255,7 @@ class TestTheReport:
 class TestOnlyModuleScopeCounts:
     """#413. `_names_in` walked the whole tree, so a local variable inside a
     function counted as a module attribute and `from target import local_name`
-    resolved against something no importer can reach -- the exact
+    resolved against something no importer can reach — the exact
     missing-attribute case this gate exists to catch, passing it."""
 
     def test_a_function_local_is_not_a_module_attribute(self, check, workspace):
@@ -297,7 +297,7 @@ class TestOnlyModuleScopeCounts:
 
     def test_a_name_bound_under_type_checking_is_not_a_runtime_name(self, check, workspace):
         """#413 review. The block never executes, so a runtime import of that
-        name fails -- and an earlier version of this test asserted the opposite,
+        name fails — and an earlier version of this test asserted the opposite,
         which was a false green written into the suite.
 
         `maistro.archive` is the live instance: it declares `S3ArchiveStore`
@@ -327,7 +327,7 @@ class TestOnlyModuleScopeCounts:
         assert _scan(check, workspace, body) == []
 
     def test_an_else_branch_of_type_checking_is_runtime(self, check, workspace):
-        """`if TYPE_CHECKING: ... else: ...` -- the else runs."""
+        """`if TYPE_CHECKING: ... else: ...` — the else runs."""
         pkg = workspace / "packages" / "thing" / "src" / "thing"
         (pkg / "both.py").write_text(
             "from typing import TYPE_CHECKING\n\n"
@@ -368,8 +368,8 @@ class TestOnlyModuleScopeCounts:
 
 class TestTheScanCoversWhatItClaims:
     """#413. The docstring promised "every first-party Python file, tests
-    included" and gave the reason -- a missing *name* can sit inside a
-    `pytest.raises` and never say so -- while the glob covered `packages/`
+    included" and gave the reason — a missing *name* can sit inside a
+    `pytest.raises` and never say so — while the glob covered `packages/`
     only. The repository's own root trees, including the ones that reason
     names, were outside a check advertised as covering them."""
 
@@ -378,8 +378,8 @@ class TestTheScanCoversWhatItClaims:
         assert "tests/test_check_cross_package_imports.py" in files
 
     def test_the_tools_tree_is_scanned(self, check):
-        """#413 review. `tools/` holds first-party importers too -- one of its
-        scripts is run by a workflow -- so leaving it out kept the same
+        """#413 review. `tools/` holds first-party importers too — one of its
+        scripts is run by a workflow — so leaving it out kept the same
         overclaim alive one directory over."""
         files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
         assert any(f.startswith("tools/") for f in files)
