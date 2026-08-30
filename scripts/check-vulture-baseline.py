@@ -207,7 +207,9 @@ def _print_capped(lines: list[str]) -> None:
         print(f"    … and {len(lines) - _DETAIL_LIMIT} more", file=sys.stderr)
 
 
-def _print_deltas(deltas: list[RuleDelta], *, title: str = "Reviewed Vulture debt changed:") -> None:
+def _print_deltas(
+    deltas: list[RuleDelta], *, title: str = "Reviewed Vulture debt changed:"
+) -> None:
     if not deltas:
         return
     print(f"\n{title}", file=sys.stderr)
@@ -239,9 +241,7 @@ def _finding_count(rules: list[dict[str, Any]]) -> int:
     return sum(len(rule.get("findings") or []) for rule in rules)
 
 
-def _candidate_has_unbankable_findings(
-    classification: Classification, *, update: bool
-) -> bool:
+def _candidate_has_unbankable_findings(classification: Classification, *, update: bool) -> bool:
     _print_findings("Unreachable-code findings must be fixed:", classification.never_allowlist)
     _print_findings(
         "Unclassified vulture findings need owner/category/rationale:", classification.unclassified
@@ -256,7 +256,9 @@ def _candidate_has_unbankable_findings(
     return failed
 
 
-def _trusted_state(findings: list[Finding], prov: ModuleType) -> tuple[object, list[dict[str, Any]], dict[str, str]]:
+def _trusted_state(
+    findings: list[Finding], prov: ModuleType
+) -> tuple[object, list[dict[str, Any]], dict[str, str]]:
     trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
     trusted = trusted_ref.loads(default={"version": int(METRIC_DEFINITION_VERSION), "rules": []})
     if not isinstance(trusted, dict):
