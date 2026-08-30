@@ -17,17 +17,13 @@ SHA_B = "b" * 40
 
 
 def test_pull_request_resolves_exact_base_sha() -> None:
-    assert (
-        resolve_base_revision("pull_request", {"pull_request": {"base": {"sha": SHA_A}}})
-        == SHA_A
-    )
+    payload = {"pull_request": {"base": {"sha": SHA_A}}}
+    assert resolve_base_revision("pull_request", payload) == SHA_A
 
 
 def test_merge_group_resolves_exact_base_sha() -> None:
-    assert (
-        resolve_base_revision("merge_group", {"merge_group": {"base_sha": SHA_B}})
-        == SHA_B
-    )
+    payload = {"merge_group": {"base_sha": SHA_B}}
+    assert resolve_base_revision("merge_group", payload) == SHA_B
 
 
 def test_push_resolves_before_sha() -> None:
@@ -35,25 +31,22 @@ def test_push_resolves_before_sha() -> None:
 
 
 def test_pull_request_does_not_fall_back_to_merge_group_base() -> None:
+    payload = {"merge_group": {"base_sha": SHA_B}, "pull_request": {"base": {}}}
     with pytest.raises(BaseRevisionError, match=r"pull_request\.base\.sha"):
-        resolve_base_revision(
-            "pull_request",
-            {"merge_group": {"base_sha": SHA_B}, "pull_request": {"base": {}}},
-        )
+        resolve_base_revision("pull_request", payload)
 
 
 def test_missing_pull_request_object_fails_closed() -> None:
-    with pytest.raises(
-        BaseRevisionError, match=r"pull_request.*missing or is not an object"
-    ):
+    match = r"pull_request.*missing or is not an object"
+    with pytest.raises(BaseRevisionError, match=match):
         resolve_base_revision("pull_request", {})
 
 
 def test_non_object_pull_request_base_fails_closed() -> None:
-    with pytest.raises(
-        BaseRevisionError, match=r"pull_request.base.*missing or is not an object"
-    ):
-        resolve_base_revision("pull_request", {"pull_request": {"base": "develop"}})
+    match = r"pull_request.base.*missing or is not an object"
+    payload = {"pull_request": {"base": "develop"}}
+    with pytest.raises(BaseRevisionError, match=match):
+        resolve_base_revision("pull_request", payload)
 
 
 def test_non_string_sha_fails_closed() -> None:
@@ -71,10 +64,9 @@ def test_null_push_sha_is_not_a_base_revision() -> None:
 
 
 def test_malformed_sha_fails_closed() -> None:
+    payload = {"merge_group": {"base_sha": "not-a-sha"}}
     with pytest.raises(BaseRevisionError, match="valid commit SHA"):
-        resolve_base_revision(
-            "merge_group", {"merge_group": {"base_sha": "not-a-sha"}}
-        )
+        resolve_base_revision("merge_group", payload)
 
 
 def test_unsupported_event_fails_closed() -> None:
@@ -105,9 +97,8 @@ def test_environment_resolver_reads_the_github_event_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     event = tmp_path / "event.json"
-    event.write_text(
-        json.dumps({"merge_group": {"base_sha": SHA_B}}), encoding="utf-8"
-    )
+    payload = {"merge_group": {"base_sha": SHA_B}}
+    event.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     assert resolve_base_revision_from_env() == SHA_B
@@ -122,9 +113,7 @@ def test_environment_resolver_requires_event_name(
         resolve_base_revision_from_env()
 
 
-def test_environment_resolver_requires_event_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_environment_resolver_requires_event_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     with pytest.raises(BaseRevisionError, match="GITHUB_EVENT_PATH is not set"):
