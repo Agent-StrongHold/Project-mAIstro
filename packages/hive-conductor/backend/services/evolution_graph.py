@@ -94,7 +94,11 @@ def _append_execution_ref(genome: Any, ctx: NodeContext) -> None:
         "node_run_id": ctx.node_run_id,
         "attempt_id": ctx.attempt_id,
     }
-    if not any(item.get("attempt_id") == ctx.attempt_id for item in refs if isinstance(item, dict)):
+    if not any(
+        item.get("attempt_id") == ctx.attempt_id
+        for item in refs
+        if isinstance(item, dict)
+    ):
         refs.append(ref)
 
 
@@ -150,7 +154,11 @@ async def _evaluate_one(
     # NodeRun/Attempt and re-evaluates the last committed genome rather than
     # folding over a partial failed score.
     working = deepcopy(genome)
-    results = await cycle.harness.evaluate_genome(working, config.target_benchmarks, llm_call)
+    results = await cycle.harness.evaluate_genome(
+        working,
+        config.target_benchmarks,
+        llm_call,
+    )
     for result in results:
         cycle._fold_score(
             working,
@@ -184,7 +192,14 @@ class _EvaluateNode(BaseNode[_EvaluateInput, _EvaluateOutput]):
     display_name: ClassVar[str] = "Evaluate Evolve genome"
     description: ClassVar[str] = "Evaluate one genome and record canonical execution provenance."
 
-    def __init__(self, *, cycle: Any, population: Any, config: Any, llm_call: Any) -> None:
+    def __init__(
+        self,
+        *,
+        cycle: Any,
+        population: Any,
+        config: Any,
+        llm_call: Any,
+    ) -> None:
         self._cycle = cycle
         self._population = population
         self._config = config
@@ -287,7 +302,10 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
     refs: list[dict[str, str]] = []
     seen: set[str] = set()
-    for parent_id in (getattr(genome, "parent_a_id", None), getattr(genome, "parent_b_id", None)):
+    for parent_id in (
+        getattr(genome, "parent_a_id", None),
+        getattr(genome, "parent_b_id", None),
+    ):
         if not parent_id:
             continue
         parent = population.get(parent_id)
@@ -321,7 +339,12 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
             population.add(genome)
 
 
-async def _finalize_cycle(cycle: Any, population: Any, config: Any, llm_call: Any) -> _FinalizeOutput:
+async def _finalize_cycle(
+    cycle: Any,
+    population: Any,
+    config: Any,
+    llm_call: Any,
+) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle."""
     from maistro_evolve.population import IslandPopulation, migrate_islands
 
@@ -330,7 +353,10 @@ async def _finalize_cycle(cycle: Any, population: Any, config: Any, llm_call: An
     cycle._compute_all_fitness(population)
     population.cull_bottom(config.cull_pct)
 
-    if cycle._island_pop is None or cycle._island_pop.island_count != config.island_count:
+    if (
+        cycle._island_pop is None
+        or cycle._island_pop.island_count != config.island_count
+    ):
         cycle._island_pop = IslandPopulation(config.island_count)
     island_pop = cycle._island_pop
 
@@ -360,7 +386,10 @@ async def _finalize_cycle(cycle: Any, population: Any, config: Any, llm_call: An
             genome.harness_params["source_evaluation_runs"] = refs
             population.add(genome)
 
-    return _FinalizeOutput(population_size=len(population.list_all()), new_genome_ids=new_ids)
+    return _FinalizeOutput(
+        population_size=len(population.list_all()),
+        new_genome_ids=new_ids,
+    )
 
 
 class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
@@ -370,7 +399,14 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
     display_name: ClassVar[str] = "Finalize Evolve cycle"
     description: ClassVar[str] = "Compute fitness, breed, improve, and migrate domain state."
 
-    def __init__(self, *, cycle: Any, population: Any, config: Any, llm_call: Any) -> None:
+    def __init__(
+        self,
+        *,
+        cycle: Any,
+        population: Any,
+        config: Any,
+        llm_call: Any,
+    ) -> None:
         self._cycle = cycle
         self._population = population
         self._config = config
@@ -394,7 +430,13 @@ def _evaluation_ids(population: Any, config: Any) -> list[str]:
     return [genome.id for genome in unevaluated[: config.eval_batch_size]]
 
 
-def _build_graph(*, workspace_id: str, project_id: str, population: Any, config: Any) -> Graph:
+def _build_graph(
+    *,
+    workspace_id: str,
+    project_id: str,
+    population: Any,
+    config: Any,
+) -> Graph:
     evaluation_ids = _evaluation_ids(population, config)
     nodes: list[Node] = []
     edges: list[Edge] = []
@@ -415,16 +457,34 @@ def _build_graph(*, workspace_id: str, project_id: str, population: Any, config:
     battle_slots = len(population.list_all()) // 2
     pair_plan_id = "evolve-plan-pairs" if battle_slots else None
     if pair_plan_id is not None:
-        nodes.append(Node(node_id=pair_plan_id, node_type=_PAIR_KIND, name="Plan tournament pairs"))
+        nodes.append(
+            Node(
+                node_id=pair_plan_id,
+                node_type=_PAIR_KIND,
+                name="Plan tournament pairs",
+            )
+        )
 
     battle_node_ids: list[str] = []
     for index in range(1, battle_slots + 1):
         node_id = f"evolve-battle-{index}"
         battle_node_ids.append(node_id)
-        nodes.append(Node(node_id=node_id, node_type=_BATTLE_KIND, name=f"Tournament pair {index}"))
+        nodes.append(
+            Node(
+                node_id=node_id,
+                node_type=_BATTLE_KIND,
+                name=f"Tournament pair {index}",
+            )
+        )
 
     final_id = "evolve-finalize"
-    nodes.append(Node(node_id=final_id, node_type=_FINALIZE_KIND, name="Finalize cycle"))
+    nodes.append(
+        Node(
+            node_id=final_id,
+            node_type=_FINALIZE_KIND,
+            name="Finalize cycle",
+        )
+    )
 
     for left, right in pairwise(evaluation_node_ids):
         edges.append(Edge(from_node=left, to_node=right))
@@ -473,16 +533,30 @@ def _build_graph(*, workspace_id: str, project_id: str, population: Any, config:
         name="Evolve cycle",
         nodes=nodes,
         edges=edges,
-        metadata={"entry_node": entry, "execution_owner": "canonical_run", "product": "evolve"},
+        metadata={
+            "entry_node": entry,
+            "execution_owner": "canonical_run",
+            "product": "evolve",
+        },
     )
 
 
 def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
     tournament_work = _TournamentWork(cycle=cycle, population=population)
-    evaluate = _EvaluateNode(cycle=cycle, population=population, config=config, llm_call=llm_call)
+    evaluate = _EvaluateNode(
+        cycle=cycle,
+        population=population,
+        config=config,
+        llm_call=llm_call,
+    )
     pair_plan = _PairPlanNode(tournament_work)
     battle = _BattleNode(tournament_work)
-    finalize = _FinalizeNode(cycle=cycle, population=population, config=config, llm_call=llm_call)
+    finalize = _FinalizeNode(
+        cycle=cycle,
+        population=population,
+        config=config,
+        llm_call=llm_call,
+    )
 
     def resolve(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
         spec = next((item for item in graph.nodes if item.node_id == node_id), None)
@@ -526,7 +600,11 @@ async def run_canonical_evolution_cycle(
     from maistro_evolve.cycle import EvolutionCycle
 
     owner = container or _engine_container()
-    if owner.run_store is None or owner.graph_run_store is None or owner.project_scope_store is None:
+    if (
+        owner.run_store is None
+        or owner.graph_run_store is None
+        or owner.project_scope_store is None
+    ):
         raise RuntimeError("Evolve canonical execution spine is unavailable (#51)")
 
     workspace_id = str(owner.config.workspace_id)
@@ -534,7 +612,8 @@ async def run_canonical_evolution_cycle(
     cycle = EvolutionCycle(harness=harness, tournament=tournament)
     if cycle.harness.fidelity != "real":
         logger.warning(
-            "evolve_cycle_fidelity: this run's fitness signal is '%s' — proxy scoring, not official benchmarks",
+            "evolve_cycle_fidelity: this run's fitness signal is '%s' — "
+            "proxy scoring, not official benchmarks",
             cycle.harness.fidelity,
         )
 
@@ -558,7 +637,12 @@ async def run_canonical_evolution_cycle(
     return await run_durable_graph(
         graph,
         store=owner.graph_run_store,
-        node_resolver=_resolver(cycle=cycle, population=population, config=config, llm_call=llm_call),
+        node_resolver=_resolver(
+            cycle=cycle,
+            population=population,
+            config=config,
+            llm_call=llm_call,
+        ),
         actor_principal_id=actor_principal_id,
         run_id=admitted.run_id,
         provenance=provenance,
