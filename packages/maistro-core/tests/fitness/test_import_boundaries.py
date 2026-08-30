@@ -247,14 +247,13 @@ def _compatibility_record_violations(
     return identity, violations
 
 
-def _compatibility_alias_violations(
-    document: dict[str, Any], root: Path
-) -> list[str]:
+def _compatibility_alias_violations(document: dict[str, Any], root: Path) -> list[str]:
     """Validate compatibility metadata and reconcile it with source aliases."""
     persisted, non_persisted, violations = _compatibility_policy(document)
     raw_aliases = document.get("compatibility_aliases")
     if not isinstance(raw_aliases, list):
-        return [*violations, "compatibility_aliases must be a list"]
+        violations.append("compatibility_aliases must be a list")
+        return violations
 
     reviewed_aliases: set[str] = set()
     for index, record in enumerate(raw_aliases):
@@ -272,7 +271,8 @@ def _compatibility_alias_violations(
     aliases = _public_direct_aliases(root)
     found_aliases = set(aliases)
     violations.extend(
-        f"unreviewed public alias: {item}" for item in sorted(found_aliases - reviewed_aliases)
+        f"unreviewed public alias: {item}"
+        for item in sorted(found_aliases - reviewed_aliases)
     )
     violations.extend(
         f"stale compatibility alias registry entry: {item}"
@@ -302,12 +302,14 @@ def _canonical_surface_entry_violations(
     if not isinstance(required_fields, list) or not all(
         isinstance(field, str) and field for field in required_fields
     ):
-        return [*violations, f"canonical surface {identity} has invalid required_fields"]
+        violations.append(f"canonical surface {identity} has invalid required_fields")
+        return violations
 
     relative_path, class_name = identity.split("::", 1)
     fields = _class_fields(root / relative_path, class_name)
     if fields is None:
-        return [*violations, f"canonical type disappeared without migration: {identity}"]
+        violations.append(f"canonical type disappeared without migration: {identity}")
+        return violations
     missing_fields = set(required_fields) - fields
     if missing_fields:
         violations.append(
