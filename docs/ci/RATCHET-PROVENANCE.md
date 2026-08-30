@@ -88,15 +88,17 @@ base SHA. Protected-branch pushes use the previous SHA so the pushed commit cann
 bless its own ledger. A depth-1 checkout or a candidate-tree fallback is not an
 acceptable monotonicity verdict.
 
-`tests/test_ratchet_provenance_repository.py` independently runs the same
-inventory and delegated adapters from the root test suite. The unit contract also
-pins the required workflow to full history, the integration target, and the full
-provenance command rather than `--inventory-only`. A separate real-git test builds
-the long-lived-PR shape explicitly: the candidate forks, the target later creates
-a ratchet, and the synthetic merge must read that target ledger rather than treat
-it as candidate-authored debt. Adding a new ratchet therefore requires choosing
-and enforcing its provenance model in the same change rather than inheriting
-candidate-controlled comparison by accident.
+`tests/test_ratchet_provenance_repository.py` independently checks the structural
+inventory from the root test suite, without re-executing environment-dependent
+ratchets in generic depth-1 pytest CI. Runtime adapter execution belongs to the
+required `Vulture Ratchet` workflow above, whose workflow contract tests pin full
+history, integration-target resolution, full delegated execution, and rejection
+of `--inventory-only` as the required enforcement path. A separate real-git test
+builds the long-lived-PR shape explicitly: the candidate forks, the target later
+creates a ratchet, and the synthetic merge must read that target ledger rather
+than treat it as candidate-authored debt. Adding a new ratchet therefore requires
+choosing and enforcing its provenance model in the same change rather than
+inheriting candidate-controlled comparison by accident.
 
 A trusted-base ratchet must fail closed when the base revision or ledger cannot
 be read, identify the base and candidate revisions in its provenance record, and
