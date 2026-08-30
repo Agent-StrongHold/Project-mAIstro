@@ -115,9 +115,7 @@ def _remove_row(row: Any) -> None:
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
-def test_two_live_runners_claim_one_occurrence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -153,9 +151,7 @@ def test_two_live_runners_claim_one_occurrence(
     asyncio.run(scenario())
 
 
-def test_persisted_template_survives_empty_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -183,9 +179,7 @@ def test_persisted_template_survives_empty_registry(
     asyncio.run(scenario())
 
 
-def test_missing_template_keeps_occurrence_owed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -210,9 +204,7 @@ def test_missing_template_keeps_occurrence_owed(
     asyncio.run(scenario())
 
 
-def test_run_creation_failure_keeps_occurrence_owed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
