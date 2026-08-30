@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
-from maistro.runs.evidence_json import decode_payload, json_of, model_of, model_of_json
+from maistro.runs.evidence_json import json_of, model_of, model_of_json
 from maistro.runs.lifecycle import renewed_lease, transition_node_run, transition_run
 from maistro.runs.model import Attempt, ExecutionLease, NodeRun, Run, RunStatus
 from maistro.runs.pg_store import PgRunStore
