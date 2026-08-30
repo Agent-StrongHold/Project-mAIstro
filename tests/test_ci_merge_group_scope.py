@@ -13,7 +13,15 @@ def test_shared_dependency_change_runs_every_specialized_leg() -> None:
 
 def test_docs_only_change_skips_service_legs_but_not_docker() -> None:
     result = classify(["docs/ci/MERGE-QUEUE.md"])
-    assert result == {"postgres": False, "object_storage": False, "durable_events": False, "strike_ladder": False, "hive_e2e": False, "wheel_imports": False, "docker_build": True}
+    assert result == {
+        "postgres": False,
+        "object_storage": False,
+        "durable_events": False,
+        "strike_ladder": False,
+        "hive_e2e": False,
+        "wheel_imports": False,
+        "docker_build": True,
+    }
 
 
 def test_archive_change_runs_minio_wheel_and_docker_only() -> None:
