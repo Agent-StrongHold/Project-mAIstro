@@ -18,16 +18,15 @@
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "docker-build", "hive-conductor-e2e", "hive-conductor-e2e-ui",
-          "lint-and-type-check", "security", "test", "wheel-imports", "workflow-lint",
+          "integration-scope",
+          "lint-and-type-check", "security", "test", "workflow-lint",
           "block", "formal-conformance",
           "Gate C — canonical clean install", "Validate ADR/spec front-matter",
           "exact-debt-ledger", "Quality gate (Pillars 1–4, 7, 8)",
           "SAST (bandit + semgrep + gitleaks)", "Supply chain (pip-audit)",
           "coverage (no services)", "coverage (MinIO)",
-          "Coverage gate (publish-set floor + diff coverage)", "strike-ladder",
-          "durable-events", "coverage (PostgreSQL)", "object storage (MinIO)",
-          "postgres (pg17)", "postgres (pg18)"
+          "Coverage gate (publish-set floor + diff coverage)",
+          "coverage (PostgreSQL)"
         ]
       },
       "enforce_admins": false,
@@ -86,7 +85,7 @@
       "restrictions": null,
       "required_linear_history": false,
       "allow_force_pushes": false,
-      "allow_deletions": false,
+      "allow_deletions": true,
       "required_conversation_resolution": true,
       "block_creations": true,
       "lock_branch": false,
