@@ -1,0 +1,148 @@
+name: temporary #640 sync develop v2
+
+on:
+  push:
+    paths:
+      - .github/workflows/tmp-640-sync-develop-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U maistro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: maistro
+      DB_PASSWORD: maistro
+      DB_NAME: maistro_test
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      REQUIRE_AUTH: "false"
+      MAISTRO_DRY_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-544-consumer-claim-recovery
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with: {version: 0.12.5}
+      - name: Merge and resolve
+        run: |
+          set -euo pipefail
+          git fetch origin develop
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git merge --no-commit --no-ff origin/develop || true
+          for path in $(git diff --name-only --diff-filter=U); do
+            case "$path" in
+              packages/maistro-core/src/maistro/runs/consumption.py|packages/maistro-core/src/maistro/runs/sqlite_store.py|packages/maistro-core/src/maistro/runs/store.py|packages/maistro-core/src/maistro/runs/wiring.py) ;;
+              *) echo "unexpected conflict: $path"; exit 1 ;;
+            esac
+          done
+          git checkout origin/develop -- \
+            packages/maistro-core/src/maistro/runs/consumption.py \
+            packages/maistro-core/src/maistro/runs/pg_store.py \
+            packages/maistro-core/src/maistro/runs/sqlite_store.py \
+            packages/maistro-core/src/maistro/runs/store.py \
+            packages/maistro-core/src/maistro/runs/wiring.py
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('packages/maistro-core/src/maistro/runs/store.py')
+          s = p.read_text()
+          marker = 'class StaleExecutionFence(RunIntegrityError):\n    pass\n\n'
+          assert marker in s
+          s = s.replace(marker, marker + 'RunCursor = tuple[datetime, str]\n\n\ndef run_cursor_key(run: Run) -> RunCursor:\n    """Stable oldest-first key for keyset scans over mutable Run queues."""\n    return (run.created_at, run.run_id)\n\n\n', 1)
+          proto_old = '''    async def list_by_status(\n        self,\n        status: RunStatus,\n        *,\n        limit: int = 100,\n        offset: int = 0,\n        project_id: str | None = None,\n    ) -> list[Run]: ...\n'''
+          proto_new = '''    async def list_by_status(\n        self,\n        status: RunStatus,\n        *,\n        limit: int = 100,\n        offset: int = 0,\n        project_id: str | None = None,\n        after: RunCursor | None = None,\n    ) -> list[Run]: ...\n'''
+          assert proto_old in s
+          s = s.replace(proto_old, proto_new, 1)
+          impl_old = '''    async def list_by_status(\n        self,\n        status: RunStatus,\n        *,\n        limit: int = 100,\n        offset: int = 0,\n        project_id: str | None = None,\n    ) -> list[Run]:\n'''
+          impl_new = '''    async def list_by_status(\n        self,\n        status: RunStatus,\n        *,\n        limit: int = 100,\n        offset: int = 0,\n        project_id: str | None = None,\n        after: RunCursor | None = None,\n    ) -> list[Run]:\n'''
+          assert impl_old in s
+          s = s.replace(impl_old, impl_new, 1)
+          body_old = '''        matching = sorted(\n            (\n                run\n                for run in self._runs.values()\n                if run.status is status and (project_id is None or run.project_id == project_id)\n            ),\n            key=lambda run: (run.created_at, run.run_id),\n        )\n        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]\n'''
+          body_new = '''        matching = sorted(\n            (\n                run\n                for run in self._runs.values()\n                if run.status is status and (project_id is None or run.project_id == project_id)\n            ),\n            key=run_cursor_key,\n        )\n        if after is not None:\n            matching = [run for run in matching if run_cursor_key(run) > after]\n        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]\n'''
+          assert body_old in s
+          p.write_text(s.replace(body_old, body_new, 1))
+
+          sig_old = '''        limit: int = 100,\n        offset: int = 0,\n        project_id: str | None = None,\n    ) -> list[Run]:\n'''
+          sig_new = '''        limit: int = 100,\n        offset: int = 0,\n        project_id: str | None = None,\n        after: tuple[datetime, str] | None = None,\n    ) -> list[Run]:\n'''
+
+          p = Path('packages/maistro-core/src/maistro/runs/sqlite_store.py')
+          s = p.read_text(); idx = s.index('    async def list_by_status('); tail = s[idx:]
+          assert sig_old in tail
+          tail = tail.replace(sig_old, sig_new, 1)
+          q_old = '''        if project_id is not None:\n            sql += " AND project_id = ?"\n            params.append(project_id)\n        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ? OFFSET ?"\n'''
+          q_new = '''        if project_id is not None:\n            sql += " AND project_id = ?"\n            params.append(project_id)\n        if after is not None:\n            sql += " AND (json_extract(payload, '$.created_at'), run_id) > (?, ?)"\n            params.extend(after)\n        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ? OFFSET ?"\n'''
+          assert q_old in tail
+          p.write_text(s[:idx] + tail.replace(q_old, q_new, 1))
+
+          p = Path('packages/maistro-core/src/maistro/runs/pg_store.py')
+          s = p.read_text(); idx = s.index('    async def list_by_status('); tail = s[idx:]
+          assert sig_old in tail
+          tail = tail.replace(sig_old, sig_new, 1)
+          q_old = '''        if project_id is not None:\n            sql += " AND project_id = $2"\n            params.append(project_id)\n        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"\n'''
+          q_new = '''        if project_id is not None:\n            sql += f" AND project_id = ${len(params) + 1}"\n            params.append(project_id)\n        if after is not None:\n            cursor_param = len(params) + 1\n            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"\n            params.extend(after)\n        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"\n'''
+          assert q_old in tail
+          p.write_text(s[:idx] + tail.replace(q_old, q_new, 1))
+
+          p = Path('packages/maistro-core/src/maistro/runs/wiring.py')
+          s = p.read_text()
+          assert 'from maistro.runs.pg_store import PgRunStore\n' in s
+          assert 'from maistro.runs.sqlite_store import SqliteRunStore\n' in s
+          assert 'from maistro.runs.store import InMemoryRunStore\n' in s
+          s = s.replace('from maistro.runs.pg_store import PgRunStore\n', 'from maistro.runs.consumer_claim import ClaimingPgRunStore\n', 1)
+          s = s.replace('run_store = PgRunStore(\n', 'run_store = ClaimingPgRunStore(\n', 1)
+          s = s.replace('from maistro.runs.sqlite_store import SqliteRunStore\n', 'from maistro.runs.consumer_claim import ClaimingSqliteRunStore\n', 1)
+          s = s.replace('sqlite_run_store = SqliteRunStore(conn, project_store=sqlite_scope_store)\n', 'sqlite_run_store = ClaimingSqliteRunStore(conn, project_store=sqlite_scope_store)\n', 1)
+          s = s.replace('from maistro.runs.store import InMemoryRunStore\n', 'from maistro.runs.consumer_claim import ClaimingInMemoryRunStore\n', 1)
+          s = s.replace('run_store = InMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)\n', 'run_store = ClaimingInMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)\n', 1)
+          p.write_text(s)
+
+          p = Path('packages/maistro-core/src/maistro/runs/consumption.py')
+          s = p.read_text()
+          s = s.replace('from datetime import UTC, datetime\n', 'from datetime import UTC, datetime, timedelta\n', 1)
+          s = s.replace('from typing import TYPE_CHECKING, Any\n', 'from typing import TYPE_CHECKING, Any, cast\n', 1)
+          s = s.replace('from maistro.runs.execution import ExecutionYielded\n', 'from maistro.runs.consumer_claim import ConsumerClaimStore\nfrom maistro.runs.execution import AttemptExecutionService, ExecutionYielded\n', 1)
+          s = s.replace('SCHEDULE_EXECUTOR_ID = "schedule-consumer"\n', 'SCHEDULE_EXECUTOR_ID = "schedule-consumer"\nDEFAULT_SCHEDULE_LEASE_TTL = timedelta(seconds=30)\n', 1)
+          init_old = '''        node_resolver: NodeResolver | None = None,\n    ) -> None:\n        if timeout_s is not None and timeout_s <= 0:\n            raise ValueError("timeout_s must be > 0")\n        self._runs = run_store\n        self._service = RunExecutionService(\n            store=run_store,\n            runtime=runtime or PythonExecutionRuntime(),\n        )\n        self._timeout_s = timeout_s\n'''
+          init_new = '''        node_resolver: NodeResolver | None = None,\n        lease_ttl: timedelta = DEFAULT_SCHEDULE_LEASE_TTL,\n    ) -> None:\n        if timeout_s is not None and timeout_s <= 0:\n            raise ValueError("timeout_s must be > 0")\n        if lease_ttl <= timedelta(0):\n            raise ValueError("lease_ttl must be positive")\n        if not callable(getattr(run_store, "claim_consumer_run", None)):\n            raise RunIntegrityError(\n                "schedule consumption requires a consumer claim capability so RUNNING is "\n                "backed by recoverable physical evidence"\n            )\n        resolved_runtime = runtime or PythonExecutionRuntime()\n        self._runs = run_store\n        self._claims = cast(ConsumerClaimStore, run_store)\n        self._attempts = AttemptExecutionService(store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl)\n        self._service = RunExecutionService(store=run_store, runtime=resolved_runtime)\n        self._runtime_id = type(resolved_runtime).__name__\n        self._lease_ttl = lease_ttl\n        self._timeout_s = timeout_s\n'''
+          assert init_old in s
+          s = s.replace(init_old, init_new, 1)
+          start = s.index('    async def execute(self, run: Run) -> Run:\n')
+          end = s.index('    async def resume(self, run: Run, pause: ParkedPause) -> Run:\n', start)
+          execute = '''    async def execute(self, run: Run) -> Run:\n        """Atomically claim and execute the Run's first physical Attempt (#544)."""\n        spec = self._single_node(run)\n        inputs = self._inputs(run, spec)\n        ctx = self._context(run, spec)\n        deadline_at = datetime.now(UTC) + timedelta(seconds=self._timeout_s) if self._timeout_s is not None else None\n        claim = await self._claims.claim_consumer_run(\n            run.run_id, node_id=spec.node_id, runtime_id=self._runtime_id,\n            executor_id=SCHEDULE_EXECUTOR_ID, lease_ttl=self._lease_ttl, deadline_at=deadline_at,\n        )\n\n        async def _run(_work_item: Any, context: Any) -> Any:\n            node = self._resolve(run, spec)\n            result = await node.run(inputs, context)\n            if result.status == "paused" and result.success:\n                raise ExecutionYielded(awaits_human=_awaits_human_answer(result), evidence=_pause_evidence(result))\n            if result.status != "completed" or not result.success:\n                message = result.error_message or f"node {spec.node_id!r} did not complete"\n                raise ScheduleExecutionFailed(f"{result.error_code or result.status}: {message}")\n            output = result.output\n            return output.model_dump(mode="json") if hasattr(output, "model_dump") else output\n\n        with contextlib.suppress(ScheduleExecutionFailed):\n            await self._attempts.execute_claimed(\n                claim.attempt, inputs, ctx, executor=_run, timeout_s=self._timeout_s,\n                context_factory=_with_attempt_identity,\n            )\n        return await self._settled(run.run_id)\n\n'''
+          p.write_text(s[:start] + execute + s[end:])
+          PY
+          git add packages/maistro-core/src/maistro/runs/{store.py,sqlite_store.py,pg_store.py,wiring.py,consumption.py}
+      - name: Verify merged semantics
+        run: |
+          uv sync --locked --extra dev
+          uv run alembic upgrade head
+          uv run ruff format packages/maistro-core/src/maistro/runs packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_parked_run_resume.py
+          uv run ruff check packages/maistro-core/src/maistro/runs packages/maistro-core/src/maistro/container.py packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_parked_run_resume.py
+          uv run pytest packages/maistro-core/tests/runs/test_consumption.py packages/maistro-core/tests/runs/test_execution.py packages/maistro-core/tests/runs/test_consumer_claim_recovery.py packages/maistro-core/tests/runs/test_parked_run_resume.py -q
+      - name: Commit
+        run: |
+          git rm .github/workflows/tmp-640-sync-develop.yml .github/workflows/tmp-640-sync-develop-v2.yml
+          git add -A
+          git commit -m 'merge: refresh #640 onto current develop'
+          git push origin HEAD:chatgpt/m1-544-consumer-claim-recovery
