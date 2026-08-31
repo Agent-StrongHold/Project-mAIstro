@@ -99,7 +99,19 @@ def test_current_target_ref_resolves_to_the_synthetic_merges_target_parent(tmp_p
     _run(repo, "fetch", "-q", "origin")
 
     _run(repo, "checkout", "-q", "-b", "synthetic")
-    _run(repo, "merge", "--no-ff", "-q", "candidate", "-m", "synthetic merge")
+    _run(
+        repo,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "merge",
+        "--no-ff",
+        "-q",
+        "candidate",
+        "-m",
+        "synthetic merge",
+    )
 
     baseline = resolve_baseline(repo / LEDGER, base="origin/develop", root=repo)
 
