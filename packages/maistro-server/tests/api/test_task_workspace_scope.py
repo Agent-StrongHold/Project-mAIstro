@@ -118,7 +118,7 @@ async def test_authenticated_client_cannot_assert_workspace_without_hive_proof(
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "Workspace scope assertion is not authorized"
+    assert response.json()["error"]["message"] == "Workspace scope assertion is not authorized"
     assert queue_module._queue is not None
     items, _ = queue_module._queue.list_tasks(limit=10)
     assert items == []
@@ -174,4 +174,4 @@ async def test_blank_workspace_header_is_rejected_before_admission(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Workspace id must be a non-empty string"
+    assert response.json()["error"]["message"] == "Workspace id must be a non-empty string"
