@@ -5,6 +5,6 @@ inventory-delta:
 
 # Merge-group specialized-job gating
 
-Adds four focused root-suite checks for the final #655 workflow slice. They pin the cheap scope producer, every specialized job-to-output mapping, the distinction from the required `integration-scope` verdict, and the unconditional core jobs that must never wait on specialized scope.
+Adds four focused root-suite checks for the final #655 workflow slice. They pin `workflow-lint` as the already-required scope-output producer, every specialized job-to-output mapping, develop-only merge-group gating, and the absence of a new scope check that would expand the required/advisory contract.
 
-The workflow policy remains fail-closed: pull requests and protected pushes receive all `true` outputs from `ci_merge_group_scope.py`, while merge-group ambiguity also enables every specialized leg.
+Pull requests, protected pushes, and non-develop merge groups preserve the existing specialized validation semantics. For the develop merge queue, `ci_merge_group_scope.py` fails closed to every leg when base/diff evidence is unavailable.
