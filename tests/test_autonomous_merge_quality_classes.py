@@ -129,9 +129,7 @@ def test_ambiguous_quality_classification_fails_closed_red(
 
 def test_wiring_reads_migration_left_the_frozen_legacy_set() -> None:
     registry = json.loads(mod.BRANCH_INDEPENDENCE_REGISTRY.read_text(encoding="utf-8"))
-    surface = next(
-        item for item in registry["surfaces"] if item["id"] == "wiring-reads-baseline"
-    )
+    surface = next(item for item in registry["surfaces"] if item["id"] == "wiring-reads-baseline")
 
     assert surface["kind"] == "base_derived"
     assert "target_kind" not in surface
