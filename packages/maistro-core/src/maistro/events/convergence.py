@@ -8,7 +8,6 @@ explicitly classifies it as metadata rather than treating it as canonical.
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
 from typing import Any
 
 CANONICAL_EVENT_AUTHORITY_FIELDS = frozenset(
@@ -30,8 +29,9 @@ class ParallelEventAuthority(ValueError):
 def event_authority_fields(model: type[Any] | Any) -> frozenset[str]:
     """Return universal authority-shaped fields declared by ``model``."""
     target = model if isinstance(model, type) else type(model)
-    if is_dataclass(target):
-        names = {field.name for field in fields(target)}
+    dataclass_fields = getattr(target, "__dataclass_fields__", None)
+    if isinstance(dataclass_fields, dict):
+        names = set(dataclass_fields)
     else:
         names = set(getattr(target, "__annotations__", {}))
     return frozenset(names & CANONICAL_EVENT_AUTHORITY_FIELDS)
