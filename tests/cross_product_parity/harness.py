@@ -192,7 +192,9 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
         if not failures:
             continue
         owner = (
-            f"PR #{dependency.pr}" if dependency.pr is not None else f"issue #{dependency.issue}"
+            f"PR #{dependency.pr}"
+            if dependency.pr is not None
+            else f"issue #{dependency.issue}"
         )
         assert dependency.key.strip(), "unavailable dependency must have a stable name"
         assert dependency.issue > 0, f"{dependency.key} must name a tracking issue"
