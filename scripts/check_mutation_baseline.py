@@ -190,8 +190,7 @@ def _trusted_entry_failures(
     failures: list[str] = []
     if candidate_rate < trusted_rate:
         failures.append(
-            f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted "
-            f"{trusted_rate:.1%}"
+            f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted {trusted_rate:.1%}"
         )
     if measured_rate is not None and candidate_rate > measured_rate:
         failures.append(
@@ -375,7 +374,9 @@ def main(argv: list[str]) -> int:
     if _inside_repository(args.baseline):
         try:
             failures.extend(
-                candidate_baseline_failures(current, trusted_baseline, _candidate_json(args.baseline))
+                candidate_baseline_failures(
+                    current, trusted_baseline, _candidate_json(args.baseline)
+                )
             )
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"::error::{exc}", file=sys.stderr)
