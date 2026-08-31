@@ -7,8 +7,12 @@ generator against a fake LLM port: content-only, and tool-call→answer.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 
+import pytest
 from adapters.llm_http import _responses_event_to_chunk
 from models.schemas import ChatCompletionRequest
 from services.chat_completion import _ToolCallAccumulator, run_chat_completion_streaming
@@ -184,6 +188,156 @@ async def test_streaming_tool_call_then_streamed_answer(monkeypatch) -> None:
     assert "".join(deltas) == "All clear"
     assert events[-1]["type"] == "done"
     assert events[-1]["content"] == "All clear"
+
+
+async def test_streaming_telemetry_call_sites_are_content_free(monkeypatch) -> None:
+    credential_probe = "".join(("sk-", "live_ABCDE", "FGHIJKLMNO", "PQRSTUVWXY", "Z123456"))
+    traces: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+
+    @contextmanager
+    def capture_trace(
+        name: str,
+        **kwargs: Any,
+    ) -> Generator[dict[str, Any], None, None]:
+        context: dict[str, Any] = {}
+        traces.append((name, kwargs, context))
+        yield context
+
+    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+
+    async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        assert args == {"api_key": credential_probe}
+        return {"credential_echo": credential_probe}
+
+    monkeypatch.setattr("services.chat_completion._execute_tool", fake_exec)
+    turns = [
+        [
+            _tool_frag(0, id="call_1", name="check_blockers"),
+            _tool_frag(0, args=f'{{"api_key":"{credential_probe}"}}'),
+            _finish("tool_calls"),
+        ],
+        [_content(f"Answer without echoing {credential_probe}"), _finish("stop")],
+    ]
+    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FakeLLM(turns))
+    req = ChatCompletionRequest(
+        messages=[{"role": "user", "content": f"use {credential_probe}"}],
+        model="test-model",
+    )
+
+    await _collect(run_chat_completion_streaming(req, user_id="private-user@example.com"))
+
+    assert [name for name, _kwargs, _context in traces] == [
+        "chat_completion",
+        "tool_call",
+        "chat_completion",
+    ]
+    assert [kwargs["metadata"] for _name, kwargs, _context in traces] == [
+        {"iteration": 0, "streaming": True},
+        {"iteration": 0, "tool_name": "check_blockers"},
+        {"iteration": 1, "streaming": True},
+    ]
+    assert all(kwargs["model"] == "test-model" for _name, kwargs, _context in traces)
+    assert all("private-user@example.com" not in repr(kwargs) for _name, kwargs, _ in traces)
+    tool_kwargs = traces[1][1]
+    assert "check_blockers" in tool_kwargs["allowed_tool_names"]
+    assert credential_probe not in repr(traces)
+    assert "private-user@example.com" not in repr(traces)
+
+
+async def test_stream_span_measures_first_model_await_and_closes_before_yield(
+    monkeypatch,
+) -> None:
+    active = False
+    timeline: list[str] = []
+
+    @contextmanager
+    def capture_trace(
+        name: str,
+        **_kwargs: Any,
+    ) -> Generator[dict[str, Any], None, None]:
+        nonlocal active
+        assert name == "chat_completion"
+        assert not active
+        active = True
+        timeline.append("span_enter")
+        try:
+            yield {}
+        finally:
+            active = False
+            timeline.append("span_exit")
+
+    class _MeasuredLLM:
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            raise AssertionError("content stream should not fall back")
+
+        async def stream(self, req: ChatCompletionRequest):
+            assert active, "the concrete first provider await is measured"
+            timeline.append("first_provider_event")
+            yield _content("first")
+            assert not active, "the span closed before resuming after the first chunk"
+            timeline.append("stream_resumed")
+            yield _content("second")
+
+    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr("services.chat_completion.build_llm_port", _MeasuredLLM)
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="model")
+    stream = run_chat_completion_streaming(req)
+
+    assert (await anext(stream))["type"] == "status"
+    first_delta = await anext(stream)
+    assert first_delta == {"type": "delta", "content": "first"}
+    assert not active
+    assert timeline == ["span_enter", "first_provider_event", "span_exit"]
+
+    await stream.aclose()
+    assert not active
+
+
+async def test_stream_span_closes_when_first_model_await_is_cancelled(
+    monkeypatch,
+) -> None:
+    active = False
+    provider_await_started = asyncio.Event()
+
+    @contextmanager
+    def capture_trace(
+        name: str,
+        **_kwargs: Any,
+    ) -> Generator[dict[str, Any], None, None]:
+        nonlocal active
+        assert name == "chat_completion"
+        active = True
+        try:
+            yield {}
+        finally:
+            active = False
+
+    class _BlockingLLM:
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            raise AssertionError("cancelled stream should not fall back")
+
+        async def stream(self, req: ChatCompletionRequest):
+            provider_await_started.set()
+            await asyncio.Event().wait()
+            yield _content("unreachable")
+
+    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr("services.chat_completion.build_llm_port", _BlockingLLM)
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="model")
+    stream = run_chat_completion_streaming(req)
+
+    assert (await anext(stream))["type"] == "status"
+    next_event = asyncio.create_task(anext(stream))
+    await provider_await_started.wait()
+    assert active
+
+    next_event.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await next_event
+    assert not active
 
 
 # --------------------------------------------------------------------------- #

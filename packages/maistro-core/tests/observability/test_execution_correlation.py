@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -20,6 +21,7 @@ import pytest
 import structlog
 
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore, correlated
+from maistro.observability import tracing
 from maistro.observability.correlation import (
     EMPTY,
     FIELD_NAMES,
@@ -251,19 +253,23 @@ class _Span:
         raise AssertionError("unexpected status")
 
 
-class TestSpansCarryTheIds:
+class TestExternalSpansDoNotCarryUnprovenIds:
     @staticmethod
     async def _run_traced(monkeypatch: pytest.MonkeyPatch, **bind: str) -> _Span:
-        import contextlib
-
-        from maistro.observability import tracing
-
         span = _Span()
 
         class _Tracer:
             @contextlib.contextmanager
-            def start_as_current_span(self, name: str) -> Any:
+            def start_as_current_span(
+                self,
+                name: str,
+                *,
+                record_exception: bool = True,
+                set_status_on_exception: bool = True,
+            ) -> Any:
                 assert name == "conductor"
+                assert record_exception is False
+                assert set_status_on_exception is False
                 yield span
 
         monkeypatch.setattr(tracing, "_get_tracer", lambda: _Tracer())
@@ -277,26 +283,29 @@ class TestSpansCarryTheIds:
         return span
 
     @pytest.mark.ac("SPEC-083026-20b2/AC-6")
-    async def test_the_span_names_the_execution_it_traced(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        span = await self._run_traced(monkeypatch, run_id="r-1", attempt_id="a-1")
-        assert span.attributes["maistro.run_id"] == "r-1"
-        assert span.attributes["maistro.attempt_id"] == "a-1"
+    async def test_ambient_execution_ids_stay_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        span = await self._run_traced(
+            monkeypatch,
+            run_id="a" * 32,
+            attempt_id="b" * 32,
+            request_id="client-controlled",
+        )
+        assert span.attributes == {}
 
     @pytest.mark.ac("SPEC-083026-20b2/AC-6")
-    async def test_an_unset_id_is_not_written_as_an_empty_attribute(
+    async def test_lowercase_encoded_payload_cannot_become_correlation(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        span = await self._run_traced(monkeypatch, run_id="r-1")
-        assert "maistro.node_run_id" not in span.attributes
+        encoded_payload = "736b2d746573742d736563726574"
+        span = await self._run_traced(monkeypatch, request_id=encoded_payload)
+        assert span.attributes == {}
 
     @pytest.mark.ac("SPEC-083026-20b2/AC-6")
     async def test_tracing_still_works_with_no_context_bound(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         span = await self._run_traced(monkeypatch)
-        assert span.attributes == {"maistro.output_preview": "done"}
+        assert span.attributes == {}
 
 
 # ─── Events ───────────────────────────────────────────────────────────────────
