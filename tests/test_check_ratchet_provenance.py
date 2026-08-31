@@ -218,17 +218,19 @@ def test_inventory_only_does_not_execute_delegated_adapters(
 
 def test_required_workflow_executes_delegated_gates_against_integration_base() -> None:
     workflow = VULTURE_WORKFLOW.read_text(encoding="utf-8")
+    executable_lines = [line for line in workflow.splitlines() if not line.lstrip().startswith("#")]
+    executable_workflow = "\n".join(executable_lines)
 
-    assert "fetch-depth: 0" in workflow
-    assert "RATCHET_BASE_REV:" in workflow
-    assert "format('origin/{0}', github.base_ref)" in workflow
-    assert "github.event.pull_request.base.sha" not in workflow
-    assert "github.event.merge_group.base_sha" in workflow
-    assert "github.event.before" in workflow
-    assert "uv python install 3.12" in workflow
-    assert "uv sync --locked --all-extras" in workflow
-    assert "uv run python scripts/check-ratchet-provenance.py\n" in workflow
-    assert "check-ratchet-provenance.py --inventory-only" not in workflow
+    assert "fetch-depth: 0" in executable_workflow
+    assert "RATCHET_BASE_REV:" in executable_workflow
+    assert "format('origin/{0}', github.base_ref)" in executable_workflow
+    assert "github.event.pull_request.base.sha" not in executable_workflow
+    assert "github.event.merge_group.base_sha" in executable_workflow
+    assert "github.event.before" in executable_workflow
+    assert "uv python install 3.12" in executable_workflow
+    assert "uv sync --locked --all-extras" in executable_workflow
+    assert "uv run python scripts/check-ratchet-provenance.py\n" in executable_workflow
+    assert "check-ratchet-provenance.py --inventory-only" not in executable_workflow
 
 
 def test_unparseable_checker_fails_closed(checker, tmp_path: Path) -> None:
