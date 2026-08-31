@@ -59,9 +59,7 @@ def test_render_outputs_contains_each_leg_and_scope_json(
     assert output_lines[:-1] == [f"{leg}=true" for leg in helper.LEGS]
     assert output_lines[-1].startswith("scope_json=")
 
-    monkeypatch.setattr(
-        "sys.argv", ["ci_merge_group_scope.py", "--github-outputs", "--json"]
-    )
+    monkeypatch.setattr("sys.argv", ["ci_merge_group_scope.py", "--github-outputs", "--json"])
     with pytest.raises(SystemExit):
         helper.main()
 
