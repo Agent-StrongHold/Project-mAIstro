@@ -86,6 +86,7 @@ if TYPE_CHECKING:
     from maistro.events.durable_log import EventLogStore
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
+    from maistro.events.publisher import CanonicalEventPublisher
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
@@ -257,7 +258,10 @@ class Container:
     _resume_scan_offsets: dict[RunStatus, int] = field(default_factory=dict)
     # Wired in create_container (P1 resilience, ADR-066).
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
-    # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
+    # Canonical Event publication (#61): one store-owned Event identity/order
+    # authority. The legacy EventBus remains a compatibility consumer only.
+    event_publisher: CanonicalEventPublisher | None = None
+    # Durable events (ADR-086): compatibility bus bridge + trigger delivery stores.
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
@@ -662,16 +666,18 @@ class Container:
             recovered_attempts_total,
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            # The Container's bus, so the sweep's dispositions land on the
-            # canonical Event stream rather than only in Run state (#462). A
-            # Container built without one still sweeps; the events are how the
-            # decision becomes inspectable, not how it is made.
+            events = (
+                CanonicalRecoveryEventSink(self.run_store, self.event_publisher)
+                if self.event_publisher is not None
+                else None
+            )
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
+                events=events,
                 source="maistro.container.recover_abandoned_attempts",
             )
             for attempt in reclaimed:
@@ -720,16 +726,7 @@ class Container:
         )
         from maistro.runs.store import run_cursor_key
 
-        # `limit` bounds successful executions, not visibility into QUEUED.
-        # Page by the stable oldest-first key so permanently ineligible rows
-        # cannot pin every future tick behind the same bounded prefix.
         after = None
-        # The wired resolver, not the bare registry. `agent.delegate_remote`,
-        # `agent.spawn_harness` and `rsi.quota_pace_trigger` are all registered,
-        # so they pass eligibility either way; constructed bare they then fail,
-        # or compute against empty state, inside a Run that looks properly
-        # admitted. Building it per tick rather than per Run keeps the cost off
-        # the loop while still reading whatever this Container was wired with.
         executor = ScheduleAttemptExecutor(
             self.run_store,
             node_resolver=build_node_resolver(
@@ -749,10 +746,6 @@ class Container:
                 after = run_cursor_key(run)
                 if not consumer_owns(run):
                     continue
-                # Owned and impossible: no later tick makes an unregistered kind
-                # appear, so this Run is disposed of rather than left QUEUED
-                # forever. A multi-node Run reaches neither branch — it is owed to
-                # the durable Graph traversal (#44/#34) and waits for it.
                 unresolvable = unresolvable_reason(run)
                 if unresolvable is not None:
                     await self._fail_unresolvable_run(run.run_id, unresolvable)
@@ -762,11 +755,8 @@ class Container:
                 try:
                     await executor.execute(run)
                 except ConsumerClaimLost:
-                    # Another tick won the atomic Run + NodeRun + Attempt claim.
                     continue
                 except Exception:
-                    # Any execution that got past claim owns leased physical
-                    # evidence, so ordinary recovery owns a process loss here.
                     logger.warning(
                         "admitted Run %s failed during consumption", run.run_id, exc_info=True
                     )
@@ -776,35 +766,11 @@ class Container:
         return executed
 
     async def resume_parked_runs(self, *, limit: int = 100, now: datetime | None = None) -> int:
-        """Tick the consumer for parked Runs whose wait is over (#641). Returns how many resumed.
-
-        The read half of #636's write half. A Run that yielded parks WAITING or
-        PAUSED, and `execute_admitted_runs` polls `QUEUED` only — so a durably
-        correct pause was also a permanently inert one, and the obvious
-        workaround (requeue to QUEUED) is worse than the gap: the consumer
-        starts a *fresh* Attempt at the node's beginning, and a node that
-        dispatched before pausing dispatches again.
-
-        So this resumes only what a timer may safely re-enter:
-        `resumable_pause` requires a YIELDED Attempt (a failure's park is a
-        retry decision somebody else owns), an elapsed `resume_at`, and a
-        pause reason classified `RESUME_ON_ELAPSED` — a node that polls.
-        Answer-gated pauses are left parked and visible, which is why
-        `agent.delegate_remote` cannot be re-dispatched by this tick.
-
-        Same discipline as its three siblings: bounded, idempotent,
-        operator-scheduled, never self-starting (ADR-019). The claim is the
-        parked→RUNNING transition itself, so a concurrent tick's loser skips
-        rather than resuming the same Run twice.
-        """
-        from maistro.runs.consumption import (
-            ScheduleAttemptExecutor,
-            resumable_by_consumer,
-        )
+        """Tick the consumer for parked Runs whose wait is over (#641). Returns how many resumed."""
+        from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_by_consumer
 
         moment = now if now is not None else datetime.now(UTC)
         parked = await self._parked_candidates()
-
         executor = ScheduleAttemptExecutor(
             self.run_store,
             node_resolver=build_node_resolver(
@@ -827,16 +793,7 @@ class Container:
             try:
                 claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
             except Exception:
-                # Another tick won the claim, or the Run moved on. Not ours.
                 continue
-            # Re-read the pause now the claim is ours (#666 review). The read
-            # above happened before it: between the two, another replica can
-            # have resumed this Run, yielded again with a later `resume_at`,
-            # and parked it back to the status this transition then found. The
-            # claim succeeds, and resuming on the pause read beforehand polls
-            # immediately instead of honouring the delay just recorded -- every
-            # replica collapsing the interval into a burst, which is the one
-            # thing a poll deadline exists to prevent.
             fresh = await self._resumable_pause_for(claimed, moment)
             if fresh is None:
                 await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
@@ -850,41 +807,12 @@ class Container:
         return resumed
 
     async def _parked_candidates(self) -> list[Run]:
-        """Every parked Run this tick will consider, oldest first.
-
-        The scan bound and the work bound are different numbers, and conflating
-        them starved the tick. `list_by_status` is oldest-first, so asking for
-        the *work* limit and filtering afterwards meant a standing backlog of
-        non-resumable WAITING Runs -- every Run parked by a failed Attempt is
-        one, and they sit there until somebody takes the retry decision -- made
-        every tick inspect the same ineligible rows and never reach a later
-        elapsed poll. Not until the backlog cleared: permanently.
-
-        Raising the bound only moved that cliff, it did not remove it: past
-        `RESUME_SCAN_LIMIT` ineligible rows the starvation returns exactly as
-        before, and a warning about it is a description, not a fix (#666 review,
-        second round). So the scan **rotates**: each tick resumes where the last
-        one stopped and wraps at the end. Work per tick stays bounded and every
-        parked Run is reached within one lap, however long the ineligible prefix
-        grows.
-
-        Offset paging over a table rows leave is approximate -- a Run
-        terminalizing ahead of the cursor shifts the page and one row can be
-        stepped over. That is acceptable here and nowhere near the defect being
-        fixed: the guarantee this needs is that no row is starved *forever*, and
-        a skipped row is picked up on the next lap. A row hidden behind a
-        permanent prefix never is.
-        """
         parked: list[Run] = []
         for status in (RunStatus.WAITING, RunStatus.PAUSED):
             offset = self._resume_scan_offsets.get(status, 0)
             batch = await self.run_store.list_by_status(
                 status, limit=RESUME_SCAN_LIMIT, offset=offset
             )
-            # Wrap on a short page rather than on an empty one: a full page
-            # means there is more behind it, anything less means this pass has
-            # reached the end. Advancing past the end and waiting for an empty
-            # page would spend one whole tick seeing nothing.
             self._resume_scan_offsets[status] = (
                 offset + RESUME_SCAN_LIMIT if len(batch) >= RESUME_SCAN_LIMIT else 0
             )
@@ -897,35 +825,6 @@ class Container:
         node_run_id: str,
         parked_as: RunStatus,
     ) -> None:
-        """Put a claimed Run back where the resume found it (#641).
-
-        `_settle_unstarted_consumption` is the wrong tool here and would be a
-        no-op: it declines to act when a NodeRun exists, and on this path one
-        always does -- that is the premise of resuming. Left alone, the Run
-        would sit RUNNING over a NodeRun that is still parked, which is exactly
-        the "claimed, with nothing running" state that helper exists to prevent,
-        one variant across.
-
-        The NodeRun being RUNNING is not on its own a reason to stand back
-        (#666 review). `prepare_execution` un-parks it *before* the Attempt is
-        created, so a failure in between leaves a RUNNING NodeRun with nothing
-        running under it -- and that state is invisible to both ticks: the
-        resume tick looks for parked Runs and abandoned-attempt recovery looks
-        for Attempts, of which there are none. What decides is whether an
-        Attempt is actually live, not what the NodeRun says.
-
-        Live means `RUNNING`, not merely non-terminal (#666 review, second
-        round). `CREATED` is the window between persisting the Attempt and
-        transitioning it: an exception there leaves a `CREATED` Attempt that
-        nothing owns. Reading it as live re-creates the same hole one step in,
-        and worse than the NodeRun case, because `ScheduleAttemptExecutor`
-        configures no lease TTL -- so nothing expires it and no recovery tick
-        reclaims it. It is re-parked with the rest.
-
-        Re-parking rather than failing, because nothing about the pause has
-        changed: the next tick may try again, and terminalizing would throw away
-        work over what is usually a transient error.
-        """
         try:
             node_run = await self.run_store.get_node_run(node_run_id)
             if node_run is None or node_run.status in TERMINAL_RUN_STATUSES:
@@ -933,8 +832,6 @@ class Container:
             if node_run.status is RunStatus.RUNNING:
                 attempts = await self.run_store.list_attempts(node_run_id)
                 if any(a.status is AttemptStatus.RUNNING for a in attempts):
-                    # Something is genuinely executing, or died holding a lease.
-                    # Either way it is the recovery tick's, not this one's.
                     return
                 await self.run_store.transition_node_run(node_run_id, parked_as)
             await self.run_store.transition_run(run_id, parked_as)
@@ -942,12 +839,6 @@ class Container:
             logger.warning("parked Run %s could not be re-parked", run_id, exc_info=True)
 
     async def _resumable_pause_for(self, run: Run, moment: datetime) -> ParkedPause | None:
-        """The one parked NodeRun this Run can be resumed through, or None.
-
-        A single-node Run has one NodeRun; more than one would mean the node was
-        restarted rather than continued, which is the state this tick exists to
-        avoid creating. Refusing to guess between them is the honest answer.
-        """
         from maistro.runs.consumption import resumable_pause
 
         node_runs = await self.run_store.list_node_runs(run.run_id)
@@ -958,13 +849,6 @@ class Container:
         return resumable_pause(node_run, attempts, now=moment)
 
     async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:
-        """Terminalize an owned Run this process can never execute (#251).
-
-        Through the claim, not around it: `QUEUED` has no edge to `FAILED`,
-        and the `QUEUED -> RUNNING` transition is also the mutex that stops
-        two consumers disposing of the same Run twice. A concurrent tick that
-        loses the claim finds the Run already terminal and does nothing.
-        """
         try:
             await self.run_store.transition_run(run_id, RunStatus.RUNNING)
             await self.run_store.transition_run(run_id, RunStatus.FAILED, error=reason)
@@ -974,31 +858,24 @@ class Container:
         logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
-        """List the durable trigger definitions backing the reactor loop."""
         return await self.trigger_store.list_triggers()
 
     async def set_durable_trigger_enabled(self, trigger_id: str, enabled: bool) -> None:
-        """Enable/disable one durable trigger without removing it."""
         await self.trigger_store.set_enabled(trigger_id, enabled)
 
     async def durable_invocations_for(self, event_id: int) -> list[Any]:
-        """Handler invocations recorded for one durable event (delivery audit)."""
         return list(await self.invocation_store.list_for_event(event_id))
 
     async def select_model(self, task: Any, budget: Any = None) -> Any:
-        """Budget-constrained model selection via the wired cost-aware router."""
         return await self.llm_router.select(task, budget)
 
     async def select_embedding_model(self, input_size_tokens: int) -> Any:
-        """Cheapest available embedding model that fits the input size."""
         return await self.llm_router.select_embedding(input_size_tokens)
 
     async def get_embedding_model(self, name: str) -> Any:
-        """Look up one embedding model in the wired provider registry."""
         return await self.provider_registry.get_embedding_model(name)
 
     def replay_session(self, trace_id: str, *, accessor: str = "replay") -> ReplaySession:
-        """Create a ReplaySession over the wired record store (ADR-055)."""
         from maistro.observability.replay import ReplaySession as _ReplaySession
 
         return _ReplaySession(self.record_store, trace_id, accessor=accessor)
@@ -1006,7 +883,6 @@ class Container:
     async def create_agent_identity(
         self, agent_id: str, *, seed: bytes | str | list[str] | None = None
     ) -> LifecycleIdentity:
-        """Bootstrap a did:key identity for an agent (ADR-084)."""
         from maistro.identity.lifecycle import create_agent_identity
 
         return await create_agent_identity(
@@ -1023,7 +899,6 @@ class Container:
         capability: str,
         ttl_seconds: int = 3600,
     ) -> CapabilityToken:
-        """Issue a signed, expiring capability token via the wired stores."""
         from maistro.identity.lifecycle import issue_capability_token
 
         return await issue_capability_token(
@@ -1037,13 +912,11 @@ class Container:
         )
 
     async def verify_capability_token(self, token: CapabilityToken) -> bool:
-        """Verify signature, expiry, and revocation against the wired store."""
         from maistro.identity.lifecycle import verify_capability_token
 
         return await verify_capability_token(token, token_store=self.token_store)
 
     async def import_skill(self, request: SkillImportRequest, **kwargs: Any) -> SkillImportVerdict:
-        """Run the fail-closed skill import pipeline against the wired stores."""
         from maistro.skills.import_pipeline import import_skill
 
         kwargs.setdefault("warden_scan", self.warden.scan)
@@ -1055,7 +928,6 @@ class Container:
         )
 
     def verify_skill_payload(self, skill_name: str, payload: str) -> tuple[bool, tuple[str, ...]]:
-        """Per-use re-scan + content-hash check for an imported skill."""
         from maistro.skills.import_pipeline import verify_skill_payload
 
         return verify_skill_payload(skill_name, payload, policy_store=self.policy_attachment_store)
@@ -1069,12 +941,6 @@ class Container:
         judge_model: Any = None,
         threshold: float = 0.5,
     ) -> Scorer:
-        """Build a persona scorer: LLM judge when available, rubric otherwise.
-
-        Loads the template's Nth eval as the deterministic RubricScorer
-        fallback and upgrades to a DeepEval judge only when ``judge_model``
-        is supplied and deepeval is importable (SPEC-192 graceful fallback).
-        """
         from maistro.personas.scorer import RubricScorer, create_judge_scorer
 
         fallback = RubricScorer.from_yaml(template_path, eval_index)
@@ -1092,7 +958,6 @@ class Container:
         http: httpx.AsyncClient,
         secret_resolver: SecretResolver,
     ) -> OAuth2Client:
-        """Build an OAuth2 (Auth Code + PKCE) client over the wired stores."""
         from maistro.auth.oauth import OAuth2Client, default_id_token_verifier
 
         return OAuth2Client(
@@ -1109,17 +974,6 @@ def _wire_schedule_admission(
     template_store: GraphTemplateStore | None,
     schedule_store: ScheduleStore,
 ) -> ScheduleRunAdmitter | None:
-    """The third admitter, from the three stores the spine already wired.
-
-    Until now `ScheduleRunAdmitter` had no production caller at all — #251
-    found it admitting Runs nothing executed, and the other half of that gap
-    is that nothing constructed it either, so the live scheduler grew its own
-    create-and-advance logic instead (#231).
-
-    A function rather than an inline conditional because `create_container` is
-    already at the complexity ceiling: one more branch in it is one more thing
-    that has to be read to answer any other question about the wiring.
-    """
     if template_store is None:
         return None
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
@@ -1132,50 +986,11 @@ async def create_container(
     embeddings: EmbeddingClient | None = None,
     pg_pool: Any = None,
 ) -> Container:
-    """Wire all dependencies and create the container.
-
-    `harness_adapters`, if given, is passed straight through to
-    `_wire_harness_adapters` -- see that function for why this container
-    cannot construct a real `RsiCycleHarnessAdapter` (`"rsi_cycle"`) on its
-    own and instead leaves the map for the caller to populate.
-
-    `embeddings` turns on similarity search over durable memory (#188). It is a
-    caller-supplied object for the same reason as the harness adapters: an
-    embedding client is a deployment's choice of model and endpoint, and
-    `AgentConfig` carries no way to name one. Without it the PostgreSQL
-    learning store is keyword-only and the embedding column stays NULL, which
-    is the honest state for a deployment with no embedding model rather than a
-    degraded one.
-
-    A client whose width the schema cannot store is refused here rather than at
-    the first write -- see `memory.vectors.require_matching_dimension`.
-    `pg_pool`, if given, is a live `asyncpg.Pool` and selects the PostgreSQL
-    stores — durable events included (#135). When it is not given and
-    `config.database_url` names PostgreSQL, this container opens one itself
-    (#122).
-
-    Both paths exist, and the parameter is not vestigial now that the URL path
-    works. #135 landed first and could only offer the parameter, because
-    deciding which backend a URL names and owning the pool's lifetime was
-    #122's work and this container still refused `postgresql://` outright. #122
-    closed that. What the parameter still buys is a caller that already holds a
-    pool — a test with a fixture, an embedding application that opened its own
-    — being able to hand it over rather than have a second one opened against
-    the same server.
-
-    A supplied pool wins over the URL. The caller naming a concrete pool is
-    more specific than a string saying which server to reach, and silently
-    opening a second pool while the given one sat unused is the shape of bug
-    that reads as "PostgreSQL is configured and nothing is durable".
-    """
+    """Wire all dependencies and create the container."""
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
         raise ConfigError(msg)
 
-    # The outbound guard is on for every request this process makes (#155), so
-    # the endpoints it is *supposed* to reach have to be named before the first
-    # one. Seeded from configuration rather than a list kept here, so moving a
-    # gateway moves its allowance with it.
     from maistro.config.settings import get_settings
 
     configure_outbound_policy(
@@ -1185,16 +1000,7 @@ async def create_container(
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
-    # Two different handles, deliberately not one. `db_pool` is the SQLite
-    # connection the durable-event stores are written against; `pg_pool` is an
-    # asyncpg pool. Collapsing them into one `Any` was how the durable-event
-    # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
-    # Held aside before the URL branch runs, because that branch rebinds
-    # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
-    # #135 first did — drops the parameter on the floor, and a caller-supplied
-    # pool silently becomes in-memory durable events: the exact failure #135
-    # exists to have fixed, reintroduced by the change that generalised it.
     supplied_pg_pool = pg_pool
     pg_pool = None
     holds_pg_pool = False
@@ -1225,19 +1031,12 @@ async def create_container(
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
-    # Prompt persistence is selected by the same backend decision as the
-    # rest of the Container, but kept out of this composition function so adding a
-    # backend does not grow the orchestration branch count (#122).
     prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
-
     episodic_store = await _wire_episodic_store(
         database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
     )
     project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
-    # Built here rather than below, because the admission seam routes on it: a
-    # separately-constructed default registry would disagree with the one the
-    # rest of the container uses (POC mode, or any custom table).
     intent_registry = build_intent_registry()
     (
         project_scope_store,
@@ -1251,16 +1050,8 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
         pg_pool=pg_pool,
-        # The same archive tier the Container holds, handed to the one
-        # subsystem that writes to it (#273). Until this line the field was
-        # built, stored, and read by nothing -- the defect
-        # `quality/wiring-reads-baseline.json` recorded as "Retirement or a
-        # reader is its own issue". This is the reader.
         archive_store=archive_store,
     )
-    # The same `project_scope_store` object the spine just selected, not a
-    # second resolution of the same question: a Workspace whose Root Project is
-    # filed in another database is a Workspace whose Runs cannot be filed.
     workspace_store = await wire_workspace_store(
         db_pool,
         project_store=project_scope_store,
@@ -1278,25 +1069,18 @@ async def create_container(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
         project_store=project_store,
-        # The same client #188 wires for durable memory similarity. Absent, the
-        # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
     )
 
     router = RouterEngine(quota_tracker)
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
-
     strike_tracker = _wire_strike_tracker(
         enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
     )
-
     gate = Gate(warden=warden, strike_tracker=strike_tracker)
 
-    from maistro.security.permission_policy import (
-        build_permission_table,
-        describe_permission_table,
-    )
+    from maistro.security.permission_policy import build_permission_table, describe_permission_table
     from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
@@ -1306,12 +1090,6 @@ async def create_container(
         permissions=config.security.permissions,
     )
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
-    # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
-    # permanent no-op, so a grant a human/owner already cleared could never be
-    # honoured. Starts empty, and is only consulted AFTER the capability check,
-    # the budget check and the BLOCKED check have all already passed -- a grant
-    # can therefore never flip authorized False -> True, only needs
-    # "self_elevation"/"scoped_2fa" -> "none".
     elevation_store = InMemoryElevationStore()
     sentinel = Sentinel(
         warden=warden,
@@ -1321,15 +1099,11 @@ async def create_container(
     )
 
     from maistro.capabilities.bootstrap import default_capability_registry
-
     capabilities = default_capability_registry()
 
-    # --- P1 resilience policies (ADR-066) --------------------------------
     from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies
-
     resilience_policies = InMemoryResiliencePolicyStore(default_policies(), include_defaults=False)
 
-    # --- Durable events (ADR-086) ----------------------------------------
     from maistro.events.bus import EventBus
     from maistro.events.durable_log import InMemoryEventLog, append_from_bus_event
     from maistro.events.invocations import InMemoryInvocationStore
@@ -1339,53 +1113,32 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
-    # PostgreSQL first: a caller who supplied a pool asked for the durable
-    # backend, and `db_pool` (SQLite) may be set at the same time because the
-    # two cover different stores. Silently preferring SQLite here would give
-    # that caller in-memory-shaped durability on the one backend that can
-    # actually be shared between workers.
     if pg_pool is not None:
-        (
-            durable_event_log,
-            trigger_store,
-            invocation_store,
-        ) = await _wire_pg_durable_events(pg_pool)
+        durable_event_log, trigger_store, invocation_store = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
-        (
-            durable_event_log,
-            trigger_store,
-            invocation_store,
-        ) = await _wire_sqlite_durable_events(db_pool)
+        durable_event_log, trigger_store, invocation_store = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
-
     event_bus = EventBus()
 
     async def _persist_bus_event(event: Any) -> None:
-        # Bridge: every in-memory bus event is appended to the durable log.
         await durable_event_log.append(**append_from_bus_event(event))
 
     event_bus.subscribe(_persist_bus_event)
 
-    # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
+    from maistro.events.wiring import wire_canonical_events
+    event_publisher = await wire_canonical_events(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        legacy_bus=event_bus,
+    )
+
     from maistro.providers.config import load_provider_registry
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.providers.router import CostAwareRouter
-
     provider_registry = (
         load_provider_registry(config.provider_config_path)
         if config.provider_config_path
@@ -1393,55 +1146,32 @@ async def create_container(
     )
     llm_router = CostAwareRouter(provider_registry)
 
-    # --- Observability record/replay + PII tiers (ADR-055) ---------------
     from maistro.observability.replay import InMemoryRecordStore
     from maistro.observability.tiers import PIIDetector
-
     record_store = InMemoryRecordStore()
     pii_detector = PIIDetector(mode="prod")
 
-    # --- Identity lifecycle (ADR-084) -------------------------------------
-    from maistro.identity.lifecycle import (
-        InMemoryIdentityStore,
-        InMemorySecretStore,
-        InMemoryTokenStore,
-    )
-
+    from maistro.identity.lifecycle import InMemoryIdentityStore, InMemorySecretStore, InMemoryTokenStore
     identity_store = InMemoryIdentityStore()
     token_store = InMemoryTokenStore()
     secret_store = InMemorySecretStore()
 
-    # --- Skill registry + import pipeline (ADR-083) ----------------------
     from maistro.skills.import_pipeline import InMemoryPolicyAttachmentStore
     from maistro.skills.registry import InMemorySkillRegistry
-
     skill_registry = InMemorySkillRegistry()
     policy_attachment_store = InMemoryPolicyAttachmentStore()
 
-    # The live agent map every wiring closure below reads. Populated later by
-    # `create_agents`; the closures capture the dict, not its contents.
     agents: dict[str, Agent] = {}
-
-    # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
-
-    # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
     spawn_harness_node = AgentSpawnHarnessNode(adapters=wired_harness_adapters)
 
-    # --- Personas golden records (SPEC-192) --------------------------------
     from maistro.personas.golden import InMemoryGoldenRecordStore
-
     golden_record_store = InMemoryGoldenRecordStore()
 
-    # --- OAuth (ADR-059) ----------------------------------------------------
     from maistro.auth.oauth import IdentityLinker, InMemoryIdentityLinkStore, InMemoryStateStore
-
     oauth_state_store = InMemoryStateStore()
     identity_linker = IdentityLinker(store=InMemoryIdentityLinkStore())
-    # Both are dependency-free: A2ADelegator() takes no arguments and
-    # GuestPeerManager defaults its own audit logger. There is no configuration
-    # decision behind either, so neither is made optional (ADR-082526-3ca6).
     a2a_delegator = A2ADelegator()
     guest_peers = GuestPeerManager()
 
@@ -1482,6 +1212,7 @@ async def create_container(
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         resilience_policies=resilience_policies,
+        event_publisher=event_publisher,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
@@ -1507,19 +1238,6 @@ async def create_container(
         guest_peers=guest_peers,
     )
 
-    # One word again, and only because this change is what makes it true.
-    #
-    # #135 had to report the stores and the durable events separately, because
-    # `pg_pool` reached the events and not the stores: saying "PostgreSQL" for
-    # both would have described a deployment whose learnings and outcomes were
-    # still in memory. That is #122's gap, and this branch closes it — a pool
-    # now selects PostgreSQL for the learnings, outcome, session and quota
-    # stores as well as for the event log, so the two words would always be the
-    # same word.
-    #
-    # The lesson survives the collapse: the line reports what is *wired*, not
-    # what was configured. If a future change makes one of these durable
-    # without the other, this splits again rather than rounding up.
     if pg_pool is not None:
         backend = "PostgreSQL"
     elif db_pool is not None:
@@ -1531,33 +1249,13 @@ async def create_container(
 
 
 async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any) -> EpisodicStore:
-    """Select the episodic store from the configured relational backend.
-
-    Kept out of `create_container` for the reason `_wire_prompt_manager` states:
-    adding a backend must not grow that function's branch count (#122). The
-    `database_url` test lives here for the same reason.
-
-    Until #710 this read `InMemoryEpisodicStore()` unconditionally — and the
-    line sits *after* the backend branch, so a `postgresql://` URL got it too.
-    Every tier, weight and reinforcement count in ADR-080 was a property of one
-    process's uptime. A `memory://` deployment still gets the in-memory store,
-    and now that is a choice rather than the only option (ADR-083026-a322).
-
-    The URL decides, not the pool in hand: `pg_pool` can be a caller-supplied
-    pool for the durable-event stores while learnings, outcomes and sessions are
-    SQLite, and episodic memory belongs with those. Filing it in a database this
-    container does not own would also run this store's DDL there — which is how
-    `test_container_pg_durable_events.py` caught it.
-    """
     if pg_pool is not None and database_url.startswith(POSTGRES_SCHEMES):
         from maistro.persistence.pg_episodic import PgEpisodicStore
-
         store = PgEpisodicStore(pg_pool)
         await store.ensure_schema()
         return store
     if db_pool is not None:
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
-
         sqlite_store = SqliteEpisodicStore(db_pool)
         await sqlite_store.ensure_schema()
         return sqlite_store
@@ -1565,191 +1263,88 @@ async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any)
 
 
 async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
-    """Select the versioned prompt store from the configured relational backend."""
     if pg_pool is not None:
         from maistro.persistence.pg_prompts import PgPromptManager
-
         return PgPromptManager(pg_pool)
     if db_pool is not None:
         from maistro.persistence.sqlite_prompts import SqlitePromptManager
-
         manager = SqlitePromptManager(db_pool)
         await manager.ensure_schema()
         return manager
-
     from maistro.prompts.store import InMemoryPromptManager
-
     return InMemoryPromptManager()
 
 
 async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
-    """Audit persistence follows the selected relational backend (#122).
-
-    PostgreSQL remains the canonical durable system of record. SQLite is the
-    supported single-instance/homelab backend, so choosing it must not leave the
-    audit log as the one relational store that silently resets on restart.
-    """
     if pg_pool is not None:
         from maistro.persistence.pg_audit import PgAuditLog
-
         return PgAuditLog(pg_pool)
     if db_pool is not None:
         from maistro.persistence.sqlite_audit import SqliteAuditLog
-
         audit = SqliteAuditLog(db_pool)
         await audit.ensure_schema()
         return audit
-
     from maistro.security.sentinel.audit import InMemoryAuditLog
-
     return InMemoryAuditLog()
 
 
 def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
-    """The strike ladder, durable when there is a database to keep it in (#134).
-
-    This used to return `InMemoryStrikeTracker` on every backend and warn that
-    lockout state resets on restart, because `PgStrikeTracker` advertised itself
-    as a drop-in and was not: both its methods returned `dict` where `Gate` does
-    attribute access on a `StrikeRecord`, so wiring it raised `AttributeError` on
-    the first security violation. That is fixed at the source rather than behind
-    an adapter — both trackers satisfy `protocols.StrikeTracker` and are held to
-    one conformance suite — so the durable one can simply be selected.
-
-    What the warning was protecting against was real and is worth stating plainly
-    now that it is gone: an in-memory ladder means **a locked-out account is
-    unlocked by any deploy**. On PostgreSQL the lockout now outlives the process
-    that imposed it.
-
-    A pool and nothing else decides. `enabled` is still the operator's switch,
-    and no pool still means in-memory — which is correct for the homelab
-    deployments that have no database, and is now said at INFO rather than
-    warned about, because it is the configuration they chose.
-    """
     if not enabled:
         return None
     if pg_pool is not None:
         from maistro.security.pg_strikes import PgStrikeTracker
-
         logger.info(
-            "Strike ladder armed (3-strike escalation via PgStrikeTracker); "
-            "lockouts survive restart."
+            "Strike ladder armed (3-strike escalation via PgStrikeTracker); lockouts survive restart."
         )
         return PgStrikeTracker(pool=pg_pool)
-
     from maistro.security.strikes import InMemoryStrikeTracker
-
     logger.info(
-        "Strike ladder armed (3-strike escalation via InMemoryStrikeTracker); "
-        "no database is configured, so lockout state resets on restart."
+        "Strike ladder armed (3-strike escalation via InMemoryStrikeTracker); no database is configured, so lockout state resets on restart."
     )
     return InMemoryStrikeTracker()
 
 
-#: URL schemes that select the PostgreSQL backend. `postgres://` is the legacy
-#: spelling libpq still accepts and operators still write; `+asyncpg` is what
-#: SQLAlchemy-shaped configuration produces; `+psycopg` is what
-#: `DatabaseSettings.sync_url` produces, and therefore what a `DB_*`-only
-#: deployment resolves to. Omitting that last one would send exactly the
-#: docker-compose case — five variables, no `DATABASE_URL` — to the in-memory
-#: branch, which is the defect #187 exists to have fixed.
 POSTGRES_SCHEMES: Final = (
     "postgresql://",
     "postgres://",
     "postgresql+asyncpg://",
     "postgresql+psycopg://",
 )
-
-#: Oldest PostgreSQL this engine supports. 17 is the floor because it is the
-#: oldest release still receiving fixes for the whole of this project's support
-#: window, and because `docker-compose.yml` has always run `pgvector:pg17`.
-#: 18 is the recommended version; 19 is expected to work and is where
-#: ADR-082226-5104's SQL/PGQ interest points.
 MIN_POSTGRES_VERSION: Final = 17
-
-#: Tables the PostgreSQL stores read and write. Checked at startup rather than
-#: discovered on the first request — see `_require_postgres_schema`.
 _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
     "sessions",
-    # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
-    # for the same reason as `prompt_labels`: without it a database migrated
-    # only as far as 022 passes this preflight and then fails on the first
-    # identified append.
     "session_turns",
     "prompts",
-    # A prompt label is a row of its own since 022 (#328). Listed beside
-    # `prompts` for the same reason the four above are listed at all: without
-    # it, a database migrated only as far as 021 passes this preflight and then
-    # fails on the first `upsert`, which is the report this list exists to
-    # replace.
     "prompt_labels",
-    # The canonical execution spine (#132). Listed here for the same reason as
-    # the four above: a `postgresql://` deployment that skipped `alembic upgrade
-    # head` should be told once, at startup, naming every table it is missing —
-    # not on the first request that happens to touch one. `wire_execution_spine`
-    # probes the same set for a caller-supplied pool, which reaches it without
-    # passing through this preflight.
     *SPINE_PG_TABLES,
-    # The strike ladder's three (#134). `pg_strikes._SCHEMA` still creates them
-    # for the standalone caller that opens its own pool, but a tracker handed
-    # the container's pool does not run it — migration
-    # `005_engine_runtime_tables` owns their shape, and a runtime
-    # `CREATE TABLE IF NOT EXISTS` behind a migration chain is what let
-    # migration 003 keep a shape nobody had migrated (#178). Named here so an
-    # unmigrated database is refused at startup, rather than at the first
-    # security violation.
     "security_strikes",
     "security_violations",
     "security_rate_limits",
-    # The canonical Workspace (#516). Same reasoning as the spine's tables: a
-    # `postgresql://` deployment that skipped `alembic upgrade head` should hear
-    # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
 )
 
 
 def _asyncpg_dsn(database_url: str) -> str:
-    """asyncpg speaks libpq DSNs, not SQLAlchemy's `+driver` spelling.
-
-    Delegates to `config.database.to_asyncpg_dsn` rather than restating the
-    rewrite: `to_sync_url` and this are the same question asked of two drivers,
-    and two copies of the scheme table drift (#187).
-    """
     from maistro.config.database import to_asyncpg_dsn
-
     return to_asyncpg_dsn(database_url)
 
 
 async def _require_supported_postgres(conn: Any) -> None:
-    """Refuse a server too old for the SQL these stores rely on.
-
-    A version check at startup rather than a failure mid-request. The stores use
-    `ON CONFLICT ... DO UPDATE` with composite targets, partial unique indexes
-    and `JSONB` throughout — nothing exotic, but a server old enough to lack any
-    of it should say so once, at the point the operator can act on it.
-    """
     version_num = int(await conn.fetchval("SHOW server_version_num"))
     major = version_num // 10_000
     if major < MIN_POSTGRES_VERSION:
         version = await conn.fetchval("SHOW server_version")
         msg = (
-            f"PostgreSQL {version} is older than the minimum supported major "
-            f"version {MIN_POSTGRES_VERSION}. Supported: {MIN_POSTGRES_VERSION}-19 "
-            f"(18 recommended)."
+            f"PostgreSQL {version} is older than the minimum supported major version {MIN_POSTGRES_VERSION}. "
+            f"Supported: {MIN_POSTGRES_VERSION}-19 (18 recommended)."
         )
         raise ConfigError(msg)
 
 
 async def _require_postgres_schema(conn: Any) -> None:
-    """Refuse a database that has not been migrated.
-
-    Without this the first request to touch a store raises `UndefinedTableError`
-    from somewhere deep in a handler, and the operator sees a 500 rather than
-    the one instruction that fixes it. The check is cheap and runs once.
-    """
     missing = [
         table
         for table in _REQUIRED_PG_TABLES
@@ -1764,17 +1359,6 @@ async def _require_postgres_schema(conn: Any) -> None:
 
 
 def _resolve_pg_pool(*, supplied: Any, from_url: Any) -> Any:
-    """Which asyncpg pool the PostgreSQL-backed subsystems should use.
-
-    A supplied pool wins over whatever the URL produced. The caller naming a
-    concrete pool is more specific than a string naming a server.
-
-    Since #335 the two can no longer differ when a URL is configured:
-    `_wire_postgres_backend` is handed the supplied pool and builds its stores
-    against it, so `from_url` *is* `supplied` in that case. This stays because
-    the URL branch is not the only way `from_url` can be set, and because a
-    preference expressed once is cheaper to read than the absence of one.
-    """
     return supplied if supplied is not None else from_url
 
 
@@ -1783,26 +1367,8 @@ async def _wire_postgres_backend(
     embeddings: EmbeddingClient | None = None,
     *,
     supplied_pool: Any = None,
-) -> tuple[
-    Any,
-    QuotaTracker,
-    LearningStore,
-    OutcomeStore,
-    SessionStore,
-]:
-    """Open an asyncpg pool and wire the durable PostgreSQL stores (#122).
-
-    ADR-082226-5104 makes PostgreSQL the durable system of record. Until this
-    existed, a `postgresql://` URL took the in-memory branch — learnings,
-    outcomes, sessions and quota all vanished on restart with nothing said.
-
-    Both preflight checks run against a real connection before any store is
-    built, because both failures are configuration errors an operator can fix in
-    a minute and neither is diagnosable from the exception it would otherwise
-    raise on some later request.
-    """
+) -> tuple[Any, QuotaTracker, LearningStore, OutcomeStore, SessionStore]:
     import asyncpg
-
     from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
     from maistro.persistence import get_pool
     from maistro.persistence.pg_learnings import PgLearningStore
@@ -1812,50 +1378,23 @@ async def _wire_postgres_backend(
 
     dsn = _asyncpg_dsn(database_url)
     try:
-        # A supplied pool is the pool. Opening a second one against the same
-        # database and then preferring the caller's left the stores below bound
-        # to a pool nothing owned or closed (#335, ADR-082926-730d).
         pool = supplied_pool if supplied_pool is not None else await get_pool(dsn)
     except (OSError, asyncpg.PostgresError) as exc:
-        # Redacted, and raised as a config error rather than propagated. A
-        # PostgreSQL DSN carries `user:password@` as a matter of course, and
-        # asyncpg's own exceptions do not reliably keep it out of the message —
-        # which lands in an uncaught startup traceback, so in process logs and
-        # whatever collects them. PostgreSQL is the durable system of record, so
-        # an unreachable server is a startup failure and not a reason to fall
-        # back to in-memory stores (#122).
-        msg = (
-            f"Could not connect to database_url {_redact_url(database_url)!r}: "
-            f"{type(exc).__name__}."
-        )
+        msg = f"Could not connect to database_url {_redact_url(database_url)!r}: {type(exc).__name__}."
         raise ConfigError(msg) from exc
     try:
         async with pool.acquire() as conn:
             await _require_supported_postgres(conn)
             await _require_postgres_schema(conn)
     except BaseException:
-        # A failed preflight means no container, so a pool *this function*
-        # opened has no owner. Leaving it holding connections to a database the
-        # operator is about to fix is how a retry finds the server still busy.
-        # A supplied pool is not ours to close: the caller still holds it, and
-        # closing it here would turn a configuration error into a broken caller.
         if supplied_pool is None:
             from maistro.persistence import close_pool
-
             await close_pool(dsn)
         raise
 
     pg_learning_store = PgLearningStore(pool)
-    # The one store with an ensure_schema: an idempotent ALTER that adds the
-    # scope column its queries name. Harmless once the migration has run.
     await pg_learning_store.ensure_schema()
-
     quota_tracker: QuotaTracker = PgQuotaTracker(pool)
-    # With an embedding client configured, the vector goes on the row and
-    # similarity composes with scope in one query (#188). Without one, the
-    # keyword store is the whole story -- the column stays NULL, and
-    # `find_similar` is never reached, which is the honest state for a
-    # deployment that has no embedding model rather than a degraded one.
     learning_store: LearningStore = (
         DurableHybridLearningStore(pg_learning_store, embeddings)
         if embeddings is not None
@@ -1863,28 +1402,13 @@ async def _wire_postgres_backend(
     )
     outcome_store: OutcomeStore = PgOutcomeStore(pool)
     session_store: SessionStore = PgSessionStore(pool)
-
     return pool, quota_tracker, learning_store, outcome_store, session_store
 
 
-#: Schemes that deliberately select ephemeral in-memory stores.
 _EPHEMERAL_SCHEMES: Final = ("memory://",)
 
 
 def _redact_url(database_url: str) -> str:
-    """Drop userinfo from a URL before it goes anywhere it might be read.
-
-    A rejected `database_url` lands in an uncaught startup `ConfigError`, which
-    means process logs and whatever collects them. PostgreSQL URLs carry
-    `user:password@` as a matter of course, so interpolating the raw value put
-    credentials in the logs of every deployment that hit this error — while
-    fixing a different silent-failure bug.
-
-    Scheme, host, port and path survive, because those are what makes the error
-    diagnosable. An unparseable value is reported as its scheme alone rather than
-    echoed: a string urlsplit cannot read is a string this cannot promise to
-    redact.
-    """
     try:
         parts = urlsplit(database_url)
     except ValueError:
@@ -1899,64 +1423,26 @@ def _redact_url(database_url: str) -> str:
 
 
 def _require_ephemeral_is_deliberate(database_url: str) -> None:
-    """Refuse a configured database this container cannot actually wire (#122).
-
-    Reached only after the durable schemes have been tried: ``sqlite:`` and the
-    PostgreSQL schemes each have a backend above, so anything arriving here named
-    a database with no wiring behind it. Before #122 such a value fell through to
-    in-memory stores, so a deployment set to ``postgres:/typo`` got learnings,
-    outcomes, sessions and quota that vanish on restart — with no error, no
-    warning, and nothing in the log saying the configured database had been
-    ignored. A misconfigured model gives visibly wrong answers; a misconfigured
-    database gives correct answers that quietly disappear, which is the worse
-    failure and the one `graph_runner.StubLLMNotAllowedError` exists to prevent
-    elsewhere.
-
-    Three cases, deliberately distinguished:
-
-    - **unset** — no database was asked for, so in-memory is the honest answer.
-      Logged at warning so an operator who *meant* to configure one can see it.
-    - **``memory://``** — ephemeral on purpose. Silent, because it was chosen.
-    - **anything else** — a database was configured and cannot be honoured.
-      That is a configuration error, not a degraded mode to paper over.
-    """
     if not database_url.strip():
         logger.warning(
-            "No database_url configured; using in-memory stores. Learnings, outcomes, "
-            "sessions and quota will not survive a restart. Set database_url to a "
-            "postgresql:// or sqlite:///path/to/file.db URL for durability, or "
-            "memory:// to select this deliberately."
+            "No database_url configured; using in-memory stores. Learnings, outcomes, sessions and quota will not survive a restart. Set database_url to a postgresql:// or sqlite:///path/to/file.db URL for durability, or memory:// to select this deliberately."
         )
         return
     if database_url.startswith(_EPHEMERAL_SCHEMES):
         return
     msg = (
-        f"database_url {_redact_url(database_url)!r} names a backend this build "
-        "cannot wire. Supported: postgresql://user@host/db (durable), "
-        "sqlite:///path/to/file.db (durable), sqlite:// (in-memory) and "
-        "memory:// (explicitly ephemeral). Falling back to in-memory would "
-        "discard the data you configured a database to keep -- see issue #122."
+        f"database_url {_redact_url(database_url)!r} names a backend this build cannot wire. "
+        "Supported: postgresql://user@host/db (durable), sqlite:///path/to/file.db (durable), "
+        "sqlite:// (in-memory) and memory:// (explicitly ephemeral). Falling back to in-memory "
+        "would discard the data you configured a database to keep -- see issue #122."
     )
     raise ConfigError(msg)
 
 
 async def _wire_sqlite_backend(
     database_url: str,
-) -> tuple[
-    Any,
-    QuotaTracker,
-    LearningStore,
-    OutcomeStore,
-    SessionStore,
-]:
-    """Open a SQLite connection and wire the homelab/single-instance stores.
-
-    ``database_url`` of the form ``sqlite:///path/to/file.db`` (or
-    ``sqlite://`` for an in-memory DB) selects this backend instead of the
-    default in-memory stores — no Postgres server required.
-    """
+) -> tuple[Any, QuotaTracker, LearningStore, OutcomeStore, SessionStore]:
     import aiosqlite
-
     from maistro.persistence.sqlite_learnings import SqliteLearningStore
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
     from maistro.persistence.sqlite_quota import SqliteQuotaTracker
@@ -1964,35 +1450,12 @@ async def _wire_sqlite_backend(
 
     path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ":memory:"
     if path == ":memory:":
-        # A pathless `sqlite://` is a real SQLite backend and a legitimate dev
-        # choice, so it is allowed — but warned, unlike `memory://`. `memory://`
-        # is silent because its name announces what it does; this one announces
-        # the opposite, and an operator reading "sqlite" reasonably expects a
-        # file. The warning lives here rather than in the scheme guard because
-        # this line is what makes it true.
         logger.warning(
-            "database_url %r has no file path, so SQLite runs in-memory: learnings, "
-            "outcomes, sessions and quota will not survive a restart. Use "
-            "sqlite:///path/to/file.db for durability, or memory:// to select "
-            "ephemeral storage deliberately.",
+            "database_url %r has no file path, so SQLite runs in-memory: learnings, outcomes, sessions and quota will not survive a restart. Use sqlite:///path/to/file.db for durability, or memory:// to select ephemeral storage deliberately.",
             database_url,
         )
     conn = await aiosqlite.connect(path)
-
-    # The session store gets its own connection, because it is the only store
-    # here that holds a *transaction* across several statements (#327). A
-    # SQLite transaction belongs to its connection, not to the object that
-    # opened it: sharing one means another store's `commit()` can land between
-    # this one's `BEGIN IMMEDIATE` and its last insert -- committing half a
-    # message batch -- and a rollback here would discard that store's
-    # uncommitted work instead of only this store's (Codex, #327).
-    #
-    # For a file path the two connections are the same database. For a pathless
-    # `sqlite://` they are two in-memory databases, which is sound because
-    # nothing but this store reads `sessions` or `session_turns`, and that URL
-    # is already warned about above as non-durable.
     session_conn = await aiosqlite.connect(path)
-
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
     sqlite_outcome_store = SqliteOutcomeStore(conn)
@@ -2001,23 +1464,15 @@ async def _wire_sqlite_backend(
     await sqlite_learning_store.ensure_schema()
     await sqlite_outcome_store.ensure_schema()
     await sqlite_session_store.ensure_schema()
-
-    quota_tracker: QuotaTracker = sqlite_quota_tracker
-    learning_store: LearningStore = sqlite_learning_store
-    outcome_store: OutcomeStore = sqlite_outcome_store
-    session_store: SessionStore = sqlite_session_store
-
-    return conn, quota_tracker, learning_store, outcome_store, session_store
+    return conn, sqlite_quota_tracker, sqlite_learning_store, sqlite_outcome_store, sqlite_session_store
 
 
 async def _wire_sqlite_durable_events(
     conn: Any,
 ) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
-    """Wire the durable-event stores onto the already-open SQLite connection."""
     from maistro.events.durable_log import SqliteEventLog
     from maistro.events.invocations import SqliteInvocationStore
     from maistro.events.trigger_store import SqliteTriggerStore
-
     sqlite_event_log = SqliteEventLog(conn)
     sqlite_trigger_store = SqliteTriggerStore(conn)
     sqlite_invocation_store = SqliteInvocationStore(conn)
@@ -2030,21 +1485,7 @@ async def _wire_sqlite_durable_events(
 async def _wire_pg_durable_events(
     pool: Any,
 ) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
-    """Wire the durable-event stores onto a caller-supplied `asyncpg.Pool` (#135).
-
-    All three share one pool rather than opening their own, matching
-    `persistence/pg_*` and leaving connection lifetime with the caller — which
-    also means a single `ensure_event_schema` covers all three tables, instead
-    of three `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
-    pool connections the way the SQLite twin's serial calls cannot.
-    """
-    from maistro.events.pg_stores import (
-        PgEventLog,
-        PgInvocationStore,
-        PgTriggerStore,
-        ensure_event_schema,
-    )
-
+    from maistro.events.pg_stores import PgEventLog, PgInvocationStore, PgTriggerStore, ensure_event_schema
     await ensure_event_schema(pool)
     return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
 
@@ -2053,19 +1494,7 @@ def _wire_hierarchy(
     agents: dict[str, Agent],
     skill_registry: InMemorySkillRegistry,
 ) -> tuple[HarnessRegistry, HierarchicalOrchestrator]:
-    """Wire hierarchical orchestration with a loopback transport.
-
-    The AgentSource adapter resolves an agent name from the container's live
-    agent map and its skill names from the wired skill registry; connecting
-    real foreign harnesses is a deployment concern (register advertisements
-    on the returned registry and connect transport handlers).
-    """
-    from maistro.orchestrator.hierarchy import (
-        HierarchicalOrchestrator,
-        HierarchyError,
-        InMemoryHarnessRegistry,
-        LoopbackHarnessTransport,
-    )
+    from maistro.orchestrator.hierarchy import HierarchicalOrchestrator, HierarchyError, InMemoryHarnessRegistry, LoopbackHarnessTransport
 
     class _AgentMapSource:
         async def resolve(self, agent_name: str) -> tuple[AgentIdentity, list[SkillDefinition]]:
@@ -2088,23 +1517,7 @@ def _wire_hierarchy(
     return registry, orchestrator
 
 
-def _wire_harness_adapters(
-    overrides: dict[str, HarnessAdapter] | None,
-) -> dict[str, HarnessAdapter]:
-    """Wire the `agent.spawn_harness` node's adapter map.
-
-    Unlike `_wire_hierarchy`, this has no default
-    population of its own. `RsiCycleHarnessAdapter` (`maistro-rsi`, a
-    downstream package this one cannot depend on -- `maistro-core` is the
-    shared library `maistro-rsi` imports, never the reverse) wraps `RsiCycle`,
-    whose `RsiCycleConfig` requires a real `repo_url` + `test_command`: exactly
-    the deployment-specific information a generic, `AgentConfig`-driven
-    container has no way to source safely. Fabricating placeholder values
-    would risk running RSI's self-modifying git operations against a wrong or
-    fake repo, so this stays an empty seam by default. Callers that do have
-    real RSI deployment config construct their own `RsiCycleHarnessAdapter`
-    and pass it via `create_container(config, harness_adapters={"rsi_cycle": ...})`.
-    """
+def _wire_harness_adapters(overrides: dict[str, HarnessAdapter] | None) -> dict[str, HarnessAdapter]:
     return dict(overrides or {})
 
 
@@ -2116,25 +1529,6 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
 ) -> Callable[[str, Any], Any]:
-    """Build the production durable-executor node resolver.
-
-    Canonical durable execution supplies a ``Graph``. Raw DAG dictionaries
-    remain accepted only as a definition-layer compatibility seam while
-    DagRegistry callers are projected onto canonical Graph at their product
-    boundary. Dependency-injected node kinds and plain registry nodes share
-    the same resolution path in either representation.
-
-    ``run_store`` is the **canonical** `maistro.runs.store.RunStore`
-    (``get_run``/``create_run``/``transition_run``), not the durable executor's
-    `DurableRunStore` (``get``/``create``/``update``). The two names are close
-    enough to swap by accident, they share no method, and the parameter was
-    typed ``Any``: passing the executor's `InMemoryDurableRunStore` type-checked
-    and then raised `AttributeError` on the first accepted delegation, after the
-    work had already been dispatched. The annotation is the fix -- there is no
-    adapter here, because a `DurableRunRecord` is a checkpoint of one graph
-    execution and a `Run` is the execution's canonical identity, and pretending
-    either can stand in for the other is what produced the confusion.
-    """
     from maistro.graph.definitions import Graph
     from maistro.graph.nodes import get_node
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
@@ -2165,13 +1559,6 @@ def build_node_resolver(
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
         if kind == "agent.delegate_remote":
-            # Previously fell through to `get_node(kind)()`, which constructs
-            # the node with `a2a_delegator=None` and `guest_peers=None` -- so in
-            # the only resolver production uses, every delegation returned
-            # `status="failed"` with "no a2a_delegator configured". A returned
-            # failure reads like the target agent declining, so nothing
-            # surfaced it (#147). `run_store` is what lets the node file the
-            # delegated work as a canonical child Run.
             return AgentDelegateRemoteNode(
                 a2a_delegator=a2a_delegator,
                 guest_peers=guest_peers,
