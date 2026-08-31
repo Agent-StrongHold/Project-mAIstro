@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 
-from hypothesis import HealthCheck, Phase, settings
+from hypothesis import HealthCheck, Phase, given, settings
+from hypothesis import strategies as st
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 
-def test_active_hypothesis_profile_matches_pytest_mode(pytestconfig) -> None:
+@given(st.booleans())
+def test_active_hypothesis_profile_matches_pytest_mode(_sample: bool, pytestconfig) -> None:
+    """Canary property intentionally inherits the active suite profile."""
     nightly = pytestconfig.getoption("--nightly")
     expected_profile = "maistro-nightly" if nightly else "maistro-ci"
     expected_examples = int(
