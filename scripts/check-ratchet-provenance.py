@@ -92,9 +92,7 @@ TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
     ("check-reachability-dispositions.py", "quality/reachability-dispositions.json"): (
         "check-reachability-dispositions-provenance"
     ),
-    ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json"): (
-        "check-lifecycle-provenance"
-    ),
+    ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json"): ("check-lifecycle-provenance"),
 }
 
 # These consumers are themselves provenance mechanisms. ac_state_notes.py folds
