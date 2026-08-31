@@ -1,0 +1,49 @@
+name: Scratch 744 Diagnostics
+
+on:
+  push:
+    branches:
+      - chatgpt/scratch-744-diagnostics
+    paths:
+      - .github/workflows/scratch-744-diagnostics.yml
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/scratch-744-diagnostics
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-uv
+      - name: Sync
+        run: uv sync --locked --extra dev --extra bootstrap
+      - name: Capture root-suite and mypy diagnostics
+        shell: bash
+        run: |
+          set +e
+          uv run pytest tests/ --ignore=tests/tools/registry -x -q --tb=short > /tmp/root.txt 2>&1
+          ROOT_RC=$?
+          uv run mypy packages/maistro-core/src packages/maistro-server/src packages/maistro-turing/src packages/maistro-canvas/src packages/maistro-bootstrap/src packages/maistro-registry/src packages/maistro-evolve/src packages/maistro-rsi/src packages/maistro-design/src > /tmp/mypy.txt 2>&1
+          MYPY_RC=$?
+          mkdir -p scratch
+          {
+            echo "ROOT_RC=${ROOT_RC}"
+            cat /tmp/root.txt
+            echo
+            echo "MYPY_RC=${MYPY_RC}"
+            cat /tmp/mypy.txt
+          } > scratch/744-diagnostics.txt
+      - name: Persist diagnostics on scratch branch
+        shell: bash
+        run: |
+          git config user.name "maistro-diagnostics-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add scratch/744-diagnostics.txt
+          git commit -m "Capture Builders integration diagnostics" || exit 0
+          git push origin HEAD:chatgpt/scratch-744-diagnostics
