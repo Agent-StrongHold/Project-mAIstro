@@ -10,8 +10,8 @@ from hypothesis import strategies as st
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 
-@given(st.booleans())
-def test_active_hypothesis_profile_matches_pytest_mode(_sample: bool, pytestconfig) -> None:
+@given(_sample=st.booleans())
+def test_active_hypothesis_profile_matches_pytest_mode(pytestconfig, _sample: bool) -> None:
     """Canary property intentionally inherits the active suite profile."""
     nightly = pytestconfig.getoption("--nightly")
     expected_profile = "maistro-nightly" if nightly else "maistro-ci"
