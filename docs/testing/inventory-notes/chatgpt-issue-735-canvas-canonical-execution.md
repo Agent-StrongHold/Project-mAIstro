@@ -1,3 +1,8 @@
+---
+inventory-delta:
+  tests/: +11
+---
+
 # #735 Canvas canonical execution evidence
 
 ## Scope
