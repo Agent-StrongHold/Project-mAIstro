@@ -55,6 +55,7 @@ test("Design Studio is the parent surface and never enables fake visual executio
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("Design Studio", { exact: true })).toBeVisible();
 
+  const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
   for (const mode of [
     "Presentation / Deck",
     "Poster",
@@ -66,7 +67,7 @@ test("Design Studio is the parent surface and never enables fake visual executio
     "Diagram / visual",
     "Custom canvas",
   ]) {
-    await expect(page.getByText(mode, { exact: true })).toBeVisible();
+    await expect(artifactTypes.getByRole("button").filter({ hasText: mode })).toBeVisible();
   }
 
   await expect(page.getByText(/1 design skill and 1 design system available/)).toBeVisible();
@@ -86,7 +87,8 @@ test("Design Studio is the parent surface and never enables fake visual executio
 
 test("Deck is a contained Design Studio mode, not a route escape", async () => {
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
-  await page.getByText("Presentation / Deck", { exact: true }).click();
+  const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
+  await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).click();
 
   await expect(page.getByRole("button", { name: "Open Deck editor" })).toBeDisabled();
   await expect(page.getByText(/Deck editing remains security-contained until #752 lands/)).toBeVisible();
