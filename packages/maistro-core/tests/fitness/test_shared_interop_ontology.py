@@ -184,8 +184,7 @@ def _concept_inventory_failures(concepts: Mapping[str, Any]) -> list[str]:
     unexpected_names = sorted(set(concepts) - set(_EXPECTED_CONCEPTS))
     if unexpected_names:
         failures.append(
-            "ontology v1 contains unreviewed shared concept(s): "
-            + ", ".join(unexpected_names)
+            "ontology v1 contains unreviewed shared concept(s): " + ", ".join(unexpected_names)
         )
 
     for name, expected in _EXPECTED_CONCEPTS.items():
@@ -194,11 +193,7 @@ def _concept_inventory_failures(concepts: Mapping[str, Any]) -> list[str]:
     return failures
 
 
-def _concept_record_failures(
-    name: str,
-    metadata: object,
-    concepts: Mapping[str, Any],
-) -> list[str]:
+def _concept_record_failures(name: str, metadata: object, concepts: Mapping[str, Any]) -> list[str]:
     if not isinstance(metadata, dict):
         return [f"invalid concept entry: {name!r}"]
 
@@ -224,10 +219,7 @@ def _concept_record_set_failures(concepts: Mapping[str, Any]) -> list[str]:
     return failures
 
 
-def _lineage_shape_failures(
-    raw_lineage: object,
-    edges: list[tuple[str, str]],
-) -> list[str]:
+def _lineage_shape_failures(raw_lineage: object, edges: list[tuple[str, str]]) -> list[str]:
     failures: list[str] = []
     if not isinstance(raw_lineage, list) or len(edges) != len(raw_lineage):
         failures.append("required_lineage must contain only two-concept edges")
@@ -245,11 +237,7 @@ def _lineage_shape_failures(
     return failures
 
 
-def _lineage_edge_failure(
-    parent: str,
-    child: str,
-    concepts: Mapping[str, Any],
-) -> str | None:
+def _lineage_edge_failure(parent: str, child: str, concepts: Mapping[str, Any]) -> str | None:
     if parent not in concepts or child not in concepts:
         return f"lineage edge references unknown concept: {parent} -> {child}"
 
@@ -258,10 +246,7 @@ def _lineage_edge_failure(
         return None
     if child_metadata.get("parent") == parent or child_metadata.get("scope") == parent:
         return None
-    return (
-        f"lineage edge {parent} -> {child} disagrees with "
-        f"{child} parent/scope metadata"
-    )
+    return f"lineage edge {parent} -> {child} disagrees with {child} parent/scope metadata"
 
 
 def _lineage_relationship_failures(
@@ -275,10 +260,7 @@ def _lineage_relationship_failures(
     ]
 
 
-def _graph_state_failures(
-    concepts: Mapping[str, Any],
-    edges: list[tuple[str, str]],
-) -> list[str]:
+def _graph_state_failures(concepts: Mapping[str, Any], edges: list[tuple[str, str]]) -> list[str]:
     failures: list[str] = []
     graph_state = concepts.get("GraphExecutionState")
     run = concepts.get("Run")
@@ -334,10 +316,7 @@ def _documentation_failures(contract: Mapping[str, Any], text: str) -> list[str]
     if not isinstance(concepts, dict):
         return ["cannot compare docs without concept metadata"]
 
-    rows = {
-        name: (owner, identity)
-        for name, owner, identity in _TABLE_ROW_RE.findall(text)
-    }
+    rows = {name: (owner, identity) for name, owner, identity in _TABLE_ROW_RE.findall(text)}
     expected_rows = {
         name: (metadata.get("owner"), metadata.get("identity"))
         for name, metadata in concepts.items()
