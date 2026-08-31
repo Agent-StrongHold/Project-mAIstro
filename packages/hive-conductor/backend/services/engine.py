@@ -189,46 +189,21 @@ class EngineService:
 
         try:
             if settings.hive_mode == "demo":
-                import os
-
                 from adapters.task_backend import LocalTaskBackend
+                from maistro.agents.conductor import run_task
 
-                pm_mode = (
-                    os.getenv("MAISTRO_POC_MODE", os.getenv("HIVE_POC_MODE", "")).strip().lower()
-                    == "pm"
-                )
-                if pm_mode:
-                    from maistro.agents.pm_runner import run_pm_task
-
-                    executor = run_pm_task
-                    # pm_runner makes real Claude calls through the LLM gateway
-                    # for LLM-reasoning capabilities and short-circuits to
-                    # source='no_data' for data tools that need PATs (jira) or
-                    # Chromium (browser-use) when those aren't wired yet.
-                    logger.info(
-                        "LocalTaskBackend (demo) using PM runner — real LLM via LLM gateway "
-                        "(source='no_data' for Jira/Airtable/web until PATs set)"
-                    )
-                else:
-                    from maistro.agents.conductor import run_task
-
-                    executor = run_task
-                    logger.info("LocalTaskBackend (demo) using engineering conductor executor")
-
+                # Demo mode retains the local backend, but not a product-specific
+                # executor switch. Workspace Persona identity is resolved before
+                # submission through the generic materialized roster; execution
+                # has one authority regardless of legacy POC environment values.
                 backend = LocalTaskBackend(
-                    executor=executor,
+                    executor=run_task,
                     admitter=self.task_admitter,
                     run_store=self.run_store,
                 )
                 await backend.start()
                 self._backend = backend
-                if pm_mode:
-                    from maistro.agents.catalog import AgentCatalog
-                    from maistro.agents.pm_fleet import register_pm_fleet
-
-                    catalog = AgentCatalog()
-                    register_pm_fleet(catalog)
-                    self._pm_catalog = catalog
+                logger.info("LocalTaskBackend (demo) using canonical conductor executor")
             else:
                 from adapters.task_backend import MaistroServerTaskBackend
 
