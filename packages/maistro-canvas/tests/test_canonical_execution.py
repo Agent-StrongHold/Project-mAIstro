@@ -36,7 +36,11 @@ async def _seed_active_attempt(
     node_run = await runs.create_node_run(run_id, node_id=node_id)
     await runs.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
     await runs.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
-    attempt = await runs.create_attempt(node_run.node_run_id, executor_id="dead-canvas-worker")
+    attempt = await runs.create_attempt(
+        node_run.node_run_id,
+        executor_id="dead-canvas-worker",
+        lease_holder="dead-canvas-worker",
+    )
     assert attempt.execution_lease is not None
     await runs.transition_attempt(
         attempt.attempt_id,
