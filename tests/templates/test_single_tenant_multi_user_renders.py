@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from tests.templates.conftest import CANONICAL_ENGINE_SRC
 
 ENGINE_REF = "74218cf762d7b704732b3a22ff1dd90e49273aee"
