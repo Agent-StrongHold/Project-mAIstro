@@ -5,7 +5,6 @@ repo: maistro-engine
 kind: adr
 status: Denied
 created: 2026-05-09
-denied: 2026-08-31
 substrate:
   - maistro-engine#ADR-039
   - maistro-engine#ADR-040
