@@ -45,8 +45,10 @@ def main() -> int:
 
     all_gaps: list[object] = []
     unavailable: list[tuple[str, str]] = []
+    executed: list[str] = []
     for name, fn in checker.CHECKS.items():
         gaps, reason = fn()
+        executed.append(name)
         if reason:
             unavailable.append((name, reason))
         all_gaps.extend(gaps)
@@ -70,7 +72,10 @@ def main() -> int:
             and isinstance(trusted_payload.get("tolerated", {}), dict)
             else {}
         )
-        prov.require_measurement(current, ratchet=RATCHET, what="enumeration gaps/check results")
+        # A clean tree legitimately has zero gaps. Measurement completeness is
+        # proven by the non-empty check registry plus the unavailable-result
+        # guard above, not by requiring a violation to exist forever.
+        prov.require_measurement(executed, ratchet=RATCHET, what="enumeration checks executed")
         authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
@@ -103,9 +108,7 @@ def main() -> int:
         for key in unbanked_authorized
     )
     failures.extend(f"{key}: current gap missing from candidate ledger" for key in candidate_new)
-    failures.extend(
-        f"{key}: stale candidate ledger entry must be pruned" for key in candidate_stale
-    )
+    failures.extend(f"{key}: stale candidate ledger entry must be pruned" for key in candidate_stale)
 
     if failures:
         print("FAIL: enumeration ratchet moved away from trusted state", file=sys.stderr)
