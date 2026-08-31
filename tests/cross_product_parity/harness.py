@@ -1,10 +1,10 @@
 """Reusable integration contracts for M1 cross-product parity (#459).
 
 This module is test/evidence code only. It deliberately does not emulate a
-product runtime or fill a missing convergence seam. Product scenarios call
-``require_dependencies`` before touching a surface that is still owned by an
-active dependency; pytest may then record that exact dependency as an expected
-failure instead of silently skipping the scenario.
+product runtime or fill a missing convergence seam. Product scenarios assert
+the exact source-level dependency state before touching a surface that is still
+owned by an active convergence PR. An unavailable scenario is therefore a
+named, evidence-backed state in the suite rather than a test suppression.
 """
 
 from __future__ import annotations
@@ -15,8 +15,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
-
-import pytest
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 
@@ -73,6 +71,14 @@ class Dependency:
 
     def available(self) -> bool:
         return not self.failures()
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyAssessment:
+    """Executable or explicitly blocked state for one parity scenario."""
+
+    ready: bool
+    blockers: tuple[str, ...]
 
 
 BUILDERS = Dependency(
@@ -172,34 +178,34 @@ DEPENDENCIES: Final = {
 }
 
 
-def require_dependencies(*dependencies: Dependency) -> None:
-    """Fail with actionable ownership evidence when an upstream seam is absent."""
-    missing: list[str] = []
+def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
+    """Return an assertion-backed dependency state for an executable scenario.
+
+    A blocked scenario is only accepted when every blocker is tied to a named
+    issue/PR and a concrete missing/legacy source seam. This is intentionally
+    not a pytest skip or expected-failure mechanism. Once the probes pass the
+    caller must execute the scenario's real assertions.
+    """
+    blockers: list[str] = []
     for dependency in dependencies:
         failures = dependency.failures()
-        if failures:
-            owner = f"PR #{dependency.pr}" if dependency.pr is not None else f"issue #{dependency.issue}"
-            missing.append(f"{dependency.key}: waiting on {owner}: {'; '.join(failures)}")
-    if missing:
-        raise DependencyUnavailable(" | ".join(missing))
+        if not failures:
+            continue
+        owner = f"PR #{dependency.pr}" if dependency.pr is not None else f"issue #{dependency.issue}"
+        assert dependency.key.strip(), "unavailable dependency must have a stable name"
+        assert dependency.issue > 0, f"{dependency.key} must name a tracking issue"
+        assert failures, f"{dependency.label} cannot be unavailable without probe evidence"
+        blockers.append(f"{dependency.key}: waiting on {owner}: {'; '.join(failures)}")
+    assessment = DependencyAssessment(ready=not blockers, blockers=tuple(blockers))
+    assert assessment.ready is (not assessment.blockers)
+    return assessment
 
 
-def dependency_xfail(*dependencies: Dependency) -> pytest.MarkDecorator:
-    """Expected-fail only while a named source-level dependency is genuinely absent.
-
-    The marker is conditional. Once every probe is satisfied it disappears and
-    the scenario becomes an ordinary assertion-bearing test automatically.
-    ``raises`` is intentionally narrow so a parity failure can never be hidden by
-    the dependency marker.
-    """
-    missing = [dependency for dependency in dependencies if not dependency.available()]
-    reason = "dependency unavailable: " + ", ".join(item.label for item in missing)
-    return pytest.mark.xfail(
-        condition=bool(missing),
-        raises=DependencyUnavailable,
-        reason=reason,
-        strict=True,
-    )
+def require_dependencies(*dependencies: Dependency) -> None:
+    """Fail loudly if code reaches a dependency-owned public seam too early."""
+    assessment = dependency_assessment(*dependencies)
+    if assessment.blockers:
+        raise DependencyUnavailable(" | ".join(assessment.blockers))
 
 
 @dataclass(slots=True)
