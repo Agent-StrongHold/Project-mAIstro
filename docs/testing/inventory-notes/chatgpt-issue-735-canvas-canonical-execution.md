@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +11
+  tests/: +22
 ---
 
 # #735 Canvas canonical execution evidence
@@ -26,19 +26,29 @@ Canvas still owns `GenerationJobRecord`, assets, layer/result paths, selected va
 
 ## Focused behavioral evidence
 
-The branch adds eleven focused tests across `test_canonical_execution.py` and `test_canonical_executor_integration.py` proving:
+The branch adds twenty-two focused tests across `test_canonical_execution.py` and `test_canonical_executor_integration.py`. They prove the primary execution mapping plus the compensation and integrity branches required by the changed-line coverage gate, including:
 
+- explicit non-empty authorized Workspace/Project bindings;
+- admission rollback when canonical queue transition fails;
 - scoped Run admission and stage Graph shape;
 - successful NodeRun/Attempt evidence;
 - failed-then-successful retry under one NodeRun;
 - worker-lease reclaim fencing before retry;
 - requested cancellation of active physical and logical identity;
 - cancellation after a failed Attempt terminalizes the parked NodeRun without rewriting the failed Attempt;
+- idempotent cancel/fail behavior after terminal Run completion;
 - four-stage reference execution;
 - empty-hero reference short-circuit without fabricated stages;
+- rejection of an invalid reference short-circuit lifecycle state;
 - completed-stage replay without a duplicate provider call;
 - final worker-loss settlement before terminal Canvas failure at Attempt, NodeRun and Run levels;
-- real `CanvasExecutor.start_job` → `CanvasJobRunner` package flow yielding a canonical Run, NodeRun and Attempt while preserving the Canvas receipt/result.
+- missing Run, invalid stage, duplicate NodeRun, invalid terminal projection, disappeared Attempt, and missing execution-lease integrity guards;
+- real `CanvasExecutor.start_job` → `CanvasJobRunner` package flow yielding a canonical Run, NodeRun and Attempt while preserving the Canvas receipt/result;
+- receipt-persistence compensation after canonical admission;
+- rejection of missing or unbound Run correlation in claimed execution, stage execution, terminal failure, and cancellation;
+- runner fail-before-claim when canonical binding is absent;
+- runner retry requeue followed by terminal failure at the retry budget;
+- idle runner behavior and canonical reconciliation of reaped terminal failures.
 
 Existing Canvas suites remain the parity evidence for provider error sanitization, layer concurrency exclusion, Warden preconditions, result-path persistence, claim/lease behavior, retry bounds, and receipt semantics.
 
