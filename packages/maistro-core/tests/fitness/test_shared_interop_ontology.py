@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
+from itertools import pairwise
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
 
@@ -30,12 +32,7 @@ _EXECUTION_CHAIN = (
     "ExecutionRuntime",
 )
 _EFFECT_CHAIN = ("Capability", "Provider", "Binding", "Invocation")
-_EXPECTED_LINEAGE = tuple(
-    [
-        *zip(_EXECUTION_CHAIN, _EXECUTION_CHAIN[1:]),
-        *zip(_EFFECT_CHAIN, _EFFECT_CHAIN[1:]),
-    ]
-)
+_EXPECTED_LINEAGE = (*pairwise(_EXECUTION_CHAIN), *pairwise(_EFFECT_CHAIN))
 
 _EXPECTED_CONCEPTS: dict[str, dict[str, str]] = {
     "Workspace": {"owner": "maistro.workspaces", "identity": "workspace_id"},
