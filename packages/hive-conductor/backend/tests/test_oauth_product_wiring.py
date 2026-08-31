@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
-import jwt
+import jwt as pyjwt
 import pytest
 import routes.auth as auth_routes
 import services.oauth_login as oauth_login
@@ -110,7 +110,7 @@ def _id_token(
     key: rsa.RSAPrivateKey = _SIGNING_KEY,
 ) -> str:
     now = int(time.time())
-    return jwt.encode(
+    return pyjwt.encode(
         {
             "iss": _ISSUER,
             "aud": _CLIENT_ID,
@@ -452,7 +452,7 @@ def test_callback_throttle_refuses_before_audit_amplification(
         ),
     )
     client = _client()
-    audits_before = len(stores.audit_log)
+    audit_snapshot = dict(stores.audit_log)
 
     responses = [
         client.get(f"/v1/auth/oauth/{_PROVIDER}/callback", follow_redirects=False) for _ in range(7)
@@ -467,11 +467,14 @@ def test_callback_throttle_refuses_before_audit_amplification(
         429,
         429,
     ]
-    assert len(stores.audit_log) == audits_before + 3
+    new_audit_entries = [
+        entry for key, entry in stores.audit_log.items() if key not in audit_snapshot
+    ]
+    assert len(new_audit_entries) == 3
     assert len(_oauth_audit_entries("auth.oauth.failed")) == 3
     throttle_audits = [
         entry
-        for entry in stores.audit_log.values()
+        for entry in new_audit_entries
         if isinstance(entry, dict) and "throttled" in str(entry.get("action", ""))
     ]
     assert throttle_audits == []
@@ -676,7 +679,7 @@ def test_signed_id_token_without_subject_cannot_fall_back_to_userinfo(
     client = _client()
     state, nonce, _ = _begin(client)
     now = int(time.time())
-    id_token_without_subject = jwt.encode(
+    id_token_without_subject = pyjwt.encode(
         {
             "iss": _ISSUER,
             "aud": _CLIENT_ID,
