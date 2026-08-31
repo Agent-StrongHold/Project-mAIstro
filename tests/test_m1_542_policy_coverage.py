@@ -294,9 +294,7 @@ def test_promotion_adapter_covers_success_failure_missing_roots_and_unreadable_o
 def test_shell_adapter_covers_success_failure_bad_candidate_and_unreadable_oracle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_script(
-        "scripts/check-shell-execution-provenance.py", "_coverage_shell_adapter"
-    )
+    module = _load_script("scripts/check-shell-execution-provenance.py", "_coverage_shell_adapter")
     _exercise_loader(module, module.PROVENANCE, "_coverage_shell_real_provenance")
     assert module._declared(None) == set()
     assert module._declared({"calls": {}}) == set()
@@ -419,11 +417,7 @@ def test_execution_lifecycle_main_covers_trusted_and_unauthorized_paths(
     ledger = tmp_path / "execution-lifecycles.json"
     ledger.write_text(
         json.dumps(
-            {
-                "lifecycles": {
-                    "m::State": {"classification": "CANONICAL", "rationale": "canonical"}
-                }
-            }
+            {"lifecycles": {"m::State": {"classification": "CANONICAL", "rationale": "canonical"}}}
         )
     )
     found = {"m::State": {"PENDING", "RUNNING", "DONE"}}
@@ -531,7 +525,9 @@ def test_radon_main_covers_trusted_and_unauthorized_paths(monkeypatch: pytest.Mo
     assert "a.py:1" in block.render()
 
 
-def test_vulture_main_covers_trusted_and_unauthorized_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vulture_main_covers_trusted_and_unauthorized_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _load_script("scripts/check-vulture-baseline.py", "_coverage_vulture")
     _exercise_direct_provenance_loader(module)
     finding = module.Finding("a.py", 1, "unused 'x'", 90)
@@ -550,11 +546,7 @@ def test_vulture_main_covers_trusted_and_unauthorized_paths(monkeypatch: pytest.
     monkeypatch.setattr(module, "_provenance", lambda: _provenance(candidate))
     assert module.main(["a.py"]) == 0
 
-    trusted = {
-        "rules": [
-            {"id": "r", "path_regex": ".*", "message_regex": ".*", "findings": []}
-        ]
-    }
+    trusted = {"rules": [{"id": "r", "path_regex": ".*", "message_regex": ".*", "findings": []}]}
     monkeypatch.setattr(module, "_provenance", lambda: _provenance(trusted))
     assert module.main(["a.py"]) == 1
     assert module._source_for("definitely-missing.py") == ""
@@ -612,9 +604,9 @@ def test_ratchet_provenance_error_edges_are_explicit(
         provenance._github_event_payload(str(event))
 
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
-    assert provenance._pull_request_event_base({"pull_request": {"base": {"ref": "integration"}}}) == (
-        "origin/integration"
-    )
+    assert provenance._pull_request_event_base(
+        {"pull_request": {"base": {"ref": "integration"}}}
+    ) == ("origin/integration")
 
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
