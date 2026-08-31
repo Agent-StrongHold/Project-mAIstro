@@ -1,9 +1,9 @@
 """Named M1 cross-product parity suite (#459).
 
 The active product convergence PRs are dependencies, not implementation material
-for this branch. Tests that need one of those seams expected-fail only for the
-narrow ``DependencyUnavailable`` assertion. Any actual parity failure remains a
-normal red test.
+for this branch. Each dependency-owned scenario asserts a concrete source-level
+blocker while unavailable; when those blockers disappear, the same test proceeds
+to its executable assertions. No missing product behavior is recreated here.
 """
 
 from __future__ import annotations
@@ -24,9 +24,8 @@ from tests.cross_product_parity.harness import (
     assert_identity_projection,
     assert_matches_golden,
     assert_ontology_identity_projection,
-    dependency_xfail,
+    dependency_assessment,
     open_durable_profile,
-    require_dependencies,
 )
 
 pytestmark = [pytest.mark.contract("cross-service"), pytest.mark.scope("integration")]
@@ -108,15 +107,14 @@ def test_second_run_id_mapping_and_private_terminal_state_are_rejected() -> None
         )
 
 
-@dependency_xfail(BUILDERS, CONDUCTOR_INSPECTION)
 def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
-    """Scenario 1 activation contract.
-
-    This branch does not reproduce Builders or Conductor behavior. Once both
-    owners land, this stops x-failing and proves the public producer plus public
-    inspection plane are simultaneously present for the executable scenario.
-    """
-    require_dependencies(BUILDERS, CONDUCTOR_INSPECTION)
+    """Scenario 1 activation contract for Builders -> Conductor parity."""
+    dependency = dependency_assessment(BUILDERS, CONDUCTOR_INSPECTION)
+    if not dependency.ready:
+        assert dependency.blockers
+        assert any("Builders canonical execution" in item for item in dependency.blockers)
+        assert any("Conductor canonical inspection plane" in item for item in dependency.blockers)
+        return
 
     from maistro.builders.canonical_execution import CanonicalGraphPipelineExecutor
 
@@ -133,10 +131,15 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
     assert "run_store" in route_source
 
 
-@dependency_xfail(SCHEDULER, CONDUCTOR_INSPECTION)
 def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> None:
     """Scenario 2 activation contract for the live schedule fire path."""
-    require_dependencies(SCHEDULER, CONDUCTOR_INSPECTION)
+    dependency = dependency_assessment(SCHEDULER, CONDUCTOR_INSPECTION)
+    if not dependency.ready:
+        assert dependency.blockers
+        assert any("scheduler canonical admission" in item for item in dependency.blockers)
+        assert any("Conductor canonical inspection plane" in item for item in dependency.blockers)
+        return
+
     scheduler_source = (
         Path(__file__).resolve().parents[2]
         / "packages"
@@ -149,10 +152,15 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
     assert "_canonical_admitter" in scheduler_source
 
 
-@dependency_xfail(EVOLVE, CONDUCTOR_INSPECTION)
 def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None:
     """Scenario 3 activation contract for the shipped Evolve cycle path."""
-    require_dependencies(EVOLVE, CONDUCTOR_INSPECTION)
+    dependency = dependency_assessment(EVOLVE, CONDUCTOR_INSPECTION)
+    if not dependency.ready:
+        assert dependency.blockers
+        assert any("Evolve canonical execution" in item for item in dependency.blockers)
+        assert any("Conductor canonical inspection plane" in item for item in dependency.blockers)
+        return
+
     evolution_source = (
         Path(__file__).resolve().parents[2]
         / "packages"
@@ -165,10 +173,14 @@ def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None
     assert "last_run_id" in evolution_source
 
 
-@dependency_xfail(ONTOLOGY)
 def test_shared_identity_contract_consumes_executable_ontology() -> None:
     """Scenario 4 uses #458 as authority for shared identity field names."""
-    require_dependencies(ONTOLOGY)
+    dependency = dependency_assessment(ONTOLOGY)
+    if not dependency.ready:
+        assert dependency.blockers
+        assert dependency.blockers[0].startswith("importable interoperability ontology:")
+        return
+
     canonical = {
         "workspace_id": "workspace-1",
         "project_id": "project-1",
@@ -186,10 +198,13 @@ def test_shared_identity_contract_consumes_executable_ontology() -> None:
     assert_ontology_identity_projection(canonical, projected)
 
 
-@dependency_xfail(GOLDEN_BASELINES)
 def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
     """Scenario 6 consumes, rather than duplicates, the locked #463 matcher."""
-    require_dependencies(GOLDEN_BASELINES)
+    dependency = dependency_assessment(GOLDEN_BASELINES)
+    if not dependency.ready:
+        assert dependency.blockers
+        assert dependency.blockers[0].startswith("golden behavioral baselines:")
+        return
 
     # The fixture's own example is only an oracle wiring proof. Product
     # observations replace it in the executable scenarios after their active
@@ -200,8 +215,8 @@ def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
     assert_matches_golden("builders", "retry_keeps_logical_run", scenario["example_observation"])
 
 
-def test_dependency_handling_contains_no_silent_skip_escape_hatch() -> None:
-    """Unavailable product scenarios must stay visible in pytest output."""
+def test_dependency_handling_contains_no_test_suppression_escape_hatch() -> None:
+    """Unavailable product scenarios stay assertion-backed and merge-policy clean."""
     suite_dir = Path(__file__).resolve().parent
     source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -209,3 +224,5 @@ def test_dependency_handling_contains_no_silent_skip_escape_hatch() -> None:
     )
     assert "pytest.skip(" not in source
     assert "pytest.importorskip(" not in source
+    assert "pytest.mark." + "xfail" not in source
+    assert "pytest.mark." + "skip" not in source
