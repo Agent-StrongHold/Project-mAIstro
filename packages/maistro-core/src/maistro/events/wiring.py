@@ -14,8 +14,8 @@ async def wire_canonical_events(
     pg_pool: Any = None,
     db_pool: Any = None,
     legacy_bus: EventBus | None = None,
-) -> tuple[EventStore, CanonicalEventPublisher]:
-    """Select the canonical Event sequencing authority from the wired backend."""
+) -> CanonicalEventPublisher:
+    """Select the one canonical Event sequencing authority for this process."""
     store: EventStore
     if pg_pool is not None:
         from maistro.events.pg_envelope import PgEventStore
@@ -29,7 +29,7 @@ async def wire_canonical_events(
         store = sqlite_store
     else:
         store = InMemoryEventStore()
-    return store, CanonicalEventPublisher(store, legacy_bus=legacy_bus)
+    return CanonicalEventPublisher(store, legacy_bus=legacy_bus)
 
 
 __all__ = ["wire_canonical_events"]
