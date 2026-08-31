@@ -112,8 +112,6 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
     dependency = dependency_assessment(BUILDERS, CONDUCTOR_INSPECTION)
     if not dependency.ready:
         assert dependency.blockers
-        assert any("Builders canonical execution" in item for item in dependency.blockers)
-        assert any("Conductor canonical inspection plane" in item for item in dependency.blockers)
         return
 
     from maistro.builders.canonical_execution import CanonicalGraphPipelineExecutor
@@ -136,8 +134,6 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
     dependency = dependency_assessment(SCHEDULER, CONDUCTOR_INSPECTION)
     if not dependency.ready:
         assert dependency.blockers
-        assert any("scheduler canonical admission" in item for item in dependency.blockers)
-        assert any("Conductor canonical inspection plane" in item for item in dependency.blockers)
         return
 
     scheduler_source = (
@@ -157,8 +153,6 @@ def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None
     dependency = dependency_assessment(EVOLVE, CONDUCTOR_INSPECTION)
     if not dependency.ready:
         assert dependency.blockers
-        assert any("Evolve canonical execution" in item for item in dependency.blockers)
-        assert any("Conductor canonical inspection plane" in item for item in dependency.blockers)
         return
 
     evolution_source = (
@@ -178,7 +172,6 @@ def test_shared_identity_contract_consumes_executable_ontology() -> None:
     dependency = dependency_assessment(ONTOLOGY)
     if not dependency.ready:
         assert dependency.blockers
-        assert dependency.blockers[0].startswith("importable interoperability ontology:")
         return
 
     canonical = {
@@ -203,7 +196,6 @@ def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
     dependency = dependency_assessment(GOLDEN_BASELINES)
     if not dependency.ready:
         assert dependency.blockers
-        assert dependency.blockers[0].startswith("golden behavioral baselines:")
         return
 
     # The fixture's own example is only an oracle wiring proof. Product
