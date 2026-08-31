@@ -16,9 +16,9 @@ import pytest
 from adapters.llm_http import _responses_event_to_chunk
 from models.schemas import ChatCompletionRequest
 from services.chat_completion import (
-    _ToolCallAccumulator,
     _complete_turn,
     _stream_turn,
+    _ToolCallAccumulator,
     run_chat_completion_streaming,
 )
 
