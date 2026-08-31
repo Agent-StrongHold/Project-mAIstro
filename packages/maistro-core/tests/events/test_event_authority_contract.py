@@ -6,14 +6,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from maistro.events.bus import Event
+from maistro.events.bus import Event, EventBus
 from maistro.events.convergence import (
     ParallelEventAuthority,
     event_authority_fields,
     require_metadata_only_projection,
 )
 from maistro.runtime.execution import RuntimeEventEnvelope
-from maistro.runs.recovery_events import RecoveryDispositionEvent
+from maistro.runs.recovery_events import RECOVERY_EVENT_TYPE, RecoveryDispositionEvent
 
 
 @dataclass(frozen=True)
@@ -50,3 +50,26 @@ def test_legacy_bus_and_runtime_sequence_are_exposed_as_compatibility_metadata()
         RuntimeEventEnvelope,
         metadata_fields=frozenset({"sequence"}),
     )
+
+
+async def test_legacy_bus_is_an_adapter_for_recovery_domain_facts() -> None:
+    fact = RecoveryDispositionEvent(
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        attempt_status="failed",
+        node_run_status="waiting",
+        cancellation_cause="recovered",
+        disposition="parked",
+        error="worker exited",
+        source="recovery-test",
+    )
+    bus = EventBus()
+
+    await bus.emit(fact)
+
+    [projected] = bus.get_history()
+    assert projected.event_type == RECOVERY_EVENT_TYPE
+    assert projected.correlation_id == "run-1"
+    assert projected.payload["attempt_id"] == "attempt-1"
+    assert projected.payload["disposition"] == "parked"
