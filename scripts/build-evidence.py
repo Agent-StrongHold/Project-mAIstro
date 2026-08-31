@@ -282,7 +282,7 @@ def verify_completed_manifest(
     if not isinstance(embedded_raw, dict):
         raise EvidenceError("completed evidence identity is malformed")
     if _validated_identity(embedded_raw) != expected:
-        raise EvidenceError("completed evidence identity does not match expected inputs")
+        raise EvidenceError("completed identity does not match expected inputs")
     if completed_manifest.get("evidence_key") != expected["evidence_key"]:
         raise EvidenceError("completed evidence_key does not match expected identity")
 
