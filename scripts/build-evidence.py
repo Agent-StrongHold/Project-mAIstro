@@ -174,14 +174,7 @@ def _validated_inputs(raw: object) -> list[dict[str, str]]:
 
 
 def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
-    expected_fields = {
-        "schema",
-        "command",
-        "runtime",
-        "tools",
-        "inputs",
-        "evidence_key",
-    }
+    expected_fields = {"schema", "command", "runtime", "tools", "inputs", "evidence_key"}
     if set(manifest) != expected_fields:
         raise EvidenceError("identity manifest fields do not match schema")
     if manifest.get("schema") != SCHEMA_VERSION:
@@ -239,9 +232,7 @@ def complete_manifest(
     }
 
 
-def _validated_result_observation(
-    completed: Mapping[str, Any],
-) -> tuple[int, float, str]:
+def _validated_result_observation(completed: Mapping[str, Any]) -> tuple[int, float, str]:
     exit_code = completed.get("exit_code")
     if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code < 0:
         raise EvidenceError("completed exit_code is malformed")
@@ -297,9 +288,7 @@ def verify_completed_manifest(
     if completed_manifest.get("result_key") != _canonical_hash(attestation):
         raise EvidenceError("completed result_key does not match evidence content")
     if exit_code != 0:
-        raise EvidenceError(
-            f"completed evidence records failed command exit code {exit_code}"
-        )
+        raise EvidenceError(f"completed evidence records failed command exit code {exit_code}")
     return dict(completed_manifest)
 
 
