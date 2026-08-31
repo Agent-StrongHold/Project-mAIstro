@@ -1,23 +1,21 @@
-"""What recovery says happened, on the canonical Event stream (#462).
+"""What recovery says happened, on the canonical Event stream (#462, #61).
 
 The disposition table (ADR-082826-08f0) decides what becomes of interrupted
-work. Until now the decision left no trace of its own: a parked NodeRun looks
-identical whether recovery parked it or a person paused it, and the reason
-survives only inside an Attempt's error string. The Run model stays the record
-of *state*; this is the record of *decision*.
+work. The Run model stays the record of *state*; this is the record of the
+*decision*. Universal identity and Workspace ordering belong to the canonical
+Event envelope. Recovery-specific facts remain domain payload.
 
-The sink is a protocol rather than the `EventBus` itself so the spine keeps
-depending on an interface (the repo's DI rule), and so a caller with no bus
-wired reconciles exactly as it did -- an unobservable recovery is bad, but a
-recovery that refuses to run because nothing is listening would be worse.
+The sink is a protocol rather than a concrete publisher so the execution spine
+keeps depending on an interface. A caller with no event sink still reconciles;
+missing observability must never prevent lifecycle repair.
 """
 
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.events.bus import Event, EventCategory
-from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, NodeRun
+from maistro.events.envelope import EventEnvelope
+from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, NodeRun, Run
 
 #: One event type, because one table decides all of these. The disposition is
 #: a payload field rather than a family of event types so a subscriber cannot
@@ -27,9 +25,9 @@ RECOVERY_EVENT_TYPE = "run.recovery_disposition"
 
 @runtime_checkable
 class RecoveryEventSink(Protocol):
-    """Anything that accepts a canonical Event. `EventBus` satisfies it."""
+    """Anything that accepts a canonical :class:`EventEnvelope`."""
 
-    async def emit(self, event: Event) -> Any: ...
+    async def emit(self, event: EventEnvelope) -> Any: ...
 
 
 def disposition_of(attempt: Attempt, cancellation: CancellationCause) -> str:
@@ -51,24 +49,33 @@ def disposition_of(attempt: Attempt, cancellation: CancellationCause) -> str:
 
 def recovery_event(
     *,
+    run: Run,
     attempt: Attempt,
     node_run: NodeRun,
     cancellation: CancellationCause,
     source: str,
-) -> Event:
-    """Build the event for one applied disposition.
+) -> EventEnvelope:
+    """Build the canonical envelope for one applied disposition.
 
-    `correlation_id` is the Run, because that is what someone asking "what
-    happened to this Run" already has in hand; the NodeRun and Attempt ids are
-    in the payload so the answer can be taken back to the spine and read there.
+    Scope and execution identity live on the envelope. The legacy event
+    category is compatibility metadata only; the adapter may use it when
+    projecting this canonical event onto the pre-#61 in-memory EventBus.
     """
-    return Event(
-        category=EventCategory.SYSTEM,
-        event_type=RECOVERY_EVENT_TYPE,
+    return EventEnvelope(
+        type=RECOVERY_EVENT_TYPE,
+        workspace_id=run.workspace_id,
+        project_id=run.project_id,
+        run_id=run.run_id,
+        node_run_id=node_run.node_run_id,
+        attempt_id=attempt.attempt_id,
+        correlation_id=run.run_id,
         source=source,
-        correlation_id=node_run.run_id,
+        provenance={"legacy_event_category": "system"},
         payload={
-            "run_id": node_run.run_id,
+            # Retained for compatibility with domain consumers that historically
+            # read these ids from the payload. They are projections only; the
+            # envelope fields above are the universal identity authority.
+            "run_id": run.run_id,
             "node_run_id": node_run.node_run_id,
             "attempt_id": attempt.attempt_id,
             "attempt_status": attempt.status.value,
