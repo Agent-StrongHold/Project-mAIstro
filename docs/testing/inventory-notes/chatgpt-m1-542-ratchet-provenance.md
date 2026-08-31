@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +39
+  tests/: +53
 ---
 # chatgpt-m1-542-ratchet-provenance
 
-Thirty-nine root tests are added for #542.
+Fifty-three root tests are added for #542.
 
 Thirteen tests in `tests/test_check_ratchet_provenance.py` pin the inventory mechanism:
 candidate-controlled ledgers fail; direct trusted resolution passes; `ROOT`, `REPO`,
@@ -37,6 +37,12 @@ that exposed the final route-gate failure: a depth-one pull-request checkout mus
 materialize both the synthetic event ref ancestry and the declared integration target
 before trusted comparison, and a failed history fetch is a hard provenance failure
 rather than permission to fall back to the candidate registry.
+
+Fourteen collected tests in `tests/test_ratchet_provenance_integration_base.py` pin the
+integration-target security boundary. One proves a long-lived PR reads the current
+target ledger from the synthetic merge, twelve parameterized cases reproduce the
+same-tree bank-and-justify exploit against every authorization-based converted ratchet,
+and one keeps mutation-floor weakening strictly rejected.
 
 Fifteen tests in `tests/test_m1_542_policy_coverage.py` exercise the policy branches
 introduced by the trusted-ratchet conversions without weakening the coverage gate.
