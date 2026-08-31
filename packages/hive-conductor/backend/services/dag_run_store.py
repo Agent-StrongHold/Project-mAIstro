@@ -1,14 +1,12 @@
 """DAG-run live state — in-memory ring buffer of recent runs + their events.
 
-Day 6 v0 deliverable. Hive backend subscribes to maistro's EventBus
-(via maistro.agents.pm_runner's _pm_event_bus hook). Every pm_node_*
-event becomes part of a "run" record. Routes/dag_runs.py exposes
-list/get/SSE-stream over this store.
+Hive DAG execution routes append node lifecycle events directly to this store.
+Routes/dag_runs.py exposes list/get/SSE-stream over the resulting history.
+The historical ``pm_node_*`` event names remain part of that presentation
+contract, but the store no longer installs or owns a PM-specific executor bus.
 
-Runs are grouped by `correlation_id` (set by pm_fleet.invoke_pm_agent
-in v0.5; for now we group by the program_pulse session). Each run has
-ordered node events; the frontend reconstructs the live DAG state from
-them.
+Runs are grouped by the run id supplied by the executing route. Each run has
+ordered node events; the frontend reconstructs the live DAG state from them.
 
 Run records are durable: the store mirrors every mutation into
 `stores.dag_runs`, the same `JsonStore` registry that already backs
@@ -414,58 +412,3 @@ def configure_dag_run_store(records: Any) -> DagRunStore:
     global _global_store
     _global_store = DagRunStore(records=records)
     return _global_store
-
-
-# -------------------------------------------------------------------------
-# pm_runner event bridge — Hive startup calls install_pm_event_bridge() to
-# subscribe to maistro's pm_node_* events and write them to the store.
-# -------------------------------------------------------------------------
-
-
-def install_pm_event_bridge(
-    *,
-    store: DagRunStore | None = None,
-    current_run_id_provider=None,
-) -> None:
-    """Wire pm_runner's _pm_event_bus → DagRunStore.
-
-    `current_run_id_provider` is an optional callable returning the active
-    run id (e.g. derived from request context or program-pulse session).
-    If None, every event creates its own ephemeral run (v0 fallback).
-    """
-    from maistro.agents import pm_runner
-    from maistro.events.bus import Event
-
-    store = store or get_dag_run_store()
-
-    async def _on_event(trigger, event: Event) -> None:  # bus action_handler signature
-        run_id = current_run_id_provider() if current_run_id_provider else None
-        if not run_id:
-            # No active run — create an ephemeral one so events aren't dropped.
-            run = await store.start_run()
-            run_id = run.id
-        await store.append_event(
-            run_id,
-            event_type=event.event_type,
-            role=event.payload.get("role", ""),
-            capability=event.payload.get("capability", ""),
-            payload=dict(event.payload),
-        )
-        if event.event_type in {"pm_node_completed", "pm_node_failed"}:
-            # Only mark finished when the LAST node of a run completes — v0
-            # doesn't track total node count, so we leave finished_at None
-            # and rely on a separate program_pulse-completion signal.
-            pass
-
-    # Create + bind an EventBus instance, then wire pm_runner's hook.
-    from maistro.events.bus import EventBus, Trigger
-
-    bus = EventBus()
-    trigger = Trigger(
-        name="pm-events-to-dag-store",
-        event_types=["pm_node_started", "pm_node_completed", "pm_node_failed"],
-        action_type="dag_store",
-    )
-    bus.add_trigger(trigger)
-    bus.register_handler("dag_store", _on_event)
-    pm_runner.set_pm_event_bus(bus)
