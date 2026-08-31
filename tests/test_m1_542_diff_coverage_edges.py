@@ -102,8 +102,16 @@ def test_dynamic_provenance_loaders_clean_failed_imports(monkeypatch: pytest.Mon
         fake_spec = SimpleNamespace(name=name, loader=Loader())
         fake_module = ModuleType(name)
         with monkeypatch.context() as patch:
-            patch.setattr(module.importlib.util, "spec_from_file_location", lambda *_args: fake_spec)
-            patch.setattr(module.importlib.util, "module_from_spec", lambda _spec: fake_module)
+            patch.setattr(
+                module.importlib.util,
+                "spec_from_file_location",
+                lambda *_args, fake_spec=fake_spec: fake_spec,
+            )
+            patch.setattr(
+                module.importlib.util,
+                "module_from_spec",
+                lambda _spec, fake_module=fake_module: fake_module,
+            )
             sys.modules.pop(name, None)
             with pytest.raises(RuntimeError, match="boom"):
                 module._provenance()
