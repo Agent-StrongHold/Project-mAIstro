@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.store import InMemoryRunStore
+from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, RunStatus
+from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import CanvasCanonicalExecution
 
 pytestmark = pytest.mark.asyncio
+
+
+class _QueueTransitionFailingRunStore(InMemoryRunStore):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.deleted_runs: list[str] = []
+
+    async def transition_run(
+        self,
+        run_id: str,
+        target: RunStatus,
+        **kwargs: Any,
+    ):
+        if target is RunStatus.QUEUED:
+            raise RuntimeError("queue transition failed")
+        return await super().transition_run(run_id, target, **kwargs)
+
+    async def delete_run(self, run_id: str) -> bool:
+        self.deleted_runs.append(run_id)
+        return await super().delete_run(run_id)
 
 
 async def _adapter() -> tuple[CanvasCanonicalExecution, InMemoryRunStore, str]:
@@ -48,6 +70,40 @@ async def _seed_active_attempt(
         fencing_token=attempt.execution_lease.fencing_token,
     )
     return node_run, attempt
+
+
+async def test_scope_binding_requires_explicit_non_empty_authorized_scope() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+
+    with pytest.raises(ValueError, match="workspace_id"):
+        CanvasCanonicalExecution(runs, workspace_id=" ", project_id=root.project_id)
+    with pytest.raises(ValueError, match="project_id"):
+        CanvasCanonicalExecution(runs, workspace_id="workspace-1", project_id=" ")
+
+
+async def test_admission_rolls_back_run_when_queue_transition_fails() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = _QueueTransitionFailingRunStore(project_store=projects)
+    adapter = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+
+    with pytest.raises(RuntimeError, match="queue transition failed"):
+        await adapter.admit(
+            job_id="job-admission-rollback",
+            canvas_id="canvas-1",
+            layer_id="layer-1",
+            action="generate",
+            actor_principal_id="user-1",
+        )
+
+    assert len(runs.deleted_runs) == 1
+    assert await runs.get_run(runs.deleted_runs[0]) is None
 
 
 async def test_admission_creates_one_scoped_run_with_stage_graph() -> None:
@@ -239,6 +295,26 @@ async def test_cancel_after_failed_attempt_terminalizes_parked_node() -> None:
     assert run.status is RunStatus.CANCELLED
 
 
+async def test_terminal_run_cancel_and_fail_are_idempotent_noops() -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-terminal-noop",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    await adapter.execute_stage(run_id, "generate", lambda: _result(["image://done"]))
+
+    await adapter.cancel(run_id)
+    await adapter.fail(run_id, "ignored")
+
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    assert run.error is None
+
+
 async def test_reference_operation_has_four_distinct_canonical_stages() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(
@@ -304,6 +380,20 @@ async def test_empty_reference_hero_short_circuits_without_fabricating_stages() 
     assert run.result == []
 
 
+async def test_reference_short_circuit_rejects_non_running_non_completed_run() -> None:
+    adapter, _runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-ref-invalid-short-circuit",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="reference",
+        actor_principal_id="user-1",
+    )
+
+    with pytest.raises(RunIntegrityError, match="cannot complete Run"):
+        await adapter._project_stage_result(run_id, "reference.hero", [])
+
+
 async def test_completed_stage_reuses_attempt_evidence_without_reexecuting_provider() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(
@@ -358,6 +448,75 @@ async def test_terminal_canvas_failure_settles_stranded_physical_attempt_first()
     assert run is not None
     assert run.status is RunStatus.FAILED
     assert run.error == "Generation failed: worker lease expired."
+
+
+async def test_integrity_guards_reject_invalid_terminalization_and_missing_identity() -> None:
+    adapter, runs, _project_id = await _adapter()
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await adapter._require_run("missing-run")
+
+    run_id = await adapter.admit(
+        job_id="job-integrity",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    with pytest.raises(RunIntegrityError, match="expected exactly one"):
+        await adapter.execute_stage(run_id, "not-a-stage", lambda: _result([]))
+    with pytest.raises(ValueError, match="failed or cancelled"):
+        await adapter._terminalize_observed_nodes(
+            run_id,
+            RunStatus.COMPLETED,
+            error="invalid",
+        )
+
+    node_id = "canvas:job-integrity:generate"
+    first = await runs.create_node_run(run_id, node_id=node_id)
+    second = await runs.create_node_run(run_id, node_id=node_id)
+    assert first.node_run_id != second.node_run_id
+    with pytest.raises(RunIntegrityError, match="duplicate NodeRuns"):
+        await adapter._node_run(run_id, node_id)
+
+
+async def test_abandoned_attempt_integrity_requires_persisted_attempt_and_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runs, _project_id = await _adapter()
+
+    missing = Attempt(node_run_id="missing-node-run", ordinal=1, executor_id="worker")
+    with pytest.raises(RunIntegrityError, match="disappeared"):
+        await adapter._settle_abandoned_attempt(
+            missing,
+            error="worker disappeared",
+            cancellation=CancellationCause.RECOVERED,
+        )
+
+    run_id = await adapter.admit(
+        job_id="job-no-attempt-lease",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    node_run = await runs.create_node_run(run_id, node_id="canvas:job-no-attempt-lease:generate")
+    await runs.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await runs.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    unleased = await runs.create_attempt(node_run.node_run_id, executor_id="worker")
+    assert unleased.execution_lease is None
+
+    async def no_cancel(_attempt_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(adapter._service, "cancel_attempt", no_cancel)
+    with pytest.raises(RunIntegrityError, match="no execution lease"):
+        await adapter._settle_abandoned_attempt(
+            unleased,
+            error="worker disappeared",
+            cancellation=CancellationCause.RECOVERED,
+        )
 
 
 async def _result(value: list[str]) -> list[str]:
