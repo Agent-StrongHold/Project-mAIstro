@@ -21,7 +21,8 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - tests/migrations/test_memory_entries_embedding_type.py
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
