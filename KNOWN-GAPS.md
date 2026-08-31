@@ -67,8 +67,9 @@ is yet the complete end-to-end production boundary.
 Tracking: complete #95 under the continuing #286 Design Studio product lane,
 with #93 supplying the supported built-in worker after the canonical Canvas
 execution dependency lands. [SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md)
-is an older Proposed Canvas API migration document and must not be read as the
-current product-identity contract.
+remains the Proposed `maistro-server` Canvas capability boundary; its historical
+filename and legacy migration notes must not be read as a separate current
+product identity.
 
 ### HTTP API content negotiation
 
