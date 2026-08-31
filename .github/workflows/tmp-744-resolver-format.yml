@@ -1,0 +1,41 @@
+name: tmp-744-resolver-format
+
+on:
+  push:
+    branches:
+      - chatgpt/tmp-744-resolver-format
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, '[tmp-744-done]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/tmp-744-resolver-format
+      - uses: ./.github/actions/setup-uv
+      - name: Apply and validate resolver annotation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('packages/maistro-core/src/maistro/builders/canonical_execution.py')
+          text = path.read_text()
+          old = "    budget: IterationBudget,\n):\n    stages ="
+          new = "    budget: IterationBudget,\n) -> Any:\n    stages ="
+          if old not in text:
+              raise SystemExit('expected resolver signature not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          uv run ruff format packages/maistro-core/src/maistro/builders/canonical_execution.py
+          uv run ruff check packages/maistro-core/src/maistro/builders/canonical_execution.py
+          uv run mypy packages/maistro-core/src/maistro/builders/canonical_execution.py
+      - name: Commit scratch result
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add packages/maistro-core/src/maistro/builders/canonical_execution.py
+          git commit -m '[tmp-744-done] format typed resolver'
+          git push origin HEAD:chatgpt/tmp-744-resolver-format
