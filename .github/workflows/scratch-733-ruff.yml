@@ -1,0 +1,35 @@
+name: Scratch 733 Ruff Autofix
+
+on:
+  push:
+    branches:
+      - chatgpt/scratch-733-ruff
+    paths:
+      - .github/workflows/scratch-733-ruff.yml
+
+permissions:
+  contents: write
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/scratch-733-ruff
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-uv
+      - name: Sync
+        run: uv sync --locked --extra dev
+      - name: Apply repository Ruff autofix
+        run: uv run ruff check --fix packages/hive-conductor/backend/tests/test_evolution_canonical_edge_cases.py
+      - name: Persist exact Ruff rewrite on scratch branch
+        shell: bash
+        run: |
+          git config user.name "maistro-diagnostics-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add packages/hive-conductor/backend/tests/test_evolution_canonical_edge_cases.py
+          git commit -m "Capture exact Ruff rewrite for Evolve test" || exit 0
+          git push origin HEAD:chatgpt/scratch-733-ruff
