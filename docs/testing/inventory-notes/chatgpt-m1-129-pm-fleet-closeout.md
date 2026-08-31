@@ -17,6 +17,7 @@ Audited from `develop@93401f3485ebb815dedc1b0c6b7ad1d7e767fa32` on 2026-08-31.
 4. Hive startup installed `install_pm_event_bridge()`, which imported `pm_runner`, created a private EventBus, and rebound the PM executor's event hook.
 5. `maistro.agents.pm_fleet` remained an importable PM-specific roster/routing adapter beside the canonical Workspace Persona template.
 6. `maistro.agents.pm_runner` remained an importable independent PM executor after the product had already moved reusable identity resolution to materialized Workspace agents.
+7. maistro-server still mounted the POC-only `/v1/maistro/agents` list/invoke API. That route imported the hardcoded fleet adapter and could queue those legacy agent IDs independently of Workspace Persona ownership whenever `MAISTRO_POC_MODE=pm` was set.
 
 ## Disposition
 
@@ -35,14 +36,15 @@ Audited from `develop@93401f3485ebb815dedc1b0c6b7ad1d7e767fa32` on 2026-08-31.
 - PM-runner event bridge.
 - `maistro.agents.pm_fleet` adapter module.
 - `maistro.agents.pm_runner` executor module.
+- maistro-server's POC-only `/v1/maistro/agents` list/invoke API and its dedicated test surface.
 
-Deletion is intentional. Keeping either removed module as a compatibility import would let restart/import recreate a second reusable roster or execution authority.
+Deletion is intentional. Keeping any removed module or route as a compatibility surface would let restart/import recreate a second reusable roster or execution authority.
 
 ## Acceptance evidence
 
 - New core retirement tests assert the packaged `pm_fleet` template is a Workspace Persona with the six migrated spawns, retains legacy-definition provenance, and that the legacy authority modules do not exist.
 - New Hive retirement tests assert demo startup contains no retired POC environment/executor/catalog switch and still uses the canonical conductor executor.
-- New maistro-server retirement tests assert startup cannot seed a PM POC catalog and task execution remains on the canonical conductor executor.
+- New maistro-server retirement tests assert startup cannot seed a PM POC catalog, task execution remains on the canonical conductor executor, and no `/v1/maistro/agents` route is registered.
 - Existing `test_agent_invocation.py` continues to characterize Workspace-scoped resolution, capability refusal, description compatibility, and pulse-roster isolation without importing the retired executor.
 - Generic DAG-run history remains; only the PM-runner-specific EventBus bridge is removed. Direct DAG route writes remain its live producer.
 
@@ -52,9 +54,11 @@ This branch deliberately does **not** edit `quality/reachability-baseline.json`,
 
 - `packages/maistro-core/src/maistro/agents/pm_fleet.py`
 - `packages/maistro-core/src/maistro/agents/pm_runner.py`
+- `packages/maistro-server/src/maistro_server/api/agents.py`
 - `register_pm_fleet`
 - `run_pm_task`
 - `install_pm_event_bridge`
 - the retired PM private EventBus hooks and PM executor helpers
+- the retired PM-specific `/v1/maistro/agents` route family
 
 The owning ratchet lane should reconcile those decreases from its then-current trusted base rather than this PR competing for the same shared files.

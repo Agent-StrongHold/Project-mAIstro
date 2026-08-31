@@ -37,7 +37,6 @@ from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig
 from maistro_server.api import (
-    agents,
     canvas,
     chat_completions,
     health,
@@ -448,7 +447,6 @@ API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=API_V1_PREFIX)
-app.include_router(agents.router, prefix=f"{API_V1_PREFIX}/maistro")
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)
