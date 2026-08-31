@@ -706,20 +706,24 @@ class Container:
         admitted canonical work nobody would ever execute.
 
         Eligibility is `executable_by_consumer`: QUEUED, an allowlisted
-        admission source, one registered node. The claim is the QUEUED→RUNNING
-        lifecycle transition itself — the transition table is the mutex, so a
-        concurrent tick's loser skips instead of double-executing. A Run whose
-        node then fails is parked by the reconciler (the recovery
-        disposition's WAITING row), never silently retried by the next tick.
+        admission source, one registered node. Claiming atomically persists the
+        RUNNING Run, RUNNING NodeRun, and a leased CREATED Attempt; the Run row
+        is the cross-process mutex and the Attempt lease is the recovery proof.
+        A node failure is parked by the reconciler and never silently retried.
         """
+        from maistro.runs.consumer_claim import ConsumerClaimLost
         from maistro.runs.consumption import (
             ScheduleAttemptExecutor,
             consumer_owns,
             executable_by_consumer,
             unresolvable_reason,
         )
+        from maistro.runs.store import run_cursor_key
 
-        queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+        # `limit` bounds successful executions, not visibility into QUEUED.
+        # Page by the stable oldest-first key so permanently ineligible rows
+        # cannot pin every future tick behind the same bounded prefix.
+        after = None
         # The wired resolver, not the bare registry. `agent.delegate_remote`,
         # `agent.spawn_harness` and `rsi.quota_pace_trigger` are all registered,
         # so they pass eligibility either way; constructed bare they then fail,
@@ -737,32 +741,38 @@ class Container:
             ),
         )
         executed = 0
-        for run in queued:
-            if not consumer_owns(run):
-                continue
-            # Owned and impossible: no later tick makes an unregistered kind
-            # appear, so this Run is disposed of rather than left QUEUED
-            # forever. A multi-node Run reaches neither branch — it is owed to
-            # the durable Graph traversal (#44/#34) and waits for it.
-            unresolvable = unresolvable_reason(run)
-            if unresolvable is not None:
-                await self._fail_unresolvable_run(run.run_id, unresolvable)
-                continue
-            if not executable_by_consumer(run):
-                continue
-            try:
-                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-            except Exception:
-                # Another tick won the claim, or the Run moved on. Not ours.
-                continue
-            try:
-                await executor.execute(claimed)
-            except Exception:
-                logger.warning(
-                    "admitted Run %s failed during consumption", run.run_id, exc_info=True
-                )
-                await self._settle_unstarted_consumption(run.run_id)
-            executed += 1
+        while executed < limit:
+            queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit, after=after)
+            if not queued:
+                break
+            for run in queued:
+                after = run_cursor_key(run)
+                if not consumer_owns(run):
+                    continue
+                # Owned and impossible: no later tick makes an unregistered kind
+                # appear, so this Run is disposed of rather than left QUEUED
+                # forever. A multi-node Run reaches neither branch — it is owed to
+                # the durable Graph traversal (#44/#34) and waits for it.
+                unresolvable = unresolvable_reason(run)
+                if unresolvable is not None:
+                    await self._fail_unresolvable_run(run.run_id, unresolvable)
+                    continue
+                if not executable_by_consumer(run):
+                    continue
+                try:
+                    await executor.execute(run)
+                except ConsumerClaimLost:
+                    # Another tick won the atomic Run + NodeRun + Attempt claim.
+                    continue
+                except Exception:
+                    # Any execution that got past claim owns leased physical
+                    # evidence, so ordinary recovery owns a process loss here.
+                    logger.warning(
+                        "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                    )
+                executed += 1
+                if executed >= limit:
+                    break
         return executed
 
     async def resume_parked_runs(self, *, limit: int = 100, now: datetime | None = None) -> int:
@@ -962,27 +972,6 @@ class Container:
             logger.warning("unresolvable Run %s could not be settled", run_id, exc_info=True)
             return
         logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
-
-    async def _settle_unstarted_consumption(self, run_id: str) -> None:
-        """Terminalize a claimed Run whose execution never left a record behind.
-
-        `ScheduleAttemptExecutor` handles the ordinary failure — the Attempt
-        records it and the reconciler parks. Reaching here means execution
-        failed *before* any NodeRun existed (an infrastructure error), and a
-        claimed RUNNING Run with no physical record would otherwise sit
-        indistinguishable from a process that died. With a NodeRun present the
-        parked/derived state is already the answer and this must not rewrite it.
-        """
-        try:
-            if await self.run_store.list_node_runs(run_id):
-                return
-            await self.run_store.transition_run(
-                run_id,
-                RunStatus.FAILED,
-                error="consumption_error",
-            )
-        except Exception:
-            logger.warning("claimed Run %s could not be settled", run_id, exc_info=True)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
         """List the durable trigger definitions backing the reactor loop."""

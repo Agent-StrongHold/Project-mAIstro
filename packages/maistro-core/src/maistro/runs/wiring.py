@@ -215,10 +215,10 @@ async def wire_execution_spine(
         # check above *probes* rather than creates.
         from maistro.graph.pg_templates import PgGraphTemplateStore
         from maistro.projects.pg_scope_store import PgProjectScopeStore
-        from maistro.runs.pg_store import PgRunStore
+        from maistro.runs.consumer_claim import ClaimingPgRunStore
 
         project_scope_store = PgProjectScopeStore(pg_pool)
-        run_store = PgRunStore(
+        run_store = ClaimingPgRunStore(
             pg_pool, project_store=project_scope_store, archive_store=archive_store
         )
         template_store = PgGraphTemplateStore(pg_pool)
@@ -228,12 +228,12 @@ async def wire_execution_spine(
         from maistro.graph.durable_runs.continuation import SqliteGraphContinuationStore
         from maistro.graph.sqlite_templates import SqliteGraphTemplateStore
         from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
-        from maistro.runs.sqlite_store import SqliteRunStore
+        from maistro.runs.consumer_claim import ClaimingSqliteRunStore
         from maistro.scheduling.store import SqliteScheduleStore
 
         sqlite_scope_store = SqliteProjectScopeStore(conn)
         await sqlite_scope_store.ensure_schema()
-        sqlite_run_store = SqliteRunStore(conn, project_store=sqlite_scope_store)
+        sqlite_run_store = ClaimingSqliteRunStore(conn, project_store=sqlite_scope_store)
         await sqlite_run_store.ensure_schema()
         sqlite_template_store = SqliteGraphTemplateStore(conn)
         await sqlite_template_store.ensure_schema()
@@ -250,11 +250,13 @@ async def wire_execution_spine(
         from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
         from maistro.graph.templates import InMemoryGraphTemplateStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
-        from maistro.runs.store import InMemoryRunStore
+        from maistro.runs.consumer_claim import ClaimingInMemoryRunStore
         from maistro.scheduling.store import InMemoryScheduleStore
 
         project_scope_store = InMemoryProjectScopeStore()
-        run_store = InMemoryRunStore(project_store=project_scope_store, archive_store=archive_store)
+        run_store = ClaimingInMemoryRunStore(
+            project_store=project_scope_store, archive_store=archive_store
+        )
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()
         continuation_store = InMemoryGraphContinuationStore()
