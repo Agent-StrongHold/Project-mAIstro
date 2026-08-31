@@ -35,11 +35,12 @@ would wait for a context that can never report where merge enforcement looks.
 Publishing the aggregate verdict onto the triggering candidate SHA keeps the
 judge protected while putting the result exactly where GitHub evaluates it.
 
-`gates-ran` is stricter than GitHub's raw required-check semantics: GitHub treats
-a skipped required check as successful, while this aggregate requires real
-execution evidence. On `main` promotions it also includes the main-only CodeQL
-and container-scan checks; those are excluded on `develop` candidates where they
-do not execute by design.
+`gates-ran` is stricter than GitHub's raw required-check semantics. On ordinary
+PRs it still requires real execution evidence from every specialized CI leg. On
+a `develop` merge group, those specialized contexts are replaced in the
+execution-evidence set by the unconditional `integration-scope` aggregate,
+which verifies every classifier-selected specialized leg succeeded. Main
+promotions retain their existing full specialized and release-tier check set.
 
 For merge groups, the initial trusted resolver is intentionally **develop-only**.
 It accepts GitHub queue refs under `gh-readonly-queue/develop/` and refuses any
@@ -103,6 +104,7 @@ wait forever for an `Expected` result.
 | CodeQL Advanced | `Analyze (python)` | base `main` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
+| Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
