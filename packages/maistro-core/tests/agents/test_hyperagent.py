@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import maistro.agents.hyperagent as hyperagent_mod
@@ -15,8 +17,19 @@ from maistro.agents.hyperagent import (
     propose_autonomous_actions,
     propose_work_item_suggestions,
 )
-from maistro.agents.pm_fleet import PM_FLEET
 from maistro.agents.program_context import ProgramContext
+from maistro.personas.expander import expand_persona
+from maistro.personas.rubric import load_template
+
+
+_PM_FLEET_TEMPLATE = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "maistro"
+    / "personas"
+    / "templates"
+    / "pm_fleet.yaml"
+)
 
 
 def _ctx(**kwargs: object) -> ProgramContext:
@@ -97,17 +110,20 @@ class TestInterviewStatus:
 
 
 def _pm_fleet_roster() -> list[RosterAgent]:
-    """PM Fleet's own agents, in PM Fleet's own order.
+    """PM Fleet's agents, derived from the canonical Workspace Persona.
 
-    Built from `PM_FLEET` rather than restated, so these tests keep proving
-    what they proved before #221 moved the roster out of the function: with
-    PM Fleet's roster, the pulse is exactly what it always was. Order matters
-    — the pulse takes the first agent declaring a capability, and
-    `fetch_program_state` is declared by both `program_manager` and
-    `research`.
+    Order still matters because the pulse takes the first agent declaring a
+    capability, and `fetch_program_state` is declared by both
+    `program_manager` and `research`. The test therefore characterizes the
+    shipped Persona without recreating the retired hardcoded fleet tuple.
     """
+    expanded = expand_persona(load_template(_PM_FLEET_TEMPLATE))
     return [
-        RosterAgent(name=defn.name, capabilities=frozenset(defn.capabilities)) for defn in PM_FLEET
+        RosterAgent(
+            name=agent.recipe.name.rsplit(".", 1)[-1],
+            capabilities=frozenset(agent.skills),
+        )
+        for agent in expanded.agents
     ]
 
 
@@ -128,7 +144,6 @@ class TestProposeAutonomousActions:
         ctx = _ctx(interview_complete=True, tools=[])
         actions = propose_autonomous_actions(ctx, roster=_pm_fleet_roster())
         assert all(a.agent_id != "research" or True for a in actions)
-        # "research" IS a known pm agent; verify no bogus agent ids leak through
         known_ids = {"program_manager", "risk_dependency", "reporting", "delivery", "research"}
         assert all(a.agent_id in known_ids for a in actions)
 
@@ -149,8 +164,7 @@ class TestProposeAutonomousActions:
         assert actions[0].payload["title"] == "program"
 
     def test_a_capability_no_one_declares_is_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Since #221 the roster answers "who", so the skippable case is a
-        capability nobody here has — not an agent name off a fixed table."""
+        """The roster answers who, so a capability nobody has is skipped."""
         ctx = _ctx(interview_complete=True, tools=[])
         monkeypatch.setattr(
             hyperagent_mod,
@@ -160,14 +174,10 @@ class TestProposeAutonomousActions:
         assert propose_autonomous_actions(ctx, roster=_pm_fleet_roster()) == []
 
     def test_an_empty_roster_proposes_nothing(self) -> None:
-        """A workspace with no agents cannot run anything, and proposing work
-        anyway moves the failure to queue time where it is less explicable."""
         ctx = _ctx(interview_complete=True, tools=["jira"])
         assert propose_autonomous_actions(ctx, roster=[]) == []
 
     def test_a_non_pm_roster_gets_its_own_agents(self) -> None:
-        """The whole point of #221. A workspace running any other persona used
-        to get PM Fleet's names, every one of which failed to queue here."""
         ctx = _ctx(interview_complete=True, tools=[])
         roster = [RosterAgent(name="analyst", capabilities=frozenset({"scan_risks"}))]
 
@@ -176,10 +186,6 @@ class TestProposeAutonomousActions:
         assert [(a.agent_id, a.capability) for a in actions] == [("analyst", "scan_risks")]
 
     def test_the_first_declarer_in_roster_order_wins(self) -> None:
-        """Two agents may declare one capability — `fetch_program_state` is
-        both `program_manager`'s and `research`'s in PM Fleet. Roster order
-        decides, which is a rule any roster can answer; a "primary capability"
-        rule would be one only PM Fleet could."""
         ctx = _ctx(interview_complete=True, tools=[])
         caps = frozenset({"fetch_program_state"})
         roster = [
