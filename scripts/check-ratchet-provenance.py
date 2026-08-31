@@ -49,6 +49,10 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ("check_ac_state_impl.py", "quality/ac-state.json"): (
         "generated AC-state report output, not a comparison oracle"
     ),
+    ("check_ac_state_impl.py", "quality/ratchet-authorizations.json"): (
+        "the worktree copy is read only to reject stale or spent grants; permission to lower "
+        "an AC-state floor is read separately from the trusted base by authorized_floors()"
+    ),
     ("check-branch-independence.py", "quality/branch-independence.json"): (
         "the branch-independence registry is the reviewed representation specification; "
         "the checker separately compares its frozen legacy set against the trusted base"
