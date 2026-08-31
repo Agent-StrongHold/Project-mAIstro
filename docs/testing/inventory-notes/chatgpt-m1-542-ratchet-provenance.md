@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +22
+  tests/: +24
 ---
 # chatgpt-m1-542-ratchet-provenance
 
-Twenty-two root tests are added for #542.
+Twenty-four root tests are added for #542.
 
 Thirteen tests in `tests/test_check_ratchet_provenance.py` pin the inventory mechanism:
 candidate-controlled ledgers fail; direct trusted resolution passes; `ROOT`, `REPO`,
@@ -31,3 +31,9 @@ measurement; changing a public route's matching kind requires prior authorizatio
 candidate mutation baseline cannot lower a trusted kill-rate floor; and an explicit
 external mutation baseline remains a supported local input rather than being forced
 through repository-history resolution.
+
+Two tests in `tests/test_public_routes_shallow_ci.py` pin the main-CI execution shape
+that exposed the final route-gate failure: a depth-one pull-request checkout must
+materialize both the synthetic event ref ancestry and the declared integration target
+before trusted comparison, and a failed history fetch is a hard provenance failure
+rather than permission to fall back to the candidate registry.
