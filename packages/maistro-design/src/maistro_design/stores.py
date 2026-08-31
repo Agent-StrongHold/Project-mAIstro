@@ -26,9 +26,15 @@ from maistro_design.types import (
 )
 
 
+def _row_dict(row: Any) -> dict[str, Any]:
+    """Materialize mapping-compatible database rows without assuming ``dict(row)`` works."""
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    return dict(mapping)
+
+
 def _coerce_design_project(row: Any, outputs: list[DesignOutput] | None = None) -> DesignProject:
     """Coerce database row to DesignProject dataclass."""
-    d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+    d = _row_dict(row)
     discovery_data = d.get("discovery_json")
     discovery: DiscoveryResult | None = None
     if discovery_data:
@@ -62,7 +68,7 @@ def _coerce_design_project(row: Any, outputs: list[DesignOutput] | None = None) 
 
 def _coerce_design_output(row: Any) -> DesignOutput:
     """Coerce database row to DesignOutput dataclass."""
-    d = dict(row)
+    d = _row_dict(row)
     metadata = d.get("metadata_json") or {}
     if isinstance(metadata, str):
         metadata = json.loads(metadata)
@@ -231,7 +237,7 @@ class PgDesignProjectStore:
             )
             projects = []
             for project_row in rows.fetchall():
-                project_id = str(dict(project_row)["id"])
+                project_id = str(_row_dict(project_row)["id"])
                 output_rows = await session.execute(
                     text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
                     {"project_id": project_id},
@@ -256,7 +262,7 @@ class PgDesignProjectStore:
             )
             projects = []
             for project_row in rows.fetchall():
-                project_id = str(dict(project_row)["id"])
+                project_id = str(_row_dict(project_row)["id"])
                 output_rows = await session.execute(
                     text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
                     {"project_id": project_id},
