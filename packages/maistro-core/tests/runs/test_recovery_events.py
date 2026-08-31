@@ -1,11 +1,4 @@
-"""Recovery says what it decided, on the canonical Event stream (#462, #61).
-
-The disposition table (ADR-082826-08f0) decides what becomes of interrupted
-work, and until now the decision left no trace of its own. A parked NodeRun
-looks the same whether recovery parked it or a person paused it; the reason
-survived only inside an Attempt's error string. The Run model stays the record
-of state. The canonical Event envelope is the record of the decision.
-"""
+"""Recovery says what it decided, on the canonical Event stream (#462, #61)."""
 
 from __future__ import annotations
 
@@ -20,18 +13,18 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
-from maistro.runs.recovery_events import RECOVERY_EVENT_TYPE
+from maistro.runs.recovery_events import CanonicalRecoveryEventSink, RECOVERY_EVENT_TYPE
 
 
-class _RecordingSink:
-    """Records the canonical envelopes emitted by reconciliation."""
+class _RecordingCanonicalSink:
+    """Records the canonical envelopes emitted by the recovery adapter."""
 
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
 
-    async def emit(self, event: EventEnvelope) -> list[Any]:
+    async def emit(self, event: EventEnvelope) -> EventEnvelope:
         self.events.append(event)
-        return []
+        return event
 
 
 async def _running_node() -> tuple[InMemoryRunStore, str, str]:
@@ -55,6 +48,13 @@ async def _running_node() -> tuple[InMemoryRunStore, str, str]:
     return store, run.run_id, node_run.node_run_id
 
 
+def _canonical_recovery_sink(
+    store: InMemoryRunStore,
+) -> tuple[CanonicalRecoveryEventSink, _RecordingCanonicalSink]:
+    recorded = _RecordingCanonicalSink()
+    return CanonicalRecoveryEventSink(store, recorded), recorded
+
+
 async def _cancelled_attempt(store: InMemoryRunStore, node_run_id: str) -> Any:
     attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
     return await store.transition_attempt(
@@ -69,14 +69,14 @@ async def test_a_recovered_cancellation_says_so_on_the_canonical_event_stream() 
     """Recovery must name canonical scope and execution identity, not just payload ids."""
     store, run_id, node_run_id = await _running_node()
     attempt = await _cancelled_attempt(store, node_run_id)
-    sink = _RecordingSink()
-    reconciler = AttemptLifecycleReconciler(store, events=sink)
+    sink, recorded = _canonical_recovery_sink(store)
 
-    await reconciler.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+    await AttemptLifecycleReconciler(store, events=sink).reconcile(
+        attempt, cancellation=CancellationCause.RECOVERED
+    )
 
-    assert len(sink.events) == 1
-    event = sink.events[0]
-    assert isinstance(event, EventEnvelope)
+    assert len(recorded.events) == 1
+    event = recorded.events[0]
     assert event.type == RECOVERY_EVENT_TYPE
     assert event.workspace_id == "ws-recovery-events"
     assert event.project_id
@@ -92,28 +92,27 @@ async def test_a_recovered_cancellation_says_so_on_the_canonical_event_stream() 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_a_requested_cancellation_is_a_different_disposition() -> None:
-    """The two meanings of a CANCELLED Attempt reach opposite rows of the table."""
     store, _run_id, node_run_id = await _running_node()
     attempt = await _cancelled_attempt(store, node_run_id)
-    sink = _RecordingSink()
-    reconciler = AttemptLifecycleReconciler(store, events=sink)
+    sink, recorded = _canonical_recovery_sink(store)
 
-    await reconciler.reconcile(attempt, cancellation=CancellationCause.REQUESTED)
+    await AttemptLifecycleReconciler(store, events=sink).reconcile(
+        attempt, cancellation=CancellationCause.REQUESTED
+    )
 
-    assert sink.events[0].payload["disposition"] == "terminalized"
-    assert sink.events[0].payload["node_run_status"] == RunStatus.CANCELLED.value
+    assert recorded.events[0].payload["disposition"] == "terminalized"
+    assert recorded.events[0].payload["node_run_status"] == RunStatus.CANCELLED.value
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_the_envelope_ids_take_the_reader_back_to_the_spine() -> None:
-    """Universal identity belongs on the envelope; payload remains domain evidence."""
     store, run_id, node_run_id = await _running_node()
     attempt = await _cancelled_attempt(store, node_run_id)
-    sink = _RecordingSink()
+    sink, recorded = _canonical_recovery_sink(store)
 
     await AttemptLifecycleReconciler(store, events=sink).reconcile(attempt)
 
-    event = sink.events[0]
+    event = recorded.events[0]
     assert event.run_id == run_id
     assert event.node_run_id == node_run_id
     assert event.attempt_id == attempt.attempt_id
@@ -123,24 +122,22 @@ async def test_the_envelope_ids_take_the_reader_back_to_the_spine() -> None:
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_an_accepted_outcome_is_announced_as_accepted() -> None:
-    """Replaying completed evidence is not mislabeled as crash recovery."""
     store, _run_id, node_run_id = await _running_node()
     attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
     attempt = await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
     attempt = await store.transition_attempt(
         attempt.attempt_id, AttemptStatus.COMPLETED, result={"text": "done"}
     )
-    sink = _RecordingSink()
+    sink, recorded = _canonical_recovery_sink(store)
 
     await AttemptLifecycleReconciler(store, events=sink).reconcile(attempt)
 
-    assert sink.events[0].payload["disposition"] == "accepted"
-    assert sink.events[0].payload["node_run_status"] == RunStatus.COMPLETED.value
+    assert recorded.events[0].payload["disposition"] == "accepted"
+    assert recorded.events[0].payload["node_run_status"] == RunStatus.COMPLETED.value
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_without_a_sink_recovery_still_happens() -> None:
-    """A missing observer must not prevent lifecycle repair."""
     store, _run_id, node_run_id = await _running_node()
     attempt = await _cancelled_attempt(store, node_run_id)
 
@@ -151,41 +148,41 @@ async def test_without_a_sink_recovery_still_happens() -> None:
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_the_lease_sweep_announces_what_it_reclaimed() -> None:
-    """The production recovery seam produces one scoped canonical envelope."""
     store, run_id, node_run_id = await _running_node()
     attempt = await store.create_attempt(
         node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
     )
     assert attempt.execution_lease is not None
     after = attempt.execution_lease.expires_at + timedelta(seconds=1)
+    sink, recorded = _canonical_recovery_sink(store)
 
-    sink = _RecordingSink()
     reclaimed = await store.reclaim_expired_attempts(now=after)
     assert len(reclaimed) == 1
     await AttemptLifecycleReconciler(
         store, events=sink, source="maistro.container.recover_abandoned_attempts"
     ).reconcile(reclaimed[0])
 
-    assert [event.payload["disposition"] for event in sink.events] == ["recovered_and_parked"]
-    assert sink.events[0].source == "maistro.container.recover_abandoned_attempts"
-    assert sink.events[0].run_id == run_id
-    assert sink.events[0].workspace_id == "ws-recovery-events"
+    assert [event.payload["disposition"] for event in recorded.events] == [
+        "recovered_and_parked"
+    ]
+    assert recorded.events[0].source == "maistro.container.recover_abandoned_attempts"
+    assert recorded.events[0].run_id == run_id
+    assert recorded.events[0].workspace_id == "ws-recovery-events"
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_a_failed_attempt_parks_and_says_it_parked() -> None:
-    """A failed Attempt is not mislabeled as a recovered cancellation."""
     store, _run_id, node_run_id = await _running_node()
     attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
     attempt = await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
     attempt = await store.transition_attempt(
         attempt.attempt_id, AttemptStatus.FAILED, error="node raised"
     )
-    sink = _RecordingSink()
+    sink, recorded = _canonical_recovery_sink(store)
 
     parked = await AttemptLifecycleReconciler(store, events=sink).reconcile(attempt)
 
     assert parked.status is RunStatus.WAITING
-    assert sink.events[0].payload["disposition"] == "parked"
-    assert sink.events[0].payload["attempt_status"] == AttemptStatus.FAILED.value
-    assert sink.events[0].payload["error"] == "node raised"
+    assert recorded.events[0].payload["disposition"] == "parked"
+    assert recorded.events[0].payload["attempt_status"] == AttemptStatus.FAILED.value
+    assert recorded.events[0].payload["error"] == "node raised"
