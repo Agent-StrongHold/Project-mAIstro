@@ -187,6 +187,10 @@ services:
       # Foundation state (SQLite/vault/state) on a persistent volume. /data is
       # pre-owned by the nonroot uid 65532 in the image so the volume is writable.
       - CONDUCTOR_DATA_DIR=/data
+      # Human OIDC login (disabled by {}); secrets remain in the /data vault.
+      - OAUTH_PROVIDERS=${OAUTH_PROVIDERS:-{}}
+      - OAUTH_PUBLIC_ORIGIN=${OAUTH_PUBLIC_ORIGIN:-}
+      - OAUTH_SUCCESS_PATH=${OAUTH_SUCCESS_PATH:-/}
       - HARDWARE_PRESET=${HARDWARE_PRESET:-laptop}
     volumes:
       - conductor-data:/data

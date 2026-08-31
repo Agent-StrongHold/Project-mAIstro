@@ -114,8 +114,6 @@
         "docs/specs/SPEC-180-maistro-install-bootstrap.md [boundary]",
         "docs/specs/SPEC-182-a2a-delegation-implementation.md [behavioral]",
         "docs/specs/SPEC-182-a2a-delegation-implementation.md [boundary]",
-        "docs/specs/SPEC-183-oauth2-user-auth-implementation.md [behavioral]",
-        "docs/specs/SPEC-183-oauth2-user-auth-implementation.md [boundary]",
         "docs/specs/SPEC-192-persona-authoring-pipeline.md [behavioral]",
         "docs/specs/SPEC-192-persona-authoring-pipeline.md [boundary]",
         "docs/specs/SPEC-193-slot-aware-inference-gateway.md [behavioral]",

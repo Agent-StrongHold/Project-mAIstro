@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
+from routes import auth as auth_routes
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
@@ -13,6 +15,13 @@ from starlette.responses import Response
 logger = logging.getLogger("hive.request")
 
 _SKIP_PREFIXES = ("/favicon.ico", "/docs", "/openapi.json", "/redoc")
+_OAUTH_CALLBACK_RE = re.compile(r"^/v1/auth/oauth/[^/]+/callback$")
+
+
+def _safe_query(request: Request) -> dict[str, str] | None:
+    if _OAUTH_CALLBACK_RE.fullmatch(request.url.path):
+        return None
+    return dict(request.query_params) or None
 
 
 class RequestLogMiddleware(BaseHTTPMiddleware):
@@ -25,13 +34,12 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         started = time.perf_counter()
-        session = request.cookies.get("hive_session", "")[:8]
         logger.debug(
-            "→ %s %s query=%s session=%s",
+            "→ %s %s query=%s session_cookie=%s",
             request.method,
             path,
-            dict(request.query_params) or None,
-            session or "-",
+            _safe_query(request),
+            "present" if request.cookies.get("hive_session") else "-",
         )
 
         response: Response | None = None
@@ -68,11 +76,9 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
 def _safe_user(request: Request) -> dict[str, Any] | None:
     try:
-        from routes.auth import get_current_user
-
         sid = request.cookies.get("hive_session")
         if not sid:
             return None
-        return get_current_user(sid)
+        return auth_routes.get_current_user(sid)
     except Exception:
         return None

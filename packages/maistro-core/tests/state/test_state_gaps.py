@@ -243,6 +243,16 @@ class TestPersistedStore:
         assert store.get_raw("raws", "r1") == '{"x": 1}'
         state.close()
 
+    def test_put_raw_if_absent_never_overwrites(self, db_path: Path) -> None:
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        assert store.put_raw_if_absent("raws", "r1", '{"owner": "first"}') is True
+        assert store.put_raw_if_absent("raws", "r1", '{"owner": "second"}') is False
+        assert store.get_raw("raws", "r1") == '{"owner": "first"}'
+        state.close()
+
     def test_get_raw_missing_key_returns_none(self, db_path: Path) -> None:
         state = State(db_path=str(db_path))
         store = PersistedStore(state)
