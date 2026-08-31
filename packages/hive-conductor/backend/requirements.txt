@@ -5,7 +5,21 @@ pydantic>=2.0.0,<3
 pydantic-settings>=2.0.0,<3
 python-multipart>=0.0.9,<1
 httpx>=0.27.0,<1
-langfuse>=3.9.3,<5
+# langfuse was listed here and imported nowhere. The Langfuse integration
+# is backend/adapters/telemetry_langfuse.py, which talks OTLP to a Langfuse
+# endpoint using the OpenTelemetry SDK and never touches the Langfuse SDK.
+# The OpenTelemetry packages it does import are `maistro-core[observability]`,
+# reachable as the `hive-conductor[observability]` extra; they are deliberately
+# NOT added here, because the adapter is inert unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set and the base image should not carry an
+# exporter it will not use (#514).
+#
+# That decision stands, but it had a consequence nobody stated: it also removed
+# the ability to opt in. A container built from packages/hive-conductor/
+# Dockerfile could not trace however it was configured, and the adapter
+# reported the missing packages as tracing being switched off. The Dockerfile
+# now takes `--build-arg INSTALL_OBSERVABILITY=1`, and the adapter says which
+# of the two is true (#668).
 argon2-cffi>=23.1.0,<25
 bcrypt>=4.0.0,<6
 cryptography>=50.0.0,<51

@@ -129,6 +129,10 @@ class DurableHybridLearningStore:
     ) -> None:
         await self._store.mark_outcome(learning_ids, success, org_id=org_id)
 
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Delegate: provenance is the wrapped store's to answer (#709)."""
+        return await self._store.produced_by(run_id, org_id=org_id)
+
     async def check_auto_promotions(
         self, threshold: int = 5, *, org_id: str = ""
     ) -> list[Learning]:

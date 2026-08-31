@@ -25,8 +25,17 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+# This list is no longer a line-for-line translation of
+# backend/requirements.txt, and the difference is deliberate (#514). The two
+# files are consumed by different installers: the Dockerfile pip-installs
+# `/packages/maistro-core` and *then* requirements.txt, so the image gets
+# core's hard dependencies from core itself, while this list is what a wheel
+# install of hive-conductor resolves. Restating a dependency the backend never
+# imports gave the app a second version range that could drift from the range
+# held by the package that actually imports it, and made the wheel claim a
+# requirement it does not have. requirements.txt keeps its own restatements
+# and its own reasons; it is a separate resolution, not a copy of this one.
 dependencies = [
-    # Translated from backend/requirements.txt, bounds preserved verbatim.
     "pyyaml>=6.0.0,<7",
     "fastapi>=0.115.0,<1",
     "uvicorn[standard]>=0.32.0,<1",
@@ -34,35 +43,39 @@ dependencies = [
     "pydantic-settings>=2.0.0,<3",
     "python-multipart>=0.0.9,<1",
     "httpx>=0.27.0,<1",
-    # maistro-server declares the same dep with a lower floor (>=3.9.3,<5
-    # there too after E2); the workspace resolves langfuse 4.x, so the cap
-    # is <5 in both rather than the <3 a naive "next major" read would give.
-    "langfuse>=3.9.3,<5",
-    "argon2-cffi>=23.1.0,<25",
-    "bcrypt>=4.0.0,<6",
     "cryptography>=50.0.0,<51",
-    "structlog>=24.1.0,<26",
     "sqlalchemy[asyncio]>=2.0.0,<3",
-    # maistro-core is now declared properly here rather than only reached via
-    # sys.path (backend/tests/conftest.py) — that arrangement is what forced
-    # requirements.txt to restate maistro-core's own hard deps. The restated
-    # deps are deliberately KEPT: the Dockerfile still pip-installs
-    # requirements.txt directly (not this pyproject), and `regex` in particular
-    # is load-bearing there, so removing them would silently degrade the image.
+    # `[bcrypt]` rather than a bare `bcrypt` pin. Nothing under `backend/`
+    # imports bcrypt; the importer is `maistro.security.passwords`, which
+    # verifies pre-Argon2id columns. maistro-core now declares that extra, so
+    # the requirement is expressed by the package whose code has it, and this
+    # app asks for it because it is the deployment with legacy hashes (#514).
+    #
+    # argon2-cffi, regex and structlog were dropped from this list for the same
+    # reason with no extra needed: all three are hard dependencies of
+    # maistro-core, which is what imports them, and the backend imports none of
+    # them itself.
     #
     # Bound is `>=0.9.0,<2` because 0.9.0 is what every package in this repo is
     # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
     # `>=1.0.0,<2` at tag time, per E1/E2 of the v1.0.0 release plan.
-    "maistro-core>=0.9.0,<2",
-    # `regex` powers Warden's per-search ReDoS timeout: before it became an
-    # unconditional import, this environment silently ran the security scanner
-    # on stdlib `re` with no timeout support at all — the exact degraded mode
-    # the conditional fallback was deleted for hiding. Declared by maistro-core
-    # too; pinned here so the app's own resolution cannot drop it.
-    "regex>=2024.5.15,<2027",
+    "maistro-core[bcrypt]>=0.9.0,<2",
 ]
 
+# `backend/adapters/telemetry_langfuse.py` exports spans to a Langfuse OTLP
+# endpoint using the OpenTelemetry SDK -- it never imports the Langfuse SDK,
+# which was nonetheless a hard dependency here while the packages the adapter
+# does import were declared nowhere. Its whole body sits under `try:` with an
+# `except Exception: _tracer = None`, so the absence read as "tracing off"
+# rather than "tracing is missing its dependencies" (#514).
+#
+# An extra rather than a hard dependency because the adapter is inert unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set, so a deployment that does not trace
+# should not carry an exporter. maistro-core owns the actual packages.
 [project.optional-dependencies]
+observability = [
+    "maistro-core[observability]>=0.9.0,<2",
+]
 # Test-only, matching the sibling packages' `dev` extra convention. These were
 # runtime entries in requirements.txt (which is also the CI/Docker install
 # path), so they stay in that file; here they are correctly optional.

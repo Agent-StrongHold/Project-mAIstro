@@ -239,7 +239,7 @@ testpaths = [
 asyncio_mode = "auto"
 markers = [
     "ac: Acceptance Criteria traceability (SPEC-NNN/AC-N)",
-    "contract: ADR-032 contract axis (boundary | behavioral | cross_service)",
+    "contract: ADR-032 contract axis (boundary | behavioral | cross-service)",
     "scope: test scope axis (unit | integration | e2e | property)",
 ]
 pythonpath = [
@@ -298,7 +298,7 @@ ignore_missing_imports = true
 # type-only dependency on a package the base install deliberately omits would
 # undo the point of making it optional.
 [[tool.mypy.overrides]]
-module = ["yaml", "asyncpg", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
+module = ["yaml", "asyncpg", "asyncpg.pool", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
 ignore_missing_imports = true
 
 # bip-utils is a declared runtime dep, but publishes no py.typed marker and has no

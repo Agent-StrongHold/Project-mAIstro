@@ -115,6 +115,10 @@ user_provider_config: JsonStore = JsonStore("user_provider_config")
 #: deployment configures for durability (#340, ADR-082926-3b80); the route
 #: used to keep its own file inside the image.
 dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
+#: DAG run history — the records behind the "Live DAG Runs" page. In-memory
+#: until #697; the page presented a 100-entry deque as history, empty after
+#: every restart.
+dag_runs: JsonStore = JsonStore("dag_runs")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -143,6 +147,7 @@ _all_json_stores: list[JsonStore] = [
     optimizer_proposals,
     user_provider_config,
     dashboard_layouts,
+    dag_runs,
 ]
 
 

@@ -25,7 +25,13 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_AWAITING_HUMAN_ANSWER,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+)
 
 
 class AskQuestionIn(BaseModel):
@@ -90,7 +96,7 @@ class HumanAskQuestionNode(BaseNode[AskQuestionIn, AskQuestionOut]):
         #      this node — which will pick up the answer above.
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(
-            "awaiting_human_answer",
+            PAUSE_AWAITING_HUMAN_ANSWER,
             resume_at=resume_at,
             metadata={
                 "question": inputs.question,

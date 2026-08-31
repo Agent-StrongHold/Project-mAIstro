@@ -222,6 +222,13 @@ class DesignOutput:
     trust_tier: TrustTier = TrustTier.T3
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Producer provenance (#709). An artifact shipped to a user with no record
+    # of what made it; `metadata` is a free-form dict and could hold anything,
+    # which is exactly why it is not where an identity belongs. Filled from the
+    # ambient execution context at write time when the caller does not name it.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
 
     @property
     def format(self) -> OutputFormat | None:
@@ -304,6 +311,18 @@ class DesignOutputShapeError(DesignError):
 
 class DesignProjectNotFoundError(DesignError):
     code = "DESIGN_PROJECT_NOT_FOUND"
+
+
+class DesignScopeError(DesignError):
+    """Raised when a project names no scope, or names one the caller is not in.
+
+    `org` is a soft scope axis (ADR-068), so nothing in the database resolves it
+    to an owner -- which is exactly why the store has to. Migration 003's
+    foreign key looked like this guard and was not: it asked whether the org was
+    a row in a table nothing writes, and so refused every value (#326).
+    """
+
+    code = "DESIGN_SCOPE_ERROR"
 
 
 class IncompatibleDesignSystemError(DesignError):

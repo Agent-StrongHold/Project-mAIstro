@@ -31,13 +31,13 @@ tests:
 source:
   - scripts/ac_state_notes.py
 ac-modules:
-  AC-1: ac_state_notes
-  AC-2: ac_state_notes
-  AC-3: ac_state_notes
-  AC-4: ac_state_notes
-  AC-5: ac_state_notes
-  AC-6: ac_state_notes
-  AC-7: ac_state_notes
+  AC-1: '@tool/ac_state_notes'
+  AC-2: '@tool/ac_state_notes'
+  AC-3: '@tool/ac_state_notes'
+  AC-4: '@tool/ac_state_notes'
+  AC-5: '@tool/ac_state_notes'
+  AC-6: '@tool/ac_state_notes'
+  AC-7: '@tool/ac_state_notes'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -88,6 +88,30 @@ relax its own bound would be the self-approving oracle #534 closed.
 
 A note therefore enters the bound only by merging, which is also why an
 abandoned branch cannot leave behind a floor the trunk cannot meet (#508).
+
+## Merge-time ownership of monotonicity
+
+The note fold remains trusted regression evidence, but an improvement observed
+during pull-request review is no longer required to be copied into a branch note
+before the PR can pass.
+
+That requirement became redundant once `scripts/check-ac-state.py` gained the
+actual-base merge guard. Merge groups measure the immutable base revision in a
+detached worktree and compare the exact merge candidate against that measurement.
+A regression still fails. An improvement becomes part of the next base by
+merging, so every later candidate is measured against it without requiring each
+open branch to rewrite bookkeeping after `develop` moves.
+
+This distinction is especially important for `design_coverage`, whose live
+`@pytest.mark.ac` execution can produce different measured values on repeated CI
+runs of the same source commit. Review-time exact equality would make transient
+outcomes authoritative repository state and force unrelated branches to re-bank
+noise. The merge serialization point is the authoritative monotonicity check;
+branch notes are not a synchronization requirement for every observed gain.
+
+`--bank` remains available where an explicit note is useful evidence or where a
+separate reviewed correction workflow requires one. The base-resolved fold still
+prevents a candidate from laundering a regression through its own note.
 
 ## Acceptance Criteria
 

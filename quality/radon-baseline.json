@@ -103,16 +103,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/agents/strategies/direct.py::DirectStrategy",
-      "path": "packages/maistro-core/src/maistro/agents/strategies/direct.py",
-      "line": 22,
-      "name": "DirectStrategy",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/agents/work_items.py::apply_clarifying_answers",
       "path": "packages/maistro-core/src/maistro/agents/work_items.py",
       "line": 166,

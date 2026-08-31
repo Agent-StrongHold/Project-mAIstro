@@ -11,21 +11,69 @@ NodeRun disposition themselves. Runtime never mutates Run/NodeRun state.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.runs.model import AcceptedNodeOutcome, Attempt, AttemptStatus, NodeRun
+from maistro.observability.correlation import bind_execution_context
+from maistro.runs.model import (
+    PAUSE_AWAITS_HUMAN,
+    AcceptedNodeOutcome,
+    Attempt,
+    AttemptStatus,
+    NodeRun,
+)
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
     AttemptLifecycleStore,
     CancellationCause,
 )
 from maistro.runs.store import RunIntegrityError
-from maistro.runtime import ExecutionCallable, ExecutionRuntime, RuntimeDeadlineExceeded
+from maistro.runtime import (
+    ExecutionCallable,
+    ExecutionPaused,
+    ExecutionRuntime,
+    RuntimeDeadlineExceeded,
+)
 
 AttemptReconciler = Callable[[Attempt], Awaitable[None]]
 AttemptContextFactory = Callable[[Attempt, Any], Any]
+
+
+class ExecutionYielded(ExecutionPaused):
+    """The work paused rather than finishing or failing.
+
+    A wait or HITL node that returns successfully with ``status="paused"`` has
+    not failed, and recording it as a failure loses the two things a pause is
+    for: what it waits on, and when to come back. `AttemptStatus.YIELDED` is
+    the physical outcome the canonical model already had for this -- it was
+    simply never produced by anything.
+
+    Carrying the disposition on an exception rather than a return value is
+    deliberate: it is the same seam `RuntimeDeadlineExceeded` uses, so the
+    generic Runtime keeps knowing nothing about wait or HITL semantics.
+
+    It subclasses `ExecutionPaused` so that Runtime can count the pause without
+    learning what it waits on (#642). Runtime's broad `except Exception` had no
+    way to tell a deliberate stop from a crash, so every successful pause was
+    recorded as a failed execution -- the same defect this class fixes one level
+    up, in the record the migration decision is actually read from.
+    """
+
+    def __init__(self, *, awaits_human: bool = False, evidence: object = None) -> None:
+        super().__init__("execution yielded")
+        self.awaits_human = awaits_human
+        self.evidence = evidence
+
+    def as_result(self) -> dict[str, object]:
+        """The JSON-safe record persisted on the yielded Attempt."""
+        record: dict[str, object] = {PAUSE_AWAITS_HUMAN: self.awaits_human}
+        if isinstance(self.evidence, dict):
+            record.update(self.evidence)
+        elif self.evidence is not None:
+            record["evidence"] = self.evidence
+        return record
 
 
 @runtime_checkable
@@ -55,6 +103,23 @@ def attempt_evidence_of(exc: BaseException) -> object | None:
     if isinstance(exc, CarriesAttemptEvidence):
         return exc.attempt_evidence
     return None
+
+
+def _failure_disposition(
+    exc: BaseException,
+) -> tuple[AttemptStatus, CancellationCause, str]:
+    """The physical outcome, cancellation meaning and recorded error for `exc`.
+
+    `CancellationCause.REQUESTED` for a cancelled coroutine: something asked the
+    work to stop, so the NodeRun is terminal rather than parked awaiting a retry
+    decision that has already been taken (#230). Recovery's own cancellations
+    reconcile elsewhere and keep the parking default.
+    """
+    if isinstance(exc, asyncio.CancelledError):
+        return AttemptStatus.CANCELLED, CancellationCause.REQUESTED, "execution cancelled"
+    if isinstance(exc, RuntimeDeadlineExceeded):
+        return AttemptStatus.TIMED_OUT, CancellationCause.RECOVERED, str(exc)
+    return AttemptStatus.FAILED, CancellationCause.RECOVERED, str(exc)
 
 
 def _materialize_execution_context(
@@ -193,6 +258,56 @@ class AttemptExecutionService:
         context_factory: AttemptContextFactory | None = None,
         prior_completion_accepted: bool = False,
     ) -> Attempt:
+        """Execute one physical Attempt under the canonical correlation context.
+
+        This wrapper exists only to own the correlation scope. `node_run_id` is
+        known here; `attempt_id` is not known until the Attempt is persisted
+        several awaits later, so the stack is handed down and the inner method
+        pushes the second binding onto it when it has something true to say.
+        Unwinding here rather than there means both bindings end with the try,
+        including on the paths that re-raise.
+
+        `context_factory` still exists and still does its own thing: it attaches
+        canonical ids to the *domain's* execution context object, which is what
+        the executor receives as an argument. This is the ambient context, which
+        is what the executor's logs, spans and events read without being handed
+        anything. Neither replaces the other.
+
+        See :meth:`_execute_attempt` for the ordering this delegates to.
+        """
+        with contextlib.ExitStack() as correlation:
+            correlation.enter_context(bind_execution_context(node_run_id=node_run_id))
+            return await self._execute_attempt(
+                node_run_id,
+                work_item,
+                execution_context,
+                executor=executor,
+                executor_id=executor_id,
+                runtime_id=runtime_id,
+                timeout_s=timeout_s,
+                resume_checkpoint_id=resume_checkpoint_id,
+                reconcile_logical=reconcile_logical,
+                context_factory=context_factory,
+                prior_completion_accepted=prior_completion_accepted,
+                correlation=correlation,
+            )
+
+    async def _execute_attempt(
+        self,
+        node_run_id: str,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        executor: ExecutionCallable,
+        executor_id: str = "",
+        runtime_id: str | None = None,
+        timeout_s: float | None = None,
+        resume_checkpoint_id: str | None = None,
+        reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
+        prior_completion_accepted: bool = False,
+        correlation: contextlib.ExitStack,
+    ) -> Attempt:
         """Create, run, terminalize, and optionally defer successful reconciliation.
 
         ``reconcile_logical=False`` allows Graph-like domains to interpret a
@@ -222,7 +337,6 @@ class AttemptExecutionService:
             deadline_at = datetime.now(UTC) + timedelta(seconds=timeout_s)
 
         runtime_name = runtime_id or type(self._runtime).__name__
-        await self._lifecycle.prepare_execution(node_run_id)
         attempt = await self._store.create_attempt(
             node_run_id,
             runtime_id=runtime_name,
@@ -232,82 +346,96 @@ class AttemptExecutionService:
             lease_holder=executor_id or runtime_name,
             lease_ttl=self._lease_ttl,
         )
+        if attempt.execution_lease is None:
+            raise RunIntegrityError("store-created Attempt is missing its execution lease")
+
+        # Persist physical recovery evidence before logical state claims that
+        # execution is active (#544). If the process dies after this point, the
+        # ordinary lease sweep has an Attempt to reclaim.
+        await self._lifecycle.prepare_execution(node_run_id)
+        return await self.execute_claimed(
+            attempt,
+            work_item,
+            execution_context,
+            executor=executor,
+            timeout_s=timeout_s,
+            reconcile_logical=reconcile_logical,
+            context_factory=context_factory,
+        )
+
+    async def execute_claimed(
+        self,
+        attempt: Attempt,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        executor: ExecutionCallable,
+        timeout_s: float | None = None,
+        reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
+    ) -> Attempt:
         lease = attempt.execution_lease
         if lease is None:
-            raise RunIntegrityError("store-created Attempt is missing its execution lease")
+            raise RunIntegrityError("claimed Attempt is missing its execution lease")
         token = lease.fencing_token
-        attempt = await self._store.transition_attempt(
-            attempt.attempt_id,
-            AttemptStatus.RUNNING,
-            fencing_token=token,
-        )
-        runtime_context = _materialize_execution_context(
-            attempt,
-            execution_context,
-            context_factory,
-        )
+        if attempt.status is AttemptStatus.CREATED:
+            attempt = await self._store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=token,
+            )
+        elif attempt.status is not AttemptStatus.RUNNING:
+            raise RunIntegrityError("execute_claimed requires an active Attempt")
 
-        heartbeat = self._start_heartbeat(attempt.attempt_id, token)
-        try:
-            # Nested so the `finally` runs *before* any handler below: a renewal
-            # landing between the executor stopping and the Attempt terminalizing
-            # would race the terminal write, and the whole point of stopping is
-            # that this process is done vouching for the work.
+        with contextlib.ExitStack() as correlation:
+            correlation.enter_context(bind_execution_context(node_run_id=attempt.node_run_id))
+            correlation.enter_context(bind_execution_context(attempt_id=attempt.attempt_id))
+            runtime_context = _materialize_execution_context(
+                attempt,
+                execution_context,
+                context_factory,
+            )
+            heartbeat = self._start_heartbeat(attempt.attempt_id, token)
             try:
-                result = await self._runtime.execute(
-                    work_item,
-                    runtime_context,
-                    execution_id=attempt.attempt_id,
-                    executor=executor,
-                    timeout_s=timeout_s,
+                try:
+                    result = await self._runtime.execute(
+                        work_item,
+                        runtime_context,
+                        execution_id=attempt.attempt_id,
+                        executor=executor,
+                        timeout_s=timeout_s,
+                    )
+                finally:
+                    await self._stop_heartbeat(heartbeat)
+            except ExecutionYielded as exc:
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    AttemptStatus.YIELDED,
+                    fencing_token=token,
+                    result=exc.as_result(),
                 )
-            finally:
-                await self._stop_heartbeat(heartbeat)
-        except asyncio.CancelledError as exc:
+                await self._reconcile(terminal)
+                return terminal
+            except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
+                status, cause, error = _failure_disposition(exc)
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    status,
+                    fencing_token=token,
+                    result=attempt_evidence_of(exc),
+                    error=error,
+                )
+                await self._reconcile(terminal, cancellation=cause)
+                raise
             terminal = await self._terminalize(
                 attempt.attempt_id,
-                AttemptStatus.CANCELLED,
+                AttemptStatus.COMPLETED,
                 fencing_token=token,
-                result=attempt_evidence_of(exc),
-                error="execution cancelled",
+                result=result,
             )
-            # REQUESTED: this coroutine was cancelled while running, which means
-            # something asked the work to stop. The NodeRun is terminal, not
-            # parked awaiting a retry decision that has already been taken
-            # (#230). Recovery's cancellations reconcile elsewhere and keep the
-            # parking default.
-            await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
-            raise
-        except RuntimeDeadlineExceeded as exc:
-            terminal = await self._terminalize(
-                attempt.attempt_id,
-                AttemptStatus.TIMED_OUT,
-                fencing_token=token,
-                result=attempt_evidence_of(exc),
-                error=str(exc),
-            )
-            await self._reconcile(terminal)
-            raise
-        except Exception as exc:
-            terminal = await self._terminalize(
-                attempt.attempt_id,
-                AttemptStatus.FAILED,
-                fencing_token=token,
-                result=attempt_evidence_of(exc),
-                error=str(exc),
-            )
-            await self._reconcile(terminal)
-            raise
-
-        terminal = await self._terminalize(
-            attempt.attempt_id,
-            AttemptStatus.COMPLETED,
-            fencing_token=token,
-            result=result,
-        )
-        if reconcile_logical:
-            await self._reconcile(terminal)
-        return terminal
+            if reconcile_logical:
+                await self._reconcile(terminal)
+            return terminal
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
         """Accept one persisted physical result with an explicit logical disposition."""
@@ -371,10 +499,12 @@ class AttemptExecutionService:
 
 
 __all__ = [
+    "PAUSE_AWAITS_HUMAN",
     "AttemptContextFactory",
     "AttemptExecutionService",
     "AttemptExecutionStore",
     "AttemptReconciler",
     "CarriesAttemptEvidence",
+    "ExecutionYielded",
     "attempt_evidence_of",
 ]

@@ -93,6 +93,54 @@ class EngineService:
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "schedule_store", None)
 
+    @property
+    def schedule_admitter(self) -> Any:
+        """The core Container's schedule admission seam, or None.
+
+        None for the same reason as `schedule_store`: without the bridge there
+        is no canonical spine in this process, and the scheduler then keeps the
+        behavior it had — evaluate locally and run the registered DAG — rather
+        than failing every tick. With the bridge, this is what makes a firing
+        and its Run one act instead of two (#231).
+        """
+        container = getattr(getattr(self, "_agent_port", None), "container", None)
+        return getattr(container, "schedule_admitter", None)
+
+    @property
+    def outcome_store(self) -> Any:
+        """The core Container's durable outcome store, or None.
+
+        None for the same reason as `run_store`: without the bridge there is no
+        durable store in this process, and `feedback_service` then keeps the
+        Hive-local in-memory one rather than writing thumbs nowhere.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "outcome_store", None)
+
+    def _wire_outcome_store(self) -> None:
+        """Point feedback writes at the container's durable store.
+
+        `set_outcome_store` has existed since the feedback route landed and had
+        no production caller, so every thumb a user gave went into a capped
+        in-process list and was lost on restart. This is the call the setter's
+        own docstring already described (#696).
+
+        Without a container this installs a *fresh* Hive-local store rather
+        than leaving whatever was bound before. Returning early would be a bug
+        on the second start in one process -- an engine restart, or a
+        configuration retry that falls back to the stub -- because the module
+        global would still point at the previous container's store, and
+        feedback would keep being written to a database this engine no longer
+        owns, or to a closed connection. `start()` decides the store for the
+        engine it is starting; it does not inherit one.
+        """
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+        from services import feedback_service
+
+        store = self.outcome_store or InMemoryOutcomeStore()
+        feedback_service.set_outcome_store(store)
+        logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
+
     async def start(self, settings: Settings) -> None:
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
@@ -114,6 +162,15 @@ class EngineService:
             self._agent_port = StubAgentPort()
 
         self._wire_capabilities(settings)
+        self._wire_outcome_store()
+
+        # A fresh metrics buffer per engine start. `set_store` had no
+        # production caller -- the wired-but-unread shape #236 gates -- and a
+        # buffer carried across a restart would mix the previous process's
+        # observations into this one's window (#698).
+        from services.node_metrics_store import reset_store
+
+        reset_store()
 
         try:
             if settings.hive_mode == "demo":

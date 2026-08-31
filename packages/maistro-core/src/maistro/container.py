@@ -45,7 +45,12 @@ from maistro.runs.chat_admission import (
 )
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
 from maistro.runs.lifecycle import RUN_TRANSITIONS
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from maistro.runs.model import (
+    TERMINAL_RUN_STATUSES,
+    AttemptStatus,
+    Run,
+    RunStatus,
+)
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -53,6 +58,7 @@ from maistro.runs.wiring import (
     wire_execution_spine,
     wire_node_template_store,
 )
+from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
@@ -110,6 +116,7 @@ if TYPE_CHECKING:
     from maistro.protocols.strikes import StrikeTracker
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
+    from maistro.runs.consumption import ParkedPause
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -124,6 +131,13 @@ if TYPE_CHECKING:
     from maistro.types.skill import SkillDefinition
 
 logger = logging.getLogger("maistro.container")
+
+#: How many parked Runs `resume_parked_runs` will look at while trying to fill
+#: its work limit. The two are different numbers: every Run parked by a failed
+#: Attempt is permanently ineligible for resumption and sits in the oldest-first
+#: WAITING list forever, so a scan bounded by the work limit inspects the same
+#: ineligible rows every tick and never reaches a resumable one (#666 review).
+RESUME_SCAN_LIMIT = 1000
 
 
 @dataclass
@@ -190,6 +204,13 @@ class Container:
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
     schedule_store: ScheduleStore = None  # type: ignore[assignment]
+    #: The seam that turns a due schedule into canonical Runs (#231). Built
+    #: here rather than by each caller for the reason `task_admitter` and
+    #: `chat_admitter` are: a producer that constructs its own admitter is a
+    #: producer with its own idea of what admission means, which is what the
+    #: canonical spine exists to stop. `None` when there is no template store,
+    #: because an admitter that cannot resolve a template cannot admit.
+    schedule_admitter: ScheduleRunAdmitter | None = None
     #: Delegation dependencies (#147). Read by `build_node_resolver`, which is
     #: what makes them admissible under ADR-082426-6201 — that ADR retired
     #: `a2a_broker` for having no reader, and check-wiring-reads.py enforces the
@@ -229,6 +250,11 @@ class Container:
     # process-wide singleton (quota/usage_log.py) so this container and any
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
+    #: Where `resume_parked_runs`' next scan of each parked status resumes.
+    #: In-process and deliberately not durable: losing it on restart costs one
+    #: lap back to the oldest page, which is where a fresh process would start
+    #: anyway. What it must not do is stay at zero forever (#666 review).
+    _resume_scan_offsets: dict[RunStatus, int] = field(default_factory=dict)
     # Wired in create_container (P1 resilience, ADR-066).
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
@@ -378,6 +404,13 @@ class Container:
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                # The Run names this turn for the session store, so a second
+                # Attempt under the same Run appends nothing rather than
+                # writing the user's message again (#327, ADR-083026-5fab).
+                # `None` when no Run was admitted: a container with no chat
+                # admitter has no identity to give, and an append with none is
+                # the unchanged one.
+                turn_id=run.run_id if run is not None else None,
             )
             return dispatched
 
@@ -673,49 +706,256 @@ class Container:
         admitted canonical work nobody would ever execute.
 
         Eligibility is `executable_by_consumer`: QUEUED, an allowlisted
-        admission source, one registered node. The claim is the QUEUED→RUNNING
-        lifecycle transition itself — the transition table is the mutex, so a
-        concurrent tick's loser skips instead of double-executing. A Run whose
-        node then fails is parked by the reconciler (the recovery
-        disposition's WAITING row), never silently retried by the next tick.
+        admission source, one registered node. Claiming atomically persists the
+        RUNNING Run, RUNNING NodeRun, and a leased CREATED Attempt; the Run row
+        is the cross-process mutex and the Attempt lease is the recovery proof.
+        A node failure is parked by the reconciler and never silently retried.
         """
+        from maistro.runs.consumer_claim import ConsumerClaimLost
         from maistro.runs.consumption import (
             ScheduleAttemptExecutor,
             consumer_owns,
             executable_by_consumer,
             unresolvable_reason,
         )
+        from maistro.runs.store import run_cursor_key
 
-        queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
-        executor = ScheduleAttemptExecutor(self.run_store)
+        # `limit` bounds successful executions, not visibility into QUEUED.
+        # Page by the stable oldest-first key so permanently ineligible rows
+        # cannot pin every future tick behind the same bounded prefix.
+        after = None
+        # The wired resolver, not the bare registry. `agent.delegate_remote`,
+        # `agent.spawn_harness` and `rsi.quota_pace_trigger` are all registered,
+        # so they pass eligibility either way; constructed bare they then fail,
+        # or compute against empty state, inside a Run that looks properly
+        # admitted. Building it per tick rather than per Run keeps the cost off
+        # the loop while still reading whatever this Container was wired with.
+        executor = ScheduleAttemptExecutor(
+            self.run_store,
+            node_resolver=build_node_resolver(
+                harness_adapters=self.harness_adapters,
+                usage_log=self.usage_log,
+                a2a_delegator=self.a2a_delegator,
+                guest_peers=self.guest_peers,
+                run_store=self.run_store,
+            ),
+        )
         executed = 0
-        for run in queued:
-            if not consumer_owns(run):
+        while executed < limit:
+            queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit, after=after)
+            if not queued:
+                break
+            for run in queued:
+                after = run_cursor_key(run)
+                if not consumer_owns(run):
+                    continue
+                # Owned and impossible: no later tick makes an unregistered kind
+                # appear, so this Run is disposed of rather than left QUEUED
+                # forever. A multi-node Run reaches neither branch — it is owed to
+                # the durable Graph traversal (#44/#34) and waits for it.
+                unresolvable = unresolvable_reason(run)
+                if unresolvable is not None:
+                    await self._fail_unresolvable_run(run.run_id, unresolvable)
+                    continue
+                if not executable_by_consumer(run):
+                    continue
+                try:
+                    await executor.execute(run)
+                except ConsumerClaimLost:
+                    # Another tick won the atomic Run + NodeRun + Attempt claim.
+                    continue
+                except Exception:
+                    # Any execution that got past claim owns leased physical
+                    # evidence, so ordinary recovery owns a process loss here.
+                    logger.warning(
+                        "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                    )
+                executed += 1
+                if executed >= limit:
+                    break
+        return executed
+
+    async def resume_parked_runs(self, *, limit: int = 100, now: datetime | None = None) -> int:
+        """Tick the consumer for parked Runs whose wait is over (#641). Returns how many resumed.
+
+        The read half of #636's write half. A Run that yielded parks WAITING or
+        PAUSED, and `execute_admitted_runs` polls `QUEUED` only — so a durably
+        correct pause was also a permanently inert one, and the obvious
+        workaround (requeue to QUEUED) is worse than the gap: the consumer
+        starts a *fresh* Attempt at the node's beginning, and a node that
+        dispatched before pausing dispatches again.
+
+        So this resumes only what a timer may safely re-enter:
+        `resumable_pause` requires a YIELDED Attempt (a failure's park is a
+        retry decision somebody else owns), an elapsed `resume_at`, and a
+        pause reason classified `RESUME_ON_ELAPSED` — a node that polls.
+        Answer-gated pauses are left parked and visible, which is why
+        `agent.delegate_remote` cannot be re-dispatched by this tick.
+
+        Same discipline as its three siblings: bounded, idempotent,
+        operator-scheduled, never self-starting (ADR-019). The claim is the
+        parked→RUNNING transition itself, so a concurrent tick's loser skips
+        rather than resuming the same Run twice.
+        """
+        from maistro.runs.consumption import (
+            ScheduleAttemptExecutor,
+            resumable_by_consumer,
+        )
+
+        moment = now if now is not None else datetime.now(UTC)
+        parked = await self._parked_candidates()
+
+        executor = ScheduleAttemptExecutor(
+            self.run_store,
+            node_resolver=build_node_resolver(
+                harness_adapters=self.harness_adapters,
+                usage_log=self.usage_log,
+                a2a_delegator=self.a2a_delegator,
+                guest_peers=self.guest_peers,
+                run_store=self.run_store,
+            ),
+        )
+        resumed = 0
+        for run in parked:
+            if resumed >= limit:
+                break
+            if not resumable_by_consumer(run):
                 continue
-            # Owned and impossible: no later tick makes an unregistered kind
-            # appear, so this Run is disposed of rather than left QUEUED
-            # forever. A multi-node Run reaches neither branch — it is owed to
-            # the durable Graph traversal (#44/#34) and waits for it.
-            unresolvable = unresolvable_reason(run)
-            if unresolvable is not None:
-                await self._fail_unresolvable_run(run.run_id, unresolvable)
-                continue
-            if not executable_by_consumer(run):
+            pause = await self._resumable_pause_for(run, moment)
+            if pause is None:
                 continue
             try:
                 claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
             except Exception:
                 # Another tick won the claim, or the Run moved on. Not ours.
                 continue
+            # Re-read the pause now the claim is ours (#666 review). The read
+            # above happened before it: between the two, another replica can
+            # have resumed this Run, yielded again with a later `resume_at`,
+            # and parked it back to the status this transition then found. The
+            # claim succeeds, and resuming on the pause read beforehand polls
+            # immediately instead of honouring the delay just recorded -- every
+            # replica collapsing the interval into a burst, which is the one
+            # thing a poll deadline exists to prevent.
+            fresh = await self._resumable_pause_for(claimed, moment)
+            if fresh is None:
+                await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
+                continue
             try:
-                await executor.execute(claimed)
+                await executor.resume(claimed, fresh)
             except Exception:
-                logger.warning(
-                    "admitted Run %s failed during consumption", run.run_id, exc_info=True
-                )
-                await self._settle_unstarted_consumption(run.run_id)
-            executed += 1
-        return executed
+                logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
+                await self._repark_after_failed_resume(run.run_id, fresh.node_run_id, run.status)
+            resumed += 1
+        return resumed
+
+    async def _parked_candidates(self) -> list[Run]:
+        """Every parked Run this tick will consider, oldest first.
+
+        The scan bound and the work bound are different numbers, and conflating
+        them starved the tick. `list_by_status` is oldest-first, so asking for
+        the *work* limit and filtering afterwards meant a standing backlog of
+        non-resumable WAITING Runs -- every Run parked by a failed Attempt is
+        one, and they sit there until somebody takes the retry decision -- made
+        every tick inspect the same ineligible rows and never reach a later
+        elapsed poll. Not until the backlog cleared: permanently.
+
+        Raising the bound only moved that cliff, it did not remove it: past
+        `RESUME_SCAN_LIMIT` ineligible rows the starvation returns exactly as
+        before, and a warning about it is a description, not a fix (#666 review,
+        second round). So the scan **rotates**: each tick resumes where the last
+        one stopped and wraps at the end. Work per tick stays bounded and every
+        parked Run is reached within one lap, however long the ineligible prefix
+        grows.
+
+        Offset paging over a table rows leave is approximate -- a Run
+        terminalizing ahead of the cursor shifts the page and one row can be
+        stepped over. That is acceptable here and nowhere near the defect being
+        fixed: the guarantee this needs is that no row is starved *forever*, and
+        a skipped row is picked up on the next lap. A row hidden behind a
+        permanent prefix never is.
+        """
+        parked: list[Run] = []
+        for status in (RunStatus.WAITING, RunStatus.PAUSED):
+            offset = self._resume_scan_offsets.get(status, 0)
+            batch = await self.run_store.list_by_status(
+                status, limit=RESUME_SCAN_LIMIT, offset=offset
+            )
+            # Wrap on a short page rather than on an empty one: a full page
+            # means there is more behind it, anything less means this pass has
+            # reached the end. Advancing past the end and waiting for an empty
+            # page would spend one whole tick seeing nothing.
+            self._resume_scan_offsets[status] = (
+                offset + RESUME_SCAN_LIMIT if len(batch) >= RESUME_SCAN_LIMIT else 0
+            )
+            parked.extend(batch)
+        return parked
+
+    async def _repark_after_failed_resume(
+        self,
+        run_id: str,
+        node_run_id: str,
+        parked_as: RunStatus,
+    ) -> None:
+        """Put a claimed Run back where the resume found it (#641).
+
+        `_settle_unstarted_consumption` is the wrong tool here and would be a
+        no-op: it declines to act when a NodeRun exists, and on this path one
+        always does -- that is the premise of resuming. Left alone, the Run
+        would sit RUNNING over a NodeRun that is still parked, which is exactly
+        the "claimed, with nothing running" state that helper exists to prevent,
+        one variant across.
+
+        The NodeRun being RUNNING is not on its own a reason to stand back
+        (#666 review). `prepare_execution` un-parks it *before* the Attempt is
+        created, so a failure in between leaves a RUNNING NodeRun with nothing
+        running under it -- and that state is invisible to both ticks: the
+        resume tick looks for parked Runs and abandoned-attempt recovery looks
+        for Attempts, of which there are none. What decides is whether an
+        Attempt is actually live, not what the NodeRun says.
+
+        Live means `RUNNING`, not merely non-terminal (#666 review, second
+        round). `CREATED` is the window between persisting the Attempt and
+        transitioning it: an exception there leaves a `CREATED` Attempt that
+        nothing owns. Reading it as live re-creates the same hole one step in,
+        and worse than the NodeRun case, because `ScheduleAttemptExecutor`
+        configures no lease TTL -- so nothing expires it and no recovery tick
+        reclaims it. It is re-parked with the rest.
+
+        Re-parking rather than failing, because nothing about the pause has
+        changed: the next tick may try again, and terminalizing would throw away
+        work over what is usually a transient error.
+        """
+        try:
+            node_run = await self.run_store.get_node_run(node_run_id)
+            if node_run is None or node_run.status in TERMINAL_RUN_STATUSES:
+                return
+            if node_run.status is RunStatus.RUNNING:
+                attempts = await self.run_store.list_attempts(node_run_id)
+                if any(a.status is AttemptStatus.RUNNING for a in attempts):
+                    # Something is genuinely executing, or died holding a lease.
+                    # Either way it is the recovery tick's, not this one's.
+                    return
+                await self.run_store.transition_node_run(node_run_id, parked_as)
+            await self.run_store.transition_run(run_id, parked_as)
+        except Exception:
+            logger.warning("parked Run %s could not be re-parked", run_id, exc_info=True)
+
+    async def _resumable_pause_for(self, run: Run, moment: datetime) -> ParkedPause | None:
+        """The one parked NodeRun this Run can be resumed through, or None.
+
+        A single-node Run has one NodeRun; more than one would mean the node was
+        restarted rather than continued, which is the state this tick exists to
+        avoid creating. Refusing to guess between them is the honest answer.
+        """
+        from maistro.runs.consumption import resumable_pause
+
+        node_runs = await self.run_store.list_node_runs(run.run_id)
+        if len(node_runs) != 1:
+            return None
+        node_run = node_runs[0]
+        attempts = await self.run_store.list_attempts(node_run.node_run_id)
+        return resumable_pause(node_run, attempts, now=moment)
 
     async def _fail_unresolvable_run(self, run_id: str, reason: str) -> None:
         """Terminalize an owned Run this process can never execute (#251).
@@ -732,27 +972,6 @@ class Container:
             logger.warning("unresolvable Run %s could not be settled", run_id, exc_info=True)
             return
         logger.warning("admitted Run %s cannot be executed here: %s", run_id, reason)
-
-    async def _settle_unstarted_consumption(self, run_id: str) -> None:
-        """Terminalize a claimed Run whose execution never left a record behind.
-
-        `ScheduleAttemptExecutor` handles the ordinary failure — the Attempt
-        records it and the reconciler parks. Reaching here means execution
-        failed *before* any NodeRun existed (an infrastructure error), and a
-        claimed RUNNING Run with no physical record would otherwise sit
-        indistinguishable from a process that died. With a NodeRun present the
-        parked/derived state is already the answer and this must not rewrite it.
-        """
-        try:
-            if await self.run_store.list_node_runs(run_id):
-                return
-            await self.run_store.transition_run(
-                run_id,
-                RunStatus.FAILED,
-                error="consumption_error",
-            )
-        except Exception:
-            logger.warning("claimed Run %s could not be settled", run_id, exc_info=True)
 
     async def list_durable_triggers(self) -> list[TriggerDefinition]:
         """List the durable trigger definitions backing the reactor loop."""
@@ -885,6 +1104,27 @@ class Container:
         )
 
 
+def _wire_schedule_admission(
+    run_store: RunStore,
+    template_store: GraphTemplateStore | None,
+    schedule_store: ScheduleStore,
+) -> ScheduleRunAdmitter | None:
+    """The third admitter, from the three stores the spine already wired.
+
+    Until now `ScheduleRunAdmitter` had no production caller at all — #251
+    found it admitting Runs nothing executed, and the other half of that gap
+    is that nothing constructed it either, so the live scheduler grew its own
+    create-and-advance logic instead (#231).
+
+    A function rather than an inline conditional because `create_container` is
+    already at the complexity ceiling: one more branch in it is one more thing
+    that has to be read to answer any other question about the wiring.
+    """
+    if template_store is None:
+        return None
+    return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -990,7 +1230,9 @@ async def create_container(
     # backend does not grow the orchestration branch count (#122).
     prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
 
-    episodic_store = InMemoryEpisodicStore()
+    episodic_store = await _wire_episodic_store(
+        database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
+    )
     project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
@@ -1025,6 +1267,7 @@ async def create_container(
         pg_pool=pg_pool,
     )
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
+    schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -1231,6 +1474,7 @@ async def create_container(
         node_template_store=node_template_store,
         graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
+        schedule_admitter=schedule_admitter,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
@@ -1284,6 +1528,40 @@ async def create_container(
         backend = "InMemory"
     logger.info("Container wired (%s stores)", backend)
     return container
+
+
+async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any) -> EpisodicStore:
+    """Select the episodic store from the configured relational backend.
+
+    Kept out of `create_container` for the reason `_wire_prompt_manager` states:
+    adding a backend must not grow that function's branch count (#122). The
+    `database_url` test lives here for the same reason.
+
+    Until #710 this read `InMemoryEpisodicStore()` unconditionally — and the
+    line sits *after* the backend branch, so a `postgresql://` URL got it too.
+    Every tier, weight and reinforcement count in ADR-080 was a property of one
+    process's uptime. A `memory://` deployment still gets the in-memory store,
+    and now that is a choice rather than the only option (ADR-083026-a322).
+
+    The URL decides, not the pool in hand: `pg_pool` can be a caller-supplied
+    pool for the durable-event stores while learnings, outcomes and sessions are
+    SQLite, and episodic memory belongs with those. Filing it in a database this
+    container does not own would also run this store's DDL there — which is how
+    `test_container_pg_durable_events.py` caught it.
+    """
+    if pg_pool is not None and database_url.startswith(POSTGRES_SCHEMES):
+        from maistro.persistence.pg_episodic import PgEpisodicStore
+
+        store = PgEpisodicStore(pg_pool)
+        await store.ensure_schema()
+        return store
+    if db_pool is not None:
+        from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
+
+        sqlite_store = SqliteEpisodicStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
+    return InMemoryEpisodicStore()
 
 
 async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
@@ -1396,7 +1674,18 @@ _REQUIRED_PG_TABLES: Final = (
     "outcomes",
     "quota_usage",
     "sessions",
+    # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
+    # for the same reason as `prompt_labels`: without it a database migrated
+    # only as far as 022 passes this preflight and then fails on the first
+    # identified append.
+    "session_turns",
     "prompts",
+    # A prompt label is a row of its own since 022 (#328). Listed beside
+    # `prompts` for the same reason the four above are listed at all: without
+    # it, a database migrated only as far as 021 passes this preflight and then
+    # fails on the first `upsert`, which is the report this list exists to
+    # replace.
+    "prompt_labels",
     # The canonical execution spine (#132). Listed here for the same reason as
     # the four above: a `postgresql://` deployment that skipped `alembic upgrade
     # head` should be told once, at startup, naming every table it is missing —
@@ -1690,10 +1979,24 @@ async def _wire_sqlite_backend(
         )
     conn = await aiosqlite.connect(path)
 
+    # The session store gets its own connection, because it is the only store
+    # here that holds a *transaction* across several statements (#327). A
+    # SQLite transaction belongs to its connection, not to the object that
+    # opened it: sharing one means another store's `commit()` can land between
+    # this one's `BEGIN IMMEDIATE` and its last insert -- committing half a
+    # message batch -- and a rollback here would discard that store's
+    # uncommitted work instead of only this store's (Codex, #327).
+    #
+    # For a file path the two connections are the same database. For a pathless
+    # `sqlite://` they are two in-memory databases, which is sound because
+    # nothing but this store reads `sessions` or `session_turns`, and that URL
+    # is already warned about above as non-durable.
+    session_conn = await aiosqlite.connect(path)
+
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
     sqlite_outcome_store = SqliteOutcomeStore(conn)
-    sqlite_session_store = SqliteSessionStore(conn)
+    sqlite_session_store = SqliteSessionStore(session_conn)
     await sqlite_quota_tracker.ensure_schema()
     await sqlite_learning_store.ensure_schema()
     await sqlite_outcome_store.ensure_schema()

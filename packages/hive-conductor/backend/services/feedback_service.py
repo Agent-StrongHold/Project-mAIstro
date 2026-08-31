@@ -9,12 +9,18 @@ Design boundary: the route is dumb — validate body + auth, hand off here.
 This service holds the outcome shape, the persistence call, and the
 canonical Hive-local outcome store singleton.
 
-The store is Hive-local (an InMemoryOutcomeStore instance owned by this
-module) so the route can persist signals deterministically even when the
-maistro-core engine bridge isn't initialized (e.g. test runs, dev mode
-without `MAISTRO_ROUTER_API_KEY`). The maistro bridge can later share
-the same instance via `set_outcome_store()` so the optimizer reads from
-one source of truth.
+The default store is Hive-local (an InMemoryOutcomeStore owned by this
+module) so the route can persist signals deterministically before the
+maistro-core engine bridge is initialized (test runs, dev mode without
+`MAISTRO_ROUTER_API_KEY`). `services.engine` calls `set_outcome_store()`
+at boot to replace it with the container's durable store, so a thumb
+survives a restart and the optimizer reads from one source of truth.
+
+`collect_thumbs` lives here rather than in the optimizer because it is the
+only supported way to read this signal. The optimizer and the topology
+comparison each used to iterate `store._outcomes` -- a private list that
+`InMemoryOutcomeStore` has and neither durable store does, so binding a
+durable store would have emptied both readers and raised nothing (#696).
 
 Returned shape:
     {"recorded": True, "outcome_id": <int>, "signal": "user_thumb"}
@@ -25,6 +31,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from maistro.constants import THUMB_WINDOW_DAYS
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import Outcome
 
@@ -103,3 +110,32 @@ async def record_thumb(
         "outcome_id": outcome_id,
         "signal": "user_thumb",
     }
+
+
+async def collect_thumbs(
+    dag_id: str = "",
+    *,
+    days: int = THUMB_WINDOW_DAYS,
+) -> dict[str, dict[str, Any]]:
+    """`{node_id: {up, down, comments}}` for one DAG, from the bound store.
+
+    The single reader of the thumbs signal. Both callers previously carried
+    their own copy of this loop over `store._outcomes`, which is two places
+    for the same aggregation to drift and two places the private attribute
+    had to be remembered.
+
+    A node id of `""` is a run-level thumb -- feedback on the whole run rather
+    than one node -- and is kept under that key rather than dropped, because
+    the optimizer scores it as a baseline against the DAG.
+    """
+    store = get_outcome_store()
+    by_node: dict[str, dict[str, Any]] = {}
+    for outcome in await store.list_thumbs(dag_id=dag_id, days=days):
+        slot = by_node.setdefault(outcome.node_id or "", {"up": 0, "down": 0, "comments": []})
+        if outcome.thumb == "up":
+            slot["up"] += 1
+        elif outcome.thumb == "down":
+            slot["down"] += 1
+            if outcome.thumb_comment:
+                slot["comments"].append(outcome.thumb_comment)
+    return by_node

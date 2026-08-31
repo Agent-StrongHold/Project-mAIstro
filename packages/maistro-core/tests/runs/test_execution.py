@@ -14,6 +14,7 @@ from maistro.runs import (
     InMemoryRunStore,
     RunStatus,
 )
+from maistro.runs.execution import ExecutionYielded
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 
 
@@ -234,3 +235,73 @@ async def test_failed_attempt_can_retry_same_logical_node_run() -> None:
     assert completed_node_run is not None and completed_node_run.status is RunStatus.COMPLETED
     assert resumed_run is not None and resumed_run.status is RunStatus.COMPLETED
     assert resumed_run.result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_yielded_attempt_is_a_pause_in_the_runtime_metrics_too() -> None:
+    """The two records of one event agree (#642).
+
+    `AttemptExecutionService` terminalizes the Attempt as YIELDED, and before
+    this the same escape was counted as a failed execution in `RuntimeMetrics`,
+    so the physical outcome and the migration-trigger measurement said different
+    things about the same pause. This is the end-to-end version of the runtime
+    unit tests: it goes through the class the consumer actually raises.
+    """
+    store, _run_id, node_run_id = await _node_run()
+    runtime = PythonExecutionRuntime()
+    service = AttemptExecutionService(store=store, runtime=runtime)
+
+    async def pause(_work: Any, _context: Any) -> None:
+        raise ExecutionYielded(awaits_human=True)
+
+    terminal = await service.execute(node_run_id, None, None, executor=pause)
+
+    assert terminal.status is AttemptStatus.YIELDED
+    metrics = runtime.metrics()
+    assert metrics.executions_yielded == 1
+    assert metrics.executions_failed == 0
+    assert metrics.executions_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_rejects_attempt_without_lease() -> None:
+    from maistro.runs.store import RunIntegrityError
+
+    store, _run_id, node_run_id = await _node_run()
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    attempt = Attempt(node_run_id=node_run_id, ordinal=1, runtime_id="test")
+
+    async def executor(_work: Any, _context: Any) -> None:
+        return None
+
+    with pytest.raises(RunIntegrityError, match="missing its execution lease"):
+        await service.execute_claimed(attempt, None, None, executor=executor)
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_rejects_terminal_attempt() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from maistro.runs.store import RunIntegrityError
+
+    store, _run_id, node_run_id = await _node_run()
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    attempt = await store.create_attempt(
+        node_run_id,
+        runtime_id="test",
+        lease_holder="test",
+        lease_ttl=timedelta(seconds=30),
+    )
+    terminal = Attempt.model_validate(
+        {
+            **attempt.model_dump(mode="python"),
+            "status": AttemptStatus.COMPLETED,
+            "finished_at": datetime.now(UTC),
+        }
+    )
+
+    async def executor(_work: Any, _context: Any) -> None:
+        return None
+
+    with pytest.raises(RunIntegrityError, match="requires an active Attempt"):
+        await service.execute_claimed(terminal, None, None, executor=executor)

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.types.memory import REINFORCE_DELTA
+
 if TYPE_CHECKING:
     from datetime import datetime
 
@@ -38,6 +41,17 @@ class LearningStore(Protocol):
 
     async def mark_used(self, learning_ids: list[int]) -> None:
         """Increment hit_count for used learnings."""
+        ...
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Return the learnings one Run produced.
+
+        The read that makes producer provenance worth recording. A learning is a
+        correction the system applies to future work, so when one turns out to
+        be wrong the first question is which execution taught it -- and until
+        #709 nothing could answer it. Scoped like every other read here: an
+        `org_id` filters, and a blank one matches only rows that have none.
+        """
         ...
 
     async def mark_outcome(
@@ -105,7 +119,7 @@ class EpisodicStore(Protocol):
         """Retrieve relevant memories, scope-filtered."""
         ...
 
-    async def reinforce(self, memory_id: str, delta: float = 0.05) -> None:
+    async def reinforce(self, memory_id: str, delta: float = REINFORCE_DELTA) -> None:
         """Reinforce a memory (increase weight, clamped to tier ceiling)."""
         ...
 
@@ -202,6 +216,30 @@ class OutcomeStore(Protocol):
         """List recent outcomes for admin inspection."""
         ...
 
+    async def list_thumbs(
+        self,
+        *,
+        dag_id: str = "",
+        days: int = THUMB_WINDOW_DAYS,
+        limit: int = THUMB_LIMIT,
+        org_id: str = "",
+    ) -> list[Outcome]:
+        """Outcomes carrying a thumb, most recent first.
+
+        The optimizer's user-satisfaction signal. It exists as a protocol
+        method because the only reader used to be
+        `getattr(store, "_outcomes", [])` -- a private list that
+        `InMemoryOutcomeStore` has and the two durable stores do not, so
+        wiring a durable store would have emptied the signal and raised
+        nothing (#696).
+
+        `dag_id` scoping keeps the reader's original rule: a thumb whose own
+        `dag_id` is empty matches every DAG. Those are thumbs recorded before
+        the attribution wire existed, and dropping them would discard real
+        user feedback to tidy a filter.
+        """
+        ...
+
 
 @runtime_checkable
 class SkillMutationStore(Protocol):
@@ -246,8 +284,26 @@ class SessionStore(Protocol):
         self,
         session_id: str,
         messages: list[dict[str, str]],
+        turn_id: str | None = None,
     ) -> None:
-        """Append messages to session history."""
+        """Append messages to session history, at most once per turn identity.
+
+        `turn_id` names the turn the batch belongs to (ADR-083026-5fab). It is
+        opaque to the store, and a batch appended under an identity already
+        recorded for the session is a retry: nothing is written, nothing is
+        raised. Omitting it leaves the append unchanged, which is what every
+        caller that does not know it is retrying should do.
+        """
+        ...
+
+    async def produced_runs(self, session_id: str) -> list[str]:
+        """The canonical Runs that produced this session's turns, oldest first.
+
+        The session-to-Run direction, which until ADR-083026-56ee existed only
+        as a coincidence of one call site passing a Run id as an opaque turn
+        identity. Distinct, and never blank: a turn appended with no execution
+        in scope contributes nothing rather than an empty name.
+        """
         ...
 
     async def delete_session(self, session_id: str) -> None:

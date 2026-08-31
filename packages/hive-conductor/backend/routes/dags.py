@@ -259,19 +259,16 @@ async def run_dag(dag_id: str) -> dict:
     log_audit("dag_run", "system", target=dag_id)
     exec_id = str(uuid4())
     try:
-        import time as _time
+        import contextlib
+        import logging
 
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        _start = _time.monotonic()
         store = get_dag_run_store()
-        run = await store.start_run(run_id=exec_id)
+        await store.start_run(run_id=exec_id, dag_id=dag_id)
         # Human-initiated run from the UI — interactive isolation floor (ADR-093)
         result = await execute_dag(dag_data, execution_mode="interactive")
-        _elapsed_ms = int((_time.monotonic() - _start) * 1000)
-        run.status = "completed"
-        run.result = result
         # Store node results as events for eval-judge and UI
         for nid, nr in result.get("node_results", {}).items():
             await store.append_event(
@@ -281,7 +278,29 @@ async def run_dag(dag_id: str) -> dict:
                 capability=nid,
                 payload={"source": "llm", "response": nr.get("response", "")[:2000]},
             )
-        # Record node metrics (Signal #5)
+        # Record node metrics (Signal #5).
+        #
+        # Only what this path measured. It knows each node's outcome and the
+        # model that node was actually called with, and nothing about any
+        # individual node's latency, tokens, or cost. Those used to be filled
+        # in with the whole-DAG elapsed time divided by the cycle count and
+        # zeroes -- so the optimizer, which weights cost at 0.15, scored every
+        # variant as free and every node as equally fast (#698). The DAG-level
+        # timer went with them: it existed only to be divided.
+        #
+        # `model_used` is not among them. The first version of this change
+        # dropped it with the rest, because the old code reached for the *first
+        # node's* model behind a hardcoded fallback and called that the model
+        # for every node. But `graph_runner` resolves and reports each node's
+        # own model now, so this is a measurement and not a guess -- and
+        # without it `topology_compare`, whose default grouping is
+        # `model_used`, collapses every new observation into one `(unset)`
+        # bucket and can no longer compare model variants at all (Codex, #698).
+        # A tool node runs no model and reports none, which is correct.
+        #
+        # `project_id` is likewise absent rather than `""`: this route carries
+        # no project scope, and an empty string is a value the project filter
+        # matches against.
         try:
             from services.node_metrics_store import NodeObservation
             from services.node_metrics_store import get_store as get_metrics
@@ -296,20 +315,48 @@ async def run_dag(dag_id: str) -> dict:
                         project_id="",
                         dag_id=dag_id,
                         phase="COMPLETED" if nr.get("success") else "FAILED",
-                        latency_ms=_elapsed_ms // max(result.get("cycles", 1), 1),
-                        tokens_in=0,
-                        tokens_out=0,
-                        cost_usd=0.0,
-                        model_used=dag_data.get("nodes", [{}])[0].get("model", "gemini-3.5-flash"),
+                        model_used=str(nr.get("model", "")),
                     )
                 )
         except Exception:
-            pass
+            # Named rather than bare: a metrics write must not fail a DAG run
+            # that already produced a result, but an operator has to be able
+            # to find out that the observations were dropped.
+            logging.getLogger("hive.dags").warning(
+                "node_metrics_not_recorded execution_id=%s dag_id=%s",
+                exec_id,
+                dag_id,
+                exc_info=True,
+            )
+        # After the events, so a reader that sees `completed` sees the events
+        # that justify it. This used to assign `run.status` and `run.result`
+        # to a dataclass that declared neither, so the run stayed `running`
+        # with no `finished_at` forever (#697).
+        #
+        # Suppressed, and that is the point: inside the surrounding `try` a
+        # failed history write would land in the `except` below and report the
+        # *execution* as failed -- for a DAG that had already succeeded, and
+        # whose run record `finish_run` marks completed before it persists. The
+        # caller would be told one thing and the history would say another
+        # (Codex, #697).
+        with contextlib.suppress(Exception):
+            await store.finish_run(exec_id, status="completed", result=result)
         return {"status": "completed", "execution_id": exec_id, "result": result}
     except Exception as exc:
+        import contextlib
         import logging
 
         logging.getLogger("hive.dags").warning("Graph execution failed: %s", exc)
+        # The failure branch left the run `running` with no `finished_at` for
+        # the life of the process -- the same defect as the success branch,
+        # and the one a reader is more likely to go looking for. Suppressed
+        # because the response the caller gets must not depend on whether the
+        # history write succeeded; the execution already failed and that is
+        # what is being reported.
+        with contextlib.suppress(Exception):
+            from services.dag_run_store import get_dag_run_store
+
+            await get_dag_run_store().finish_run(exec_id, status="failed")
         return {"status": "failed", "execution_id": exec_id, "error": str(exc)}
 
 

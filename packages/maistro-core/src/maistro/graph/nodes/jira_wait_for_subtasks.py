@@ -13,14 +13,21 @@ carries `timed_out=True` so downstream conditional edges can branch.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 from maistro.http import shared_client
 
 from . import register_node
-from .base import BaseNode, NodeContext, now_utc, pause_until
+from .base import (
+    PAUSE_WAITING_ON_JIRA_SUBTASKS,
+    BaseNode,
+    NodeContext,
+    now_utc,
+    pause_until,
+    resumed_pause,
+)
 
 
 class WaitForSubtasksIn(BaseModel):
@@ -85,12 +92,12 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
             )
 
         # Have we exceeded the overall timeout?
-        first_seen = (ctx.metadata or {}).get(f"wait_first_seen:{ctx.node_id}")
+        first_seen = _first_seen(ctx)
         now = now_utc()
         if first_seen is None:
             # First reach — store start timestamp, pause for the poll interval.
             pause_until(
-                "waiting_on_jira_subtasks",
+                PAUSE_WAITING_ON_JIRA_SUBTASKS,
                 resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
                 metadata={
                     "parent_key": inputs.parent_key,
@@ -119,7 +126,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
 
         # Still waiting — pause for another poll interval.
         pause_until(
-            "waiting_on_jira_subtasks",
+            PAUSE_WAITING_ON_JIRA_SUBTASKS,
             resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
             metadata={
                 "parent_key": inputs.parent_key,
@@ -128,6 +135,23 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
             },
         )
         return WaitForSubtasksOut(parent_key=inputs.parent_key)
+
+
+def _first_seen(ctx: NodeContext) -> Any:
+    """When this node first reached its wait, or None on a first reach.
+
+    Read from the pause this node itself wrote, with the older
+    `wait_first_seen:` key kept as a fallback. Nothing in the system ever
+    *wrote* that key -- only tests did -- so on every real path `first_seen`
+    was None, the node took its first-reach branch again, and the deadline it
+    recorded could never be reached. A poll whose timeout cannot expire is an
+    unbounded loop, and a resume tick is what turns that from a latent defect
+    into a running one (#641).
+    """
+    carried = resumed_pause(ctx).get("first_seen")
+    if carried:
+        return carried
+    return (ctx.metadata or {}).get(f"wait_first_seen:{ctx.node_id}")
 
 
 async def _fetch_subtask_statuses(inputs: WaitForSubtasksIn) -> dict[str, str]:

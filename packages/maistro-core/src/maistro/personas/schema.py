@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CriterionSpec(BaseModel):
@@ -85,6 +85,25 @@ class InterviewQuestionSpec(BaseModel):
     question: str
 
 
+class PersonaTemplateSource(BaseModel):
+    """Loader-attested provenance for one reusable Persona template.
+
+    This is evidence about the source that produced the normalized template,
+    not author-controlled template content. ``load_template`` replaces any
+    value supplied by the YAML with an attested value derived from the raw
+    source shape and the file it actually read.
+
+    It is excluded from normal serialization so saving/exporting a normalized
+    template does not copy a stale filesystem locator into a new source. The
+    loader reconstructs provenance when that new source is read.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_format: str
+    source_locator: str
+
+
 class PersonaTemplate(BaseModel):
     """A full persona/department template loaded from one YAML file."""
 
@@ -101,6 +120,10 @@ class PersonaTemplate(BaseModel):
     # `kind: workspace` only: this persona's own onboarding interview script.
     # Empty means "no custom script" -- callers fall back to the generic one.
     interview: list[InterviewQuestionSpec] = Field(default_factory=list)
+    # Import/source evidence belongs on the reusable definition while it is in
+    # memory, but is not itself authorable content. The canonical loader sets
+    # this after validation from the raw source it actually consumed.
+    source_provenance: PersonaTemplateSource | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="before")
     @classmethod
