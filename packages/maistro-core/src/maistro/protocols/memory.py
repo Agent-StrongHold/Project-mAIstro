@@ -43,6 +43,17 @@ class LearningStore(Protocol):
         """Increment hit_count for used learnings."""
         ...
 
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Return the learnings one Run produced.
+
+        The read that makes producer provenance worth recording. A learning is a
+        correction the system applies to future work, so when one turns out to
+        be wrong the first question is which execution taught it -- and until
+        #709 nothing could answer it. Scoped like every other read here: an
+        `org_id` filters, and a blank one matches only rows that have none.
+        """
+        ...
+
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
     ) -> None:
@@ -282,6 +293,16 @@ class SessionStore(Protocol):
         recorded for the session is a retry: nothing is written, nothing is
         raised. Omitting it leaves the append unchanged, which is what every
         caller that does not know it is retrying should do.
+        """
+        ...
+
+    async def produced_runs(self, session_id: str) -> list[str]:
+        """The canonical Runs that produced this session's turns, oldest first.
+
+        The session-to-Run direction, which until ADR-083026-56ee existed only
+        as a coincidence of one call site passing a Run id as an opaque turn
+        identity. Distinct, and never blank: a turn appended with no execution
+        in scope contributes nothing rather than an empty name.
         """
         ...
 

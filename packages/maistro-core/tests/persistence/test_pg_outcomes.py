@@ -179,6 +179,20 @@ async def test_record_inserts_with_all_fields_and_returns_id(
         "wrong file",
         42.5,
         RECORDED_AT,
+        # The canonical producer, NULL because this outcome was recorded with
+        # no execution in scope. Beside the DAG identity above rather than
+        # instead of it: `dag_run_id` names a real hive-conductor object the
+        # Conductor UI reads (#709).
+        None,
+        None,
+        None,
+        # `None`, because `make_outcome` leaves the count unset: a writer that
+        # did not count binds NULL rather than a measured zero (#717).
+        None,
+        # The session, NULL because this outcome was recorded outside one. It
+        # is bound here rather than into `request_id`, which is what
+        # `agents/base.py` used to do (#748).
+        None,
     )
 
 

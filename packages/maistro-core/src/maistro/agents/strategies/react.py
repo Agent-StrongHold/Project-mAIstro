@@ -9,6 +9,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.quota.usage_report import reported_usage
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -59,6 +60,10 @@ class ReactStrategy:
         tool_history: list[dict[str, Any]] = []
         total_input_tokens = 0
         total_output_tokens = 0
+        # How many of this loop's provider calls reported usage. A ReAct turn
+        # stores one summed pair, so without the count a turn whose providers
+        # reported nothing is stored as one that cost nothing (#717).
+        reported_calls = 0
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -70,9 +75,11 @@ class ReactStrategy:
                 llm, current_messages, model, tools, tool_choice, trace, round_num
             )
 
-            usage = response.get("usage", {})
-            total_input_tokens += usage.get("prompt_tokens", 0)
-            total_output_tokens += usage.get("completion_tokens", 0)
+            reported = reported_usage(response)
+            if reported is not None:
+                total_input_tokens += reported[0]
+                total_output_tokens += reported[1]
+                reported_calls += 1
 
             choices = response.get("choices", [])
             choice = choices[0] if choices else {}
@@ -89,6 +96,7 @@ class ReactStrategy:
                     tool_history=tool_history,
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
+                    usage_reported_calls=reported_calls,
                 )
 
             current_messages.append(message)
@@ -129,6 +137,7 @@ class ReactStrategy:
             tool_history=tool_history,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            usage_reported_calls=reported_calls,
         )
 
     async def _call_llm(
@@ -157,10 +166,13 @@ class ReactStrategy:
                 tools=tools,
                 tool_choice=tool_choice if tools else None,
             )
-            usage = response.get("usage", {})
+            # The span records tokens and has nowhere to put an absence. One
+            # parser decides what "reported" means, here and at the two seams
+            # that store the total (#717).
+            reported = reported_usage(response) or (0, 0)
             ls.set_usage(
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+                input_tokens=reported[0],
+                output_tokens=reported[1],
                 model=model,
             )
         return response

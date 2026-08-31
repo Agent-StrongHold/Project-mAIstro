@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from maistro.memory.types import Learning
+from maistro.observability.correlation import observed_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,25 @@ class InMemoryLearningStore:
         self._max = max_learnings
 
     async def store(self, learning: Learning) -> int:
-        """Store a learning, dedup against existing within same org."""
+        """Store a learning, naming the execution that produced it.
+
+        The in-memory store fills provenance too. It is the default backend in
+        dev and test, so a store that skipped this would let every behavioural
+        test pass while only the durable ones did the work -- which is how a
+        claim ends up resting on the one implementation that cannot check it.
+
+        Assigned onto the object rather than kept beside it: this store keeps
+        the caller's `Learning` and hands the same instance back, so a
+        provenance held anywhere else would not survive the read (#709).
+        """
+        provenance = observed_provenance(
+            run_id=learning.run_id,
+            node_run_id=learning.node_run_id,
+            attempt_id=learning.attempt_id,
+        )
+        learning.run_id = provenance.run_id
+        learning.node_run_id = provenance.node_run_id
+        learning.attempt_id = provenance.attempt_id
         new_keys = set(learning.trigger_keys)
         for existing in self._learnings:
             if existing.tool_name != learning.tool_name:
@@ -47,6 +66,14 @@ class InMemoryLearningStore:
                 )
                 existing.learning = learning.learning
                 existing.trigger_keys = learning.trigger_keys
+                # The producer moves with the content it produced. Dedup
+                # replaces what the row says, so leaving the old ids in place
+                # would attribute the surviving text to the Run that no longer
+                # wrote it, and `produced_by` would return nothing for the Run
+                # that did (Codex, #709).
+                existing.run_id = learning.run_id
+                existing.node_run_id = learning.node_run_id
+                existing.attempt_id = learning.attempt_id
                 return existing.id or 0
 
         if len(self._learnings) >= self._max:
@@ -92,6 +119,21 @@ class InMemoryLearningStore:
         for learning in self._learnings:
             if learning.id in id_set:
                 learning.hit_count += 1
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Return the learnings this Run produced, newest first.
+
+        A blank `run_id` returns nothing rather than every learning with no
+        producer — the same rule the durable stores follow, so a caller cannot
+        tell the backends apart by getting a different answer (#709).
+        """
+        if not run_id:
+            return []
+        return [
+            learning
+            for learning in reversed(self._learnings)
+            if learning.run_id == run_id and (learning.org_id or "") == org_id
+        ]
 
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
