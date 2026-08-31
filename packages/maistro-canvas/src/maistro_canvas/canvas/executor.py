@@ -363,8 +363,8 @@ class CanvasExecutor:
             from maistro_canvas.types import RefineNoSourceError
 
             raise RefineNoSourceError("source image no longer available")
-        source_url = layer.image_path
-        if not source_url:
+        source_image_url = layer.image_path
+        if not source_image_url:
             from maistro_canvas.types import RefineNoSourceError
 
             raise RefineNoSourceError("source image no longer available")
@@ -372,7 +372,7 @@ class CanvasExecutor:
         async def _refine() -> list[str]:
             refined = await self._image_client.refine(
                 model_id=job.model_id,
-                source_url=source_url,
+                source_url=source_image_url,
                 prompt=job.prompt,
                 region=str(params.get("region", "full")),
                 strength=float(params.get("strength", 0.6)),
