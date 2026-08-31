@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +53
+  tests/: +65
 ---
 # chatgpt-m1-542-ratchet-provenance
 
-Fifty-three root tests are added for #542.
+Sixty-five root tests are added for #542.
 
 Thirteen tests in `tests/test_check_ratchet_provenance.py` pin the inventory mechanism:
 candidate-controlled ledgers fail; direct trusted resolution passes; `ROOT`, `REPO`,
@@ -51,6 +51,15 @@ shell-execution, reachability, and reachability-disposition adapters through tru
 regression, malformed-input, unavailable-measurement, and unreadable-oracle outcomes;
 they also exercise the direct execution-lifecycle, model-egress, public-route, Radon,
 Vulture, mutation, and shared provenance paths through success and fail-closed cases.
+
+Twelve tests in `tests/test_m1_542_diff_coverage_edges.py` exercise the remaining
+changed policy/error branches identified by the required per-file diff-coverage gate:
+dynamic-loader cleanup after failed imports; shell measurement discovery and candidate
+drift; lifecycle and model-egress trusted-oracle failures; shallow Git materialization
+fail-closed behavior; public-route matching-kind changes; Radon and Vulture tool/error
+paths; and mutation entry validation, health-report publication, scheduler candidate
+generation, and main-path provenance/configuration failures.
+
 The required Vulture Ratchet workflow remains the integration proof against real Git
 history; these root tests provide deterministic branch evidence for the policy code
 itself so the per-file 90%/80% diff-coverage gate remains meaningful.
