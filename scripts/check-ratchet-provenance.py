@@ -49,6 +49,14 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
     ("check_ac_state_impl.py", "quality/ac-state.json"): (
         "generated AC-state report output, not a comparison oracle"
     ),
+    ("check-branch-independence.py", "quality/branch-independence.json"): (
+        "the branch-independence registry is the reviewed representation specification; "
+        "the checker separately compares its frozen legacy set against the trusted base"
+    ),
+    ("check_direct_effects.py", "quality/direct-effect-call-sites.json"): (
+        "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
+        "match both directions and every live site must state disposition, owner and rationale"
+    ),
 }
 
 # Adapter values are tooling identities (filename stems), not paths. Keeping the
@@ -104,6 +112,34 @@ def _join(left: str, right: str) -> str:
     return str(PurePosixPath(left) / right)
 
 
+def _is_repo_root_expression(node: ast.AST) -> bool:
+    """Recognize ``Path(__file__).resolve().parents[1]`` as the repository root."""
+    if not (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "parents"
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == 1
+    ):
+        return False
+    resolved = node.value.value
+    if not (
+        isinstance(resolved, ast.Call)
+        and isinstance(resolved.func, ast.Attribute)
+        and resolved.func.attr == "resolve"
+    ):
+        return False
+    path_call = resolved.func.value
+    return bool(
+        isinstance(path_call, ast.Call)
+        and isinstance(path_call.func, ast.Name)
+        and path_call.func.id in {"Path", "PurePath"}
+        and len(path_call.args) == 1
+        and isinstance(path_call.args[0], ast.Name)
+        and path_call.args[0].id == "__file__"
+    )
+
+
 def _expr_path(node: ast.AST, env: dict[str, str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -111,6 +147,8 @@ def _expr_path(node: ast.AST, env: dict[str, str]) -> str | None:
         if node.id in _ROOT_NAMES:
             return "ROOT"
         return env.get(node.id)
+    if _is_repo_root_expression(node):
+        return "ROOT"
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left = _expr_path(node.left, env)
         right = _expr_path(node.right, env)
@@ -190,7 +228,9 @@ def consumers(root: Path = ROOT) -> set[Consumer]:
 def _uses_trusted_resolver(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     return "ratchet_provenance" in source and (
-        "resolve_baseline(" in source or "resolve_baseline_dir(" in source
+        "resolve_baseline(" in source
+        or "resolve_baseline_dir(" in source
+        or "load_authorizations(" in source
     )
 
 
