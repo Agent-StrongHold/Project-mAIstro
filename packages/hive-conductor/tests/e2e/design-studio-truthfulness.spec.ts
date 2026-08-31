@@ -18,6 +18,105 @@ const designSkills = [
     discovery_form: [],
     render_slot: "renderer.fixed-page",
   },
+  {
+    slug: "infographic",
+    name: "Infographic",
+    mode: "template",
+    description: "Create an infographic.",
+    featured: true,
+    output_formats: ["svg", "png"],
+    tags: ["infographic"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
+  {
+    slug: "flyer",
+    name: "Flyer",
+    mode: "template",
+    description: "Create a flyer.",
+    featured: false,
+    output_formats: ["svg", "png"],
+    tags: ["flyer"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
+  {
+    slug: "cover",
+    name: "Cover",
+    mode: "template",
+    description: "Create cover art.",
+    featured: false,
+    output_formats: ["svg", "png"],
+    tags: ["cover"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
+  {
+    slug: "diagram",
+    name: "Diagram",
+    mode: "template",
+    description: "Create a diagram.",
+    featured: false,
+    output_formats: ["svg", "png"],
+    tags: ["diagram"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
+  {
+    slug: "pitch-deck",
+    name: "Pitch Deck",
+    mode: "deck",
+    description: "Create a presentation.",
+    featured: true,
+    output_formats: ["pptx", "pdf"],
+    tags: ["deck"],
+    discovery_form: [],
+    render_slot: "renderer.deck",
+  },
+  {
+    slug: "web-concept",
+    name: "Web Concept",
+    mode: "prototype",
+    description: "Create a web concept.",
+    featured: false,
+    output_formats: ["html"],
+    tags: ["web"],
+    discovery_form: [],
+    render_slot: "renderer.reflowable-web",
+  },
+  {
+    slug: "style-board",
+    name: "Style Board",
+    mode: "design_system",
+    description: "Create a style board.",
+    featured: false,
+    output_formats: ["svg", "png"],
+    tags: ["style"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
+  {
+    slug: "hero-image",
+    name: "Hero Image",
+    mode: "image",
+    description: "Create hero imagery.",
+    featured: true,
+    output_formats: ["png"],
+    tags: ["image"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
+  {
+    slug: "social-card",
+    name: "Social Card",
+    mode: "template",
+    description: "Create a social card.",
+    featured: true,
+    output_formats: ["png"],
+    tags: ["social"],
+    discovery_form: [],
+    render_slot: "renderer.fixed-page",
+  },
 ];
 
 const designSystems = {
@@ -80,7 +179,15 @@ test("Design Studio is the parent surface and never enables fake visual executio
     await expect(artifactTypes.getByRole("button").filter({ hasText: mode })).toBeVisible();
   }
 
-  await expect(page.getByText(/1 design skill and 1 design system available/)).toBeVisible();
+  await expect(page.getByText(/10 design skills and 1 design system available/)).toBeVisible();
+  const availableSkills = page.getByLabel("Available design skills");
+  await expect(availableSkills.getByText("Hero Image", { exact: true })).toBeVisible();
+  await expect(availableSkills.getByText("Social Card", { exact: true })).toBeVisible();
+
+  const discovery = page.getByRole("listitem").filter({ hasText: "Design resource discovery" });
+  await expect(discovery).toContainText("available");
+  await expect(discovery).toContainText("Brief creation is not connected yet");
+  await expect(page.getByText("Brief + design system", { exact: true })).toHaveCount(0);
 
   const generate = page.getByRole("button", { name: "Generate visual" });
   await expect(generate).toBeDisabled();
@@ -109,4 +216,31 @@ test("Deck is a contained Design Studio mode, not a route escape", async () => {
   await expect(page.getByRole("button", { name: "Open Deck editor" })).toBeDisabled();
   await expect(page.getByText(/Deck editing is temporarily unavailable while secure rendering is enabled/)).toBeVisible();
   await expect(page).toHaveURL(/\/cli\/canvas$/);
+});
+
+test("Design Studio reports optional design-system catalog degradation without hiding usable resources", async () => {
+  await page.unroute("**/v1/design/systems");
+  await page.route("**/v1/design/systems", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...designSystems,
+        catalog: {
+          available: false,
+          cause: "Tier-2 design-system catalog could not be loaded",
+          count: 0,
+        },
+      }),
+    });
+  });
+
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("degraded", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Additional design systems are unavailable: Tier-2 design-system catalog could not be loaded/)).toBeVisible();
+  await expect(page.getByLabel("Available design skills").getByText("Social Card", { exact: true })).toBeVisible();
+
+  const discovery = page.getByRole("listitem").filter({ hasText: "Design resource discovery" });
+  await expect(discovery).toContainText("degraded");
 });
