@@ -48,8 +48,10 @@ def _authorize_workspace_scope(workspace_id: str, signature: str | None) -> None
     tenant selector.
     """
     key = os.getenv("WORKSPACE_SCOPE_KEY", "")
-    if not key or signature is None or not verify_workspace_scope_signature(
-        workspace_id, signature, key
+    if (
+        not key
+        or signature is None
+        or not verify_workspace_scope_signature(workspace_id, signature, key)
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -136,9 +138,7 @@ async def list_tasks(
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = None,
 ) -> PaginatedTasks:
-    items, next_cursor = queue.list_tasks(
-        limit=limit, cursor=cursor, user_id=_owner_id(auth)
-    )
+    items, next_cursor = queue.list_tasks(limit=limit, cursor=cursor, user_id=_owner_id(auth))
     return PaginatedTasks(
         items=items,
         next_cursor=next_cursor,
