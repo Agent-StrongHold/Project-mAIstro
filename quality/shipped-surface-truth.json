@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "backend_roots": [
+    "packages/hive-conductor/backend/routes",
+    "packages/maistro-server/src/maistro_server/api"
+  ],
+  "frontend_roots": [
+    "packages/hive-conductor/frontend/src"
+  ],
+  "backend_surfaces": [],
+  "frontend_surfaces": []
+}
