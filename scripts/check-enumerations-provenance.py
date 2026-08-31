@@ -68,8 +68,10 @@ def main() -> int:
         trusted_payload = trusted_ref.loads(default={"tolerated": {}})
         trusted = (
             dict(trusted_payload.get("tolerated", {}))
-            if isinstance(trusted_payload, dict)
-            and isinstance(trusted_payload.get("tolerated", {}), dict)
+            if (
+                isinstance(trusted_payload, dict)
+                and isinstance(trusted_payload.get("tolerated", {}), dict)
+            )
             else {}
         )
         # A clean tree legitimately has zero gaps. Measurement completeness is
@@ -108,7 +110,9 @@ def main() -> int:
         for key in unbanked_authorized
     )
     failures.extend(f"{key}: current gap missing from candidate ledger" for key in candidate_new)
-    failures.extend(f"{key}: stale candidate ledger entry must be pruned" for key in candidate_stale)
+    failures.extend(
+        f"{key}: stale candidate ledger entry must be pruned" for key in candidate_stale
+    )
 
     if failures:
         print("FAIL: enumeration ratchet moved away from trusted state", file=sys.stderr)
