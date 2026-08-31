@@ -31,7 +31,9 @@ def _identity(tmp_path: Path, *, content: str = "VALUE = 1\n") -> dict[str, obje
     )
 
 
-def test_successful_result_round_trips_against_expected_identity(tmp_path: Path) -> None:
+def test_successful_result_round_trips_against_expected_identity(
+    tmp_path: Path,
+) -> None:
     identity = _identity(tmp_path)
     completed = complete_manifest(identity, exit_code=0, duration_seconds=1.25)
 
@@ -51,7 +53,9 @@ def test_failed_command_evidence_is_never_reusable_as_green(tmp_path: Path) -> N
         verify_completed_manifest(completed, expected_identity=identity)
 
 
-def test_consumer_rejects_evidence_for_different_input_content(tmp_path: Path) -> None:
+def test_consumer_rejects_evidence_for_different_input_content(
+    tmp_path: Path,
+) -> None:
     first = _identity(tmp_path, content="VALUE = 1\n")
     completed = complete_manifest(first, exit_code=0, duration_seconds=0.5)
     second = _identity(tmp_path, content="VALUE = 2\n")
@@ -92,7 +96,9 @@ def test_completion_rejects_boolean_exit_code(tmp_path: Path) -> None:
         complete_manifest(identity, exit_code=True, duration_seconds=0.0)
 
 
-def test_cli_can_complete_then_verify_evidence(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_can_complete_then_verify_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     identity = _identity(tmp_path)
     identity_path = tmp_path / "identity.json"
     completed_path = tmp_path / "completed.json"
