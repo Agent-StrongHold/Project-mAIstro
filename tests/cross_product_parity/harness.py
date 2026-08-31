@@ -122,7 +122,7 @@ SCHEDULER = Dependency(
 
 CONDUCTOR_INSPECTION = Dependency(
     key="Conductor canonical inspection plane",
-    issue=766,
+    issue=65,
     pr=None,
     description=(
         "GET /v1/dag-runs/{run_id} must resolve canonical Run evidence instead of the "
