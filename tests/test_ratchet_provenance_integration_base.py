@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from scripts.ratchet_provenance import load_authorizations, resolve_baseline
 
 ROOT = Path(__file__).resolve().parents[1]
