@@ -2,10 +2,12 @@
 """Gate the unauthenticated route surface against a trusted base (#316, #542).
 
 Every public path must still be declared, owned, justified, correctly shaped and
-unexpired in the candidate registry. In addition, a path that is public now but
-was not in the registry at the merge base is a security-surface expansion and
-requires a separately landed authorization. A candidate therefore cannot make a
-new bypass acceptable by adding the route and its registry row in one commit.
+unexpired in the candidate registry. In addition, a route identity ``(path,
+matching kind)`` that is public now but was not in the registry at the merge
+base is a security-surface expansion and requires a separately landed
+authorization. A candidate therefore cannot make a new bypass, or widen an
+existing bypass from boundary-safe matching to loose-prefix matching, acceptable
+by editing the route and registry in one commit.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "
 REGISTRY = ROOT / "quality" / "public-routes.json"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "public-routes"
-METRIC_DEFINITION_VERSION = "1"
+METRIC_DEFINITION_VERSION = "2"
 
 DECLARATIONS: dict[str, str] = {
     "_PUBLIC_PREFIXES": "prefix",
@@ -124,6 +126,14 @@ def _registry(loaded: object) -> dict[str, Any]:
     return dict(routes) if isinstance(routes, dict) else {}
 
 
+def _registry_identities(registry: dict[str, Any]) -> set[tuple[str, str]]:
+    return {
+        (path, str(entry.get("kind")))
+        for path, entry in registry.items()
+        if isinstance(entry, dict) and entry.get("kind")
+    }
+
+
 def audit_registry(
     declared: dict[str, str], registry: dict[str, Any], today: date | None = None
 ) -> list[str]:
@@ -174,9 +184,14 @@ def main() -> int:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
-    added = sorted(set(declared) - set(trusted))
-    unauthorized = [path for path in added if path not in authorized]
-    unbanked_authorized = [path for path in added if path in authorized and path not in candidate]
+    current_identities = set(declared.items())
+    trusted_identities = _registry_identities(trusted)
+    added_identities = sorted(current_identities - trusted_identities)
+    affected_paths = sorted({path for path, _kind in added_identities})
+    unauthorized = [path for path in affected_paths if path not in authorized]
+    unbanked_authorized = [
+        path for path in affected_paths if path in authorized and path not in candidate
+    ]
 
     print(
         prov.Provenance(
@@ -184,21 +199,29 @@ def main() -> int:
             baseline=trusted_ref,
             tool="python ast",
             metric_definition_version=METRIC_DEFINITION_VERSION,
-            old_value=f"{len(trusted)} public paths",
-            new_value=f"{len(declared)} public paths",
+            old_value=f"{len(trusted_identities)} public route identities",
+            new_value=f"{len(current_identities)} public route identities",
             candidate_sha=prov.head_sha(ROOT),
             authorizations=tuple(
-                f"{path}: {authorized[path]}" for path in added if path in authorized
+                f"{path}: {authorized[path]}" for path in affected_paths if path in authorized
             ),
         ).render()
     )
 
     failures = list(candidate_failures)
-    failures.extend(
-        f"  {path}: NEW unauthenticated path is absent from the trusted base and has no "
-        "already-landed authorization"
-        for path in unauthorized
-    )
+    for path in unauthorized:
+        trusted_entry = trusted.get(path)
+        old_kind = trusted_entry.get("kind") if isinstance(trusted_entry, dict) else None
+        if old_kind is None:
+            failures.append(
+                f"  {path}: NEW unauthenticated path is absent from the trusted base and has no "
+                "already-landed authorization"
+            )
+        else:
+            failures.append(
+                f"  {path}: unauthenticated matching kind changed from {old_kind!r} to "
+                f"{declared[path]!r} without already-landed authorization"
+            )
     failures.extend(
         f"  {path}: authorized public-surface expansion is not recorded in the candidate registry"
         for path in unbanked_authorized
@@ -208,9 +231,9 @@ def main() -> int:
         print(f"FAIL: {len(failures)} problem(s) with the unauthenticated route surface:\n")
         print("\n".join(failures))
         print(
-            "\nA new public route requires its registry entry plus a separately landed "
-            "authorization. Existing entries remain ordinary reviewed policy and must stay "
-            "owned, justified, correctly shaped, and unexpired."
+            "\nA new public route or matching-kind expansion requires its registry entry plus a "
+            "separately landed authorization. Existing entries remain ordinary reviewed policy "
+            "and must stay owned, justified, correctly shaped, and unexpired."
         )
         return 1
 
