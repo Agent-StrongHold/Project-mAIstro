@@ -82,9 +82,15 @@ def main() -> int:
     )
 
     failures: list[str] = []
-    failures.extend(f"{item}: NEW lifecycle violation absent from trusted base" for item in trusted_new)
-    failures.extend(f"{item}: current violation missing from candidate ledger" for item in candidate_new)
-    failures.extend(f"{item}: stale candidate lifecycle entry must be pruned" for item in candidate_stale)
+    failures.extend(
+        f"{item}: NEW lifecycle violation absent from trusted base" for item in trusted_new
+    )
+    failures.extend(
+        f"{item}: current violation missing from candidate ledger" for item in candidate_new
+    )
+    failures.extend(
+        f"{item}: stale candidate lifecycle entry must be pruned" for item in candidate_stale
+    )
     if failures:
         print("FAIL: lifecycle ratchet moved away from trusted state", file=sys.stderr)
         for failure in failures:
