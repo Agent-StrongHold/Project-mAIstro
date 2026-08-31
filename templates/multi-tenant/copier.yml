@@ -3,6 +3,10 @@ _min_version: "9.0.0"
 project_slug:
   type: str
   help: Short slug for the generated multi-tenant product
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9-]*\Z')) %}
+    Use lowercase letters, digits, and dashes; start with a letter.
+    {% endif %}
 
 substrate_ref:
   type: str

@@ -1,10 +1,44 @@
 _min_version: "9.0.0"
+_answers_file: .copier-answers.yml
 
 project_slug:
   type: str
   help: Short slug for the generated autonoetic product
+  default: turing-agent
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9-]*\Z')) %}
+    Use lowercase letters, digits, and dashes; start with a letter.
+    {% endif %}
 
-substrate_ref:
+awareness_loop_hz:
+  type: int
+  help: Awareness-loop ticks per second
+  default: 1
+  validator: >-
+    {% if awareness_loop_hz < 1 or awareness_loop_hz > 1000 %}
+    awareness_loop_hz must be between 1 and 1000.
+    {% endif %}
+
+self_model:
   type: str
-  default: "maistro-engine#ADR-030"
-  help: ADR substrate cross-reference for generated docs
+  help: Self-model profile
+  choices:
+    Minimal: minimal
+    HEXACO: hexaco
+  default: minimal
+
+memory_consolidator:
+  type: str
+  help: Enable autonomous memory consolidation
+  choices:
+    "Off": "off"
+    "On": "on"
+  default: "off"
+
+dossier_store:
+  type: str
+  help: Durable dossier storage adapter
+  choices:
+    Filesystem: fs
+    Obsidian vault: obsidian
+  default: fs

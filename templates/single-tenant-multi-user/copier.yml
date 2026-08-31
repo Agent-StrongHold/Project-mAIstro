@@ -1,10 +1,52 @@
 _min_version: "9.0.0"
+_answers_file: .copier-answers.yml
 
 project_slug:
   type: str
   help: Short slug for the generated product directory (e.g. my-conductor)
+  default: maistro-conductor
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9-]*\Z')) %}
+    Use lowercase letters, digits, and dashes; start with a letter.
+    {% endif %}
 
-substrate_ref:
+users_max:
+  type: int
+  help: Maximum number of human users served by this single tenant
+  default: 5
+  validator: >-
+    {% if users_max < 2 or users_max > 1000 %}
+    users_max must be between 2 and 1000.
+    {% endif %}
+
+auth_backend:
   type: str
-  default: "maistro-engine#ADR-030"
-  help: ADR substrate cross-reference string written into generated ADR seeds
+  help: Authentication integration contract
+  choices:
+    Local credentials: local
+    Keycloak OIDC: keycloak
+  default: local
+
+channels:
+  type: str
+  help: Product channels to include
+  choices:
+    Web: web
+    Voice: voice
+    Email: email
+  multiselect: true
+  default:
+    - web
+  validator: >-
+    {% if channels | length == 0 %}
+    Select at least one channel.
+    {% endif %}
+
+host_target:
+  type: str
+  help: Deployment host target
+  choices:
+    Rootless Podman: podman
+    Docker: docker
+    systemd: systemd
+  default: podman
