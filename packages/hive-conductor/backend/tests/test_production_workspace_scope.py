@@ -109,6 +109,13 @@ async def test_named_workspace_fails_closed_without_scope_proof_key() -> None:
             workspace_id="workspace-a",
         )
 
+    with pytest.raises(ValueError, match="workspace_id must be a non-empty string"):
+        await backend.submit(
+            TaskCreate(description="ship it"),
+            user_id="user-1",
+            workspace_id="   ",
+        )
+
 
 async def test_unscoped_submission_does_not_fabricate_workspace_scope(
     monkeypatch,
