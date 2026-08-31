@@ -35,11 +35,12 @@ from maistro.auth.oauth import (
     StateStore,
     complete_login,
 )
+from maistro.http import get_shared_client
 from services.model_store import JsonStore
 from services.secrets import resolve_secret
 
 OAUTH_CALLBACK_BASE_PATH = "/v1/auth/oauth"
-OAUTH_STATE_COOKIE_PREFIX = "hive_oauth_state_"
+OAUTH_STATE_COOKIE_PREFIX = "__Host-hive_oauth_state_"
 OAUTH_STATE_TTL_SECONDS = 300
 OAUTH_STATE_MAX_LENGTH = 256
 OAUTH_MAX_PENDING_STATES = 1024
@@ -219,11 +220,11 @@ class OAuthLoginService:
             raise OAuthLoginDenied(stage="configuration", reason="missing")
         self._settings = settings
         self._provider_settings = dict(settings.oauth_providers)
-        self._http = http or httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0, connect=5.0),
+        self._http = http or get_shared_client(
+            timeout=10.0,
             follow_redirects=False,
         )
-        self._owns_http = http is None
+        self._owns_http = False
         self._states = (
             state_store
             if state_store is not None
@@ -239,9 +240,9 @@ class OAuthLoginService:
             name: self._core_provider(name, provider)
             for name, provider in self._provider_settings.items()
         }
-        # SECURITY-REVIEW: OAuth2Client performs external provider I/O. URLs
-        # are HTTPS-only deployment settings and are registered with core's
-        # outbound policy; core's mandatory default is the JWKS verifier.
+        # SECURITY-REVIEW: OAuth2Client performs external provider I/O through
+        # maistro.http's guarded transport; provider URLs are also registered
+        # with core's outbound allowlist and JWKS verification is mandatory.
         self._client = OAuth2Client(
             providers=providers,
             state_store=self._states,

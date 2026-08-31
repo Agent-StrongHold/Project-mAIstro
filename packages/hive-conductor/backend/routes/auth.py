@@ -24,7 +24,6 @@ from services.oauth_login import (
     OAUTH_STATE_TTL_SECONDS,
     OAuthLoginDenied,
     get_oauth_login_service,
-    oauth_callback_path,
     oauth_state_cookie_name,
 )
 from starlette.responses import JSONResponse, RedirectResponse
@@ -53,7 +52,9 @@ _OAUTH_START_LIMITS = AuthLimits(
     max_delay_seconds=0.5,
 )
 _OAUTH_START_THROTTLE = AuthThrottle(_OAUTH_START_LIMITS)
+_OAUTH_CALLBACK_THROTTLE = AuthThrottle(_OAUTH_START_LIMITS)
 _OAUTH_START_ACCOUNT = "oauth-start"
+_OAUTH_CALLBACK_ACCOUNT = "oauth-callback"
 
 
 def _client_key(request: Request) -> str:
@@ -313,7 +314,6 @@ async def _charge_oauth_start(request: Request) -> None:
     if decision.delay_seconds:
         await asyncio.sleep(decision.delay_seconds)
     if not decision.allowed:
-        log_audit("oauth_start_throttled", "oauth", severity="warning")
         raise HTTPException(
             status_code=429,
             detail="Too many attempts. Wait a few minutes and try again.",
@@ -325,6 +325,29 @@ async def _charge_oauth_start(request: Request) -> None:
     _OAUTH_START_THROTTLE.record_failure(
         client_key=client_key,
         account=_OAUTH_START_ACCOUNT,
+    )
+
+
+async def _charge_oauth_callback(request: Request) -> None:
+    """Count each anonymous callback before it can reach audit or state work."""
+    # SECURITY-REVIEW: This anonymous authentication boundary trusts only the
+    # canonical proxy-aware client key and charges before audit amplification.
+    client_key = _client_key(request)
+    decision = _OAUTH_CALLBACK_THROTTLE.check(
+        client_key=client_key,
+        account=_OAUTH_CALLBACK_ACCOUNT,
+    )
+    if decision.delay_seconds:
+        await asyncio.sleep(decision.delay_seconds)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts. Wait a few minutes and try again.",
+            headers={"Retry-After": "60"},
+        )
+    _OAUTH_CALLBACK_THROTTLE.record_failure(
+        client_key=client_key,
+        account=_OAUTH_CALLBACK_ACCOUNT,
     )
 
 
@@ -361,7 +384,7 @@ def _clear_oauth_state_cookie(response: Response, provider: str) -> None:
         value="",
         max_age=0,
         expires=0,
-        path=oauth_callback_path(safe_provider),
+        path="/",
         httponly=True,
         secure=True,
         samesite="lax",
@@ -406,7 +429,7 @@ async def oauth_start(provider: str, request: Request) -> Response:
         httponly=True,
         secure=True,
         samesite="lax",
-        path=oauth_callback_path(safe_provider),
+        path="/",
     )
     return _oauth_response_headers(response)
 
@@ -416,6 +439,7 @@ async def oauth_callback(provider: str, request: Request) -> Response:
     """Verify an OIDC callback and issue the existing Hive session."""
     # SECURITY-REVIEW: OAuth query/cookie values are untrusted authentication
     # inputs. They are bounded, browser-bound, single-use, and never logged.
+    await _charge_oauth_callback(request)
     if request.query_params.getlist("error"):
         state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
         if state is None:

@@ -33,6 +33,7 @@ def _fresh_throttles():
     auth._REGISTER_THROTTLE = AuthThrottle(stricter.register)
     auth._ELEVATE_THROTTLE = AuthThrottle(stricter.elevate)
     auth._OAUTH_START_THROTTLE = AuthThrottle(auth._OAUTH_START_LIMITS)
+    auth._OAUTH_CALLBACK_THROTTLE = AuthThrottle(auth._OAUTH_START_LIMITS)
     yield
 
 

@@ -204,6 +204,11 @@ def oauth_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[OAuthHarness]:
         "_OAUTH_START_THROTTLE",
         AuthThrottle(auth_routes._OAUTH_START_LIMITS),
     )
+    monkeypatch.setattr(
+        auth_routes,
+        "_OAUTH_CALLBACK_THROTTLE",
+        AuthThrottle(auth_routes._OAUTH_START_LIMITS),
+    )
 
     idp = FakeIdentityProvider()
     http = httpx.AsyncClient(transport=httpx.MockTransport(idp.handler))
@@ -393,10 +398,7 @@ def test_start_throttle_bounds_state_allocations_before_store_churn(
         for entry in stores.audit_log.values()
         if isinstance(entry, dict) and entry.get("action") == "oauth_start_throttled"
     ]
-    assert throttle_audits
-    assert throttle_audits[-1]["actor"] == "oauth"
-    assert throttle_audits[-1]["target"] is None
-    assert throttle_audits[-1]["detail"] == {}
+    assert throttle_audits == []
 
     for _ in range(20):
         assert (
@@ -420,7 +422,8 @@ def test_state_cookie_is_short_lived_secure_and_cleared(oauth_harness: OAuthHarn
     assert "HttpOnly" in set_cookie
     assert "Secure" in set_cookie
     assert "SameSite=lax" in set_cookie
-    assert f"Path={oauth_callback_path(_PROVIDER)}" in set_cookie
+    assert "Path=/" in set_cookie
+    assert "Domain=" not in set_cookie
 
     failure = _callback(client, "bad-code", state)
     cleared = failure.headers["set-cookie"]
@@ -429,6 +432,71 @@ def test_state_cookie_is_short_lived_secure_and_cleared(oauth_harness: OAuthHarn
     assert "HttpOnly" in cleared
     assert "Secure" in cleared
     assert "SameSite=lax" in cleared
+
+
+def test_callback_throttle_refuses_before_audit_amplification(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        auth_routes,
+        "_OAUTH_CALLBACK_THROTTLE",
+        AuthThrottle(
+            AuthLimits(
+                per_client=3,
+                per_account=100,
+                global_failures=100,
+                window_seconds=300.0,
+                max_delay_seconds=0.0,
+            )
+        ),
+    )
+    client = _client()
+    audits_before = len(stores.audit_log)
+
+    responses = [
+        client.get(f"/v1/auth/oauth/{_PROVIDER}/callback", follow_redirects=False) for _ in range(7)
+    ]
+
+    assert [response.status_code for response in responses] == [
+        401,
+        401,
+        401,
+        429,
+        429,
+        429,
+        429,
+    ]
+    assert len(stores.audit_log) == audits_before + 3
+    assert len(_oauth_audit_entries("auth.oauth.failed")) == 3
+    throttle_audits = [
+        entry
+        for entry in stores.audit_log.values()
+        if isinstance(entry, dict) and "throttled" in str(entry.get("action", ""))
+    ]
+    assert throttle_audits == []
+
+
+def test_legacy_subdomain_cookie_injection_does_not_issue_session(
+    oauth_harness: OAuthHarness,
+) -> None:
+    asyncio.run(oauth_harness.links.link(_PROVIDER, "subject-123", "user"))
+    browser = _client()
+    state, nonce, _ = _begin(browser)
+    _queue_code(oauth_harness, "host-bound-code", nonce)
+    before = set(stores.sessions.keys())
+
+    attacker = _client()
+    legacy_cookie = f"hive_oauth_state_{_PROVIDER}={state}"
+    response = attacker.get(
+        f"/v1/auth/oauth/{_PROVIDER}/callback",
+        params={"code": "host-bound-code", "state": state},
+        headers={"cookie": legacy_cookie},
+        follow_redirects=False,
+    )
+
+    _assert_no_new_session(before, response)
+    assert _oauth_audit_entries("auth.oauth.failed")[-1]["detail"]["stage"] == "browser_state"
 
 
 @pytest.mark.parametrize(
@@ -984,3 +1052,17 @@ def test_rejected_config_secret_is_not_echoed_in_validation_error() -> None:
         _settings(oauth_providers={_PROVIDER: provider})
 
     assert secret_value not in str(raised.value)
+
+
+def test_default_oauth_http_client_uses_guarded_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OAUTH_PROVIDERS", json.dumps(_provider_document()))
+    monkeypatch.setenv("OAUTH_PUBLIC_ORIGIN", _PUBLIC_ORIGIN)
+    monkeypatch.setenv("OAUTH_SUCCESS_PATH", _SUCCESS_PATH)
+    get_settings.cache_clear()
+
+    from maistro.security.outbound import GuardedTransport
+
+    service = OAuthLoginService(get_settings())
+    assert isinstance(service._http._transport, GuardedTransport)  # type: ignore[attr-defined]
