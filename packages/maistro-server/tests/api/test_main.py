@@ -137,6 +137,7 @@ class TestLifespan:
         # check, and `test_startup.py` is.
         monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
 
+    @pytest.mark.contract("behavioral")
     async def test_lifespan_starts_and_stops_runner(self) -> None:
         test_app = MagicMock()
         test_app.state = MagicMock()

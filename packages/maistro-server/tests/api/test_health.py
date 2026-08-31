@@ -73,6 +73,7 @@ class TestStartupEndpoint:
         assert response.status_code == 503
         assert response.json() == {"status": "starting", "startup_complete": False}
 
+    @pytest.mark.contract("boundary")
     def test_complete_startup_returns_200(self) -> None:
         test_app = self._app()
         set_startup_phase(test_app, StartupPhase.COMPLETE)
