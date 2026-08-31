@@ -67,7 +67,7 @@ class CanvasJobRunner:
         """Reap expired Canvas leases and reconcile exhausted jobs canonically."""
         from maistro_canvas.types import JobStatus
 
-        reaped = await self._store.reap_expired_leases()
+        reaped: list[GenerationJobRecord] = await self._store.reap_expired_leases()
         terminal_failure = getattr(self._executor, "fail_job_execution", None)
         if terminal_failure is None:
             return reaped

@@ -316,8 +316,8 @@ class CanvasExecutor:
                 raise RuntimeError(
                     f"Canvas job {job.id!r} has canonical execution configured but no Run correlation"
                 )
-            # Compatibility-only direct run_job path. CanvasJobRunner refuses
-            # this shape in _execute_claimed, so shipped background execution
+            # Compatibility-only direct path. CanvasJobRunner checks
+            # canonical_enabled before claim, so shipped background execution
             # cannot silently bypass canonical evidence.
             return await operation()
         if self._canonical_execution is None:
@@ -359,7 +359,12 @@ class CanvasExecutor:
     async def _execute_refine(self, job: GenerationJobRecord) -> list[str]:
         params = job.params
         layer = await self._store.get_layer(job.layer_id)
-        if layer is None or not layer.image_path:
+        if layer is None:
+            from maistro_canvas.types import RefineNoSourceError
+
+            raise RefineNoSourceError("source image no longer available")
+        source_url = layer.image_path
+        if not source_url:
             from maistro_canvas.types import RefineNoSourceError
 
             raise RefineNoSourceError("source image no longer available")
@@ -367,7 +372,7 @@ class CanvasExecutor:
         async def _refine() -> list[str]:
             refined = await self._image_client.refine(
                 model_id=job.model_id,
-                source_url=layer.image_path,
+                source_url=source_url,
                 prompt=job.prompt,
                 region=str(params.get("region", "full")),
                 strength=float(params.get("strength", 0.6)),

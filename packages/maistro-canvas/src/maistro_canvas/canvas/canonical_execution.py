@@ -20,6 +20,7 @@ from maistro.runs.model import (
     Attempt,
     AttemptStatus,
     CancellationCause,
+    NodeRun,
     Run,
     RunStatus,
 )
@@ -438,7 +439,7 @@ class CanvasCanonicalExecution:
             )
         return matches[0]
 
-    async def _node_run(self, run_id: str, node_id: str):
+    async def _node_run(self, run_id: str, node_id: str) -> NodeRun | None:
         matches = [
             node_run
             for node_run in await self._runs.list_node_runs(run_id)
