@@ -47,14 +47,19 @@ degraded state is not yet a complete user-facing operating mode.
 
 Tracking: finish the visible degraded-mode behavior in F3 (#302).
 
-### Canvas Studio cutover
+### Design Studio Canvas/tool cutover
 
-The engine mounts `/v2/canvas` routes, but the separate Canvas Studio frontend
-has not completed its migration to that API. The `/v2` surface is therefore
-not the end-to-end production boundary for Studio yet.
+The engine exposes Canvas capability APIs, but the shipped Design Studio
+product has not yet completed its canonical product/API cutover onto those
+Canvas/tool boundaries. Design Studio is the parent creative-production
+surface; Canvas is one visual/fixed-page/rendering capability it consumes,
+not the identity of the Studio. The current Canvas-facing routes are therefore
+not yet the complete end-to-end Design Studio production boundary.
 
-Tracking: complete the cutover described by
-[SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md).
+Tracking: complete #95 under the continuing #286 Design Studio product lane.
+[SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md) is an
+older Proposed Canvas API migration document and must not be read as the
+current product-identity contract.
 
 ### HTTP API content negotiation
 
@@ -112,6 +117,6 @@ The following text is intended to be copied verbatim into the release notes.
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
 > active tasks. Canvas jobs require an external runner; Canvas publish and
 > some export formats are not implemented. Conductor can run in degraded mode
-> when optional services are unavailable. Canvas Studio has not completed its
-> `/v2/canvas` cutover, and API-wide HTTP content negotiation from ADR-076 is
-> deferred to v1.1.
+> when optional services are unavailable. Design Studio has not completed its
+> canonical cutover onto the Canvas/tool API boundaries, and API-wide HTTP
+> content negotiation from ADR-076 is deferred to v1.1.
