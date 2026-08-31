@@ -95,6 +95,10 @@ def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory, tmp_path: Path
         "check_direct_effects.py",
         "quality/direct-effect-call-sites.json",
     ) in inventory.CANDIDATE_AUTHORED
+    assert (
+        "check_ac_state_impl.py",
+        "quality/ratchet-authorizations.json",
+    ) in inventory.CANDIDATE_AUTHORED
 
 
 def test_github_event_metadata_supplies_every_integration_base(
