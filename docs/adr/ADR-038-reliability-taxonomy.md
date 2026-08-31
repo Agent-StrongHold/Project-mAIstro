@@ -52,14 +52,22 @@ Five reliability primitives, each with engine-level defaults that products inher
 Per upstream dependency — each LLM provider, each MCP server, each A2A peer, each database. State machine:
 
 ```
-closed ──(N failures in W)──► open ──(T cool-down)──► half-open ──(success)──► closed
+closed ──(N failures in W)──► open ──(T cool-down)──► half-open ──(leased probe succeeds)──► closed
                                                   │
-                                          (failure) │
+                                    (probe failure) │
                                                   ▼
                                                 open
 ```
 
 Defaults: `N=5`, `W=60s`, `T=30s`. Per-dependency tunable. State changes emit `maistro_circuit_state` (ADR-037) and a `circuit.state_change` event.
+
+**Probe ownership (clarified 2026-08-31).** `allow_request()` atomically grants the
+HALF_OPEN probe to one execution owner (thread or asyncio task). In HALF_OPEN,
+`record_success()` closes the circuit only when called by the owner whose
+`allow_request()` call acquired the current exclusive probe lease; success from any
+other caller is ignored. The owner may call `release_probe()` so another caller can
+claim the probe without changing state. An abandoned lease eventually reopens the
+circuit after its configured probe timeout.
 
 ### 3. Fallbacks
 
