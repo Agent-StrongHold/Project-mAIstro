@@ -276,28 +276,25 @@ class MaistroServerTaskBackend:
             if r.status_code == 400:
                 return False
             r.raise_for_status()
-            return True
+            return bool(r.json().get("cancelled", False))
 
     async def iter_events(self, task_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Poll task status — server-side SSE can replace this later without
-        changing EngineService."""
-        last: tuple[str, float, str] | None = None
-        while True:
-            rec = self.get(task_id)
-            if rec is None:
-                return
-            state = (rec.mission_status, rec.progress, rec.current_step)
-            if state != last:
+        async with shared_client(timeout=30.0) as client:
+            while True:
+                r = await client.get(f"{self._base}/tasks/{task_id}", headers=self._headers())
+                if r.status_code == 404:
+                    return
+                r.raise_for_status()
+                rec = TaskRecord(TaskResponse.model_validate(r.json()))
                 yield {
                     "id": rec.id,
                     "status": rec.mission_status,
                     "progress": rec.progress,
                     "current_step": rec.current_step,
                 }
-                last = state
-            if rec.mission_status in _TERMINAL:
-                return
-            await asyncio.sleep(self._POLL_INTERVAL_S)
+                if rec.mission_status in _TERMINAL:
+                    return
+                await asyncio.sleep(self._POLL_INTERVAL_S)
 
     async def stop(self) -> None:
-        return
+        return None
