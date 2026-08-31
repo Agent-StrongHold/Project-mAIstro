@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,7 @@ from scripts.ratchet_provenance import load_authorizations, resolve_baseline
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = "quality/ledger.json"
 AUTHORIZATIONS = "quality/ratchet-authorizations.json"
-CONVERTED_RATCHET_CHECKERS = (
+AUTHORIZATION_RATCHET_CHECKERS = (
     "scripts/check-vulture-baseline.py",
     "scripts/check-radon-baseline.py",
     "scripts/check-citation-status-provenance.py",
@@ -24,7 +26,6 @@ CONVERTED_RATCHET_CHECKERS = (
     "scripts/check-execution-lifecycles.py",
     "scripts/check-reachability-provenance.py",
     "scripts/check-reachability-dispositions-provenance.py",
-    "scripts/check_mutation_baseline.py",
     "scripts/check-model-egress.py",
     "scripts/check-public-routes.py",
 )
@@ -70,6 +71,16 @@ def _ratchet_identity(checker: str) -> str:
         ):
             return node.value.value
     raise AssertionError(f"{checker} does not declare a stable RATCHET identity")
+
+
+def _load_script(relative: str, name: str):
+    path = ROOT / relative
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_current_target_ref_resolves_to_the_synthetic_merges_target_parent(tmp_path: Path) -> None:
@@ -119,18 +130,11 @@ def test_current_target_ref_resolves_to_the_synthetic_merges_target_parent(tmp_p
     assert baseline.loads()["tolerated"] == ["introduced-on-target"]
 
 
-@pytest.mark.parametrize("checker", CONVERTED_RATCHET_CHECKERS)
+@pytest.mark.parametrize("checker", AUTHORIZATION_RATCHET_CHECKERS)
 def test_same_tree_bank_and_justify_cannot_authorize_converted_ratchet(
     checker: str, tmp_path: Path
 ) -> None:
-    """Reproduce #534's self-approval exploit for every #542 conversion.
-
-    The candidate weakens a generic measured floor, banks that weakened state in
-    its own ledger, and writes the grant that would justify the new debt in the
-    same tree. Every converted checker is required to consume the common trusted
-    authorization seam; that seam must therefore hide the candidate grant until
-    it has landed independently on the trusted base.
-    """
+    """Reproduce #534's self-approval exploit for authorization-based conversions."""
     ratchet = _ratchet_identity(checker)
     repo = tmp_path / ratchet.replace("/", "-")
     repo.mkdir()
@@ -172,3 +176,15 @@ def test_same_tree_bank_and_justify_cannot_authorize_converted_ratchet(
     assert "banked-regression" in candidate_grants, "exploit setup did not write its grant"
     assert "banked-regression" not in trusted_grants
     assert trusted_ledger["tolerated"] == []
+
+
+def test_mutation_conversion_rejects_same_tree_floor_weakening() -> None:
+    """Mutation is stricter: no authorization can lower an already-trusted floor."""
+    mutation = _load_script("scripts/check_mutation_baseline.py", "_m1_542_mutation_strict_floor")
+    current = {"pkg/mod.py": (19, 20)}
+    trusted = {"entries": {"pkg/mod.py": {"kill_rate": 0.95}}}
+    candidate = {"entries": {"pkg/mod.py": {"kill_rate": 0.90}}}
+
+    assert mutation.candidate_baseline_failures(current, trusted, candidate) == [
+        "pkg/mod.py: candidate kill_rate 90.0% weakens trusted 95.0%"
+    ]
