@@ -471,6 +471,7 @@ class PgRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
 
@@ -491,8 +492,12 @@ class PgRunStore:
         sql = "SELECT payload FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
         params: list[object] = [status.value]
         if project_id is not None:
-            sql += " AND project_id = $2"
+            sql += f" AND project_id = ${len(params) + 1}"
             params.append(project_id)
+        if after is not None:
+            cursor_param = len(params) + 1
+            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
+            params.extend(after)
         sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
         params.append(limit)
         sql += f" OFFSET ${len(params) + 1}"

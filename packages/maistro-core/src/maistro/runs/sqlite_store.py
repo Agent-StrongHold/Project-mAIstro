@@ -313,6 +313,7 @@ class SqliteRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
 
@@ -334,6 +335,9 @@ class SqliteRunStore:
         if project_id is not None:
             sql += " AND project_id = ?"
             params.append(project_id)
+        if after is not None:
+            sql += " AND (json_extract(payload, '$.created_at'), run_id) > (?, ?)"
+            params.extend(after)
         sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ? OFFSET ?"
         params.append(limit)
         params.append(offset)

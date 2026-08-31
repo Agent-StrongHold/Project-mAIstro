@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -274,6 +275,33 @@ def _print_failures(unauthorized: list[str], stale: list[str], undocumented: lis
         )
 
 
+def _integration_target_base(prov: ModuleType) -> str | None:
+    """Current PR target when CI supplied a historical pull-request base snapshot.
+
+    GitHub's pull-request `base.sha` is the target snapshot from the PR object,
+    not necessarily the target tip used to build today's synthetic merge. Using
+    that old SHA serializes long-lived PRs behind unrelated target-side ratchet
+    changes. The current remote target is still outside candidate control, and
+    `resolve_baseline` takes its merge-base with HEAD, so the trusted ledger is
+    bound to the exact integration target represented by the synthetic merge.
+
+    Only override a PR run that already opted into an explicit CI ratchet base.
+    This preserves local/shallow test jobs that intentionally have no base, and
+    leaves push and merge-group revisions supplied by their workflows untouched.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME", "").strip() != "pull_request":
+        return None
+    if not os.environ.get(prov.BASE_REV_ENV, "").strip():
+        return None
+    base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
+    if not base_ref:
+        raise prov.RatchetProvenanceError(
+            "pull-request wiring ratchet has an explicit base SHA but GITHUB_BASE_REF is empty; "
+            "cannot resolve the current integration target fail-closed"
+        )
+    return f"origin/{base_ref}"
+
+
 def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object, object]:
     """The ledger as of the base revision, where that was, and its metric version.
 
@@ -282,7 +310,7 @@ def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object, object]:
     global rather than a default argument.
     """
     prov = _provenance()
-    baseline = prov.resolve_baseline(BASELINE, root=ROOT)
+    baseline = prov.resolve_baseline(BASELINE, base=_integration_target_base(prov), root=ROOT)
     loaded = baseline.loads(default={})
     version = loaded.get("metric_definition_version") if isinstance(loaded, dict) else None
     return _entries_from(loaded), baseline, version

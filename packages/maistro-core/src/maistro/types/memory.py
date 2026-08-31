@@ -139,7 +139,18 @@ class Outcome:
     constructs one yet (#55, and ADR-083026-aba1 for why this record says so).
     """
 
+    #: The request this outcome came out of, or "" when none was in scope.
+    #: Before migration 028 this field carried the *session* id: the one
+    #: production writer passed `session_id` into it, and there was no
+    #: `session_id` field to pass it to. Rows from before that revision may
+    #: therefore hold either, which is why they are not backfilled -- there is
+    #: no way to tell which a given historical row meant (ADR-083026-56ee).
     request_id: str = ""
+    #: The conversation this outcome came out of, or "" when it came out of
+    #: none. A session is not a request and not a Run; it is the axis
+    #: `ExecutionContext` names `session_id` (ADR-083026-1cb1), and it now has
+    #: a field of its own rather than borrowing one that means something else.
+    session_id: str = ""
     task_type: str = ""
     model_used: str = ""
     provider: str = ""

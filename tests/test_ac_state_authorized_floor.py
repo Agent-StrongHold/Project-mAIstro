@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,11 +64,31 @@ def gate():
     return module
 
 
-def _git(*args: str, cwd: Path) -> str:
+def _git(*args: str, cwd: Path, env: dict[str, str] | None = None) -> str:
+    full_env = {**os.environ, **env} if env else None
     proc = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=60
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+        env=full_env,
     )
     return proc.stdout.strip()
+
+
+def _dated_commit_env(unix_seconds: int) -> dict[str, str]:
+    """`GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` for a commit at an exact instant.
+
+    Real wall-clock gaps between commits would make "landed after the grant"
+    true by accident of test speed rather than by design, and second-level
+    `%ct` granularity means two commits made in the same test run could tie.
+    Explicit, strictly increasing timestamps make landing order a fact of the
+    fixture, not a race.
+    """
+    stamp = f"@{unix_seconds} +0000"
+    return {"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
 
 
 @pytest.fixture
@@ -125,21 +146,40 @@ def repo(gate, tmp_path, monkeypatch):
         banked: float | None = None,
         raw_grant_at_base: object = UNCHANGED,
         extra_base_notes: dict[str, float] | None = None,
+        bundled_extra_notes: dict[str, float] | None = None,
     ) -> Path:
+        # `_baseline` and the grant land together, at t=1000 -- this commit
+        # *is* "when the grant was authorized" as `_grants_file_landing_commit`
+        # reads it. Each `extra_base_notes` entry then gets its own commit, one
+        # second later than the last, so "independently landed after the
+        # grant" (SPEC-083026-fcc9) is a fact of the fixture's git history, the
+        # same thing `_superseded_grants` itself reads, not merely a fold of
+        # files that happen to sit in one working tree. `bundled_extra_notes`
+        # is the opposite case: every entry lands in one shared commit, one
+        # second after `_baseline`'s -- one review, however many files it
+        # touches, which is what "distinct landing" must collapse to one.
         _note("_baseline", base)
-        # Named separately from `_baseline`, so a test that counts *notes*
-        # above a floor -- supersession is deliberately per-note, not
-        # per-fold -- has more than the one file `base` alone would give it.
-        # `_baseline` still carries the fold's own maximum for tests that
-        # only care what the fold is.
-        for name, coverage in (extra_base_notes or {}).items():
-            _note(name, coverage)
         if raw_grant_at_base is not UNCHANGED:
             grants_path.write_text(json.dumps(raw_grant_at_base))
         else:
             _grant(grant_at_base)
         _git("add", "-A", cwd=root)
-        _git("commit", "-qm", "base", cwd=root)
+        _git("commit", "-qm", "base", cwd=root, env=_dated_commit_env(1000))
+        for offset, (name, coverage) in enumerate(sorted((extra_base_notes or {}).items()), 1):
+            _note(name, coverage)
+            _git("add", "-A", cwd=root)
+            _git("commit", "-qm", name, cwd=root, env=_dated_commit_env(1000 + offset))
+        if bundled_extra_notes:
+            for name, coverage in bundled_extra_notes.items():
+                _note(name, coverage)
+            _git("add", "-A", cwd=root)
+            _git(
+                "commit",
+                "-qm",
+                "bundle",
+                cwd=root,
+                env=_dated_commit_env(1000 + len(extra_base_notes or {}) + 1),
+            )
         _git("update-ref", "refs/remotes/origin/develop", "HEAD", cwd=root)
         _git("checkout", "-q", "-b", "branch", cwd=root)
         if grant_in_worktree is not UNCHANGED:
@@ -1050,58 +1090,111 @@ class TestSupersededGrantsDirectly:
     content or of what the removing change touches. `_superseded_grants` is
     the escape -- multiple *independent* already-landed notes, not the fold's
     `max`, each clearing the floor on their own.
+
+    Real git history, not synthetic `Note` objects: Codex's #720 finding on
+    the first version was exactly that a purely value-based count cannot tell
+    "three files" from "three reviews", or "before the correction" from
+    "after" -- and neither can a test that hands the function an in-memory
+    list with no git behind it. These read `_superseded_grants` against a
+    real repository built by the same `repo` fixture the rest of this file
+    uses, per this file's own header on stubbed provenance going quiet.
     """
 
-    def _note(self, gate, name: str, coverage: float | None) -> object:
-        counters = {} if coverage is None else {"design_coverage": coverage}
-        return gate.ac_state_notes.Note(
-            name=name, branch=name, measured_with_tests=True, counters=counters
+    def test_a_note_absent_from_git_history_is_ignored(self, gate, repo) -> None:
+        """`_superseded_grants` reads only what `notes` names, but nothing
+        stops a caller from handing it a note `load_notes()` never produced
+        -- a hand-built list, a future caller's own construction. One with no
+        landing commit at all must not crash the count or be mistaken for a
+        well-provenanced one."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            extra_base_notes={"a": 20.0, "b": 20.0},
+        )
+        base_sha = gate.ac_state_notes.bounds().base_sha
+        notes, _, _ = gate.ac_state_notes.load_notes(base=base_sha)
+        phantom = gate.ac_state_notes.Note(
+            name="phantom",
+            branch="phantom",
+            measured_with_tests=True,
+            counters={"design_coverage": 99.0},
         )
 
-    @pytest.mark.ac("SPEC-083026-fcc9/AC-1")
-    def test_two_notes_above_the_floor_do_not_supersede_it(self, gate) -> None:
-        notes = [self._note(gate, "a", 20.0), self._note(gate, "b", 20.0)]
+        superseded = gate._superseded_grants(
+            [*notes, phantom], {"design_coverage": 15.0}, base_sha=base_sha
+        )
 
-        assert gate._superseded_grants(notes, {"design_coverage": 15.0}) == {}
+        assert superseded == {}, (
+            "a and b alone are two -- short of three -- and phantom must not make three"
+        )
 
-    @pytest.mark.ac("SPEC-083026-fcc9/AC-2")
-    def test_three_notes_above_the_floor_supersede_it(self, gate) -> None:
-        notes = [
-            self._note(gate, "a", 20.0),
-            self._note(gate, "b", 20.0),
-            self._note(gate, "c", 20.0),
-        ]
+    def test_no_grants_means_nothing_to_supersede(self, gate, repo) -> None:
+        repo(20.0, grant_at_base="design_coverage@15.0", extra_base_notes={"a": 20.0})
+        base_sha = gate.ac_state_notes.bounds().base_sha
+        notes, _, _ = gate.ac_state_notes.load_notes(base=base_sha)
 
-        superseded = gate._superseded_grants(notes, {"design_coverage": 15.0})
+        assert gate._superseded_grants(notes, {}, base_sha=base_sha) == {}
 
-        assert superseded == {"design_coverage": ["a", "b", "c"]}
+    def test_no_base_sha_refuses_to_guess(self, gate, repo) -> None:
+        """Landing history cannot be resolved without a revision to resolve it
+        against -- the safe default is to count nothing, not to fall back to
+        treating every note as equally provenanced."""
+        repo(20.0, grant_at_base="design_coverage@15.0", extra_base_notes={"a": 20.0})
+        notes, _, _ = gate.ac_state_notes.load_notes()
 
-    def test_a_note_exactly_at_the_floor_does_not_count(self, gate) -> None:
-        """`>`, not `>=`: a note naming the grant's own value is not evidence
-        against it -- it is the fall the grant permits, taken."""
-        notes = [
-            self._note(gate, "a", 15.0),
-            self._note(gate, "b", 15.0),
-            self._note(gate, "c", 15.0),
-        ]
+        assert gate._superseded_grants(notes, {"design_coverage": 15.0}, base_sha=None) == {}
 
-        assert gate._superseded_grants(notes, {"design_coverage": 15.0}) == {}
+    def test_note_landing_commits_tolerates_an_unreachable_root(self, gate) -> None:
+        """`root` pointing nowhere makes `subprocess.run`'s `cwd` raise
+        before git ever executes -- the helper absorbs that the same way a
+        real git failure is absorbed, rather than propagating it into a
+        caller whose job is only to compute supersession."""
+        assert (
+            gate._note_landing_commits(
+                Path("quality/ac-state-notes"), "HEAD", root=Path("/nonexistent-root-xyz")
+            )
+            == {}
+        )
 
-    def test_a_note_with_no_value_for_the_counter_is_ignored(self, gate) -> None:
-        """An older note predating a counter, or one for an unrelated ratchet,
-        must not crash the count or be mistaken for a low value."""
-        notes = [
-            self._note(gate, "a", 20.0),
-            self._note(gate, "b", 20.0),
-            self._note(gate, "c", None),
-        ]
+    def test_note_landing_commits_tolerates_a_non_git_root(self, gate, tmp_path) -> None:
+        """A real directory that is simply not a git repository fails with a
+        non-zero exit rather than an exception -- the other failure shape
+        the helper must absorb the same way."""
+        assert (
+            gate._note_landing_commits(Path("quality/ac-state-notes"), "HEAD", root=tmp_path) == {}
+        )
 
-        assert gate._superseded_grants(notes, {"design_coverage": 15.0}) == {}
+    def test_grants_file_landing_commit_tolerates_an_unreachable_root(self, gate) -> None:
+        assert gate._grants_file_landing_commit("HEAD", root=Path("/nonexistent-root-xyz")) is None
 
-    def test_no_grants_means_nothing_to_supersede(self, gate) -> None:
-        notes = [self._note(gate, "a", 20.0)]
+    def test_grants_file_landing_commit_tolerates_a_non_git_root(self, gate, tmp_path) -> None:
+        assert gate._grants_file_landing_commit("HEAD", root=tmp_path) is None
 
-        assert gate._superseded_grants(notes, {}) == {}
+    def test_commit_timestamps_tolerates_an_unreachable_root(self, gate) -> None:
+        assert gate._commit_timestamps({"deadbeef"}, root=Path("/nonexistent-root-xyz")) == {}
+
+    def test_commit_timestamps_tolerates_a_non_git_root(self, gate, tmp_path) -> None:
+        assert gate._commit_timestamps({"deadbeef"}, root=tmp_path) == {}
+
+    def test_an_unresolvable_grant_timestamp_supersedes_nothing(
+        self, gate, repo, monkeypatch
+    ) -> None:
+        """The grant's own landing commit can resolve
+        (`_grants_file_landing_commit` succeeds) while its timestamp still
+        cannot -- `_commit_timestamps` failing for that one sha, in
+        practice. Without a grant time to compare against, nothing can be
+        said to land after it, so the count must not silently treat every
+        note as later."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            extra_base_notes={"a": 20.0, "b": 20.0, "c": 20.0},
+        )
+        base_sha = gate.ac_state_notes.bounds().base_sha
+        notes, _, _ = gate.ac_state_notes.load_notes(base=base_sha)
+        monkeypatch.setattr(gate._impl, "_commit_timestamps", lambda shas, **kwargs: {})
+
+        assert gate._superseded_grants(notes, {"design_coverage": 15.0}, base_sha=base_sha) == {}
 
 
 class TestASupersededGrantCanBePruned:
@@ -1118,17 +1211,20 @@ class TestASupersededGrantCanBePruned:
     """
 
     @pytest.mark.ac("SPEC-083026-fcc9/AC-1")
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-7")
     def test_fewer_than_three_independent_notes_do_not_excuse_removal(self, gate, repo) -> None:
-        """`_baseline` at 20 and one more at 16 is two notes above the grant
-        -- short of the three this spec requires -- so the grant is still
-        binding and removing it is still refused, exactly as before this
-        spec existed."""
+        """`_baseline` lands in the same commit as the grant itself, so it
+        never counts toward supersession (it is the record the grant exists
+        beside, not independent evidence against it) -- two more, each in
+        its own later commit, is still short of the three this spec
+        requires, so the grant is still binding and removing it is still
+        refused, exactly as before this spec existed."""
         repo(
             20.0,
             grant_at_base="design_coverage@15.0",
             grant_in_worktree=None,
             banked=20.0,
-            extra_base_notes={"other-one": 16.0},
+            extra_base_notes={"other-one": 16.0, "other-two": 17.0},
         )
 
         assert _run(gate, 20.0) == 1
@@ -1182,8 +1278,8 @@ class TestASupersededGrantCanBePruned:
 
     @pytest.mark.ac("SPEC-083026-fcc9/AC-5")
     def test_the_candidates_own_note_cannot_manufacture_supersession(self, gate, repo) -> None:
-        """`_baseline` at 20 and one more at 16 -- two independent base notes,
-        short of three -- plus this change's own measurement, well above the
+        """Two independent base notes, each in its own later commit -- short
+        of three -- plus this change's own measurement, well above the
         grant. Three by a naive count, but the candidate's own claim about
         itself must not count toward supersession: removal is still
         refused."""
@@ -1192,10 +1288,58 @@ class TestASupersededGrantCanBePruned:
             grant_at_base="design_coverage@15.0",
             grant_in_worktree=None,
             banked=25.0,
-            extra_base_notes={"n1": 16.0},
+            extra_base_notes={"n1": 16.0, "n2": 17.0},
         )
 
         assert _run(gate, 25.0) == 1
+
+    def test_a_note_exactly_at_the_floor_does_not_count(self, gate, repo) -> None:
+        """`>`, not `>=`: a note naming the grant's own value is not evidence
+        against it -- it is the fall the grant permits, taken."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            banked=15.0,
+            extra_base_notes={"n1": 15.0, "n2": 15.0, "n3": 15.0},
+        )
+
+        assert _run(gate, 15.0) == 1
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-8")
+    def test_notes_landed_in_one_commit_count_as_one_landing(self, gate, repo) -> None:
+        """Three note files added in a single commit are one review, not
+        three -- this repository's own squash-merge convention makes "one
+        commit" and "one merged PR" the same fact (Codex, #720). Short of
+        the three independent landings this spec requires, so removal is
+        still refused even though three *files* clear the floor."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            banked=20.0,
+            bundled_extra_notes={"n1": 16.0, "n2": 17.0, "n3": 18.0},
+        )
+
+        assert _run(gate, 20.0) == 1
+
+    @pytest.mark.ac("SPEC-083026-fcc9/AC-8")
+    def test_one_bundled_commit_plus_two_independent_ones_supersedes(
+        self, gate, repo, capsys
+    ) -> None:
+        """The bundle is one landing; two more independent ones make three,
+        and the grant is superseded -- distinct landings, not distinct
+        files, is what the threshold counts."""
+        repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            grant_in_worktree=None,
+            banked=20.0,
+            extra_base_notes={"n1": 16.0, "n2": 17.0},
+            bundled_extra_notes={"n3": 18.0, "n4": 19.0},
+        )
+
+        assert _run(gate, 20.0) == 0
 
     @pytest.mark.ac("SPEC-083026-fcc9/AC-6")
     def test_a_grant_with_no_independent_notes_above_it_is_unaffected(self, gate, repo) -> None:

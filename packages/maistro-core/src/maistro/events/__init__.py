@@ -9,20 +9,6 @@ from maistro.events.bus import (
     TriggerCondition,
     get_event_bus,
 )
-from maistro.events.checkpoints import (
-    CHECKPOINT_SCHEMA_VERSION,
-    SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS,
-    Checkpoint,
-    CheckpointError,
-    CheckpointNotFoundError,
-    CheckpointRef,
-    CheckpointStore,
-    CheckpointVersionError,
-    InMemoryCheckpointStore,
-    SqliteCheckpointStore,
-    checkpoint_created_event,
-    resolve_checkpoint,
-)
 from maistro.events.durable_log import (
     EventLogStore,
     InMemoryEventLog,
@@ -68,20 +54,6 @@ _EVENT_STORE_STREAM_READS = (
     InMemoryEventStore.list_stream,
     SqliteEventStore.list_stream,
 )
-_CHECKPOINT_STORE_OPERATIONS = (
-    CheckpointStore.append,
-    CheckpointStore.get,
-    CheckpointStore.latest,
-    CheckpointStore.list_run,
-    InMemoryCheckpointStore.append,
-    InMemoryCheckpointStore.get,
-    InMemoryCheckpointStore.latest,
-    InMemoryCheckpointStore.list_run,
-    SqliteCheckpointStore.append,
-    SqliteCheckpointStore.get,
-    SqliteCheckpointStore.latest,
-    SqliteCheckpointStore.list_run,
-)
 _OUTBOX_OPERATIONS = (
     SqliteEventOutbox.ensure_schema,
     SqliteEventOutbox.stage,
@@ -90,17 +62,9 @@ _OUTBOX_OPERATIONS = (
 )
 
 __all__ = [
-    "CHECKPOINT_SCHEMA_VERSION",
     "HANDLER_FAILED_EVENT",
     "MAX_ATTEMPTS",
-    "SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS",
     "ActionHandler",
-    "Checkpoint",
-    "CheckpointError",
-    "CheckpointNotFoundError",
-    "CheckpointRef",
-    "CheckpointStore",
-    "CheckpointVersionError",
     "Event",
     "EventBus",
     "EventCategory",
@@ -111,7 +75,6 @@ __all__ = [
     "HandlerCallError",
     "HandlerCaller",
     "HandlerInvocation",
-    "InMemoryCheckpointStore",
     "InMemoryEventLog",
     "InMemoryEventStore",
     "InMemoryInvocationStore",
@@ -119,7 +82,6 @@ __all__ = [
     "InvocationStatus",
     "InvocationStore",
     "LoggedEvent",
-    "SqliteCheckpointStore",
     "SqliteEventLog",
     "SqliteEventOutbox",
     "SqliteEventStore",
@@ -130,9 +92,7 @@ __all__ = [
     "TriggerDefinition",
     "TriggerStore",
     "append_from_bus_event",
-    "checkpoint_created_event",
     "get_event_bus",
     "pattern_matches",
     "process_events",
-    "resolve_checkpoint",
 ]

@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from maistro.observability.correlation import observed_provenance
 from maistro.sessions.turns import reject_blank_turn_id
 
 if TYPE_CHECKING:
@@ -30,9 +31,19 @@ CREATE TABLE IF NOT EXISTS session_turns (
     session_id TEXT NOT NULL,
     turn_id TEXT NOT NULL,
     timestamp REAL NOT NULL,
+    run_id TEXT,
+    node_run_id TEXT,
+    attempt_id TEXT,
     PRIMARY KEY (session_id, turn_id)
 )
 """
+
+#: Migration 028's columns, for a database file created before it (#748).
+#: `CREATE TABLE IF NOT EXISTS` leaves an existing table exactly as it was, so
+#: without these an older homelab file would keep a three-column table and every
+#: append would fail on the insert -- the failure mode #710 hit on the same
+#: shape of change.
+_TURN_PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
 
 class SqliteSessionStore:
@@ -56,6 +67,11 @@ class SqliteSessionStore:
         """Create the sessions table if it doesn't exist."""
         await self._conn.execute(_SCHEMA)
         await self._conn.execute(_TURNS_SCHEMA)
+        cursor = await self._conn.execute("PRAGMA table_info(session_turns)")
+        existing = {row[1] for row in await cursor.fetchall()}
+        for column in _TURN_PROVENANCE_COLUMNS:
+            if column not in existing:
+                await self._conn.execute(f"ALTER TABLE session_turns ADD COLUMN {column} TEXT")
         # Without this, the TTL purge is a full table scan on every append —
         # which is how a retention sweep turns into a reason to disable the
         # retention sweep.
@@ -136,10 +152,14 @@ class SqliteSessionStore:
                         next_seq += 1
 
                 if turn_id is not None:
+                    # The execution that produced the turn, resolved from the
+                    # ambient context and recorded beside the opaque identity
+                    # rather than read out of it (ADR-083026-56ee).
                     await self._conn.execute(
-                        "INSERT INTO session_turns (session_id, turn_id, timestamp) "
-                        "VALUES (?, ?, ?)",
-                        (session_id, turn_id, now),
+                        "INSERT INTO session_turns "
+                        "(session_id, turn_id, timestamp, run_id, node_run_id, attempt_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (session_id, turn_id, now, *observed_provenance().as_columns()),
                     )
             except BaseException:
                 await self._conn.rollback()
@@ -151,6 +171,22 @@ class SqliteSessionStore:
         # anything. This mirrors security/pg_strikes.py, which clears its
         # expired windows inline on every check.
         await self.purge_expired()
+
+    async def produced_runs(self, session_id: str) -> list[str]:
+        """The canonical Runs that produced this session's turns, oldest first.
+
+        The session-to-Run direction, which until ADR-083026-56ee existed only
+        as a coincidence of one call site passing a Run id as an opaque turn
+        identity. Distinct, and never blank: a turn appended with no execution
+        in scope contributes nothing rather than an empty name.
+        """
+        cursor = await self._conn.execute(
+            "SELECT run_id FROM session_turns "
+            "WHERE session_id = ? AND run_id IS NOT NULL "
+            "GROUP BY run_id ORDER BY MIN(timestamp)",
+            (session_id,),
+        )
+        return [str(row[0]) for row in await cursor.fetchall()]
 
     async def delete_session(self, session_id: str) -> None:
         """Delete a session."""

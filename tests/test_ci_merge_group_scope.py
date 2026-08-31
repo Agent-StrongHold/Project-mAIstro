@@ -47,6 +47,21 @@ def test_shared_dependency_change_runs_every_specialized_leg() -> None:
     assert classify(["uv.lock"]) == dict.fromkeys(LEGS, True)
 
 
+def test_scope_control_change_runs_every_specialized_leg() -> None:
+    for path in (
+        "scripts/ci_base_revision.py",
+        "scripts/ci_merge_group_scope.py",
+    ):
+        assert classify([path]) == dict.fromkeys(LEGS, True)
+
+
+def test_core_test_conftest_runs_database_backed_legs() -> None:
+    result = classify(["packages/maistro-core/tests/conftest.py"])
+    assert result["postgres"] is True
+    assert result["durable_events"] is True
+    assert result["strike_ladder"] is True
+
+
 def test_docs_only_change_skips_service_legs_but_not_docker() -> None:
     result = classify(["docs/ci/MERGE-QUEUE.md"])
     assert result == {
