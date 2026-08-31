@@ -52,7 +52,16 @@ test("current Design Studio parent surface is operable by keyboard without enabl
   const poster = modes.getByRole("button").filter({ hasText: "Poster" });
   const infographic = modes.getByRole("button").filter({ hasText: "Infographic" });
 
-  await poster.focus();
+  // Enter the picker using only the real page tab order. This deliberately
+  // does not call focus() on a picker control, so removing Poster from the tab
+  // order or making the picker pointer-only fails the regression test.
+  for (
+    let step = 0;
+    step < 80 && !(await poster.evaluate((element) => document.activeElement === element));
+    step += 1
+  ) {
+    await page.keyboard.press("Tab");
+  }
   await expect(poster).toBeFocused();
   await expect(poster).toHaveAttribute("aria-pressed", "true");
 
@@ -72,7 +81,11 @@ test("current Design Studio parent surface is operable by keyboard without enabl
   // Continue with Tab only until the next editable control is reached. This
   // fails if a future artifact-picker change traps focus or adds a pointer-only
   // interaction in the parent surface.
-  for (let step = 0; step < 12 && !(await prompt.evaluate((element) => document.activeElement === element)); step += 1) {
+  for (
+    let step = 0;
+    step < 12 && !(await prompt.evaluate((element) => document.activeElement === element));
+    step += 1
+  ) {
     await page.keyboard.press("Tab");
   }
   await expect(prompt).toBeFocused();
@@ -81,6 +94,8 @@ test("current Design Studio parent surface is operable by keyboard without enabl
 
   const generate = page.getByRole("button", { name: "Generate visual" });
   await expect(generate).toBeDisabled();
-  await expect(page.getByText(/Nothing is submitted or simulated while this control is disabled/)).toBeVisible();
+  await expect(
+    page.getByText(/Nothing is submitted or simulated while this control is disabled/),
+  ).toBeVisible();
   expect(canvasRequests).toEqual([]);
 });
