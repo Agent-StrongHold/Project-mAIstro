@@ -93,6 +93,12 @@ test("Design Studio is the parent surface and never enables fake visual executio
   await expect(page.getByText("Running...", { exact: true })).toHaveCount(0);
   await expect(page.getByText(/Generated output for/)).toHaveCount(0);
   expect(canvasRequests).toEqual([]);
+
+  // Engineering coordination belongs in issues/docs, not the shipped product.
+  const product = page.locator("body");
+  await expect(product).not.toContainText("#735");
+  await expect(product).not.toContainText("#752");
+  await expect(product).not.toContainText("M3 #");
 });
 
 test("Deck is a contained Design Studio mode, not a route escape", async () => {
@@ -101,6 +107,6 @@ test("Deck is a contained Design Studio mode, not a route escape", async () => {
   await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).click();
 
   await expect(page.getByRole("button", { name: "Open Deck editor" })).toBeDisabled();
-  await expect(page.getByText(/Deck editing remains security-contained until #752 lands/)).toBeVisible();
+  await expect(page.getByText(/Deck editing is temporarily unavailable while secure rendering is enabled/)).toBeVisible();
   await expect(page).toHaveURL(/\/cli\/canvas$/);
 });
