@@ -104,7 +104,7 @@ def test_major_version_drift_fails_loudly() -> None:
     with pytest.raises(InteropContractError, match="incompatible"):
         INTEROP_ONTOLOGY_V1.require_compatible("2.0.0")
 
-    with pytest.raises(InteropContractError, match="semantic x.y.z"):
+    with pytest.raises(InteropContractError, match=r"semantic x\.y\.z"):
         INTEROP_ONTOLOGY_V1.require_compatible("v1")
 
 
