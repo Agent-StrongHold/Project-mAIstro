@@ -30,9 +30,7 @@ def inventory() -> ModuleType:
 
 @pytest.fixture(scope="module")
 def enumerations_adapter() -> ModuleType:
-    return _load_script(
-        "scripts/check-enumerations-provenance.py", "_m1_542_enumerations_adapter"
-    )
+    return _load_script("scripts/check-enumerations-provenance.py", "_m1_542_enumerations_adapter")
 
 
 @pytest.fixture(scope="module")
@@ -67,9 +65,7 @@ def test_stale_trusted_adapter_mapping_is_a_failure(inventory) -> None:
         label="trusted adapter",
     )
 
-    assert errors == [
-        "stale trusted adapter mapping vanished.py -> quality/vanished.json: adapter"
-    ]
+    assert errors == ["stale trusted adapter mapping vanished.py -> quality/vanished.json: adapter"]
 
 
 def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory, tmp_path: Path) -> None:
