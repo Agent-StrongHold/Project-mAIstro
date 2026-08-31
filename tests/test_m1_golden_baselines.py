@@ -104,7 +104,7 @@ def test_semantically_incompatible_builders_retry_is_rejected() -> None:
     scenario = _scenario("builders", "retry_keeps_logical_run")
     candidate = incompatible_copy(scenario, "request_after.run_id", "builders-run-2")
 
-    with pytest.raises(BaselineContractError, match="request_after.run_id"):
+    with pytest.raises(BaselineContractError, match=re.escape("request_after.run_id")):
         assert_observation_matches(scenario, candidate)
 
 
@@ -112,5 +112,5 @@ def test_schedule_candidate_without_durable_run_identity_is_rejected() -> None:
     scenario = _scenario("schedules", "fire_produces_canonical_run_and_provenance")
     candidate = incompatible_copy(scenario, "audit.run_id", None)
 
-    with pytest.raises(BaselineContractError, match="audit.run_id"):
+    with pytest.raises(BaselineContractError, match=re.escape("audit.run_id")):
         assert_observation_matches(scenario, candidate)
