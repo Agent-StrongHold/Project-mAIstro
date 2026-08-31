@@ -13,7 +13,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from maistro_design.stores import PgDesignProjectStore
 from maistro_design.trust import TrustTier
-from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, DesignProject, OutputFormat
+from maistro_design.types import (
+    ArtifactKind,
+    ArtifactNode,
+    DesignOutput,
+    DesignProject,
+    OutputFormat,
+)
 
 
 def _read_store() -> tuple[PgDesignProjectStore, Any]:
