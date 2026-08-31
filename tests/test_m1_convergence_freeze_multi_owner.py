@@ -46,8 +46,8 @@ def test_one_valid_concept_cannot_launder_an_invalid_shared_owner() -> None:
     )
 
     assert len(failures) == 1
-    assert "Run" in failures[0]
-    assert "Event" not in failures[0]
+    assert "overlaps Run." in failures[0]
+    assert "overlaps Event" not in failures[0]
 
 
 def test_retired_events_checkpoint_family_cannot_regain_checkpoint_authority() -> None:
