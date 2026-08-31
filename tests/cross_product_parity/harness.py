@@ -305,12 +305,15 @@ def assert_identity_projection(
 
     canonical_status = canonical.get("status")
     product_terminal = projected.get("terminal_state")
-    if canonical_status in _TERMINAL_STATUSES and product_terminal is not None:
-        if product_terminal != canonical_status:
-            raise ParityContractError(
-                "product-private terminal state diverged from canonical Run status: "
-                f"{product_terminal!r} != {canonical_status!r}"
-            )
+    if (
+        canonical_status in _TERMINAL_STATUSES
+        and product_terminal is not None
+        and product_terminal != canonical_status
+    ):
+        raise ParityContractError(
+            "product-private terminal state diverged from canonical Run status: "
+            f"{product_terminal!r} != {canonical_status!r}"
+        )
 
 
 def assert_ontology_identity_projection(
