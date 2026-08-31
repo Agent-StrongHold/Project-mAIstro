@@ -51,6 +51,26 @@ def test_plan_includes_uv_sync_for_core_lib() -> None:
     assert "uv sync" in lines
 
 
+def test_plan_uses_updateable_root_copier_dispatcher() -> None:
+    answers = parse_answers_dict(
+        {
+            "schema_version": "1",
+            "product": "autonoetic",
+            "stack_bringup": "none",
+        }
+    )
+
+    plan = build_install_plan(
+        answers,
+        repo_root=Path("/tmp/maistro-root"),
+        copier_dest="../my product",
+    )
+
+    assert plan["copier_command"] == (
+        "uv run copier copy --data product_template=autonoetic . '../my product'"
+    )
+
+
 def test_apply_spec_when_root_full_and_repo_root() -> None:
     raw = {
         "schema_version": "1",

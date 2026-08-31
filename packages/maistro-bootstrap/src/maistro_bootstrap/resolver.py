@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 
 
@@ -190,5 +191,9 @@ def should_print_podman_preface(compose_addons: set[str]) -> bool:
 def copier_command(product: str, dest: str) -> str | None:
     if product not in PRODUCTS:
         return None
-    _title, path = PRODUCTS[product]
-    return f"copier copy {path} {dest} --trust"
+    # SECURITY-REVIEW: Product is allowlisted above and the only caller prints
+    # this command for a human; quote the configurable destination regardless.
+    if product == "multi-tenant":
+        _title, path = PRODUCTS[product]
+        return f"uv run copier copy {path} {shlex.quote(dest)}"
+    return f"uv run copier copy --data product_template={product} . {shlex.quote(dest)}"

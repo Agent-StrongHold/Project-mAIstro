@@ -68,11 +68,17 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 
 ### Templates (M2 — weeks 2–6)
 
-**[engine-010] Copier template `single-tenant-multi-user` — Accepted; `gap-impl` — v1.0 M2**
+**[engine-010] Copier template `single-tenant-multi-user` — Implemented — v1.0 M2**
 - Knobs: `users_max`, `auth_backend`, `channels`, `host_target`.
+- Evidence: `tests/templates/test_single_tenant_multi_user_renders.py` renders secure defaults,
+  exercises alternate knobs through `copier update`, runs generated contract tests, and checks
+  target-specific file removal/addition.
 
-**[engine-011] Copier template `autonoetic` — Accepted; `gap-impl` — v1.0 M2**
+**[engine-011] Copier template `autonoetic` — Implemented — v1.0 M2**
 - Knobs: `awareness_loop_hz`, `self_model`, `memory_consolidator`, `dossier_store`.
+- Evidence: `tests/templates/test_autonoetic_renders.py` renders secure defaults, exercises
+  alternate knobs through `copier update`, runs generated contract tests, and checks optional
+  consolidator/storage file conditions.
 
 **[engine-012] Copier template `multi-tenant` — Accepted; `gap-impl` — v1.0 M2**
 - Knobs: `tenants_max`, `policy_engine`, `deploy_target`, `compliance_pack`. Round-trip vs `stronghold`

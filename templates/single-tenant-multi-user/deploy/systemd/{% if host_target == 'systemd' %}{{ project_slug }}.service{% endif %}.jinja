@@ -1,0 +1,21 @@
+[Unit]
+Description={{ project_slug }} configuration readiness check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=maistro
+Group=maistro
+EnvironmentFile=/etc/{{ project_slug }}.env
+ExecStart=/opt/{{ project_slug }}/.venv/bin/{{ project_slug }} --check
+RemainAfterExit=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
