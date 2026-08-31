@@ -35,10 +35,11 @@ NIGHTLY_PHASES = (
 def _load_hypothesis_profile(*, nightly: bool) -> str:
     """Register and load the live suite-wide Hypothesis profile.
 
-    Formal tests must not override mode-owned settings such as max_examples,
-    phases, deadline, database, derandomize, or health-check policy. The root
-    wiring regression enforces that rule so ``--nightly`` cannot silently stop
-    broadening exploration because one property test pins its own budget.
+    These profiles are the defaults for formal properties. Explicit per-test
+    ``@settings`` remain intentional local overrides and therefore take normal
+    Hypothesis precedence over the active profile. The profile wiring regression
+    itself is deliberately undecorated so it proves that ordinary properties
+    inherit the selected CI or nightly policy.
     """
     settings.register_profile(
         CI_PROFILE,
