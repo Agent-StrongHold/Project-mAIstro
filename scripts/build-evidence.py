@@ -351,9 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.complete_from:
             if args.exit_code is None or args.duration_seconds is None:
-                raise EvidenceError(
-                    "--complete-from requires --exit-code and --duration-seconds"
-                )
+                raise EvidenceError("--complete-from requires --exit-code and --duration-seconds")
             if args.inputs or args.command is not None or args.tools:
                 raise EvidenceError(
                     "--complete-from consumes an existing identity; do not pass --input/--command/--tool"
