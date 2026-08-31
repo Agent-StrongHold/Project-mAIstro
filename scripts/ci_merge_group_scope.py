@@ -174,7 +174,10 @@ def main() -> int:
             parser.error("--github-outputs cannot be combined with paths or --json")
         event_name = os.environ.get("GITHUB_EVENT_NAME", "").strip()
         if not event_name:
-            print("WARN: GITHUB_EVENT_NAME is missing; enabling every specialized leg", file=sys.stderr)
+            print(
+                "WARN: GITHUB_EVENT_NAME is missing; enabling every specialized leg",
+                file=sys.stderr,
+            )
         print(render_outputs(scope_from_environment(event_name)))
         return 0
 
