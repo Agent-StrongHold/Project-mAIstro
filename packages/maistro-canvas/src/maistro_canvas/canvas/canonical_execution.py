@@ -121,10 +121,7 @@ class CanvasCanonicalExecution:
         edges: list[Edge] = []
         if action == "reference":
             hero = _node_id(job_id, "reference.hero")
-            edges = [
-                Edge(from_node=hero, to_node=_node_id(job_id, stage))
-                for stage in stages[1:]
-            ]
+            edges = [Edge(from_node=hero, to_node=_node_id(job_id, stage)) for stage in stages[1:]]
         graph = Graph(
             graph_id=f"canvas:{job_id}",
             workspace_id=self._workspace_id,
@@ -207,7 +204,11 @@ class CanvasCanonicalExecution:
         else:
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (item for item in reversed(attempts) if item.status not in TERMINAL_ATTEMPT_STATUSES),
+                (
+                    item
+                    for item in reversed(attempts)
+                    if item.status not in TERMINAL_ATTEMPT_STATUSES
+                ),
                 None,
             )
             if active is not None:
@@ -246,7 +247,11 @@ class CanvasCanonicalExecution:
         for node_run in await self._runs.list_node_runs(run_id):
             attempts = await self._runs.list_attempts(node_run.node_run_id)
             active = next(
-                (item for item in reversed(attempts) if item.status not in TERMINAL_ATTEMPT_STATUSES),
+                (
+                    item
+                    for item in reversed(attempts)
+                    if item.status not in TERMINAL_ATTEMPT_STATUSES
+                ),
                 None,
             )
             if active is not None:
@@ -425,9 +430,7 @@ class CanvasCanonicalExecution:
     def _stage_node_id(run: Run, stage: str) -> str:
         graph = run.graph.materialize()
         matches = [
-            node.node_id
-            for node in graph.nodes
-            if node.metadata.get("canvas_stage") == stage
+            node.node_id for node in graph.nodes if node.metadata.get("canvas_stage") == stage
         ]
         if len(matches) != 1:
             raise RunIntegrityError(

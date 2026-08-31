@@ -257,10 +257,20 @@ class CanvasExecutor:
         return await self._store.update_job(job)
 
     async def _execute_claimed(self, job: GenerationJobRecord) -> None:
-        """Execute one runner-claimed job through canonical physical evidence."""
-        if canonical_run_id(job.params) is None or self._canonical_execution is None:
+        """Execute one runner-claimed job with correlation integrity checks."""
+        run_id = canonical_run_id(job.params)
+        if run_id is None and self._canonical_execution is None:
+            # Compatibility-only direct call. CanvasJobRunner rejects a real
+            # CanvasExecutor with canonical_enabled=False before it claims work.
+            job.result_paths = await self._execute_action(job)
+            return
+        if run_id is None:
             raise RuntimeError(
-                "CanvasJobRunner requires a job correlated to canonical execution before provider work"
+                f"Canvas job {job.id!r} has canonical execution configured but no Run correlation"
+            )
+        if self._canonical_execution is None:
+            raise RuntimeError(
+                f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
             )
         job.result_paths = await self._execute_action(job)
 
