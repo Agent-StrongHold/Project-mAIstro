@@ -29,13 +29,13 @@ jobs:
           from pathlib import Path
           path = Path('packages/maistro-core/src/maistro/builders/canonical_execution.py')
           text = path.read_text()
-          before_import = 'from typing import TYPE_CHECKING, Any, ClassVar, Literal'
-          after_import = 'from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal'
+          before_imports = 'import asyncio\nfrom dataclasses import dataclass\nfrom typing import TYPE_CHECKING, Any, ClassVar, Literal'
+          after_imports = 'import asyncio\nfrom collections.abc import Callable\nfrom dataclasses import dataclass\nfrom typing import TYPE_CHECKING, Any, ClassVar, Literal'
           before_sig = '    budget: IterationBudget,\n):\n    stages = {node.name: node for node in graph}'
           after_sig = '    budget: IterationBudget,\n) -> Callable[[str, Graph], BaseNode[Any, Any]]:\n    stages = {node.name: node for node in graph}'
-          assert before_import in text
+          assert before_imports in text
           assert before_sig in text
-          path.write_text(text.replace(before_import, after_import).replace(before_sig, after_sig))
+          path.write_text(text.replace(before_imports, after_imports).replace(before_sig, after_sig))
           PY
       - name: Validate
         run: |
