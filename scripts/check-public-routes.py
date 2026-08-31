@@ -73,42 +73,30 @@ def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
         raise RuntimeError(f"git {' '.join(args)} could not run: {exc}") from exc
 
 
-def _materialize_ci_history(prov: ModuleType) -> None:
-    """Make the event-selected trusted base readable from a shallow Actions checkout.
-
-    ``actions/checkout`` defaults to depth one. On pull requests that leaves the
-    synthetic merge itself marked shallow and omits ``origin/<base>`` entirely,
-    so even a correct trusted-base resolver cannot calculate the merge base.
-    Materialize only the current event ref and its declared integration target;
-    never substitute the candidate ledger when that fetch fails.
-    """
-    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
-        return
-
-    event_base = prov._github_event_base()
-    if not event_base:
-        return
-
+def _unshallow_ci_checkout(prov: ModuleType, event_base: str) -> None:
     shallow = _run_git(["rev-parse", "--is-shallow-repository"])
     if shallow.returncode != 0:
         raise prov.RatchetProvenanceError(
             f"could not determine checkout depth before resolving {event_base!r}: "
             f"{shallow.stderr.strip()}"
         )
+    if shallow.stdout.strip() != "true":
+        return
 
-    if shallow.stdout.strip() == "true":
-        current_ref = os.environ.get("GITHUB_REF", "").strip()
-        if not current_ref:
-            raise prov.RatchetProvenanceError(
-                f"GitHub Actions checkout is shallow while resolving {event_base!r}, "
-                "but GITHUB_REF is unavailable to materialize the candidate ancestry"
-            )
-        fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
-        if fetched.returncode != 0:
-            raise prov.RatchetProvenanceError(
-                f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
-            )
+    current_ref = os.environ.get("GITHUB_REF", "").strip()
+    if not current_ref:
+        raise prov.RatchetProvenanceError(
+            f"GitHub Actions checkout is shallow while resolving {event_base!r}, "
+            "but GITHUB_REF is unavailable to materialize the candidate ancestry"
+        )
+    fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
+    if fetched.returncode != 0:
+        raise prov.RatchetProvenanceError(
+            f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
+        )
 
+
+def _materialize_event_base(prov: ModuleType, event_base: str) -> None:
     if event_base.startswith("origin/"):
         branch = event_base.removeprefix("origin/")
         fetched = _run_git(
@@ -133,6 +121,25 @@ def _materialize_ci_history(prov: ModuleType) -> None:
         raise prov.RatchetProvenanceError(
             f"could not materialize trusted base {event_base!r}: {fetched.stderr.strip()}"
         )
+
+
+def _materialize_ci_history(prov: ModuleType) -> None:
+    """Make the event-selected trusted base readable from a shallow Actions checkout.
+
+    ``actions/checkout`` defaults to depth one. On pull requests that leaves the
+    synthetic merge itself marked shallow and omits ``origin/<base>`` entirely,
+    so even a correct trusted-base resolver cannot calculate the merge base.
+    Materialize only the current event ref and its declared integration target;
+    never substitute the candidate ledger when that fetch fails.
+    """
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+
+    event_base = prov._github_event_base()
+    if not event_base:
+        return
+    _unshallow_ci_checkout(prov, event_base)
+    _materialize_event_base(prov, event_base)
 
 
 def declared_paths(source: str) -> dict[str, str]:
