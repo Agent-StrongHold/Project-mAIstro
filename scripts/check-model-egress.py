@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import check_direct_effects
+
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "model-egress.json"
 REACHABILITY = ROOT / "scripts" / "check-reachability.py"
@@ -165,7 +167,7 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
     print(f"OK: {len(found)} direct model caller(s), no candidate-approved expansion")
-    return 0
+    return check_direct_effects.main([])
 
 
 if __name__ == "__main__":
