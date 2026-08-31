@@ -3,6 +3,9 @@
 Issue: #734
 Parent: #49
 
+inventory-delta:
+  packages/maistro-core/tests/: +7
+
 ## Claim and collision boundary
 
 This branch owns only the Builders-local migration seam from the private pipeline lifecycle to the existing canonical Graph/Run/NodeRun/Attempt contracts.
@@ -22,12 +25,8 @@ Explicitly excluded:
 
 If parity cannot be reached through the existing public canonical execution API inside that boundary, this branch records the missing seam rather than modifying shared execution infrastructure.
 
-## Planned evidence
+## Evidence
 
-Parity tests will compare representative legacy/private Builders execution with the canonical adapter for stage ordering, ready-wave concurrency, skips, failures, timeout behavior, gate revise/proceed/halt semantics, revision feedback, iteration bounds, and completion ordering.
+Seven focused behavioral tests compare representative legacy/private Builders execution with the canonical adapter for ready-wave ordering/concurrency, skips and unsupported stages, failure and timeout behavior, gate revision feedback, iteration bounds, and canonical completion projection.
 
-Canonical evidence tests will inspect the Run store directly and require one Run per pipeline execution, one NodeRun per executed stage, chronological Attempt evidence for physical execution/re-execution, and no Builders-private generic lifecycle authority after projection.
-
-## Inventory delta
-
-To be updated when the focused test set is complete.
+Canonical evidence directly inspects the Run store and requires one canonical Run per pipeline execution, canonical NodeRun/Attempt evidence for physical stage execution and re-execution, and Builders domain state to remain a projection rather than a second generic lifecycle authority.
