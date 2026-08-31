@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Coroutine, Mapping
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -27,6 +28,22 @@ from maistro.graph.durable_runs.attempt_executor import run_durable_graph
 from maistro.graph.durable_runs.executor import MAX_NODE_VISITS
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.orchestrator.output_security import (
+    HANDLER_ERROR_RESULT,
+    HANDLER_INVALID_RESULT,
+    HANDLER_OUTCOME_ERROR,
+    HANDLER_OUTCOME_FAILED,
+    HANDLER_OUTCOME_INVALID,
+    HANDLER_OUTCOME_KEY,
+    MAX_PROJECTED_XP,
+    MIN_PROJECTED_XP,
+    OUTPUT_SECURITY_BLOCKED,
+    OUTPUT_SECURITY_BLOCKED_RESULT,
+    OUTPUT_SECURITY_ERROR,
+    OUTPUT_SECURITY_ERROR_RESULT,
+    OUTPUT_SECURITY_OUTCOME_KEY,
+    build_output_security_gate,
+)
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.runs.lifecycle import latest_node_runs
 from maistro.runs.model import NodeRun, RunStatus
@@ -38,6 +55,8 @@ logger = logging.getLogger("maistro.orchestrator")
 _ROOT_NODE_ID = "__master_orchestrator_root__"
 _OUTCOME_PREFIX = "orchestrator_outcome__"
 _RESULT_MAPPING = TypeAdapter(dict[str, Any])
+INVALID_TERMINAL_RESULT = "Work item result unavailable."
+WORK_ITEM_EXECUTION_FAILED_RESULT = "Work item execution failed."
 
 
 class WorkItemStatus:
@@ -49,6 +68,16 @@ class WorkItemStatus:
     FAILED: ClassVar[str] = "failed"
     BLOCKED: ClassVar[str] = "blocked"
     SKIPPED: ClassVar[str] = "skipped"
+
+
+_TERMINAL_WORK_ITEM_STATUSES = frozenset(
+    {
+        WorkItemStatus.PASSED,
+        WorkItemStatus.FAILED,
+        WorkItemStatus.BLOCKED,
+        WorkItemStatus.SKIPPED,
+    }
+)
 
 
 @dataclass
@@ -64,6 +93,18 @@ class WorkItem:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _handler_seed(item: WorkItem) -> WorkItem:
+    return replace(
+        item,
+        depends_on=list(item.depends_on),
+        status=WorkItemStatus.PENDING,
+        result="",
+        started_at=None,
+        completed_at=None,
+        metadata=deepcopy(item.metadata),
+    )
 
 
 @dataclass
@@ -86,6 +127,8 @@ class OrchestratorResult:
     duration_seconds: float = 0.0
 
 
+HandlerResult = WorkItem | Mapping[str, Any]
+WorkHandler = Callable[[WorkItem], Coroutine[Any, Any, HandlerResult]]
 StageHandler = Callable[[WorkItem], Coroutine[Any, Any, WorkItem]]
 
 
@@ -108,10 +151,12 @@ class _WorkItemNode:
         self,
         *,
         item: WorkItem,
-        handler: StageHandler | None,
-        security_gate: StageHandler | None,
+        handler_seed: WorkItem,
+        handler: WorkHandler | None,
+        security_gate: StageHandler,
     ) -> None:
         self._item = item
+        self._handler_seed = handler_seed
         self._handler = handler
         self._security_gate = security_gate
 
@@ -128,21 +173,6 @@ class _WorkItemNode:
                 "metadata": dict(metadata),
             }
         }
-
-    def _failed(
-        self,
-        message: str,
-        *,
-        error_code: str,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> NodeResult:
-        return NodeResult(
-            success=False,
-            status="failed",
-            error_code=error_code,
-            error_message=message,
-            output=self._output(WorkItemStatus.FAILED, message, metadata or {}),
-        )
 
     def _domain_failure(
         self,
@@ -165,15 +195,62 @@ class _WorkItemNode:
                 blocked.append(dependency)
         return blocked
 
+    def _handler_failure(self, message: str, category: str) -> WorkItem:
+        return replace(
+            self._handler_seed,
+            status=WorkItemStatus.FAILED,
+            result=message,
+            metadata={HANDLER_OUTCOME_KEY: category},
+        )
+
+    def _normalize_handler_result(self, raw: HandlerResult) -> WorkItem:
+        if isinstance(raw, WorkItem):
+            status: object = raw.status
+            message: object = raw.result
+            metadata: object = raw.metadata
+        elif isinstance(raw, Mapping):
+            status = raw.get("status")
+            message = raw.get("result")
+            metadata = raw.get("metadata", {})
+        else:
+            return self._handler_failure(HANDLER_INVALID_RESULT, HANDLER_OUTCOME_INVALID)
+
+        if (
+            not isinstance(status, str)
+            or status not in _TERMINAL_WORK_ITEM_STATUSES
+            or not isinstance(message, str)
+            or not isinstance(metadata, Mapping)
+            or not all(isinstance(key, str) for key in metadata)
+        ):
+            return self._handler_failure(HANDLER_INVALID_RESULT, HANDLER_OUTCOME_INVALID)
+
+        normalized_metadata = dict(metadata)
+        normalized_metadata.pop(HANDLER_OUTCOME_KEY, None)
+        if status == WorkItemStatus.FAILED:
+            normalized_metadata[HANDLER_OUTCOME_KEY] = HANDLER_OUTCOME_FAILED
+
+        return replace(
+            self._handler_seed,
+            status=status,
+            result=message,
+            metadata=normalized_metadata,
+        )
+
     async def _run_handler(self) -> WorkItem | NodeResult:
         if self._handler is None:
-            return self._domain_failure(f"No handler for agent role: {self._item.agent_role}")
-        self._item.status = WorkItemStatus.IN_PROGRESS
+            return self._domain_failure("Work item handler unavailable.")
+        handler_item = _handler_seed(self._handler_seed)
+        handler_item.status = WorkItemStatus.IN_PROGRESS
         try:
-            return await self._handler(self._item)
-        except Exception as exc:
-            logger.exception("Work item %s raised: %s", self._item.task_id, exc)
-            return self._failed(str(exc), error_code=type(exc).__name__)
+            raw = await self._handler(handler_item)
+        except Exception:
+            logger.error("Work item handler failed")
+            return self._handler_failure(HANDLER_ERROR_RESULT, HANDLER_OUTCOME_ERROR)
+        try:
+            return self._normalize_handler_result(raw)
+        except Exception:
+            logger.error("Work item handler result normalization failed")
+            return self._handler_failure(HANDLER_INVALID_RESULT, HANDLER_OUTCOME_INVALID)
 
     async def _apply_security_gate(
         self,
@@ -182,16 +259,51 @@ class _WorkItemNode:
         status = str(result.status)
         message = result.result
         metadata = dict(result.metadata)
-        if self._security_gate is None or status != WorkItemStatus.PASSED:
-            return status, message, metadata
         try:
+            # SECURITY-REVIEW: handler output is untrusted until the injected
+            # production gate returns an explicitly sanitized projection.
             secured = await self._security_gate(result)
-        except Exception as exc:
-            logger.exception("Security gate for %s raised: %s", self._item.task_id, exc)
-            return WorkItemStatus.FAILED, f"Security gate: {exc}", metadata
-        metadata.update(secured.metadata)
-        if secured.status == WorkItemStatus.FAILED:
-            return WorkItemStatus.FAILED, f"Security gate: {secured.result}", metadata
+            secured_status = str(secured.status)
+            secured_message = secured.result
+            secured_metadata = dict(secured.metadata)
+            if secured_status not in _TERMINAL_WORK_ITEM_STATUSES or not isinstance(
+                secured_message, str
+            ):
+                raise TypeError("security gate returned an invalid result")
+        except Exception:
+            logger.error("Master Orchestrator output security gate failed closed")
+            status = WorkItemStatus.FAILED
+            message = OUTPUT_SECURITY_ERROR_RESULT
+            metadata = {OUTPUT_SECURITY_OUTCOME_KEY: OUTPUT_SECURITY_ERROR}
+        else:
+            category = secured_metadata.get(OUTPUT_SECURITY_OUTCOME_KEY)
+            if isinstance(category, str) and category in {
+                OUTPUT_SECURITY_BLOCKED,
+                OUTPUT_SECURITY_ERROR,
+            }:
+                status = WorkItemStatus.FAILED
+                message = (
+                    OUTPUT_SECURITY_ERROR_RESULT
+                    if category == OUTPUT_SECURITY_ERROR
+                    else OUTPUT_SECURITY_BLOCKED_RESULT
+                )
+                metadata = {OUTPUT_SECURITY_OUTCOME_KEY: category}
+            elif status == WorkItemStatus.PASSED and secured_status != WorkItemStatus.PASSED:
+                status = WorkItemStatus.FAILED
+                message = OUTPUT_SECURITY_BLOCKED_RESULT
+                metadata = {OUTPUT_SECURITY_OUTCOME_KEY: OUTPUT_SECURITY_BLOCKED}
+            else:
+                status = secured_status
+                message = secured_message
+                metadata = secured_metadata
+
+        # Always project into the canonical item. A handler may return a fresh
+        # WorkItem or mapping, so scrubbing only its return value leaves stale
+        # canonical metadata and status behind.
+        self._item.status = status
+        self._item.result = message
+        self._item.metadata.clear()
+        self._item.metadata.update(metadata)
         return status, message, metadata
 
     async def run(self, inputs: Any, ctx: NodeContext) -> NodeResult:
@@ -211,12 +323,21 @@ class _WorkItemNode:
             return handled
         status, message, metadata = await self._apply_security_gate(handled)
         succeeded = status == WorkItemStatus.PASSED
+        security_outcome = metadata.get(OUTPUT_SECURITY_OUTCOME_KEY)
+        policy_terminal = security_outcome in {
+            OUTPUT_SECURITY_BLOCKED,
+            OUTPUT_SECURITY_ERROR,
+        }
+        error_code: str | None = None
+        if not succeeded and not policy_terminal:
+            error_code = "WorkItemFailed"
+        physical_success = succeeded or policy_terminal
         return NodeResult(
-            success=succeeded,
-            status="completed" if succeeded else "failed",
-            error_code=None if succeeded else "WorkItemFailed",
+            success=physical_success,
+            status="completed" if physical_success else "failed",
+            error_code=error_code,
             error_message=(
-                None if succeeded else (message or f"work item {self._item.task_id} failed")
+                None if physical_success else (message or WORK_ITEM_EXECUTION_FAILED_RESULT)
             ),
             output=self._output(status, message, metadata),
         )
@@ -243,11 +364,14 @@ class MasterOrchestrator:
         if run_store is not None and (not workspace_id or not project_id):
             raise ValueError("injected run_store requires workspace_id and project_id")
 
-        self._handlers: dict[str, StageHandler] = {}
+        self._handlers: dict[str, WorkHandler] = {}
         self._max_concurrent = max_concurrent_per_wave
         self._max_attempts = min(max_retries + 1, MAX_NODE_VISITS)
-        self._security_gate = security_gate
+        self._security_gate: StageHandler = (
+            security_gate if security_gate is not None else build_output_security_gate()
+        )
         self._items: dict[str, WorkItem] = {}
+        self._handler_seeds: dict[str, WorkItem] = {}
         self._waves: list[Wave] = []
         self._xp_earned: dict[str, int] = {}
         self._workspace_id = workspace_id or f"master-{uuid4().hex}"
@@ -269,7 +393,7 @@ class MasterOrchestrator:
         """Canonical Run id produced by the most recent execute call."""
         return self._last_run_id
 
-    def register_handler(self, agent_role: str, handler: StageHandler) -> None:
+    def register_handler(self, agent_role: str, handler: WorkHandler) -> None:
         self._handlers[agent_role] = handler
 
     def load_plan(self, waves: list[list[WorkItem]]) -> None:
@@ -282,6 +406,9 @@ class MasterOrchestrator:
             raise ValueError(f"task_id {_ROOT_NODE_ID!r} is reserved")
         self._waves = [Wave(wave_number=i, items=items) for i, items in enumerate(waves)]
         self._items = {item.task_id: item for wave in self._waves for item in wave.items}
+        self._handler_seeds = {
+            task_id: _handler_seed(item) for task_id, item in self._items.items()
+        }
 
     def _nonempty_waves(self) -> list[list[WorkItem]]:
         return [wave.items for wave in self._waves if wave.items]
@@ -378,9 +505,11 @@ class MasterOrchestrator:
         if node_id == _ROOT_NODE_ID:
             return _RootNode()
         item = self._items[node_id]
+        handler_seed = self._handler_seeds[node_id]
         return _WorkItemNode(
             item=item,
-            handler=self._handlers.get(item.agent_role),
+            handler_seed=handler_seed,
+            handler=self._handlers.get(handler_seed.agent_role),
             security_gate=self._security_gate,
         )
 
@@ -408,6 +537,7 @@ class MasterOrchestrator:
         metadata = raw.get("metadata", {})
         if (
             not isinstance(status, str)
+            or status not in _TERMINAL_WORK_ITEM_STATUSES
             or not isinstance(message, str)
             or not isinstance(metadata, dict)
         ):
@@ -417,16 +547,22 @@ class MasterOrchestrator:
     def _project_one(self, item: WorkItem, node_run: NodeRun | None) -> None:
         if node_run is None:
             item.status = WorkItemStatus.SKIPPED
+            item.result = ""
+            item.metadata.clear()
             return
 
         item.started_at = node_run.started_at
         item.completed_at = node_run.finished_at
         payload = self._projection_payload(node_run)
         if node_run.status is RunStatus.COMPLETED:
-            item.status = payload[0] if payload is not None else WorkItemStatus.PASSED
-            if payload is not None:
-                _, item.result, metadata = payload
-                item.metadata.update(metadata)
+            if payload is None:
+                item.status = WorkItemStatus.FAILED
+                item.result = INVALID_TERMINAL_RESULT
+                item.metadata.clear()
+                return
+            item.status, item.result, metadata = payload
+            item.metadata.clear()
+            item.metadata.update(metadata)
             return
         if node_run.status in {
             RunStatus.FAILED,
@@ -434,19 +570,22 @@ class MasterOrchestrator:
             RunStatus.CANCELLED,
         }:
             item.status = WorkItemStatus.FAILED
-            item.result = node_run.error or "failed"
+            item.result = WORK_ITEM_EXECUTION_FAILED_RESULT
+            item.metadata.clear()
             return
         if node_run.status in {RunStatus.RUNNING, RunStatus.WAITING, RunStatus.PAUSED}:
             item.status = WorkItemStatus.IN_PROGRESS
         else:
             item.status = WorkItemStatus.PENDING
+        item.result = ""
+        item.metadata.clear()
 
     def _project_xp(self) -> None:
         totals: dict[str, int] = {}
         for item in self._items.values():
             if item.status == WorkItemStatus.PASSED:
                 xp = item.metadata.get("xp_earned", 10)
-                if isinstance(xp, int):
+                if type(xp) is int and MIN_PROJECTED_XP <= xp <= MAX_PROJECTED_XP:
                     totals[item.agent_role] = totals.get(item.agent_role, 0) + xp
         self._xp_earned = totals
 

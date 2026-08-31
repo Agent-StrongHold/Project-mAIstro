@@ -173,7 +173,7 @@ Detail in `BACKLOG.md` `[engine-100]`–`[engine-105]`.
 | `[engine-102]` Frontend completion vs. archived PRODUCT-SPEC | Proposed; `gap-impl` | Page-by-page coverage unverified |
 | `[engine-103]` MCP server implementations | Proposed | Decide wrap-existing-tools vs. build-new |
 | `[engine-104]` Port remaining legacy experimental features | Proposed | Shipped: Bouncer, Agent Factory, Spawner, Skill Forge, Message Board. Superseded: Heartbeat (replaced by `reactor.py`). Outstanding: APM, Red Team |
-| `[engine-105]` Wire Master Orchestrator security gate + API dispatch | Accepted; `gap-impl` | J1–J5 shipped (`orchestrator/master.py`, `planner.py`; security gate tested); J6 (API dispatch) open |
+| `[engine-105]` Wire Master Orchestrator security gate + API dispatch | Accepted; `gap-impl` | J1–J5 shipped; J5 is the production fail-closed Warden + Sentinel output gate on canonical Run projection. J6 HTTP/API dispatch remains open and separate |
 
 ### Phase F — Contracts as the bar (weeks 6–12)
 

@@ -162,7 +162,8 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 - Shipped: Bouncer, Agent Factory, Spawner, Skill Forge, Message Board. Superseded: Heartbeat (replaced by `reactor.py`). Outstanding: APM, Red Team — feature-flagged off, not yet ported into the consolidated monorepo
 
 **[engine-105] Wire Master Orchestrator security gate + API dispatch — Accepted; `gap-impl`**
-- `orchestrator/master.py` + `orchestrator/planner.py` exist (Group J1–J4 done), but the Security Scanner gate (J5) and wiring into the `maistro-server` API (J6) from the archived consolidation plan are still open
+- J5 shipped: production planner construction supplies a fail-closed Warden + Sentinel output gate before a WorkItem can project `PASSED`; only sanitized output crosses into the canonical Graph → Run → NodeRun → Attempt result
+- J6 remains open and separate: no Master Orchestrator HTTP/API dispatch contract has been accepted or wired into `maistro-server`
 
 ### NEW — from May 2026 catalog review (engine)
 
