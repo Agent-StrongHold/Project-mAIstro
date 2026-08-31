@@ -340,7 +340,7 @@ def _resolver(
     run: Any,
     dispatcher: PipelineDispatcher,
     budget: IterationBudget,
-):
+) -> Any:
     stages = {node.name: node for node in graph}
     start = _StartNode()
     stage_nodes = {
