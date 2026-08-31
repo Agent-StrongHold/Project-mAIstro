@@ -7,15 +7,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from maistro.graph.nodes.base import NodeContext
 from routes.evolution import _actor_principal_id, trigger_cycle
 from services.evolution import _EvolutionService
 from services.evolution_graph import (
-    _BattleInput,
-    _TournamentWork,
     _append_execution_ref,
+    _BattleInput,
     _published_evaluation_ref,
+    _TournamentWork,
 )
+
+from maistro.graph.nodes.base import NodeContext
 
 
 def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.MonkeyPatch) -> None:
