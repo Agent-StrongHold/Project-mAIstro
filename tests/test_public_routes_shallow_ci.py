@@ -28,7 +28,12 @@ def _load_public_routes() -> ModuleType:
     return module
 
 
-def _result(args: list[str], returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _result(
+    args: list[str],
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["git", *args], returncode, stdout, stderr)
 
 
@@ -84,5 +89,7 @@ def test_shallow_pull_request_fetch_failure_is_not_downgraded(
 
     monkeypatch.setattr(public_routes, "_run_git", fake_git)
 
-    with pytest.raises(_FakeProvenanceError, match="could not unshallow GitHub event ref"):
+    with pytest.raises(
+        _FakeProvenanceError, match="could not unshallow GitHub event ref"
+    ):
         public_routes._materialize_ci_history(provenance)
