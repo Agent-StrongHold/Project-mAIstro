@@ -237,7 +237,8 @@ test("Design Studio reports optional design-system catalog degradation without h
 
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
 
-  await expect(page.getByText("degraded", { exact: true })).toBeVisible();
+  const resourceHeader = page.getByText("Design resources", { exact: true }).locator("..");
+  await expect(resourceHeader.getByText("degraded", { exact: true })).toBeVisible();
   await expect(page.getByText(/Additional design systems are unavailable: Tier-2 design-system catalog could not be loaded/)).toBeVisible();
   await expect(page.getByLabel("Available design skills").getByText("Social Card", { exact: true })).toBeVisible();
 
