@@ -127,6 +127,52 @@ def build_manifest(
     return {**identity, "evidence_key": _canonical_hash(identity)}
 
 
+def _validated_runtime(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict) or set(raw) != {"implementation", "python"}:
+        raise EvidenceError("identity runtime is malformed")
+    if not all(isinstance(raw.get(key), str) and raw[key] for key in raw):
+        raise EvidenceError("identity runtime values must be non-empty strings")
+    return {"implementation": raw["implementation"], "python": raw["python"]}
+
+
+def _validated_tools(raw: object) -> list[str]:
+    if not isinstance(raw, list) or not all(isinstance(tool, str) for tool in raw):
+        raise EvidenceError("identity tools must be a list of strings")
+    if raw != sorted(set(raw)):
+        raise EvidenceError("identity tools are not canonical")
+    return list(raw)
+
+
+def _validated_digest(item: object, previous_path: str) -> dict[str, str]:
+    if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+        raise EvidenceError("identity input entry is malformed")
+    path = item.get("path")
+    digest = item.get("sha256")
+    if not isinstance(path, str) or not path:
+        raise EvidenceError("identity input path must be non-empty")
+    if path <= previous_path:
+        raise EvidenceError("identity inputs are not in canonical path order")
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise EvidenceError(f"identity input digest is malformed: {path}")
+    try:
+        int(digest, 16)
+    except ValueError as exc:
+        raise EvidenceError(f"identity input digest is malformed: {path}") from exc
+    return {"path": path, "sha256": digest}
+
+
+def _validated_inputs(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list) or not raw:
+        raise EvidenceError("identity inputs must be a non-empty list")
+    normalized: list[dict[str, str]] = []
+    previous_path = ""
+    for item in raw:
+        digest = _validated_digest(item, previous_path)
+        normalized.append(digest)
+        previous_path = digest["path"]
+    return normalized
+
+
 def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
     expected_fields = {"schema", "command", "runtime", "tools", "inputs", "evidence_key"}
     if set(manifest) != expected_fields:
@@ -135,54 +181,28 @@ def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
         raise EvidenceError(f"unsupported identity schema: {manifest.get('schema')!r}")
 
     command = manifest.get("command")
-    runtime = manifest.get("runtime")
-    tools = manifest.get("tools")
-    inputs = manifest.get("inputs")
-    evidence_key = manifest.get("evidence_key")
     if not isinstance(command, str) or not command.strip():
         raise EvidenceError("identity command must be a non-empty string")
-    if not isinstance(runtime, dict) or set(runtime) != {"implementation", "python"}:
-        raise EvidenceError("identity runtime is malformed")
-    if not all(isinstance(runtime.get(key), str) and runtime[key] for key in runtime):
-        raise EvidenceError("identity runtime values must be non-empty strings")
-    if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
-        raise EvidenceError("identity tools must be a list of strings")
-    if tools != sorted(set(tools)):
-        raise EvidenceError("identity tools are not canonical")
-    if not isinstance(inputs, list) or not inputs:
-        raise EvidenceError("identity inputs must be a non-empty list")
-
-    normalized_inputs: list[dict[str, str]] = []
-    previous_path = ""
-    for item in inputs:
-        if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
-            raise EvidenceError("identity input entry is malformed")
-        path = item.get("path")
-        digest = item.get("sha256")
-        if not isinstance(path, str) or not path:
-            raise EvidenceError("identity input path must be non-empty")
-        if path <= previous_path:
-            raise EvidenceError("identity inputs are not in canonical path order")
-        if not isinstance(digest, str) or len(digest) != 64:
-            raise EvidenceError(f"identity input digest is malformed: {path}")
-        try:
-            int(digest, 16)
-        except ValueError as exc:
-            raise EvidenceError(f"identity input digest is malformed: {path}") from exc
-        previous_path = path
-        normalized_inputs.append({"path": path, "sha256": digest})
-
     identity: dict[str, object] = {
         "schema": SCHEMA_VERSION,
         "command": command,
-        "runtime": dict(runtime),
-        "tools": list(tools),
-        "inputs": normalized_inputs,
+        "runtime": _validated_runtime(manifest.get("runtime")),
+        "tools": _validated_tools(manifest.get("tools")),
+        "inputs": _validated_inputs(manifest.get("inputs")),
     }
-    expected_key = _canonical_hash(identity)
-    if not isinstance(evidence_key, str) or evidence_key != expected_key:
+    evidence_key = manifest.get("evidence_key")
+    if not isinstance(evidence_key, str) or evidence_key != _canonical_hash(identity):
         raise EvidenceError("identity evidence_key does not match manifest content")
     return {**identity, "evidence_key": evidence_key}
+
+
+def _validated_duration(raw: object, *, label: str) -> float:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise EvidenceError(f"{label} must be finite and non-negative")
+    duration = float(raw)
+    if not math.isfinite(duration) or duration < 0:
+        raise EvidenceError(f"{label} must be finite and non-negative")
+    return duration
 
 
 def complete_manifest(
@@ -195,8 +215,7 @@ def complete_manifest(
     identity = _validated_identity(identity_manifest)
     if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code < 0:
         raise EvidenceError("exit_code must be a non-negative integer")
-    if not math.isfinite(duration_seconds) or duration_seconds < 0:
-        raise EvidenceError("duration_seconds must be finite and non-negative")
+    duration = _validated_duration(duration_seconds, label="duration_seconds")
 
     result = "success" if exit_code == 0 else "failure"
     attestation: dict[str, object] = {
@@ -204,13 +223,25 @@ def complete_manifest(
         "evidence_key": identity["evidence_key"],
         "result": result,
         "exit_code": exit_code,
-        "duration_seconds": duration_seconds,
+        "duration_seconds": duration,
     }
     return {
         **attestation,
         "result_key": _canonical_hash(attestation),
         "identity": identity,
     }
+
+
+def _validated_result_observation(completed: Mapping[str, Any]) -> tuple[int, float, str]:
+    exit_code = completed.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code < 0:
+        raise EvidenceError("completed exit_code is malformed")
+    duration = _validated_duration(completed.get("duration_seconds"), label="completed duration_seconds")
+    result = completed.get("result")
+    expected_result = "success" if exit_code == 0 else "failure"
+    if result != expected_result:
+        raise EvidenceError("completed result contradicts exit_code")
+    return exit_code, duration, expected_result
 
 
 def verify_completed_manifest(
@@ -239,38 +270,23 @@ def verify_completed_manifest(
     embedded_raw = completed_manifest.get("identity")
     if not isinstance(embedded_raw, dict):
         raise EvidenceError("completed evidence identity is malformed")
-    embedded = _validated_identity(embedded_raw)
-    if embedded != expected:
+    if _validated_identity(embedded_raw) != expected:
         raise EvidenceError("completed evidence identity does not match expected inputs")
     if completed_manifest.get("evidence_key") != expected["evidence_key"]:
         raise EvidenceError("completed evidence_key does not match expected identity")
 
-    exit_code = completed_manifest.get("exit_code")
-    duration_seconds = completed_manifest.get("duration_seconds")
-    result = completed_manifest.get("result")
-    if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code < 0:
-        raise EvidenceError("completed exit_code is malformed")
-    if not isinstance(duration_seconds, (int, float)) or isinstance(duration_seconds, bool):
-        raise EvidenceError("completed duration_seconds is malformed")
-    duration = float(duration_seconds)
-    if not math.isfinite(duration) or duration < 0:
-        raise EvidenceError("completed duration_seconds is malformed")
-    expected_result = "success" if exit_code == 0 else "failure"
-    if result != expected_result:
-        raise EvidenceError("completed result contradicts exit_code")
-
+    exit_code, duration, result = _validated_result_observation(completed_manifest)
     attestation: dict[str, object] = {
         "schema": RESULT_SCHEMA_VERSION,
         "evidence_key": expected["evidence_key"],
-        "result": expected_result,
+        "result": result,
         "exit_code": exit_code,
-        "duration_seconds": duration_seconds,
+        "duration_seconds": duration,
     }
     if completed_manifest.get("result_key") != _canonical_hash(attestation):
         raise EvidenceError("completed result_key does not match evidence content")
     if exit_code != 0:
         raise EvidenceError(f"completed evidence records failed command exit code {exit_code}")
-
     return dict(completed_manifest)
 
 
