@@ -14,8 +14,7 @@ history:
     date: 2026-08-12
 substrate:
   - maistro-engine#ADR-081226-7248
-implements:
-  - maistro-engine#ADR-081226-7248
+implements: [maistro-engine#ADR-081226-7248, maistro-engine#ADR-083026-6e2a]
 related:
   - maistro-engine#ADR-081226-a66b
   - maistro-engine#ADR-081226-69ee
@@ -36,8 +35,8 @@ ac-modules:
   AC-3: maistro.events.outbox
   AC-4: maistro.events.invocations
   AC-5: maistro.events.envelope
-  AC-6: maistro.events.checkpoints
-  AC-7: maistro.events.checkpoints
+  AC-6: maistro.graph.durable_runs.execution_store
+  AC-7: maistro.graph.durable_runs.execution_store
   AC-8: maistro.graph.durable_runs.executor
   AC-9: maistro.graph.durable_runs.executor
   AC-10: maistro.events.durable_log

@@ -71,6 +71,10 @@ class GovernedInvocationExecutionService:
     :class:`InvocationExecutionService`. When an ApprovalStore is supplied,
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
+
+    Unreached in production, like the service it wraps: no policy verdict
+    recorded here has ever gated a live provider call, and no approval this
+    would key has ever been requested of a human (#55).
     """
 
     def __init__(

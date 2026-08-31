@@ -257,13 +257,15 @@ class TestTheDecayLadderIsDurable:
     async def test_the_decayed_weights_are_still_there_for_the_next_reader(
         self, durable_store: Any
     ) -> None:
-        await durable_store.store(_memory("observation", tier=MemoryTier.OBSERVATION, weight=0.5))
+        memory = _memory("observation", tier=MemoryTier.OBSERVATION, weight=0.5)
+        moment = memory.last_accessed_at + timedelta(hours=10)
+        await durable_store.store(memory)
 
-        await durable_store.apply_decay(now=datetime.now(UTC) + timedelta(hours=10))
+        await durable_store.apply_decay(now=moment)
 
         [found] = await durable_store.list_by_scope(org_id="org-a")
         assert found.weight == pytest.approx(0.4)
-        assert found.last_accessed_at > datetime.now(UTC) + timedelta(hours=9)
+        assert found.last_accessed_at == moment
 
     @pytest.mark.ac("SPEC-083026-ba26/AC-5")
     async def test_a_wisdom_memory_does_not_fall_below_its_floor(self, durable_store: Any) -> None:
