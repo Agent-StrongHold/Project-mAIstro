@@ -51,8 +51,7 @@ def test_inventory_discovers_quality_consumers_under_tools(inventory, tmp_path: 
     tools.mkdir()
     (tools / "lint_lifecycle.py").write_text(
         "from pathlib import Path\n"
-        "ROOT = Path(__file__).resolve().parents[1]\n"
-        'BASELINE = ROOT / "quality" / "lifecycle-baseline.json"\n',
+        'BASELINE = Path(__file__).resolve().parents[1] / "quality" / "lifecycle-baseline.json"\n',
         encoding="utf-8",
     )
 
@@ -73,12 +72,29 @@ def test_stale_trusted_adapter_mapping_is_a_failure(inventory) -> None:
     ]
 
 
-def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory) -> None:
+def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory, tmp_path: Path) -> None:
     key = ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json")
     adapter = inventory.TRUSTED_ADAPTERS[key]
 
     assert adapter == "check-lifecycle-provenance"
     assert inventory._adapter_problem(ROOT, adapter) is None
+
+    trusted = tmp_path / "trusted.py"
+    trusted.write_text(
+        "import ratchet_provenance\n"
+        "def load(): return ratchet_provenance.load_authorizations('example')\n",
+        encoding="utf-8",
+    )
+    assert inventory._uses_trusted_resolver(trusted)
+
+    assert (
+        "check-branch-independence.py",
+        "quality/branch-independence.json",
+    ) in inventory.CANDIDATE_AUTHORED
+    assert (
+        "check_direct_effects.py",
+        "quality/direct-effect-call-sites.json",
+    ) in inventory.CANDIDATE_AUTHORED
 
 
 def test_github_event_metadata_supplies_every_integration_base(
