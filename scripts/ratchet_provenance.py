@@ -114,6 +114,44 @@ def _is_null_sha(rev: str) -> bool:
     return set(rev.strip()) == {"0"} and len(rev.strip()) in (40, 64)
 
 
+def _github_event_payload(event_path: str) -> dict[str, Any]:
+    if not event_path:
+        return {}
+    try:
+        loaded = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RatchetProvenanceError(
+            f"GitHub event payload {event_path!r} could not be read: {exc}"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise RatchetProvenanceError(f"GitHub event payload {event_path!r} is not a JSON object")
+    return loaded
+
+
+def _pull_request_event_base(payload: dict[str, Any]) -> str | None:
+    base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
+    if not base_ref:
+        pull_request = payload.get("pull_request")
+        if isinstance(pull_request, dict):
+            base = pull_request.get("base")
+            if isinstance(base, dict):
+                base_ref = str(base.get("ref", "")).strip()
+    return f"origin/{base_ref}" if base_ref else None
+
+
+def _merge_group_event_base(payload: dict[str, Any]) -> str | None:
+    merge_group = payload.get("merge_group")
+    if not isinstance(merge_group, dict):
+        return None
+    base_sha = str(merge_group.get("base_sha", "")).strip()
+    return None if not base_sha or _is_null_sha(base_sha) else base_sha
+
+
+def _push_event_base(payload: dict[str, Any]) -> str | None:
+    before = str(payload.get("before", "")).strip()
+    return None if not before or _is_null_sha(before) else before
+
+
 def _github_event_base() -> str | None:
     """Resolve the integration base from GitHub Actions event metadata.
 
@@ -127,41 +165,13 @@ def _github_event_base() -> str | None:
     if not event_name and not event_path:
         return None
 
-    payload: dict[str, Any] = {}
-    if event_path:
-        try:
-            loaded = json.loads(Path(event_path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RatchetProvenanceError(
-                f"GitHub event payload {event_path!r} could not be read: {exc}"
-            ) from exc
-        if not isinstance(loaded, dict):
-            raise RatchetProvenanceError(
-                f"GitHub event payload {event_path!r} is not a JSON object"
-            )
-        payload = loaded
-
+    payload = _github_event_payload(event_path)
     if event_name == "pull_request":
-        base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
-        if not base_ref:
-            pull_request = payload.get("pull_request")
-            if isinstance(pull_request, dict):
-                base = pull_request.get("base")
-                if isinstance(base, dict):
-                    base_ref = str(base.get("ref", "")).strip()
-        return f"origin/{base_ref}" if base_ref else None
-
+        return _pull_request_event_base(payload)
     if event_name == "merge_group":
-        merge_group = payload.get("merge_group")
-        if isinstance(merge_group, dict):
-            base_sha = str(merge_group.get("base_sha", "")).strip()
-            return None if not base_sha or _is_null_sha(base_sha) else base_sha
-        return None
-
+        return _merge_group_event_base(payload)
     if event_name == "push":
-        before = str(payload.get("before", "")).strip()
-        return None if not before or _is_null_sha(before) else before
-
+        return _push_event_base(payload)
     return None
 
 
