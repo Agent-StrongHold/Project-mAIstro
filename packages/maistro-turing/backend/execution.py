@@ -155,7 +155,13 @@ class TuringExecutionPlane:
                 return
             state = record.graph_state.model_copy(update={"active_node_ids": ()})
             await self.durable_store.update(
-                record.model_copy(update={"graph_state": state, "resume_at": None})
+                record.model_copy(
+                    update={
+                        "graph_state": state,
+                        "resume_at": None,
+                        "version": record.version + 1,
+                    }
+                )
             )
         except Exception:
             logger.warning("Turing continuation cleanup failed for Run %s", run_id, exc_info=True)
