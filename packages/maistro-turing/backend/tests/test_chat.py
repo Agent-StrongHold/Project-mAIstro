@@ -6,7 +6,8 @@ from typing import Any
 
 import pytest
 
-from maistro.runs.model import RunStatus
+from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -69,6 +70,7 @@ def test_chat_without_llm_returns_503_and_failed_canonical_run(authed_client):
 
     r = authed_client.post("/v1/chat", json={"message": "hey"})
     assert r.status_code == 503
+    assert r.json()["detail"] == "Turing chat execution failed"
 
     plane = get_execution_plane()
     failed = _await(plane.run_store.list_by_status(RunStatus.FAILED, limit=10))
@@ -78,6 +80,154 @@ def test_chat_without_llm_returns_503_and_failed_canonical_run(authed_client):
     assert node_runs[0].status is RunStatus.FAILED
     attempts = _await(plane.run_store.list_attempts(node_runs[0].node_run_id))
     assert len(attempts) == 1
+
+
+def test_provider_failure_detail_is_not_returned_to_the_caller(authed_client, monkeypatch):
+    from ..state import get_state
+
+    secret = "https://provider.invalid/v1 key=do-not-return"
+
+    def fail_provider(*_args: Any, **_kwargs: Any) -> str:
+        raise ValueError(secret)
+
+    monkeypatch.setattr(get_state().provider, "complete", fail_provider, raising=True)
+
+    response = authed_client.post("/v1/chat", json={"message": "hey"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Turing chat execution failed"
+    assert secret not in response.text
+
+
+def test_cancelled_chat_terminalizes_canonical_evidence():
+    from ..execution import TuringExecutionPlane
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+
+        class BlockingSession:
+            async def handle_message(self, _message: str) -> str:
+                started.set()
+                await asyncio.Event().wait()
+                raise AssertionError("blocking chat should have been cancelled")
+
+        plane = TuringExecutionPlane()
+        task = asyncio.create_task(
+            plane.run_chat(
+                session=BlockingSession(),  # type: ignore[arg-type]
+                user_id="user",
+                session_id="session",
+                message="hello",
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        cancelled = await plane.run_store.list_by_status(RunStatus.CANCELLED, limit=10)
+        assert len(cancelled) == 1
+        node_runs = await plane.run_store.list_node_runs(cancelled[0].run_id)
+        assert len(node_runs) == 1
+        assert node_runs[0].status is RunStatus.CANCELLED
+        attempts = await plane.run_store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 1
+        assert attempts[0].status is AttemptStatus.CANCELLED
+
+    _await(scenario())
+
+
+def test_turing_chat_admission_uses_chat_retention_and_bounded_window():
+    from ..execution import TuringExecutionPlane
+
+    class ReplySession:
+        async def handle_message(self, message: str) -> str:
+            return f"reply:{message}"
+
+    async def scenario() -> None:
+        plane = TuringExecutionPlane(max_retained=1)
+        session = ReplySession()
+        first = await plane.run_chat(
+            session=session,  # type: ignore[arg-type]
+            user_id="user",
+            session_id="session",
+            message="one",
+        )
+        second = await plane.run_chat(
+            session=session,  # type: ignore[arg-type]
+            user_id="user",
+            session_id="session",
+            message="two",
+        )
+
+        assert await plane.run_store.get_run(first.run_id) is None
+        retained = await plane.run_store.get_run(second.run_id)
+        assert retained is not None
+        assert retained.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+        assert retained.retention_expires_at is not None
+        assert plane.retained == 1
+
+    _await(scenario())
+
+
+def test_create_run_failure_does_not_make_chat_unavailable(authed_client, monkeypatch):
+    from ..execution import get_execution_plane
+    from ..state import get_state
+
+    plane = get_execution_plane()
+    provider_calls = 0
+
+    def reply(*_args: Any, **_kwargs: Any) -> str:
+        nonlocal provider_calls
+        provider_calls += 1
+        return "available without audit"
+
+    async def fail_create(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("run store unavailable")
+
+    monkeypatch.setattr(get_state().provider, "complete", reply, raising=True)
+    monkeypatch.setattr(plane.run_store, "create_run", fail_create)
+
+    response = authed_client.post("/v1/chat", json={"message": "hey"})
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "available without audit"
+    assert response.json()["run_id"] is None
+    assert provider_calls == 1
+
+
+def test_checkpoint_admission_failure_is_compensated_before_unrecorded_chat(
+    authed_client, monkeypatch
+):
+    from maistro.runs.chat_admission import ADMISSION_INCOMPLETE
+
+    from ..execution import get_execution_plane
+    from ..state import get_state
+
+    plane = get_execution_plane()
+    provider_calls = 0
+
+    def reply(*_args: Any, **_kwargs: Any) -> str:
+        nonlocal provider_calls
+        provider_calls += 1
+        return "available after checkpoint failure"
+
+    async def fail_checkpoint(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("continuation store unavailable")
+
+    monkeypatch.setattr(get_state().provider, "complete", reply, raising=True)
+    monkeypatch.setattr(plane.durable_store, "create", fail_checkpoint)
+
+    response = authed_client.post("/v1/chat", json={"message": "hey"})
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "available after checkpoint failure"
+    assert response.json()["run_id"] is None
+    assert provider_calls == 1
+
+    cancelled = _await(plane.run_store.list_by_status(RunStatus.CANCELLED, limit=10))
+    assert len(cancelled) == 1
+    assert cancelled[0].error == ADMISSION_INCOMPLETE
 
 
 def test_each_turn_gets_a_new_run_without_minting_a_new_workspace(authed_client, monkeypatch):

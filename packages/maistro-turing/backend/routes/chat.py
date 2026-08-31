@@ -19,6 +19,8 @@ isn't faked.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,11 +30,15 @@ from maistro.graph.durable_runs import DurableRunRecord
 from maistro.runs.model import RunStatus
 from maistro_turing.runtime import TuringChatSession
 
-from ..execution import get_execution_plane
+from ..execution import TuringAdmissionUnavailable, get_execution_plane
 from ..middleware.auth import require_user
 from ..state import get_state
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["chat"])
+
+_PUBLIC_CHAT_FAILURE = "Turing chat execution failed"
 
 # (user_id, session_id) -> TuringChatSession. Lives for the process; a
 # production version persists history through the memory bridge. Keying by
@@ -56,6 +62,17 @@ def _reply_from_record(record: DurableRunRecord) -> str:
     return str(result["reply"])
 
 
+async def _unrecorded_reply(session: TuringChatSession, message: str) -> str:
+    """Preserve chat availability when only canonical audit admission failed."""
+    try:
+        return await session.handle_message(message)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("unrecorded Turing chat execution failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
+
+
 @router.post("")
 async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
     message = body.message.strip()
@@ -69,19 +86,33 @@ async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
         session = get_state().new_chat_session()
         _SESSIONS[key] = session
 
-    record = await get_execution_plane().run_chat(
-        session=session,
-        user_id=str(user["id"]),
-        session_id=session_id,
-        message=message,
-    )
+    try:
+        record = await get_execution_plane().run_chat(
+            session=session,
+            user_id=str(user["id"]),
+            session_id=session_id,
+            message=message,
+        )
+    except TuringAdmissionUnavailable:
+        logger.warning(
+            "Turing chat audit admission unavailable; executing turn without run_id",
+            exc_info=True,
+        )
+        reply = await _unrecorded_reply(session, message)
+        return {"session_id": session_id, "run_id": None, "reply": reply}
+
     if record.run.status is not RunStatus.COMPLETED:
-        detail = record.run.error or "Turing chat execution failed"
-        raise HTTPException(status_code=503, detail=detail)
+        logger.warning(
+            "canonical Turing chat Run %s failed: %s",
+            record.run_id,
+            record.run.error,
+        )
+        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE)
 
     try:
         reply = _reply_from_record(record)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.warning("canonical Turing chat result projection failed", exc_info=True)
+        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
 
     return {"session_id": session_id, "run_id": record.run_id, "reply": reply}
