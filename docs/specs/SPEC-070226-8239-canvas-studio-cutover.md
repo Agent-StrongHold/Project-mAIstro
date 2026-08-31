@@ -3,8 +3,9 @@ id: SPEC-070226-8239
 title: "Canvas Studio ↔ maistro-server /v2/canvas API cutover"
 repo: maistro-engine
 kind: spec
-status: Proposed
+status: Will Not Implement
 created: 2026-07-02
+rejected: 2026-08-31
 substrate:
   - maistro-engine#ADR-045
   - maistro-engine#ADR-076
@@ -25,9 +26,27 @@ tests: []
 layer: UserClient
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-07-02
+  - status: Will Not Implement
+    date: 2026-08-31
 ---
 
 # SPEC-070226-8239: Canvas Studio ↔ maistro-server /v2/canvas API cutover
+
+## Current disposition
+
+This specification is **Will Not Implement** in its proposed form. It treats
+Canvas Studio as a separate user-facing product whose frontend is migrated as
+an independent application. The current product contract in #286 and #95 makes
+**Design Studio** the parent creative-production surface and **Canvas** a
+capability/tool boundary inside that product.
+
+The route and API observations below remain historical input. Any useful
+Canvas API migration work must be revalidated against the live #95 Design
+Studio cutover and canonical execution/tool boundaries rather than implementing
+this separate-Studio contract.
 
 ## Context
 
