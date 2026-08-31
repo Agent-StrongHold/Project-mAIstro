@@ -99,7 +99,12 @@ def _exercise_loader(module: ModuleType, target: Path, name: str) -> None:
     assert module._load(target, name) is first
 
 
-def _wire_adapter(module: ModuleType, monkeypatch: pytest.MonkeyPatch, checker: object, prov: object) -> None:
+def _wire_adapter(
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    checker: object,
+    prov: object,
+) -> None:
     monkeypatch.setattr(
         module,
         "_load",
