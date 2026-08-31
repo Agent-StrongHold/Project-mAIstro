@@ -297,7 +297,9 @@ def verify_completed_manifest(
     if completed_manifest.get("result_key") != _canonical_hash(attestation):
         raise EvidenceError("completed result_key does not match evidence content")
     if exit_code != 0:
-        raise EvidenceError(f"completed evidence records failed command exit code {exit_code}")
+        raise EvidenceError(
+            f"completed evidence records failed command exit code {exit_code}"
+        )
     return dict(completed_manifest)
 
 
