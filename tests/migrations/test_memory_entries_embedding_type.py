@@ -36,7 +36,30 @@ from maistro.memory.vectors import EMBEDDING_DIMENSIONS
 pytestmark = [pytest.mark.contract("boundary")]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
+
+#: The environment variables that name a usable PostgreSQL, in the order a
+#: reader should trust them.
+#:
+#: Three rather than one, because the jobs that must run these tests do not
+#: agree on a name. `quality.yml`'s Quality gate -- the job whose AC-state
+#: ratchet decides whether a criterion counts as proven -- exports
+#: `MAISTRO_TEST_PG_DSN` and `DATABASE_URL` and never sets
+#: `MAISTRO_TEST_DATABASE_URL`. A suite reading only the last of those skips
+#: there, and `ac_outcome_plugin` counts a skip as not-passing, so criteria
+#: whose evidence needs a server become unprovable in the one job that asks
+#: (#188; the same trap #328's comment in that workflow describes).
+_DSN_VARIABLES = ("MAISTRO_TEST_DATABASE_URL", "MAISTRO_TEST_PG_DSN", "DATABASE_URL")
+
+
+def _configured_dsn() -> str:
+    for name in _DSN_VARIABLES:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+DATABASE_URL = _configured_dsn()
 SCRATCH_DB = "maistro_embedding_type_test"
 
 #: The revision immediately before the repair -- the state every deployment has
@@ -54,17 +77,30 @@ _TYPE_QUERY = """
 
 def _require_postgres() -> str:
     if not DATABASE_URL:
+        named = ", ".join(_DSN_VARIABLES)
         if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
-            raise AssertionError(
-                "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_DATABASE_URL is not"
-            )
-        pytest.skip("MAISTRO_TEST_DATABASE_URL is not set")
+            raise AssertionError(f"MAISTRO_REQUIRE_PG_LEGS is set but none of {named} is")
+        pytest.skip(f"set one of {named} to a PostgreSQL with pgvector to run these")
     return DATABASE_URL
 
 
 def _alembic_env(url: str) -> dict[str, str]:
-    """`DB_*` for alembic's `DatabaseSettings`, pointed at the scratch database."""
+    """Every variable alembic might resolve its URL from, all naming the scratch database.
+
+    Both spellings, deliberately. `DB_*` feeds `DatabaseSettings` (`env_prefix`
+    `DB_`), and since #187 gave alembic and the container one resolver, a
+    `DATABASE_URL` in the environment can win instead. The Quality gate exports
+    `DATABASE_URL` pointing at *its* database, so setting only `DB_*` here sent
+    `alembic upgrade` to the CI database rather than the scratch one: the
+    upgrade succeeded, exited 0, and left this suite's scratch database empty.
+    The guard in `_seed_broken_rows` is what caught it (#188).
+
+    Overriding rather than unsetting: a resolver that falls back to a default
+    when the variable is absent would find `localhost:5432` and be wrong in a
+    quieter way.
+    """
     parts = urlsplit(url)
+    scratch = urlsplit(url)._replace(path=f"/{SCRATCH_DB}").geturl()
     return {
         **os.environ,
         "DB_HOST": parts.hostname or "127.0.0.1",
@@ -72,6 +108,8 @@ def _alembic_env(url: str) -> dict[str, str]:
         "DB_NAME": SCRATCH_DB,
         "DB_USER": parts.username or "postgres",
         "DB_PASSWORD": parts.password or "",
+        "DATABASE_URL": scratch,
+        "MAISTRO_DATABASE_URL": scratch,
     }
 
 
