@@ -89,7 +89,5 @@ def test_shallow_pull_request_fetch_failure_is_not_downgraded(
 
     monkeypatch.setattr(public_routes, "_run_git", fake_git)
 
-    with pytest.raises(
-        _FakeProvenanceError, match="could not unshallow GitHub event ref"
-    ):
+    with pytest.raises(_FakeProvenanceError, match="could not unshallow GitHub event ref"):
         public_routes._materialize_ci_history(provenance)
