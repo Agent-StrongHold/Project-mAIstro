@@ -5,9 +5,10 @@ from __future__ import annotations
 import ast
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 VALID_DISPOSITIONS = {
@@ -172,7 +173,9 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     return surfaces
 
 
-def _iter_source_files(repo_root: Path, roots: Iterable[str], suffixes: tuple[str, ...]) -> Iterable[Path]:
+def _iter_source_files(
+    repo_root: Path, roots: Iterable[str], suffixes: tuple[str, ...]
+) -> Iterable[Path]:
     for root_name in roots:
         root = repo_root / root_name
         if not root.is_dir():
@@ -249,23 +252,25 @@ def _frontend_entry_key(entry: dict[str, Any]) -> str:
     return f"{entry.get('source', '')}:{entry.get('signal', '')}{suffix}"
 
 
+def _nonblank_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _validate_entry(entry: dict[str, Any], *, strict: bool) -> list[str]:
     errors: list[str] = []
     disposition = entry.get("disposition")
     if disposition not in VALID_DISPOSITIONS:
-        errors.append(f"invalid disposition {disposition!r}")
-        return errors
+        return [f"invalid disposition {disposition!r}"]
     if not isinstance(entry.get("production_enabled"), bool):
         errors.append("production_enabled must be true or false")
-    if not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
+    if not _nonblank_string(entry.get("reason")):
         errors.append("missing reason")
-
-    if disposition in {"canonical", "domain-state"}:
-        if not isinstance(entry.get("effect_owner"), str) or not entry["effect_owner"].strip():
-            errors.append(f"{disposition} surface must name effect_owner")
-    if disposition == "local-only":
-        if not isinstance(entry.get("truth_contract"), str) or not entry["truth_contract"].strip():
-            errors.append("local-only surface must name truth_contract")
+    if disposition in {"canonical", "domain-state"} and not _nonblank_string(
+        entry.get("effect_owner")
+    ):
+        errors.append(f"{disposition} surface must name effect_owner")
+    if disposition == "local-only" and not _nonblank_string(entry.get("truth_contract")):
+        errors.append("local-only surface must name truth_contract")
     if disposition in {"disabled", "unresolved"} and not isinstance(entry.get("owner_issue"), int):
         errors.append(f"{disposition} surface must name owner_issue")
     if disposition == "disabled" and entry.get("production_enabled") is True:
@@ -275,7 +280,9 @@ def _validate_entry(entry: dict[str, Any], *, strict: bool) -> list[str]:
     return errors
 
 
-def _index_entries(entries: list[dict[str, Any]], key_fn: Any, label: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def _index_entries(
+    entries: list[dict[str, Any]], key_fn: Any, label: str
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
     indexed: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
     for entry in entries:
@@ -286,42 +293,34 @@ def _index_entries(entries: list[dict[str, Any]], key_fn: Any, label: str) -> tu
     return indexed, errors
 
 
-def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
+def _coverage_errors(
+    discovered_keys: set[str],
+    entry_keys: set[str],
+    *,
+    unclassified_label: str,
+    stale_label: str,
+) -> list[str]:
+    errors = [
+        f"{unclassified_label}: {key}"
+        for key in sorted(discovered_keys - entry_keys)
+    ]
+    errors.extend(
+        f"{stale_label}: {key}"
+        for key in sorted(entry_keys - discovered_keys)
+    )
+    return errors
+
+
+def _backend_entry_errors(
+    discovered: dict[str, BackendSurface],
+    entries: dict[str, dict[str, Any]],
+    *,
+    strict: bool,
+) -> list[str]:
     errors: list[str] = []
-    backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
-    frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
-
-    backend_entries, duplicate_backend = _index_entries(
-        list(matrix.get("backend_surfaces", [])), _backend_entry_key, "backend"
-    )
-    frontend_entries, duplicate_frontend = _index_entries(
-        list(matrix.get("frontend_surfaces", [])), _frontend_entry_key, "frontend"
-    )
-    errors.extend(duplicate_backend)
-    errors.extend(duplicate_frontend)
-
-    discovered_backend = {surface.key: surface for surface in backend}
-    discovered_frontend = {surface.key: surface for surface in frontend}
-
-    for key in sorted(discovered_backend.keys() - backend_entries.keys()):
-        errors.append(f"unclassified backend surface: {key}")
-    for key in sorted(backend_entries.keys() - discovered_backend.keys()):
-        errors.append(f"stale backend surface entry: {key}")
-
-    auto_frontend_entries = {
-        key: entry
-        for key, entry in frontend_entries.items()
-        if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
-    }
-    for key in sorted(discovered_frontend.keys() - auto_frontend_entries.keys()):
-        errors.append(f"unclassified frontend execution surface: {key}")
-    for key in sorted(auto_frontend_entries.keys() - discovered_frontend.keys()):
-        errors.append(f"stale frontend execution surface: {key}")
-
-    for key, entry in sorted(backend_entries.items()):
-        for error in _validate_entry(entry, strict=strict):
-            errors.append(f"{key}: {error}")
-        surface = discovered_backend.get(key)
+    for key, entry in sorted(entries.items()):
+        errors.extend(f"{key}: {error}" for error in _validate_entry(entry, strict=strict))
+        surface = discovered.get(key)
         if (
             surface
             and surface.obvious_fake_success
@@ -331,10 +330,18 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
             errors.append(
                 f"{key}: production success-shaped no-op cannot be {entry.get('disposition')}"
             )
+    return errors
 
-    for key, entry in sorted(frontend_entries.items()):
-        for error in _validate_entry(entry, strict=strict):
-            errors.append(f"{key}: {error}")
+
+def _frontend_entry_errors(
+    repo_root: Path,
+    entries: dict[str, dict[str, Any]],
+    *,
+    strict: bool,
+) -> list[str]:
+    errors: list[str] = []
+    for key, entry in sorted(entries.items()):
+        errors.extend(f"{key}: {error}" for error in _validate_entry(entry, strict=strict))
         source = repo_root / str(entry.get("source", ""))
         if not source.is_file():
             errors.append(f"{key}: frontend source does not exist")
@@ -346,15 +353,65 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
             errors.append(
                 f"{key}: production timer-driven execution state cannot be {entry.get('disposition')}"
             )
-
     return errors
 
 
-def discovered_inventory(repo_root: Path, matrix: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
+    backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
+    frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
+    backend_entries, duplicate_backend = _index_entries(
+        list(matrix.get("backend_surfaces", [])), _backend_entry_key, "backend"
+    )
+    frontend_entries, duplicate_frontend = _index_entries(
+        list(matrix.get("frontend_surfaces", [])), _frontend_entry_key, "frontend"
+    )
+    discovered_backend = {surface.key: surface for surface in backend}
+    discovered_frontend = {surface.key: surface for surface in frontend}
+    auto_frontend_entries = {
+        key: entry
+        for key, entry in frontend_entries.items()
+        if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
+    }
+
+    errors = [*duplicate_backend, *duplicate_frontend]
+    errors.extend(
+        _coverage_errors(
+            set(discovered_backend),
+            set(backend_entries),
+            unclassified_label="unclassified backend surface",
+            stale_label="stale backend surface entry",
+        )
+    )
+    errors.extend(
+        _coverage_errors(
+            set(discovered_frontend),
+            set(auto_frontend_entries),
+            unclassified_label="unclassified frontend execution surface",
+            stale_label="stale frontend execution surface",
+        )
+    )
+    errors.extend(_backend_entry_errors(discovered_backend, backend_entries, strict=strict))
+    errors.extend(_frontend_entry_errors(repo_root, frontend_entries, strict=strict))
+    return errors
+
+
+def discovered_inventory(
+    repo_root: Path, matrix: dict[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
     """Machine-readable current discovery, useful for review and inventory refresh."""
     return {
-        "backend_surfaces": [surface.__dict__ for surface in discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))],
-        "frontend_surfaces": [surface.__dict__ for surface in discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))],
+        "backend_surfaces": [
+            surface.__dict__
+            for surface in discover_backend_surfaces(
+                repo_root, list(matrix.get("backend_roots", []))
+            )
+        ],
+        "frontend_surfaces": [
+            surface.__dict__
+            for surface in discover_frontend_surfaces(
+                repo_root, list(matrix.get("frontend_roots", []))
+            )
+        ],
     }
 
 
