@@ -80,6 +80,9 @@ TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
     ("check-reachability-dispositions.py", "quality/reachability-dispositions.json"): (
         "check-reachability-dispositions-provenance"
     ),
+    ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json"): (
+        "check-lifecycle-provenance"
+    ),
 }
 
 # These consumers are themselves provenance mechanisms. ac_state_notes.py folds
@@ -153,17 +156,34 @@ def _module_paths(path: Path) -> set[str]:
     return found
 
 
+def _consumer_identity(path: Path, root: Path) -> str:
+    relative = path.relative_to(root).as_posix()
+    return path.name if relative.startswith("scripts/") else relative
+
+
+def _consumer_path(root: Path, identity: str) -> Path:
+    return root / identity if "/" in identity else root / "scripts" / identity
+
+
+def _consumer_files(root: Path) -> list[Path]:
+    files = list((root / "scripts").glob("*.py"))
+    tools = root / "tools"
+    if tools.is_dir():
+        files.extend(tools.glob("*.py"))
+    return sorted(files)
+
+
 def consumers(root: Path = ROOT) -> set[Consumer]:
-    script_dir = root / "scripts"
     result: set[Consumer] = set()
-    for path in sorted(script_dir.glob("*.py")):
-        if path.name == Path(__file__).name:
+    for path in _consumer_files(root):
+        if path.resolve() == Path(__file__).resolve():
             continue
         try:
             ledgers = _module_paths(path)
         except (OSError, SyntaxError) as exc:
             raise RuntimeError(f"cannot inventory {path}: {exc}") from exc
-        result.update(Consumer(path.name, ledger) for ledger in ledgers)
+        identity = _consumer_identity(path, root)
+        result.update(Consumer(identity, ledger) for ledger in ledgers)
     return result
 
 
@@ -189,6 +209,20 @@ def _adapter_problem(root: Path, adapter_name: str) -> str | None:
     return None
 
 
+def stale_mapping_errors(
+    live_keys: set[tuple[str, str]],
+    mappings: dict[tuple[str, str], str],
+    *,
+    label: str,
+) -> list[str]:
+    """Return mappings that name consumers/ledgers the repository no longer has."""
+    return [
+        f"stale {label} mapping {script} -> {ledger}: {value}"
+        for (script, ledger), value in sorted(mappings.items())
+        if (script, ledger) not in live_keys
+    ]
+
+
 def violations(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     seen = consumers(root)
@@ -207,7 +241,7 @@ def violations(root: Path = ROOT) -> list[str]:
                     errors.append(problem)
                 checked_adapters.add(adapter_name)
             continue
-        script = root / "scripts" / consumer.script
+        script = _consumer_path(root, consumer.script)
         if consumer.script in SPECIAL_TRUSTED_CONSUMERS or _uses_trusted_resolver(script):
             continue
         errors.append(
@@ -215,9 +249,15 @@ def violations(root: Path = ROOT) -> list[str]:
             "without trusted-base resolution or a documented exception"
         )
 
-    for key, reason in sorted(CANDIDATE_AUTHORED.items()):
-        if root == ROOT and key not in live_keys:
-            errors.append(f"stale provenance exception {key[0]} -> {key[1]}: {reason}")
+    # The repository's committed policy maps are themselves inventory. A stale
+    # mapping must fail rather than quietly skip the adapter it promised would
+    # execute. Synthetic roots used by unit tests intentionally do not inherit
+    # the repository's full policy map.
+    if root == ROOT:
+        errors.extend(
+            stale_mapping_errors(live_keys, CANDIDATE_AUTHORED, label="provenance exception")
+        )
+        errors.extend(stale_mapping_errors(live_keys, TRUSTED_ADAPTERS, label="trusted adapter"))
     return errors
 
 
