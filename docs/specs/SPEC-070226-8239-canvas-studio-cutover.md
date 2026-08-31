@@ -5,7 +5,6 @@ repo: maistro-engine
 kind: spec
 status: Will Not Implement
 created: 2026-07-02
-rejected: 2026-08-31
 substrate:
   - maistro-engine#ADR-045
   - maistro-engine#ADR-076
