@@ -169,6 +169,54 @@ def _entry_rate(entry: object) -> float | None:
         return None
 
 
+def _measured_rate(current: dict[str, tuple[int, int]], source: str) -> float | None:
+    measured = current.get(source)
+    if not measured or not measured[1]:
+        return None
+    return round(measured[0] / measured[1], 4)
+
+
+def _trusted_entry_failures(
+    source: str,
+    trusted_entry: object,
+    candidate_entry: object,
+    measured_rate: float | None,
+) -> list[str]:
+    trusted_rate = _entry_rate(trusted_entry)
+    candidate_rate = _entry_rate(candidate_entry)
+    if trusted_rate is None or candidate_rate is None:
+        return [f"{source}: mutation baseline entry has no numeric kill_rate"]
+
+    failures: list[str] = []
+    if candidate_rate < trusted_rate:
+        failures.append(
+            f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted "
+            f"{trusted_rate:.1%}"
+        )
+    if measured_rate is not None and candidate_rate > measured_rate:
+        failures.append(
+            f"{source}: candidate kill_rate {candidate_rate:.1%} exceeds measured "
+            f"{measured_rate:.1%}"
+        )
+    return failures
+
+
+def _new_candidate_entry_failures(
+    source: str, candidate_entry: object, measured_rate: float | None
+) -> list[str]:
+    if measured_rate is None:
+        return [f"{source}: unreviewed candidate baseline entry has no measurement"]
+    candidate_rate = _entry_rate(candidate_entry)
+    if candidate_rate is None:
+        return [f"{source}: mutation baseline entry has no numeric kill_rate"]
+    if candidate_rate != measured_rate:
+        return [
+            f"{source}: new candidate kill_rate {candidate_rate:.1%} must equal measured "
+            f"{measured_rate:.1%}"
+        ]
+    return []
+
+
 def candidate_baseline_failures(
     current: dict[str, tuple[int, int]],
     trusted: dict[str, Any],
@@ -183,40 +231,21 @@ def candidate_baseline_failures(
         if source not in candidate_entries:
             failures.append(f"{source}: candidate baseline removed a trusted source floor")
             continue
-        trusted_rate = _entry_rate(trusted_entry)
-        candidate_rate = _entry_rate(candidate_entries[source])
-        if trusted_rate is None or candidate_rate is None:
-            failures.append(f"{source}: mutation baseline entry has no numeric kill_rate")
-            continue
-        if candidate_rate < trusted_rate:
-            failures.append(
-                f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted "
-                f"{trusted_rate:.1%}"
+        failures.extend(
+            _trusted_entry_failures(
+                source,
+                trusted_entry,
+                candidate_entries[source],
+                _measured_rate(current, source),
             )
-        measured = current.get(source)
-        if measured and measured[1]:
-            measured_rate = round(measured[0] / measured[1], 4)
-            if candidate_rate > measured_rate:
-                failures.append(
-                    f"{source}: candidate kill_rate {candidate_rate:.1%} exceeds measured "
-                    f"{measured_rate:.1%}"
-                )
+        )
 
     for source, candidate_entry in sorted(candidate_entries.items()):
-        if source in trusted_entries:
-            continue
-        measured = current.get(source)
-        if not measured or not measured[1]:
-            failures.append(f"{source}: unreviewed candidate baseline entry has no measurement")
-            continue
-        candidate_rate = _entry_rate(candidate_entry)
-        measured_rate = round(measured[0] / measured[1], 4)
-        if candidate_rate is None:
-            failures.append(f"{source}: mutation baseline entry has no numeric kill_rate")
-        elif candidate_rate != measured_rate:
-            failures.append(
-                f"{source}: new candidate kill_rate {candidate_rate:.1%} must equal measured "
-                f"{measured_rate:.1%}"
+        if source not in trusted_entries:
+            failures.extend(
+                _new_candidate_entry_failures(
+                    source, candidate_entry, _measured_rate(current, source)
+                )
             )
     return failures
 
