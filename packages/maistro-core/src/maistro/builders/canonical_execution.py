@@ -15,6 +15,7 @@ canonical stores, traversal, or recovery internals.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -340,7 +341,7 @@ def _resolver(
     run: Any,
     dispatcher: PipelineDispatcher,
     budget: IterationBudget,
-):
+) -> Callable[[str, Graph], BaseNode[Any, Any]]:
     stages = {node.name: node for node in graph}
     start = _StartNode()
     stage_nodes = {
