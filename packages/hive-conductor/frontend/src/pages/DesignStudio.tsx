@@ -173,7 +173,7 @@ export default function DesignStudio() {
           Decks are a specialized Design Studio mode; fixed-page artifacts share the same project, rendering, security, and provenance foundation.
         </div>
         <div
-          role="list"
+          role="group"
           aria-label="Design artifact types"
           style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}
         >
@@ -183,7 +183,6 @@ export default function DesignStudio() {
               <button
                 key={artifact.id}
                 type="button"
-                role="listitem"
                 aria-pressed={selected}
                 onClick={() => setSelectedMode(artifact.id)}
                 className="card"
