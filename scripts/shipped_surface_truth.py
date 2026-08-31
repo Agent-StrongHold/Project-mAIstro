@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 VALID_DISPOSITIONS = {
@@ -27,10 +27,36 @@ SUCCESS_STATUS = {
     "running",
     "started",
 }
+EXCLUDED_PARTS = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "site-packages",
+    "tests",
+    "__tests__",
+    "examples",
+    "fixtures",
+    "reference",
+    "references",
+    "dist",
+    "build",
+    "__pycache__",
+}
 _FRONTEND_STATUS_RE = re.compile(
-    r"\b(?:complete|completed|success|succeeded|building|running|progress)\b",
+    r"\b(?:complete|completed|success|succeeded|building|running|started|done|progress)\b",
     re.IGNORECASE,
 )
+_TIMER_CALLBACK_RE = re.compile(
+    r"setTimeout\s*\(\s*(?:\(\s*\)\s*=>|function\s*\([^)]*\))\s*"
+    r"(?P<body>\{.*?\}|.*?)(?=,\s*\d[\d_]*\s*\))",
+    re.DOTALL,
+)
+_FETCH_RE = re.compile(
+    r"fetch\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
+    re.DOTALL,
+)
+_METHOD_RE = re.compile(r"\bmethod\s*:\s*['\"](?P<method>POST|PUT|PATCH|DELETE)['\"]", re.I)
 
 
 @dataclass(frozen=True, order=True)
@@ -47,20 +73,28 @@ class BackendSurface:
 
 
 @dataclass(frozen=True, order=True)
-class FrontendSignal:
+class FrontendSurface:
     source: str
     signal: str
+    method: str = ""
+    route: str = ""
 
     @property
     def key(self) -> str:
-        return f"{self.source}:{self.signal}"
+        suffix = f":{self.method}:{self.route}" if self.method or self.route else ""
+        return f"{self.source}:{self.signal}{suffix}"
 
 
 def load_matrix(path: Path) -> dict[str, Any]:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    if raw.get("schema_version") != 1:
-        raise ValueError("surface matrix schema_version must be 1")
+    if raw.get("schema_version") != 2:
+        raise ValueError("surface matrix schema_version must be 2")
     return raw
+
+
+def _excluded(path: Path, root: Path) -> bool:
+    rel = path.relative_to(root)
+    return any(part in EXCLUDED_PARTS for part in rel.parts) or ".test." in path.name or ".spec." in path.name
 
 
 def _literal_methods(call: ast.Call) -> list[str]:
@@ -78,14 +112,10 @@ def _literal_methods(call: ast.Call) -> list[str]:
     return []
 
 
-def _decorated_routes(
-    node: ast.AsyncFunctionDef | ast.FunctionDef,
-) -> list[tuple[str, str]]:
+def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tuple[str, str]]:
     routes: list[tuple[str, str]] = []
     for decorator in node.decorator_list:
-        if not isinstance(decorator, ast.Call) or not isinstance(
-            decorator.func, ast.Attribute
-        ):
+        if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
             continue
         if not decorator.args:
             continue
@@ -101,6 +131,9 @@ def _decorated_routes(
 
 
 def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None:
+    # Deliberately conservative: a production handler is only called an obvious
+    # fake when its entire body is a literal success-shaped return. More complex
+    # handlers must be classified from evidence in the matrix, not guessed here.
     if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
         return None
     value = node.body[0].value
@@ -139,48 +172,61 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     return surfaces
 
 
-def discover_backend_surfaces(
-    repo_root: Path, roots: list[str]
-) -> list[BackendSurface]:
-    surfaces: list[BackendSurface] = []
+def _iter_source_files(repo_root: Path, roots: Iterable[str], suffixes: tuple[str, ...]) -> Iterable[Path]:
     for root_name in roots:
         root = repo_root / root_name
         if not root.is_dir():
-            raise ValueError(f"backend surface root does not exist: {root_name}")
-        for path in sorted(root.rglob("*.py")):
-            if "tests" in path.relative_to(root).parts:
+            raise ValueError(f"surface root does not exist: {root_name}")
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in suffixes or _excluded(path, root):
                 continue
-            surfaces.extend(_source_surfaces(path, repo_root))
+            yield path
+
+
+def discover_backend_surfaces(repo_root: Path, roots: list[str]) -> list[BackendSurface]:
+    surfaces: list[BackendSurface] = []
+    for path in _iter_source_files(repo_root, roots, (".py",)):
+        surfaces.extend(_source_surfaces(path, repo_root))
     return sorted(set(surfaces))
 
 
-def discover_frontend_signals(
-    repo_root: Path, roots: list[str]
-) -> list[FrontendSignal]:
-    signals: list[FrontendSignal] = []
-    for root_name in roots:
-        root = repo_root / root_name
-        if not root.is_dir():
-            raise ValueError(f"frontend surface root does not exist: {root_name}")
-        paths = (*root.rglob("*.ts"), *root.rglob("*.tsx"))
-        for path in sorted(paths):
-            if any(
-                part in {"tests", "__tests__"}
-                for part in path.relative_to(root).parts
-            ):
-                continue
-            if ".test." in path.name or ".spec." in path.name:
-                continue
-            text = path.read_text(encoding="utf-8")
-            if "setTimeout" not in text or not _FRONTEND_STATUS_RE.search(text):
-                continue
-            signals.append(
-                FrontendSignal(
-                    source=path.relative_to(repo_root).as_posix(),
-                    signal="timer-status-simulation",
+def _timer_success_signal(text: str) -> bool:
+    for match in _TIMER_CALLBACK_RE.finditer(text):
+        if _FRONTEND_STATUS_RE.search(match.group("body")):
+            return True
+    return False
+
+
+def _mutating_fetches(text: str) -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for match in _FETCH_RE.finditer(text):
+        method_match = _METHOD_RE.search(match.group("opts"))
+        if method_match:
+            found.add((method_match.group("method").upper(), match.group("route")))
+    return found
+
+
+def discover_frontend_surfaces(repo_root: Path, roots: list[str]) -> list[FrontendSurface]:
+    surfaces: list[FrontendSurface] = []
+    for path in _iter_source_files(repo_root, roots, (".ts", ".tsx", ".js", ".jsx")):
+        text = path.read_text(encoding="utf-8")
+        source = path.relative_to(repo_root).as_posix()
+        if _timer_success_signal(text):
+            surfaces.append(FrontendSurface(source=source, signal="timer-status-simulation"))
+        for method, route in _mutating_fetches(text):
+            surfaces.append(
+                FrontendSurface(
+                    source=source,
+                    signal="mutating-api-call",
+                    method=method,
+                    route=route,
                 )
             )
-    return sorted(set(signals))
+    return sorted(set(surfaces))
+
+
+# Backward-compatible name used by the abandoned branch's tests/imports.
+discover_frontend_signals = discover_frontend_surfaces
 
 
 def _backend_entry_key(entry: dict[str, Any]) -> str:
@@ -195,7 +241,12 @@ def _backend_entry_key(entry: dict[str, Any]) -> str:
 
 
 def _frontend_entry_key(entry: dict[str, Any]) -> str:
-    return f"{entry.get('source', '')}:{entry.get('signal', '')}"
+    suffix = (
+        f":{entry.get('method', '')}:{entry.get('route', '')}"
+        if entry.get("method") or entry.get("route")
+        else ""
+    )
+    return f"{entry.get('source', '')}:{entry.get('signal', '')}{suffix}"
 
 
 def _validate_entry(entry: dict[str, Any], *, strict: bool) -> list[str]:
@@ -204,22 +255,27 @@ def _validate_entry(entry: dict[str, Any], *, strict: bool) -> list[str]:
     if disposition not in VALID_DISPOSITIONS:
         errors.append(f"invalid disposition {disposition!r}")
         return errors
+    if not isinstance(entry.get("production_enabled"), bool):
+        errors.append("production_enabled must be true or false")
     if not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
         errors.append("missing reason")
-    if disposition == "unresolved" and not isinstance(entry.get("owner_issue"), int):
-        errors.append("unresolved surface must name owner_issue")
-    if (
-        strict
-        and disposition == "unresolved"
-        and entry.get("production_enabled") is True
-    ):
+
+    if disposition in {"canonical", "domain-state"}:
+        if not isinstance(entry.get("effect_owner"), str) or not entry["effect_owner"].strip():
+            errors.append(f"{disposition} surface must name effect_owner")
+    if disposition == "local-only":
+        if not isinstance(entry.get("truth_contract"), str) or not entry["truth_contract"].strip():
+            errors.append("local-only surface must name truth_contract")
+    if disposition in {"disabled", "unresolved"} and not isinstance(entry.get("owner_issue"), int):
+        errors.append(f"{disposition} surface must name owner_issue")
+    if disposition == "disabled" and entry.get("production_enabled") is True:
+        errors.append("disabled surface cannot be production_enabled")
+    if strict and disposition == "unresolved" and entry.get("production_enabled") is True:
         errors.append("production-enabled unresolved surface blocks Gate D")
     return errors
 
 
-def _index_entries(
-    entries: list[dict[str, Any]], key_fn: Any, label: str
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def _index_entries(entries: list[dict[str, Any]], key_fn: Any, label: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
     indexed: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
     for entry in entries:
@@ -230,14 +286,10 @@ def _index_entries(
     return indexed, errors
 
 
-def validate_matrix(
-    repo_root: Path, matrix: dict[str, Any], *, strict: bool = False
-) -> list[str]:
+def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
     errors: list[str] = []
     backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
-    frontend = discover_frontend_signals(
-        repo_root, list(matrix.get("frontend_roots", []))
-    )
+    frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
 
     backend_entries, duplicate_backend = _index_entries(
         list(matrix.get("backend_surfaces", [])), _backend_entry_key, "backend"
@@ -249,7 +301,7 @@ def validate_matrix(
     errors.extend(duplicate_frontend)
 
     discovered_backend = {surface.key: surface for surface in backend}
-    discovered_frontend = {signal.key: signal for signal in frontend}
+    discovered_frontend = {surface.key: surface for surface in frontend}
 
     for key in sorted(discovered_backend.keys() - backend_entries.keys()):
         errors.append(f"unclassified backend surface: {key}")
@@ -259,24 +311,25 @@ def validate_matrix(
     auto_frontend_entries = {
         key: entry
         for key, entry in frontend_entries.items()
-        if entry.get("signal") == "timer-status-simulation"
+        if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
     }
     for key in sorted(discovered_frontend.keys() - auto_frontend_entries.keys()):
-        errors.append(f"unclassified frontend execution signal: {key}")
+        errors.append(f"unclassified frontend execution surface: {key}")
     for key in sorted(auto_frontend_entries.keys() - discovered_frontend.keys()):
-        errors.append(f"stale frontend execution signal: {key}")
+        errors.append(f"stale frontend execution surface: {key}")
 
     for key, entry in sorted(backend_entries.items()):
         for error in _validate_entry(entry, strict=strict):
             errors.append(f"{key}: {error}")
         surface = discovered_backend.get(key)
-        if surface and surface.obvious_fake_success and entry.get("disposition") not in {
-            "disabled",
-            "unresolved",
-        }:
+        if (
+            surface
+            and surface.obvious_fake_success
+            and entry.get("production_enabled") is True
+            and entry.get("disposition") not in {"disabled", "unresolved"}
+        ):
             errors.append(
-                f"{key}: obvious success-shaped no-op cannot be "
-                f"{entry.get('disposition')}"
+                f"{key}: production success-shaped no-op cannot be {entry.get('disposition')}"
             )
 
     for key, entry in sorted(frontend_entries.items()):
@@ -285,20 +338,27 @@ def validate_matrix(
         source = repo_root / str(entry.get("source", ""))
         if not source.is_file():
             errors.append(f"{key}: frontend source does not exist")
-        if entry.get("signal") == "timer-status-simulation" and entry.get(
-            "disposition"
-        ) not in {"disabled", "unresolved"}:
+        if (
+            entry.get("signal") == "timer-status-simulation"
+            and entry.get("production_enabled") is True
+            and entry.get("disposition") not in {"disabled", "unresolved"}
+        ):
             errors.append(
-                f"{key}: timer-driven execution state cannot be "
-                f"{entry.get('disposition')}"
+                f"{key}: production timer-driven execution state cannot be {entry.get('disposition')}"
             )
 
     return errors
 
 
+def discovered_inventory(repo_root: Path, matrix: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Machine-readable current discovery, useful for review and inventory refresh."""
+    return {
+        "backend_surfaces": [surface.__dict__ for surface in discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))],
+        "frontend_surfaces": [surface.__dict__ for surface in discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))],
+    }
+
+
 def format_errors(errors: list[str]) -> str:
     if not errors:
         return "Shipped-surface truth matrix is complete."
-    return "Shipped-surface truth matrix failed:\n" + "\n".join(
-        f"  - {error}" for error in errors
-    )
+    return "Shipped-surface truth matrix failed:\n" + "\n".join(f"  - {error}" for error in errors)
