@@ -70,15 +70,24 @@ def test_every_fixture_is_locked_and_fail_closed_schema_valid() -> None:
         validate_fixture(unlocked)
 
 
-def test_every_cited_characterization_test_exists_at_capture_time() -> None:
-    definition = re.compile(r"^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(", re.MULTILINE)
+def test_capture_provenance_is_pinned_and_worktree_independent() -> None:
+    """Retiring old characterization tests must not erase the captured oracle."""
+    manifest = _manifest()
+    capture_commit = manifest["captured_from_commit"]
+    assert re.fullmatch(r"[0-9a-f]{40}", capture_commit)
+
+    references: set[tuple[str, str]] = set()
     for fixture, _ in _fixtures():
+        assert fixture["captured_from"]["commit"] == capture_commit
         for reference in fixture["captured_from"]["evidence_tests"]:
             relative_path, test_name = reference.split("::", 1)
-            source = ROOT / relative_path
-            assert source.is_file(), reference
-            names = set(definition.findall(source.read_text(encoding="utf-8")))
-            assert test_name in names, reference
+            assert relative_path.endswith(".py")
+            assert test_name.startswith("test_")
+            key = (capture_commit, reference)
+            assert key not in references
+            references.add(key)
+
+    assert references
 
 
 def test_baseline_and_scenario_ids_are_globally_unique() -> None:
