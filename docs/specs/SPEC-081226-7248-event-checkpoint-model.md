@@ -14,9 +14,7 @@ history:
     date: 2026-08-12
 substrate:
   - maistro-engine#ADR-081226-7248
-implements:
-  - maistro-engine#ADR-081226-7248
-  - maistro-engine#ADR-083026-6e2a
+implements: [maistro-engine#ADR-081226-7248, maistro-engine#ADR-083026-6e2a]
 related:
   - maistro-engine#ADR-081226-a66b
   - maistro-engine#ADR-081226-69ee
