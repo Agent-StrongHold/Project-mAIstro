@@ -13,8 +13,7 @@ import logging
 import re
 import threading
 from collections.abc import Callable, Collection, Iterator, Mapping
-from contextlib import contextmanager
-from types import TracebackType
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any, Protocol
 
 from maistro.observability.tiers import PIIDetector
@@ -70,17 +69,6 @@ class TelemetrySpan(Protocol):
     def set_status(self, status: Any, description: str | None = None) -> Any: ...
 
 
-class _SpanContextManager(Protocol):
-    def __enter__(self) -> TelemetrySpan: ...
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> Any: ...
-
-
 class TelemetryTracer(Protocol):
     """The tracer operation needed to create one protected span."""
 
@@ -90,7 +78,7 @@ class TelemetryTracer(Protocol):
         *,
         record_exception: bool = True,
         set_status_on_exception: bool = True,
-    ) -> _SpanContextManager: ...
+    ) -> AbstractContextManager[TelemetrySpan]: ...
 
 
 def safe_exception_type_name(error_type: type[BaseException]) -> str:
@@ -222,6 +210,27 @@ def _write_span_attribute(
         _notify_failure(reporter, "span_attribute_write", exc)
 
 
+def _safe_attribute_value(key: str, value: object) -> TelemetryAttribute | None:
+    """Select the exportable form of one attribute value, or ``None``.
+
+    Strings export only as finite allowlisted labels, booleans only for known
+    keys, and integers only within per-key reviewed bounds. Everything else —
+    floats, containers, payloads of any kind — has no safe export form.
+    """
+    if isinstance(value, str):
+        allowed = _FIXED_STRING_ATTRIBUTES.get(key)
+        if allowed is not None:
+            return _select_allowlisted_label(value, allowed)
+        return None
+    if isinstance(value, bool):
+        return value if key in _BOOLEAN_ATTRIBUTES else None
+    if isinstance(value, int):
+        limits = _INTEGER_ATTRIBUTE_RANGES.get(key)
+        if limits is not None and limits[0] <= value <= limits[1]:
+            return value
+    return None
+
+
 def set_span_attributes(
     span: TelemetrySpan | None,
     attributes: Mapping[str, object],
@@ -232,18 +241,7 @@ def set_span_attributes(
     if span is None:
         return
     for key, value in attributes.items():
-        safe_value: TelemetryAttribute | None = None
-        if isinstance(value, str):
-            allowed = _FIXED_STRING_ATTRIBUTES.get(key)
-            if allowed is not None:
-                safe_value = _select_allowlisted_label(value, allowed)
-        elif isinstance(value, bool):
-            if key in _BOOLEAN_ATTRIBUTES:
-                safe_value = value
-        elif isinstance(value, int):
-            limits = _INTEGER_ATTRIBUTE_RANGES.get(key)
-            if limits is not None and limits[0] <= value <= limits[1]:
-                safe_value = value
+        safe_value = _safe_attribute_value(key, value)
         if safe_value is not None:
             _write_span_attribute(span, key, safe_value, reporter)
 
@@ -282,7 +280,7 @@ def mark_span_error(
 
 
 def _close_span(
-    manager: _SpanContextManager,
+    manager: AbstractContextManager[TelemetrySpan],
     reporter: TelemetryFailureReporter | None,
 ) -> None:
     try:
@@ -308,7 +306,7 @@ def safe_span(
     is attempted. They are deliberately never handed to the telemetry context
     manager, which prevents automatic exception-event and traceback capture.
     """
-    manager: _SpanContextManager | None = None
+    manager: AbstractContextManager[TelemetrySpan] | None = None
     span: TelemetrySpan | None = None
 
     if tracer is not None:

@@ -15,7 +15,12 @@ from typing import Any
 import pytest
 from adapters.llm_http import _responses_event_to_chunk
 from models.schemas import ChatCompletionRequest
-from services.chat_completion import _ToolCallAccumulator, run_chat_completion_streaming
+from services.chat_completion import (
+    _ToolCallAccumulator,
+    _complete_turn,
+    _stream_turn,
+    run_chat_completion_streaming,
+)
 
 # --------------------------------------------------------------------------- #
 # _ToolCallAccumulator — pure fragment assembly (no I/O)
@@ -293,6 +298,195 @@ async def test_stream_span_measures_first_model_await_and_closes_before_yield(
 
     await stream.aclose()
     assert not active
+
+
+async def test_stream_turn_exits_when_provider_stream_is_empty(monkeypatch) -> None:
+    traces: list[tuple[str, dict[str, Any]]] = []
+
+    @contextmanager
+    def capture_trace(name: str, **kwargs: Any) -> Generator[dict[str, Any], None, None]:
+        traces.append((name, kwargs))
+        yield {}
+
+    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
+    content_out: list[str] = []
+    events = [
+        event
+        async for event in _stream_turn(
+            _FakeLLM([[]]),
+            req,
+            None,
+            content_out,
+            model="test-model",
+            allowed_models=("test-model",),
+            iteration=0,
+        )
+    ]
+
+    assert events == []
+    assert content_out == []
+    assert traces == [
+        (
+            "chat_completion",
+            {
+                "model": "test-model",
+                "allowed_models": ("test-model",),
+                "metadata": {"iteration": 0, "streaming": True},
+            },
+        )
+    ]
+
+
+async def test_complete_turn_uses_non_streaming_telemetry_span(monkeypatch) -> None:
+    traces: list[tuple[str, dict[str, Any]]] = []
+
+    @contextmanager
+    def capture_trace(name: str, **kwargs: Any) -> Generator[dict[str, Any], None, None]:
+        traces.append((name, kwargs))
+        yield {}
+
+    class _CompleteLLM:
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": "done"}}]}
+
+    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
+    out = await _complete_turn(
+        _CompleteLLM(),
+        req,
+        model="test-model",
+        allowed_models=("test-model",),
+        iteration=2,
+    )
+
+    assert out["choices"][0]["message"]["content"] == "done"
+    assert traces == [
+        (
+            "chat_completion",
+            {
+                "model": "test-model",
+                "allowed_models": ("test-model",),
+                "metadata": {"iteration": 2, "streaming": False},
+            },
+        )
+    ]
+
+
+async def test_streaming_falls_back_to_complete_on_stream_error(monkeypatch) -> None:
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+
+    class _BrokenStream:
+        def __aiter__(self) -> _BrokenStream:
+            return self
+
+        async def __anext__(self) -> dict[str, Any]:
+            raise RuntimeError("stream broken")
+
+    class _FailStreamLLM:
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": "recovered via complete"}}]}
+
+        def stream(self, req: ChatCompletionRequest) -> _BrokenStream:
+            return _BrokenStream()
+
+    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FailStreamLLM())
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
+    events = await _collect(run_chat_completion_streaming(req))
+
+    assert events[-1]["type"] == "done"
+    assert events[-1]["content"] == "recovered via complete"
+
+
+async def test_streaming_falls_back_to_complete_when_stream_yields_nothing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+
+    class _EmptyThenCompleteLLM(_FakeLLM):
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": "from non-streaming"}}]}
+
+    monkeypatch.setattr(
+        "services.chat_completion.build_llm_port",
+        lambda: _EmptyThenCompleteLLM([[]]),
+    )
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
+    events = await _collect(run_chat_completion_streaming(req))
+
+    assert events[-1]["type"] == "done"
+    assert events[-1]["content"] == "from non-streaming"
+
+
+async def test_streaming_retries_non_streaming_when_tool_leaked_as_text(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+
+    class _LeakyLLM:
+        def __init__(self) -> None:
+            self.complete_calls = 0
+
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            self.complete_calls += 1
+            return {"choices": [{"message": {"content": "structured answer"}}]}
+
+        async def stream(self, req: ChatCompletionRequest):
+            yield _content("Please poll_jira for my tasks")
+            yield _finish("stop")
+
+    llm = _LeakyLLM()
+    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: llm)
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "tasks?"}], model="test-model")
+
+    with caplog.at_level("WARNING"):
+        events = await _collect(run_chat_completion_streaming(req))
+
+    assert llm.complete_calls == 1
+    assert "Model leaked tool calls as text" in caplog.text
+    assert events[-1]["type"] == "done"
+    assert events[-1]["content"] == "structured answer"
+
+
+async def test_streaming_final_synthesis_uses_non_streaming_span(monkeypatch) -> None:
+    traces: list[tuple[str, dict[str, Any]]] = []
+
+    @contextmanager
+    def capture_trace(name: str, **kwargs: Any) -> Generator[dict[str, Any], None, None]:
+        traces.append((name, kwargs))
+        yield {}
+
+    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+
+    async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        return {"ok": True}
+
+    monkeypatch.setattr("services.chat_completion._execute_tool", fake_exec)
+
+    tool_turn = [
+        _tool_frag(0, id="call_1", name="poll_jira"),
+        _tool_frag(0, args="{}"),
+        _finish("tool_calls"),
+    ]
+
+    class _FiveToolLoopLLM:
+        async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": "final synthesis answer"}}]}
+
+        async def stream(self, req: ChatCompletionRequest):
+            for chunk in tool_turn:
+                yield chunk
+
+    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FiveToolLoopLLM())
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "loop"}], model="test-model")
+    events = await _collect(run_chat_completion_streaming(req))
+
+    assert events[-1]["type"] == "done"
+    assert events[-1]["content"] == "final synthesis answer"
+    final_traces = [kwargs for name, kwargs in traces if name == "chat_completion"]
+    assert final_traces[-1]["metadata"] == {"iteration": 5, "streaming": False}
 
 
 async def test_stream_span_closes_when_first_model_await_is_cancelled(
