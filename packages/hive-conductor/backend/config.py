@@ -301,6 +301,13 @@ class Settings(BaseSettings):
             raise ValueError("OAuth provider names must be lowercase URL-safe slugs")
         return value
 
+    @field_validator("oauth_public_origin", mode="before")
+    @classmethod
+    def empty_oauth_public_origin_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("oauth_public_origin")
     @classmethod
     def validate_oauth_public_origin(cls, value: str | None) -> str | None:

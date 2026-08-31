@@ -19,7 +19,7 @@ import pytest
 import routes.auth as auth_routes
 import services.oauth_login as oauth_login
 import stores
-from config import Settings, get_settings
+from config import OAuthProviderSettings, Settings, get_settings
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from logging_setup import OAuthCallbackQueryFilter
@@ -30,6 +30,8 @@ from services.oauth_login import (
     OAUTH_STATE_TTL_SECONDS,
     HiveIdentityLinkStore,
     IdentityLinkConflictError,
+    OAuthLoginDenied,
+    OAuthLoginResult,
     OAuthLoginService,
     oauth_callback_path,
     oauth_state_cookie_name,
@@ -1069,3 +1071,372 @@ def test_default_oauth_http_client_uses_guarded_transport(
 
     service = OAuthLoginService(get_settings())
     assert isinstance(service._http._transport, GuardedTransport)  # type: ignore[attr-defined]
+
+
+def test_empty_oauth_public_origin_with_no_providers_loads() -> None:
+    settings = Settings(_env_file=None, oauth_providers={}, oauth_public_origin="")
+    assert settings.oauth_public_origin is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        (
+            {
+                "oauth_providers": {
+                    _PROVIDER: {
+                        **_provider_document()[_PROVIDER],
+                        "authorization_url": "https://idp.example.test/authorize?x=1",
+                    }
+                },
+                "oauth_public_origin": _PUBLIC_ORIGIN,
+            },
+            "must not contain a query",
+        ),
+        (
+            {
+                "oauth_providers": {
+                    _PROVIDER: {
+                        **_provider_document()[_PROVIDER],
+                        "authorization_url": "https://user:pass@idp.example.test/authorize",
+                    }
+                },
+                "oauth_public_origin": _PUBLIC_ORIGIN,
+            },
+            "must not contain credentials",
+        ),
+        (
+            {
+                "oauth_providers": {
+                    _PROVIDER: {
+                        **_provider_document()[_PROVIDER],
+                        "client_id": "   ",
+                    }
+                },
+                "oauth_public_origin": _PUBLIC_ORIGIN,
+            },
+            "client_id must not be blank",
+        ),
+        (
+            {
+                "oauth_providers": {
+                    _PROVIDER: {
+                        **_provider_document()[_PROVIDER],
+                        "scopes": ("profile", "email"),
+                    }
+                },
+                "oauth_public_origin": _PUBLIC_ORIGIN,
+            },
+            "scopes must include openid",
+        ),
+        (
+            {
+                "oauth_providers": {f"provider-{index}": _provider_document()[_PROVIDER] for index in range(17)},
+                "oauth_public_origin": _PUBLIC_ORIGIN,
+            },
+            "at most 16 OAuth providers",
+        ),
+        (
+            {
+                "oauth_providers": _provider_document(),
+                "oauth_public_origin": None,
+            },
+            "oauth_public_origin is required",
+        ),
+    ],
+)
+def test_oauth_config_rejects_additional_invalid_values(
+    overrides: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        _settings(**overrides)
+
+
+def test_oauth_public_origin_strips_trailing_slash() -> None:
+    settings = _settings(oauth_public_origin="https://conductor.example.test/")
+    assert settings.oauth_public_origin == "https://conductor.example.test"
+
+
+def test_invalid_identity_link_record_is_rejected(oauth_harness: OAuthHarness) -> None:
+    key = oauth_login._identity_link_key(_PROVIDER, "bad-subject")
+    stores.oauth_identity_links[key] = {"provider": _PROVIDER, "subject": "wrong-subject", "local_user_id": "user"}
+
+    with pytest.raises(IdentityLinkConflictError, match="invalid"):
+        asyncio.run(oauth_harness.links.resolve(_PROVIDER, "bad-subject"))
+
+
+def test_link_rejects_invalid_provider_or_subject(oauth_harness: OAuthHarness) -> None:
+    with pytest.raises(IdentityLinkConflictError, match="invalid provider"):
+        asyncio.run(oauth_harness.links.link("Not-A-Provider", "subject", "user"))
+    with pytest.raises(IdentityLinkConflictError, match="invalid subject"):
+        asyncio.run(oauth_harness.links.link(_PROVIDER, "", "user"))
+
+
+def test_link_rejects_inactive_target_user(oauth_harness: OAuthHarness) -> None:
+    stores.users["user"] = stores.users["user"].model_copy(update={"is_active": False})
+    with pytest.raises(IdentityLinkConflictError, match="active local user"):
+        asyncio.run(oauth_harness.links.link(_PROVIDER, "new-subject", "user"))
+
+
+def test_oauth_service_rejects_missing_configuration() -> None:
+    settings = Settings(_env_file=None, oauth_providers={}, oauth_public_origin=None)
+    with pytest.raises(OAuthLoginDenied, match="OAuth authentication failed"):
+        OAuthLoginService(settings)
+
+
+def test_oauth_service_unknown_provider_and_public_client_paths(
+    oauth_harness: OAuthHarness,
+) -> None:
+    service = oauth_harness.service
+    with pytest.raises(OAuthLoginDenied) as denied:
+        service._provider("missing-provider")
+    assert denied.value.reason == "unknown_provider"
+
+    public_provider = OAuthProviderSettings.model_validate(
+        {
+            k: v
+            for k, v in _provider_document()[_PROVIDER].items()
+            if k != "client_secret_vault_key"
+        }
+    )
+    assert public_provider.client_secret_vault_key is None
+    public_service = OAuthLoginService(
+        Settings(
+            _env_file=None,
+            oauth_providers={_PROVIDER: public_provider},
+            oauth_public_origin=_PUBLIC_ORIGIN,
+            oauth_success_path=_SUCCESS_PATH,
+        ),
+        http=oauth_harness.http,
+        link_store=oauth_harness.links,
+    )
+    assert public_service._resolve_client_secret(_PROVIDER) is None
+
+    service = oauth_harness.service
+    service._settings = service._settings.model_copy(update={"oauth_public_origin": None})
+    with pytest.raises(OAuthLoginDenied) as missing_origin:
+        service.callback_uri(_PROVIDER)
+    assert missing_origin.value.stage == "configuration"
+
+
+def test_oauth_start_maps_core_errors_to_provider_denial(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _broken_authorize(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        raise oauth_login.OAuthError("broken")
+
+    monkeypatch.setattr(oauth_harness.service._client, "authorize_url", _broken_authorize)
+    with pytest.raises(OAuthLoginDenied) as denied:
+        asyncio.run(oauth_harness.service.start(_PROVIDER))
+    assert denied.value.reason == "unknown_provider"
+
+
+def test_oauth_browser_state_length_is_bounded(oauth_harness: OAuthHarness) -> None:
+    long_state = "x" * (oauth_login.OAUTH_STATE_MAX_LENGTH + 1)
+    with pytest.raises(OAuthLoginDenied) as denied:
+        oauth_harness.service._validate_browser_state("short", long_state)
+    assert denied.value.stage == "browser_state"
+
+
+def test_consume_failed_callback_rejects_invalid_state(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    state, _, _ = _begin(client)
+
+    async def _consume_none(_state: str) -> None:
+        return None
+
+    monkeypatch.setattr(oauth_harness.service._states, "consume", _consume_none)
+    with pytest.raises(OAuthLoginDenied) as denied:
+        asyncio.run(
+            oauth_harness.service.consume_failed_callback(
+                provider=_PROVIDER,
+                state=state,
+                browser_state=state,
+            )
+        )
+    assert denied.value.stage == "state"
+
+
+def test_complete_login_maps_unexpected_errors(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(*_args: object, **_kwargs: object) -> tuple[str | None, object]:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(oauth_login, "complete_login", _boom)
+    with pytest.raises(OAuthLoginDenied) as denied:
+        asyncio.run(
+            oauth_harness.service._complete_login(_PROVIDER, "code", "state")
+        )
+    assert denied.value.stage == "provider"
+
+
+def test_get_and_close_oauth_login_service_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OAUTH_PROVIDERS", json.dumps(_provider_document()))
+    monkeypatch.setenv("OAUTH_PUBLIC_ORIGIN", _PUBLIC_ORIGIN)
+    monkeypatch.setenv("OAUTH_SUCCESS_PATH", _SUCCESS_PATH)
+    get_settings.cache_clear()
+    oauth_login._service = None
+
+    first = oauth_login.get_oauth_login_service()
+    second = oauth_login.get_oauth_login_service()
+    assert first is second
+
+    async def _run_close() -> None:
+        await oauth_login.close_oauth_login_service()
+        assert oauth_login._service is None
+
+    asyncio.run(_run_close())
+
+
+def test_user_has_permission_is_false_for_missing_user(
+    oauth_harness: OAuthHarness,
+) -> None:
+    asyncio.run(oauth_harness.links.link(_PROVIDER, "subject-123", "user"))
+    client = _client()
+    state, nonce, _ = _begin(client)
+    _queue_code(oauth_harness, "perm-code", nonce)
+    callback = _callback(client, "perm-code", state)
+    session_cookie = callback.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+    stores.users.pop("user", None)
+    assert auth_routes.user_has_permission(session_cookie, "admin") is False
+
+
+def test_oauth_start_survives_unexpected_service_errors(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom() -> OAuthLoginService:
+        raise RuntimeError("service unavailable")
+
+    monkeypatch.setattr(auth_routes, "get_oauth_login_service", _boom)
+    response = _client().get(f"/v1/auth/oauth/{_PROVIDER}/start", follow_redirects=False)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "OAuth authentication failed"
+
+
+def test_oauth_callback_survives_unexpected_service_errors(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(oauth_harness.links.link(_PROVIDER, "subject-123", "user"))
+    client = _client()
+    state, nonce, _ = _begin(client)
+    _queue_code(oauth_harness, "unexpected-code", nonce)
+
+    async def _boom(*_args: object, **_kwargs: object) -> OAuthLoginResult:
+        raise RuntimeError("service unavailable")
+
+    monkeypatch.setattr(
+        oauth_harness.service,
+        "authenticate",
+        _boom,
+    )
+    response = _callback(client, "unexpected-code", state)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "OAuth authentication failed"
+
+
+def test_oauth_provider_error_callback_survives_unexpected_failures(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    state, _, _ = _begin(client)
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("service unavailable")
+
+    monkeypatch.setattr(
+        oauth_harness.service,
+        "consume_failed_callback",
+        _boom,
+    )
+    response = client.get(
+        f"/v1/auth/oauth/{_PROVIDER}/callback",
+        params={"error": "access_denied", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "OAuth authentication failed"
+
+
+def test_uvicorn_access_log_filter_sanitizes_dict_args() -> None:
+    callback_code = "sentinel-dict-code-material"
+    path = f"/v1/auth/oauth/{_PROVIDER}/callback?code={callback_code}"
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="%(client)s %(request_line)s",
+        args={"client": "127.0.0.1:1", "request_line": f'GET {path} HTTP/1.1"'},
+        exc_info=None,
+    )
+
+    assert OAuthCallbackQueryFilter().filter(record) is True
+    assert callback_code not in str(record.args)
+
+
+def test_oauth_start_applies_throttle_delay(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.security.auth_throttle import AuthThrottle, Decision
+
+    class DelayingThrottle(AuthThrottle):
+        def check(self, **kwargs: object) -> Decision:
+            return Decision(allowed=True, delay_seconds=0.01)
+
+    monkeypatch.setattr(
+        auth_routes,
+        "_OAUTH_START_THROTTLE",
+        DelayingThrottle(auth_routes._OAUTH_START_LIMITS),
+    )
+    response = _client().get(f"/v1/auth/oauth/{_PROVIDER}/start", follow_redirects=False)
+    assert response.status_code == 303
+
+
+def test_oauth_callback_applies_throttle_delay(
+    oauth_harness: OAuthHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.security.auth_throttle import AuthThrottle, Decision
+
+    class DelayingThrottle(AuthThrottle):
+        def check(self, **kwargs: object) -> Decision:
+            return Decision(allowed=True, delay_seconds=0.01)
+
+    monkeypatch.setattr(
+        auth_routes,
+        "_OAUTH_CALLBACK_THROTTLE",
+        DelayingThrottle(auth_routes._OAUTH_START_LIMITS),
+    )
+    response = _client().get(f"/v1/auth/oauth/{_PROVIDER}/callback", follow_redirects=False)
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_shutdown_logs_oauth_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    import main
+
+    async def _boom() -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(main, "close_oauth_login_service", _boom)
+    with caplog.at_level(logging.WARNING, logger="hive.lifespan"):
+        await main._shutdown_background_services()
+    assert any("oauth_login_stop_failed" in record.message for record in caplog.records)

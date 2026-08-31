@@ -253,6 +253,41 @@ class TestPersistedStore:
         assert store.get_raw("raws", "r1") == '{"owner": "first"}'
         state.close()
 
+    def test_put_raw_if_absent_times_out(self, db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        def _never_run(_fn: object) -> None:
+            return None
+
+        monkeypatch.setattr(state, "submit", _never_run)
+        with pytest.raises(TimeoutError, match="conflict-safe state insert"):
+            store.put_raw_if_absent("raws", "r1", '{"x": 1}', timeout=0.01)
+        state.close()
+
+    def test_put_raw_if_absent_surfaces_insert_errors(
+        self, db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        class _BrokenConn:
+            def execute(self, *_args: object, **_kwargs: object) -> None:
+                raise sqlite3.OperationalError("insert failed")
+
+            def commit(self) -> None:
+                return None
+
+            def rollback(self) -> None:
+                return None
+
+        monkeypatch.setattr(state, "submit", lambda fn: fn(_BrokenConn()))
+        with pytest.raises(RuntimeError, match="conflict-safe state insert failed"):
+            store.put_raw_if_absent("raws", "r1", '{"x": 1}')
+        state.close()
+
     def test_get_raw_missing_key_returns_none(self, db_path: Path) -> None:
         state = State(db_path=str(db_path))
         store = PersistedStore(state)
