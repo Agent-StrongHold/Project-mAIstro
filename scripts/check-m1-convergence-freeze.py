@@ -171,10 +171,7 @@ def _contains_concept(name: str, concept: str) -> bool:
     if not needle or len(needle) > len(words):
         return False
     width = len(needle)
-    return any(
-        words[index : index + width] == needle
-        for index in range(len(words) - width + 1)
-    )
+    return any(words[index : index + width] == needle for index in range(len(words) - width + 1))
 
 
 def _class_records(source: str) -> dict[str, str]:
