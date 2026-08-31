@@ -1,13 +1,5 @@
 """Temporary diagnostic: print the pinned Ruff formatting diff for #129 cleanup."""
 
-from __future__ import annotations
-
-import subprocess
-from pathlib import Path
-
-import pytest
-
-
 _FILES = (
     "packages/hive-conductor/backend/main.py",
     "packages/hive-conductor/backend/services/dag_run_store.py",
@@ -22,7 +14,10 @@ _FILES = (
 
 
 def test_print_pinned_ruff_format_diff() -> None:
-    root = Path(__file__).resolve().parents[3]
+    pathlib = __import__("pathlib")
+    subprocess = __import__("subprocess")
+    pytest = __import__("pytest")
+    root = pathlib.Path(__file__).resolve().parents[3]
     proc = subprocess.run(
         ["ruff", "format", "--diff", *_FILES],
         cwd=root,
