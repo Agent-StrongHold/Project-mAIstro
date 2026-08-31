@@ -30,6 +30,16 @@ const designSystems = {
 
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+
+  // These tests exercise the post-onboarding Design Studio product surface,
+  // not the onboarding journey itself. Seed the same durable browser fact the
+  // real "Skip onboarding" / "Get Started" actions write, before React mounts,
+  // so the modal cannot obscure controls and the tests do not bypass it with
+  // force-clicks.
+  await context.addInitScript(() => {
+    window.localStorage.setItem("hive_onboarded", "1");
+  });
+
   page = await context.newPage();
   await setupIfNeeded(page);
   await loginAsPM(page);
