@@ -56,12 +56,8 @@ from routes import (
     workspaces,
     ws,
 )
-from routes import (
-    metrics as metrics_r,
-)
-from routes import (
-    optimizer as optimizer_r,
-)
+from routes import metrics as metrics_r
+from routes import optimizer as optimizer_r
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
