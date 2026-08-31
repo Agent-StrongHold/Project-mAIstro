@@ -276,12 +276,6 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # #150 had to build here for want of one.
     chat_completions.configure_container(container)
 
-    if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
-        catalog = AgentCatalog()
-        register_pm_fleet(catalog)
-        app.state.pm_catalog = catalog
-        await logger.ainfo("pm_fleet_catalog_seeded", agents=len(catalog.list_agents()))
-
     progress_wh: ProgressWebhookNotifier | None = None
     if settings.task_progress_webhook_url.strip():
         progress_wh = ProgressWebhookNotifier(
