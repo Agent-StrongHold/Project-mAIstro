@@ -30,12 +30,17 @@ type DesignSkill = {
 
 type DesignSystemsResponse = {
   systems: Array<{ slug: string; name: string }>;
+  catalog: {
+    available: boolean;
+    cause: string | null;
+    count: number;
+  };
   ready: boolean;
   cause: string | null;
 };
 
 type CatalogState = {
-  status: "loading" | "ready" | "unavailable";
+  status: "loading" | "ready" | "degraded" | "unavailable";
   skills: DesignSkill[];
   systemCount: number;
   message: string;
@@ -95,6 +100,10 @@ function failureMessage(result: PromiseSettledResult<unknown>): string | null {
   return result.reason instanceof Error ? result.reason.message : String(result.reason);
 }
 
+function resourceSummary(skillCount: number, systemCount: number): string {
+  return `${skillCount} design skill${skillCount === 1 ? "" : "s"} and ${systemCount} design system${systemCount === 1 ? "" : "s"} available.`;
+}
+
 export default function DesignStudio() {
   const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
   const [prompt, setPrompt] = useState("");
@@ -131,11 +140,23 @@ export default function DesignStudio() {
         return;
       }
 
+      const optionalCatalog = systemsResult.status === "fulfilled" ? systemsResult.value.catalog : null;
+      if (optionalCatalog && !optionalCatalog.available) {
+        const cause = optionalCatalog.cause ?? "Additional design-system catalog is unavailable.";
+        setCatalog({
+          status: "degraded",
+          skills,
+          systemCount: systems.length,
+          message: `${resourceSummary(skills.length, systems.length)} Additional design systems are unavailable: ${cause}`,
+        });
+        return;
+      }
+
       setCatalog({
         status: "ready",
         skills,
         systemCount: systems.length,
-        message: `${skills.length} design skill${skills.length === 1 ? "" : "s"} and ${systems.length} design system${systems.length === 1 ? "" : "s"} available.`,
+        message: resourceSummary(skills.length, systems.length),
       });
     }
 
@@ -146,7 +167,7 @@ export default function DesignStudio() {
   }, []);
 
   const mode = ARTIFACT_MODES.find((candidate) => candidate.id === selectedMode) ?? ARTIFACT_MODES[0];
-  const catalogBorder = catalog.status === "ready" ? "var(--ok, #5a9a4a)" : catalog.status === "unavailable" ? "var(--danger, #c4452a)" : "var(--rule)";
+  const catalogBorder = catalog.status === "ready" ? "var(--ok, #5a9a4a)" : catalog.status === "loading" ? "var(--rule)" : "var(--danger, #c4452a)";
 
   return (
     <div>
@@ -204,9 +225,9 @@ export default function DesignStudio() {
         <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 6 }}>
           {catalog.message}
         </div>
-        {catalog.status === "ready" && catalog.skills.length > 0 && (
+        {catalog.skills.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }} aria-label="Available design skills">
-            {catalog.skills.slice(0, 8).map((skill) => (
+            {catalog.skills.map((skill) => (
               <span key={skill.slug} className="btn" style={{ fontSize: 9, padding: "2px 7px", cursor: "default" }}>
                 {skill.name}
               </span>
@@ -270,9 +291,9 @@ export default function DesignStudio() {
         <div style={{ display: "grid", gap: 8 }} role="list" aria-label="Design Studio availability">
           {[
             {
-              label: "Brief + design system",
+              label: "Design resource discovery",
               state: catalog.status === "ready" ? "available" : catalog.status,
-              detail: "Design skills and design systems are connected to the saved Design Studio foundation.",
+              detail: "Available design skills and design systems are discovered from the connected Design service. Brief creation is not connected yet.",
             },
             {
               label: "Visual generation",
