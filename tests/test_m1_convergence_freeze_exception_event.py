@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-m1-convergence-freeze.py"
+MAIN_TEST = ROOT / "tests" / "test_m1_convergence_freeze.py"
 
 
 def _module() -> ModuleType:
@@ -39,3 +41,12 @@ def test_direct_checker_reads_exception_plan_from_pull_request_event(
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
     assert checker._exception_plan_from_environment() == plan
+
+    formatted = subprocess.run(
+        ["uv", "run", "ruff", "format", "--diff", str(CHECKER), str(MAIN_TEST)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    raise AssertionError("RUFF_FORMAT_DIFF\n" + formatted.stdout + formatted.stderr)
