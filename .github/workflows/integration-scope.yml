@@ -1,0 +1,103 @@
+name: Integration Scope
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  checks: read
+  contents: read
+
+concurrency:
+  group: integration-scope-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-scope:
+    name: integration-scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve integration scope
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+            base_sha="$(python3 scripts/ci_base_revision.py)"
+            git diff --name-only "$base_sha"...HEAD > /tmp/changed-paths.txt
+            mapfile -t changed_paths < /tmp/changed-paths.txt
+            scope_json="$(python3 scripts/ci_merge_group_scope.py --json "${changed_paths[@]}")"
+          else
+            scope_json="$(python3 scripts/ci_merge_group_scope.py --json)"
+          fi
+          required_json="$(
+            python3 scripts/check-integration-scope.py \
+              --event-name "$GITHUB_EVENT_NAME" \
+              --scope-json "$scope_json" \
+              --required-json
+          )"
+          echo "scope_json=$scope_json" >> "$GITHUB_OUTPUT"
+          echo "required_json=$required_json" >> "$GITHUB_OUTPUT"
+          echo "$scope_json"
+          echo "$required_json"
+
+      - name: Wait only for required specialized CI evidence
+        uses: actions/github-script@v7
+        env:
+          REQUIRED_JSON: ${{ steps.scope.outputs.required_json }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        with:
+          script: |
+            const required = new Set(JSON.parse(process.env.REQUIRED_JSON));
+            const candidateSha = process.env.CANDIDATE_SHA;
+
+            core.info(`candidate ${candidateSha}: waiting for ${[...required].join(', ') || '<no specialized checks>'}`);
+            if (required.size === 0) return;
+
+            for (let attempt = 1; attempt <= 100; attempt += 1) {
+              const runs = await github.paginate(
+                github.rest.checks.listForRef,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: candidateSha,
+                  per_page: 100,
+                },
+              );
+
+              const latest = new Map();
+              for (const run of runs) latest.set(run.name, run);
+
+              const pending = [];
+              for (const name of required) {
+                const run = latest.get(name);
+                if (!run || run.status !== 'completed') {
+                  pending.push(name);
+                  continue;
+                }
+                if (run.conclusion !== 'success') {
+                  core.setFailed(`${name} is required by integration scope but concluded ${run.conclusion || '<none>'}`);
+                  return;
+                }
+              }
+
+              if (pending.length === 0) {
+                core.info('all integration-scope specialized evidence succeeded');
+                return;
+              }
+
+              core.info(`attempt ${attempt}: still waiting for ${pending.join(', ')}`);
+              await new Promise(resolve => setTimeout(resolve, 10000));
+            }
+
+            core.setFailed('timed out waiting for required specialized CI evidence');

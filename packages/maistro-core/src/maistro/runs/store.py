@@ -157,6 +157,22 @@ class StaleExecutionFence(RunIntegrityError):
     pass
 
 
+RunCursor = tuple[str, str]
+
+
+def run_cursor_key(run: Run) -> RunCursor:
+    """Stable oldest-first key using the exact durable JSON timestamp."""
+    created_at = run.model_dump(mode="json")["created_at"]
+    if not isinstance(created_at, str):
+        raise RunIntegrityError("Run.created_at did not serialize as JSON text")
+    return (created_at, run.run_id)
+
+
+def _run_matches_status_scope(run: Run, *, status: RunStatus, project_id: str | None) -> bool:
+    """Whether one Run belongs in a status/scope listing."""
+    return run.status is status and (project_id is None or run.project_id == project_id)
+
+
 def validate_child_scope(
     parent: Run,
     *,
@@ -309,6 +325,7 @@ class RunStore(Protocol):
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        after: RunCursor | None = None,
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
@@ -718,6 +735,7 @@ class InMemoryRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        after: RunCursor | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first.
 
@@ -739,10 +757,12 @@ class InMemoryRunStore:
             (
                 run
                 for run in self._runs.values()
-                if run.status is status and (project_id is None or run.project_id == project_id)
+                if _run_matches_status_scope(run, status=status, project_id=project_id)
             ),
-            key=lambda run: (run.created_at, run.run_id),
+            key=run_cursor_key,
         )
+        if after is not None:
+            matching = [run for run in matching if run_cursor_key(run) > after]
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
     async def get_run(self, run_id: str) -> Run | None:
