@@ -73,6 +73,7 @@
       "findings": [
         "packages/maistro-bootstrap/src/maistro_bootstrap/schema.py::unused variable 'install_mode'",
         "packages/maistro-bootstrap/src/maistro_bootstrap/schema.py::unused variable 'provider_accounts'",
+        "packages/maistro-bootstrap/src/maistro_bootstrap/schema.py::unused variable 'schema_version'",
         "packages/maistro-bootstrap/src/maistro_bootstrap/schema.py::unused variable 'users_intent'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'FLOATING'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'FX'",
@@ -558,6 +559,7 @@
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'active_slots'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'emitted_at'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'event_loop_lag_ms_last'",
+        "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'event_sequence'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'events_emitted'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'executions_cancelled'",
         "packages/maistro-core/src/maistro/runtime/execution.py::unused variable 'executions_completed'",
