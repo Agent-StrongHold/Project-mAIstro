@@ -168,6 +168,30 @@ class TestLifespan:
         assert main_module._runner is mock_runner
         assert get_startup_phase(test_app) is StartupPhase.NOT_STARTED
 
+    async def test_runtime_failure_with_missing_runner_is_not_a_startup_failure(self) -> None:
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        mock_runner = MagicMock(start=AsyncMock(), stop=AsyncMock())
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("asyncio.get_running_loop") as mock_loop,
+            pytest.raises(RuntimeError, match="runtime failed"),
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                assert get_startup_phase(test_app) is StartupPhase.COMPLETE
+                main_module._runner = None
+                raise RuntimeError("runtime failed")
+
+        mock_runner.stop.assert_not_awaited()
+        assert get_startup_phase(test_app) is StartupPhase.NOT_STARTED
+
     async def test_lifespan_failure_is_sanitized_and_never_complete(self) -> None:
         test_app = FastAPI()
         test_app.include_router(health_router)
