@@ -4,7 +4,6 @@ from pathlib import Path
 
 from maistro_server.main import app
 
-
 _MAIN = Path(__file__).resolve().parents[1] / "src" / "maistro_server" / "main.py"
 
 

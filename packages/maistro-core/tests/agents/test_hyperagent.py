@@ -21,7 +21,6 @@ from maistro.agents.program_context import ProgramContext
 from maistro.personas.expander import expand_persona
 from maistro.personas.rubric import load_template
 
-
 _PM_FLEET_TEMPLATE = (
     Path(__file__).resolve().parents[2]
     / "src"

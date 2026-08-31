@@ -12,7 +12,6 @@ from pathlib import Path
 from maistro.personas.expander import expand_persona
 from maistro.personas.rubric import load_template
 
-
 _CORE = Path(__file__).resolve().parents[2]
 _AGENTS = _CORE / "src" / "maistro" / "agents"
 _TEMPLATE = _CORE / "src" / "maistro" / "personas" / "templates" / "pm_fleet.yaml"

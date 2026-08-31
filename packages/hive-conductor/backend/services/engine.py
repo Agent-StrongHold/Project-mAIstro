@@ -190,6 +190,7 @@ class EngineService:
         try:
             if settings.hive_mode == "demo":
                 from adapters.task_backend import LocalTaskBackend
+
                 from maistro.agents.conductor import run_task
 
                 # Demo mode retains the local backend, but not a product-specific
