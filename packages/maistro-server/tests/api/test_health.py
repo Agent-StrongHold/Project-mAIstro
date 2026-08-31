@@ -9,12 +9,15 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from maistro.agents.circuit_breaker import CircuitState
 from maistro.config.settings import SandboxSettings, Settings, get_settings
 from maistro_server.api.health import ProbeResult, _check_docker, _check_postgres
+from maistro_server.api.health import router as health_router
 from maistro_server.main import APP_VERSION, app
+from maistro_server.startup import StartupPhase, set_startup_phase
 
 
 @pytest.fixture
@@ -46,6 +49,66 @@ class TestLivenessEndpoint:
         response = client.get("/health/live")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+
+
+class TestStartupEndpoint:
+    """The startup probe reflects lifespan state without dependency probes."""
+
+    @staticmethod
+    def _app() -> FastAPI:
+        test_app = FastAPI()
+        test_app.include_router(health_router)
+        return test_app
+
+    @pytest.mark.parametrize(
+        "phase",
+        [StartupPhase.NOT_STARTED, StartupPhase.STARTING],
+    )
+    def test_incomplete_startup_returns_503(self, phase: StartupPhase) -> None:
+        test_app = self._app()
+        set_startup_phase(test_app, phase)
+
+        response = TestClient(test_app).get("/health/startup")
+
+        assert response.status_code == 503
+        assert response.json() == {"status": "starting", "startup_complete": False}
+
+    def test_complete_startup_returns_200(self) -> None:
+        test_app = self._app()
+        set_startup_phase(test_app, StartupPhase.COMPLETE)
+
+        response = TestClient(test_app).get("/health/startup")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "startup_complete": True}
+
+    def test_failed_startup_returns_sanitized_503(self) -> None:
+        test_app = self._app()
+        set_startup_phase(test_app, StartupPhase.FAILED)
+
+        response = TestClient(test_app).get("/health/startup")
+
+        assert response.status_code == 503
+        assert response.json() == {"status": "failed", "startup_complete": False}
+        assert set(response.json()) == {"status", "startup_complete"}
+
+    def test_startup_does_not_run_readiness_probes(self) -> None:
+        test_app = self._app()
+        set_startup_phase(test_app, StartupPhase.COMPLETE)
+
+        with (
+            patch(
+                "maistro_server.api.health._check_docker",
+                AsyncMock(side_effect=AssertionError("must not probe Docker")),
+            ),
+            patch(
+                "maistro_server.api.health._check_postgres",
+                AsyncMock(side_effect=AssertionError("must not probe PostgreSQL")),
+            ),
+        ):
+            response = TestClient(test_app).get("/health/startup")
+
+        assert response.status_code == 200
 
 
 class TestCheckDocker:
@@ -101,41 +164,26 @@ class TestCheckPostgres:
     """Evidence: _check_postgres probes connectivity via asyncpg."""
 
     async def test_postgres_ok(self) -> None:
-        from maistro.config.settings import Settings
-
         settings = Settings(require_auth=False)
         mock_conn = AsyncMock()
         mock_connect = AsyncMock(return_value=mock_conn)
-        with patch.dict(
-            "sys.modules",
-            {"asyncpg": type("M", (), {"connect": mock_connect})()},
-        ):
+        with patch("maistro_server.api.health.asyncpg.connect", mock_connect):
             result = await _check_postgres(settings)
         assert result.status == "ok"
         mock_conn.close.assert_awaited_once()
 
     async def test_postgres_connection_error(self) -> None:
-        from maistro.config.settings import Settings
-
         settings = Settings(require_auth=False)
         mock_connect = AsyncMock(side_effect=RuntimeError("connection refused"))
-        with patch.dict(
-            "sys.modules",
-            {"asyncpg": type("M", (), {"connect": mock_connect})()},
-        ):
+        with patch("maistro_server.api.health.asyncpg.connect", mock_connect):
             result = await _check_postgres(settings)
         assert result.status == "error"
         assert "connection refused" in result.detail
 
     async def test_postgres_error_detail_truncated(self) -> None:
-        from maistro.config.settings import Settings
-
         settings = Settings(require_auth=False)
         mock_connect = AsyncMock(side_effect=RuntimeError("x" * 500))
-        with patch.dict(
-            "sys.modules",
-            {"asyncpg": type("M", (), {"connect": mock_connect})()},
-        ):
+        with patch("maistro_server.api.health.asyncpg.connect", mock_connect):
             result = await _check_postgres(settings)
         assert result.status == "error"
         assert len(result.detail) == 100

@@ -8,14 +8,26 @@ ErrorResponse envelope (request_id, type, message).
 
 from __future__ import annotations
 
+import json
 import signal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import maistro_server.main as main_module
-from maistro_server.main import _graceful_shutdown, _validate_startup, app, lifespan
+from maistro.config.settings import Settings
+from maistro_server.api.health import router as health_router
+from maistro_server.main import (
+    _graceful_shutdown,
+    _validate_startup,
+    app,
+    lifespan,
+    unhandled_exception_handler,
+)
+from maistro_server.startup import StartupPhase, get_startup_phase
 
 
 @pytest.fixture
@@ -42,8 +54,6 @@ class TestValidateStartup:
     """CRIT-02 — duplicated here for completeness; primary coverage in test_startup.py."""
 
     def test_raises_without_keys_when_auth_required(self) -> None:
-        from maistro.config.settings import Settings
-
         settings = Settings(api_keys=[], require_auth=True)
         with pytest.raises(RuntimeError, match="REQUIRE_AUTH"):
             _validate_startup(settings)
@@ -64,12 +74,6 @@ class TestExceptionHandlers:
         """Directly invoke the registered handler to verify its envelope shape —
         every current route catches its own exceptions internally, so there is
         no live endpoint that lets an exception escape to this handler."""
-        import json
-
-        from starlette.requests import Request
-
-        from maistro_server.main import unhandled_exception_handler
-
         scope = {
             "type": "http",
             "method": "GET",
@@ -137,8 +141,11 @@ class TestLifespan:
         test_app = MagicMock()
         test_app.state = MagicMock()
 
+        async def _start_runner() -> None:
+            assert get_startup_phase(test_app) is StartupPhase.STARTING
+
         mock_runner = MagicMock()
-        mock_runner.start = AsyncMock()
+        mock_runner.start = AsyncMock(side_effect=_start_runner)
         mock_runner.stop = AsyncMock()
 
         with (
@@ -154,9 +161,31 @@ class TestLifespan:
             async with lifespan(test_app):
                 assert main_module._runner is mock_runner
                 mock_runner.start.assert_awaited_once()
+                assert get_startup_phase(test_app) is StartupPhase.COMPLETE
 
         mock_runner.stop.assert_awaited_once()
         assert main_module._runner is mock_runner
+        assert get_startup_phase(test_app) is StartupPhase.NOT_STARTED
+
+    async def test_lifespan_failure_is_sanitized_and_never_complete(self) -> None:
+        test_app = FastAPI()
+        test_app.include_router(health_router)
+        internal_failure = RuntimeError("bootstrap failed at /private/config/settings.yaml")
+
+        with (
+            patch("maistro_server.main.get_settings", return_value=Settings(require_auth=False)),
+            patch("maistro_server.main.configure_logging"),
+            patch("maistro_server.main._validate_startup", side_effect=internal_failure),
+            pytest.raises(RuntimeError, match="bootstrap failed"),
+        ):
+            async with lifespan(test_app):
+                pytest.fail("failed startup must not yield")
+
+        assert get_startup_phase(test_app) is StartupPhase.FAILED
+        response = TestClient(test_app).get("/health/startup")
+        assert response.status_code == 503
+        assert response.json() == {"status": "failed", "startup_complete": False}
+        assert "/private/config" not in response.text
 
     @pytest.mark.parametrize(
         ("pool", "expects_warning"),

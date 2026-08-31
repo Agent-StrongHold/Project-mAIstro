@@ -19,7 +19,9 @@ blocked-by: []
 contracts:
   - boundary
   - behavioral
-tests: []
+tests:
+  - packages/maistro-server/tests/api/test_health.py
+  - packages/maistro-server/tests/api/test_main.py
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -87,6 +89,13 @@ Three levels per service:
 - **Liveness** (`/health/live`) — process is up. Cheap.
 - **Readiness** (`/health/ready`) — ready to accept traffic. Verifies upstream deps reachable, cache warm, migrations applied.
 - **Startup** (`/health/startup`) — initial bootstrap done. K8s uses this to delay liveness probes during slow boot.
+
+**maistro-server implementation (2026-08-31):** the FastAPI lifespan records
+application-local startup state before initialization, marks it complete only after
+configuration, database/run-spine/container wiring, role-specific setup, and task-runner
+startup finish, and records initialization failure without exposing the exception. The startup
+endpoint reads only that in-process state; ongoing dependency probes remain the responsibility of
+readiness.
 
 K8s probes hit these directly; `Project_mAIstro` runs them via systemd or Docker healthcheck.
 
