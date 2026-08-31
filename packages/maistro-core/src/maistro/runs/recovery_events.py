@@ -44,6 +44,24 @@ class RecoveryDispositionEvent:
             "error": self.error,
         }
 
+    def to_legacy_event(self) -> Any:
+        """Project onto the pre-#61 trigger bus without owning canonical identity.
+
+        The compatibility ``Event`` minted here is a delivery projection only.
+        Its short id and timestamp are not persisted canonical Event identity or
+        Workspace ordering; migrated paths use :class:`CanonicalRecoveryEventSink`
+        and :class:`CanonicalEventPublisher` before this projection is observed.
+        """
+        from maistro.events.bus import Event, EventCategory
+
+        return Event(
+            category=EventCategory.SYSTEM,
+            event_type=RECOVERY_EVENT_TYPE,
+            source=self.source,
+            correlation_id=self.run_id,
+            payload=self.payload(),
+        )
+
 
 @runtime_checkable
 class RecoveryEventSink(Protocol):
