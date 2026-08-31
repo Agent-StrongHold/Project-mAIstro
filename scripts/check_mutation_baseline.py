@@ -126,12 +126,108 @@ def _publish_ratchet_into_health_report(rows_path: Path, report: dict[str, Any])
         )
 
 
+def _inside_repository(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(ROOT.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _local_baseline(path: Path, *, prov: ModuleType) -> object:
+    text = path.read_text(encoding="utf-8") if path.is_file() else None
+    return prov.Baseline(text=text, origin="worktree", base_sha=None, path=path)
+
+
 def _trusted_json(path: Path, *, prov: ModuleType) -> tuple[dict[str, Any], object]:
-    baseline = prov.resolve_baseline(path, root=ROOT)
+    # --baseline has long supported temp/external files for local experimentation
+    # and tests. Such a file has no meaningful path in repository history, so it
+    # is explicitly local rather than being forced through a git resolver that
+    # can only address files beneath ROOT.
+    baseline = (
+        prov.resolve_baseline(path, root=ROOT)
+        if _inside_repository(path)
+        else _local_baseline(path, prov=prov)
+    )
     loaded = baseline.loads(default={"entries": {}})
     if not isinstance(loaded, dict):
         raise prov.RatchetProvenanceError(f"{path.name}: trusted content is not a JSON object")
     return loaded, baseline
+
+
+def _entries(payload: dict[str, Any]) -> dict[str, Any]:
+    entries = payload.get("entries", {})
+    return dict(entries) if isinstance(entries, dict) else {}
+
+
+def _entry_rate(entry: object) -> float | None:
+    if not isinstance(entry, dict) or "kill_rate" not in entry:
+        return None
+    try:
+        return float(entry["kill_rate"])
+    except (TypeError, ValueError):
+        return None
+
+
+def candidate_baseline_failures(
+    current: dict[str, tuple[int, int]],
+    trusted: dict[str, Any],
+    candidate: dict[str, Any],
+) -> list[str]:
+    """Reject candidate bookkeeping that weakens or invents reviewed floors."""
+    trusted_entries = _entries(trusted)
+    candidate_entries = _entries(candidate)
+    failures: list[str] = []
+
+    for source, trusted_entry in sorted(trusted_entries.items()):
+        if source not in candidate_entries:
+            failures.append(f"{source}: candidate baseline removed a trusted source floor")
+            continue
+        trusted_rate = _entry_rate(trusted_entry)
+        candidate_rate = _entry_rate(candidate_entries[source])
+        if trusted_rate is None or candidate_rate is None:
+            failures.append(f"{source}: mutation baseline entry has no numeric kill_rate")
+            continue
+        if candidate_rate < trusted_rate:
+            failures.append(
+                f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted "
+                f"{trusted_rate:.1%}"
+            )
+        measured = current.get(source)
+        if measured and measured[1]:
+            measured_rate = round(measured[0] / measured[1], 4)
+            if candidate_rate > measured_rate:
+                failures.append(
+                    f"{source}: candidate kill_rate {candidate_rate:.1%} exceeds measured "
+                    f"{measured_rate:.1%}"
+                )
+
+    for source, candidate_entry in sorted(candidate_entries.items()):
+        if source in trusted_entries:
+            continue
+        measured = current.get(source)
+        if not measured or not measured[1]:
+            failures.append(f"{source}: unreviewed candidate baseline entry has no measurement")
+            continue
+        candidate_rate = _entry_rate(candidate_entry)
+        measured_rate = round(measured[0] / measured[1], 4)
+        if candidate_rate is None:
+            failures.append(f"{source}: mutation baseline entry has no numeric kill_rate")
+        elif candidate_rate != measured_rate:
+            failures.append(
+                f"{source}: new candidate kill_rate {candidate_rate:.1%} must equal measured "
+                f"{measured_rate:.1%}"
+            )
+    return failures
+
+
+def _candidate_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"entries": {}}
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path.name}: candidate content is not a JSON object")
+    return loaded
 
 
 def _write_scheduler_candidate(
@@ -247,6 +343,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     failures = enforce(current, trusted_baseline)
+    if _inside_repository(args.baseline):
+        try:
+            failures.extend(
+                candidate_baseline_failures(current, trusted_baseline, _candidate_json(args.baseline))
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"::error::{exc}", file=sys.stderr)
+            return 2
+
     print(
         prov.Provenance(
             ratchet=RATCHET,
