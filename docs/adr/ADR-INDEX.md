@@ -60,7 +60,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-042 | v1 | Accepted | 2026-05-09 | 2026-06-10 | 2026-05-08 21:00 CDT | Canvas asset HTTP routes. |
 | ADR-043 | v1 | Accepted | 2026-05-09 | 2026-06-10 | 2026-05-08 21:07 CDT | Canvas asset executor + tool (agent integration). |
 | ADR-044 | v1 | Accepted | 2026-05-09 | 2026-06-10 | 2026-05-08 21:45 CDT | LayerRecord → AssetInstance migration plan. |
-| ADR-045 | v1 | Proposed | 2026-05-09 | — | 2026-05-08 21:45 CDT | Canvas Studio ↔ maistro-server /v2/canvas cutover. |
+| ADR-045 | v1 | Denied | 2026-05-09 | — | 2026-05-08 21:45 CDT | Canvas Studio ↔ maistro-server /v2/canvas cutover. |
 | ADR-046 | v2 | Superseded | 2026-05-13 | 2026-06-10 | 2026-05-13 02:56 CDT | Scheduler for recurring agent tasks (cron → TaskQueue). |
 | ADR-047 | v2 | Deprecated | 2026-05-13 | 2026-05-13† | 2026-05-13 02:56 CDT | Outbound delivery gateway — multi-channel notifier. |
 | ADR-048 | v2 | Accepted | 2026-05-13 | 2026-05-13† | 2026-05-13 02:56 CDT | Session search — read-only episodic-memory inspector endpoint. |
