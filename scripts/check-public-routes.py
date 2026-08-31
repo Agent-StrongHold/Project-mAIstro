@@ -15,6 +15,8 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -27,6 +29,7 @@ REGISTRY = ROOT / "quality" / "public-routes.json"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "public-routes"
 METRIC_DEFINITION_VERSION = "2"
+_GIT_TIMEOUT_SECONDS = 60
 
 DECLARATIONS: dict[str, str] = {
     "_PUBLIC_PREFIXES": "prefix",
@@ -54,6 +57,82 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
+
+
+def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"git {' '.join(args)} could not run: {exc}") from exc
+
+
+def _materialize_ci_history(prov: ModuleType) -> None:
+    """Make the event-selected trusted base readable from a shallow Actions checkout.
+
+    ``actions/checkout`` defaults to depth one. On pull requests that leaves the
+    synthetic merge itself marked shallow and omits ``origin/<base>`` entirely,
+    so even a correct trusted-base resolver cannot calculate the merge base.
+    Materialize only the current event ref and its declared integration target;
+    never substitute the candidate ledger when that fetch fails.
+    """
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+
+    event_base = prov._github_event_base()
+    if not event_base:
+        return
+
+    shallow = _run_git(["rev-parse", "--is-shallow-repository"])
+    if shallow.returncode != 0:
+        raise prov.RatchetProvenanceError(
+            f"could not determine checkout depth before resolving {event_base!r}: "
+            f"{shallow.stderr.strip()}"
+        )
+
+    if shallow.stdout.strip() == "true":
+        current_ref = os.environ.get("GITHUB_REF", "").strip()
+        if not current_ref:
+            raise prov.RatchetProvenanceError(
+                f"GitHub Actions checkout is shallow while resolving {event_base!r}, "
+                "but GITHUB_REF is unavailable to materialize the candidate ancestry"
+            )
+        fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
+        if fetched.returncode != 0:
+            raise prov.RatchetProvenanceError(
+                f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
+            )
+
+    if event_base.startswith("origin/"):
+        branch = event_base.removeprefix("origin/")
+        fetched = _run_git(
+            [
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ]
+        )
+        if fetched.returncode != 0:
+            raise prov.RatchetProvenanceError(
+                f"could not materialize trusted base {event_base!r}: {fetched.stderr.strip()}"
+            )
+        return
+
+    probe = _run_git(["rev-parse", "--verify", f"{event_base}^{{commit}}"])
+    if probe.returncode == 0:
+        return
+    fetched = _run_git(["fetch", "--no-tags", "origin", event_base])
+    if fetched.returncode != 0:
+        raise prov.RatchetProvenanceError(
+            f"could not materialize trusted base {event_base!r}: {fetched.stderr.strip()}"
+        )
 
 
 def declared_paths(source: str) -> dict[str, str]:
@@ -176,11 +255,12 @@ def main() -> int:
 
     prov = _provenance()
     try:
+        _materialize_ci_history(prov)
         trusted_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
         trusted = _registry(trusted_ref.loads(default={"routes": {}}))
         prov.require_measurement(declared, ratchet=RATCHET, what="public routes")
         authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
-    except prov.RatchetProvenanceError as exc:
+    except (RuntimeError, prov.RatchetProvenanceError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
