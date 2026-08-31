@@ -290,11 +290,15 @@ def assess(
         eligible=False,
         merge_group=merge_group,
     )
-    quality_surfaces = _quality_surfaces() if any(
-        candidate.startswith(QUALITY_PREFIX)
-        for item in changed
-        for candidate in ([item.path] if item.old_path is None else [item.path, item.old_path])
-    ) else None
+    quality_surfaces = (
+        _quality_surfaces()
+        if any(
+            candidate.startswith(QUALITY_PREFIX)
+            for item in changed
+            for candidate in ([item.path] if item.old_path is None else [item.path, item.old_path])
+        )
+        else None
+    )
     for item in changed:
         result.changed_files.append(item.path)
         candidates = [item.path]
