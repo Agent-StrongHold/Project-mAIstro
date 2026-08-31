@@ -3,8 +3,9 @@ id: ADR-045
 title: Canvas Studio ↔ maistro-server /v2/canvas Cutover
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Denied
 created: 2026-05-09
+denied: 2026-08-31
 substrate:
   - maistro-engine#ADR-039
   - maistro-engine#ADR-040
@@ -28,9 +29,24 @@ owners:
 history:
   - status: Proposed
     date: 2026-05-09
+  - status: Denied
+    date: 2026-08-31
 ---
 
 # ADR-045: Canvas Studio ↔ Engine Cutover
+
+## Current disposition
+
+This proposal is **Denied** as a product-boundary decision. It assumed a separate
+Canvas Studio application whose identity would be preserved while its API was
+migrated. The current product contract in #286 and #95 instead makes **Design
+Studio** the parent creative-production surface and **Canvas** one
+visual/fixed-page/rendering capability it consumes.
+
+The API-migration observations below remain historical engineering context and
+may inform #95 where they still match the live tree. They do not authorize a
+separate Studio identity, a parallel product state model, or a compatibility
+path that bypasses the canonical Design Studio product boundary.
 
 ## Context
 
