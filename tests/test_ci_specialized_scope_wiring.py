@@ -27,7 +27,9 @@ def _jobs() -> dict[str, object]:
 
 
 def _contract_gate():
-    spec = importlib.util.spec_from_file_location("_ci_scope_required_checks", CONTRACT_SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "_ci_scope_required_checks", CONTRACT_SCRIPT
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -39,7 +41,9 @@ def test_required_workflow_lint_job_emits_every_specialized_leg() -> None:
     scope = _jobs()["workflow-lint"]
     outputs = scope["outputs"]
     assert set(outputs) == set(SPECIALIZED.values())
-    assert all(value.startswith("${{ steps.scope.outputs.") for value in outputs.values())
+    assert all(
+        value.startswith("${{ steps.scope.outputs.") for value in outputs.values()
+    )
 
     checkout = scope["steps"][0]
     assert checkout["uses"] == "actions/checkout@v4"
@@ -56,7 +60,9 @@ def test_every_specialized_job_is_gated_only_for_the_develop_merge_queue() -> No
         assert job["needs"] == "workflow-lint", job_name
         condition = job["if"]
         assert "github.event_name != 'merge_group'" in condition, job_name
-        assert "github.event.merge_group.base_ref != 'refs/heads/develop'" in condition, job_name
+        assert (
+            "github.event.merge_group.base_ref != 'refs/heads/develop'" in condition
+        ), job_name
         assert f"needs.workflow-lint.outputs.{output} == 'true'" in condition, job_name
 
 
