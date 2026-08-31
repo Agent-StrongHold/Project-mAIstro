@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
+from maistro.observability.correlation import observed_provenance
 from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
@@ -73,7 +74,17 @@ class PgLearningStore:
             )
 
     async def store(self, learning: Learning) -> int:
-        """Store a learning. Dedup by tool_name + trigger_key overlap."""
+        """Store a learning, naming the execution that produced it.
+
+        Resolved before the dedup read, not after: the deduplicating branch
+        returns early, and a provenance read that only happens on the insert
+        path would be a second place for the rule to live (#709).
+        """
+        provenance = observed_provenance(
+            run_id=learning.run_id,
+            node_run_id=learning.node_run_id,
+            attempt_id=learning.attempt_id,
+        )
         async with self._pool.acquire() as conn:
             existing = await conn.fetch(
                 """SELECT id, trigger_keys FROM learnings
@@ -104,9 +115,10 @@ class PgLearningStore:
                    (category, trigger_keys, learning, tool_name, source_query,
                     agent_id, user_id, org_id, team_id, scope, hit_count, status,
                     rca_category, rca_prevention,
-                    success_after_use, failure_after_use)
+                    success_after_use, failure_after_use,
+                    run_id, node_run_id, attempt_id)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                           $13, $14, $15, $16)
+                           $13, $14, $15, $16, $17, $18, $19)
                    RETURNING id""",
                 learning.category,
                 _dump_keys(learning.trigger_keys),
@@ -124,6 +136,9 @@ class PgLearningStore:
                 learning.rca_prevention,
                 learning.success_after_use,
                 learning.failure_after_use,
+                # `as_columns` owns the "blank means absent" rule for every
+                # store that writes it (#709).
+                *provenance.as_columns(),
             )
             return int(row["id"]) if row else 0
 
@@ -283,6 +298,26 @@ class PgLearningStore:
                 learning_ids,
             )
 
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Return the learnings this Run produced, newest first.
+
+        An empty `run_id` returns nothing rather than every row whose producer
+        is NULL. "Which learnings did no execution produce" is a legitimate
+        question, but it is a different one, and answering it from the same
+        call means a caller with an unresolved id silently gets the wrong set.
+        """
+        if not run_id:
+            return []
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM learnings
+                   WHERE run_id = $1 AND org_id = $2
+                   ORDER BY id DESC""",
+                run_id,
+                org_id,
+            )
+        return [_row_to_learning(row) for row in rows]
+
     async def mark_outcome(
         self, learning_ids: list[int], success: bool, *, org_id: str = ""
     ) -> None:
@@ -406,4 +441,10 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         rca_prevention=row.get("rca_prevention", ""),
         success_after_use=row.get("success_after_use", 0),
         failure_after_use=row.get("failure_after_use", 0),
+        # `or ""` because the columns are nullable and the dataclass fields are
+        # not: a row with no producer comes back as a Learning naming none,
+        # which is the same fact in the shape the caller expects (#709).
+        run_id=row.get("run_id") or "",
+        node_run_id=row.get("node_run_id") or "",
+        attempt_id=row.get("attempt_id") or "",
     )

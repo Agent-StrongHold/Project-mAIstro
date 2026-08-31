@@ -222,6 +222,13 @@ class DesignOutput:
     trust_tier: TrustTier = TrustTier.T3
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Producer provenance (#709). An artifact shipped to a user with no record
+    # of what made it; `metadata` is a free-form dict and could hold anything,
+    # which is exactly why it is not where an identity belongs. Filled from the
+    # ambient execution context at write time when the caller does not name it.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
 
     @property
     def format(self) -> OutputFormat | None:

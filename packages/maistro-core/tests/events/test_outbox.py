@@ -7,6 +7,7 @@ import pytest
 
 from maistro.events.envelope import EventEnvelope, SqliteEventStore
 from maistro.events.outbox import SqliteEventOutbox
+from maistro.observability.correlation import bind_execution_context
 
 
 @pytest.fixture
@@ -129,3 +130,46 @@ async def test_stage_rejects_presequenced_event(
     )
     with pytest.raises(ValueError, match="store-assigned sequence"):
         await outbox.stage(event)
+
+
+class TestAStagedEventKeepsItsProducersCorrelation:
+    """The outbox splits producing an event from appending it. Correlating only
+    at append means correlating in the publisher's context, which is not the
+    producer's — and by then the producer's has usually ended (Codex, #707)."""
+
+    async def test_the_producers_ids_are_captured_at_staging(
+        self, connection: aiosqlite.Connection
+    ) -> None:
+        outbox, event_store = await _stores(connection)
+        with bind_execution_context(run_id="r-producer", attempt_id="a-producer"):
+            await outbox.stage(
+                EventEnvelope(type="staged", workspace_id="ws-1", event_id="e-staged")
+            )
+        await connection.commit()
+
+        # Published from somewhere else entirely, as a real publisher would be.
+        with bind_execution_context(run_id="r-publisher", attempt_id="a-publisher"):
+            assert await outbox.publish_pending(event_store) == 1
+
+        stored = await event_store.get("e-staged")
+        assert stored is not None
+        assert stored.run_id == "r-producer"
+        assert stored.attempt_id == "a-producer"
+
+    async def test_a_publishers_execution_does_not_leak_onto_an_uncorrelated_event(
+        self, connection: aiosqlite.Connection
+    ) -> None:
+        """Staged outside any execution, so there is nothing to capture. The
+        event must reach the store naming no Run rather than the publisher's."""
+        outbox, event_store = await _stores(connection)
+        await outbox.stage(EventEnvelope(type="orphan", workspace_id="ws-1", event_id="e-orphan"))
+        await connection.commit()
+
+        with bind_execution_context(run_id="r-publisher", attempt_id="a-publisher"):
+            assert await outbox.publish_pending(event_store) == 1
+
+        stored = await event_store.get("e-orphan")
+        assert stored is not None
+        assert stored.run_id == ""
+        assert stored.attempt_id == ""
+        assert stored.correlation_id == ""

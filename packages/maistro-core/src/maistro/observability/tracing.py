@@ -16,6 +16,8 @@ from typing import Any, ParamSpec, TypeVar
 
 import structlog
 
+from maistro.observability.correlation import current_execution_context
+
 logger = structlog.get_logger()
 
 P = ParamSpec("P")
@@ -50,6 +52,13 @@ def trace_agent(name: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
             from opentelemetry.trace import Status, StatusCode
 
             with tracer.start_as_current_span(name) as span:
+                # The span used to carry one attribute, `maistro.output_preview`,
+                # so a trace existed and could not be joined to the execution it
+                # traced. Only ids that are actually set are written -- an
+                # attribute present and empty is a claim that this span had no
+                # Run, which is different from not having recorded one (#707).
+                for id_name, id_value in current_execution_context().as_log_fields().items():
+                    span.set_attribute(f"maistro.{id_name}", id_value)
                 try:
                     result = await fn(*args, **kwargs)  # type: ignore[misc]
                     span.set_attribute("maistro.output_preview", str(result)[:500])

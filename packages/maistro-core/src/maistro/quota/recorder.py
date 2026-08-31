@@ -33,19 +33,7 @@ from maistro.quota.reconciliation import (
     reconcile_ambient,
 )
 from maistro.quota.usage_log import InMemoryUsageLog
-
-
-def extract_usage(response_json: dict[str, Any]) -> tuple[int, int]:
-    """Pull (input_tokens, output_tokens) out of an OpenAI-compatible response
-    body. Missing/malformed `usage` reads as (0, 0), not an error — a
-    misbehaving upstream shouldn't take down the call that already succeeded."""
-    usage = response_json.get("usage")
-    if not isinstance(usage, dict):
-        return 0, 0
-    try:
-        return int(usage.get("prompt_tokens", 0) or 0), int(usage.get("completion_tokens", 0) or 0)
-    except (TypeError, ValueError):
-        return 0, 0
+from maistro.quota.usage_report import extract_usage
 
 
 def record_llm_usage(

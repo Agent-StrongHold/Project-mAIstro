@@ -79,6 +79,34 @@ A migration may leave the old aggregate as `retired_compat` for a compatibility
 window. No checker may use that retired file as authority. Delete it after live
 branches no longer predate the migration.
 
+## AC-state: merge-time monotonicity, not review-time rebanking
+
+AC-state has two different jobs and they must not share one synchronization
+mechanism.
+
+During pull-request review, the base-resolved fold still rejects regressions and
+the touched-criterion mandate still requires new claims to be proven. An
+improvement above that bound is informational: the author does not have to write
+or refresh a branch note merely to make the measured value equal a number stored
+in the branch.
+
+At the merge serialization point, `scripts/check-ac-state.py` measures the actual
+immutable base revision in a detached worktree and compares the exact merge
+candidate against it. Any regression still fails. Any improvement becomes part
+of the next base simply because the improved tree merged; the next candidate is
+measured against that newer base and cannot spend the gain.
+
+This ownership is deliberate. Live AC test execution can change the measured
+`design_coverage` value between runs even when the source commit is identical.
+Making review-time exact equality authoritative turns that measurement noise, or
+an unrelated improvement that landed on `develop`, into a mandatory bookkeeping
+commit on every open PR. The actual-base merge guard preserves monotonicity
+without imposing that branch-wide re-bank tax.
+
+Per-branch AC-state notes remain readable historical evidence and remain part of
+the trusted regression fold during the transition. They are not a synchronization
+requirement for recording every improvement observed during review.
+
 ## What this tranche does not do
 
 This contract intentionally does not convert the eighteen existing legacy

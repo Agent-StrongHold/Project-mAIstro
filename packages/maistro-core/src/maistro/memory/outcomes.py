@@ -9,7 +9,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.memory.types import Outcome
+from maistro.observability.correlation import observed_provenance
 
 MAX_OUTCOMES = 10_000
 
@@ -37,6 +39,20 @@ def _format_thumb_lines(thumb_downs: list[Outcome]) -> list[str]:
     return lines
 
 
+def _dag_matches(record_dag: str, caller_dag: str) -> bool:
+    """Whether a thumb belongs to the DAG being asked about.
+
+    Empty on either side matches: a caller naming no DAG wants all of them,
+    and a thumb carrying no `dag_id` predates the attribution wire, so
+    excluding it would silently discard feedback a user actually gave. That
+    second half is the rule the optimizer already applied inline, kept here
+    where all three stores can share one definition of it (#696).
+    """
+    if not caller_dag or not record_dag:
+        return True
+    return record_dag == caller_dag
+
+
 class InMemoryOutcomeStore:
     def __init__(self, max_outcomes: int = MAX_OUTCOMES) -> None:
         self._outcomes: list[Outcome] = []
@@ -44,6 +60,26 @@ class InMemoryOutcomeStore:
         self._max = max_outcomes
 
     async def record(self, outcome: Outcome) -> int:
+        """Record an outcome, naming the execution that produced it.
+
+        The ambient provenance is resolved here too, for the reason
+        `InMemoryLearningStore.store` gives: this is the backend `memory://`
+        selects, so a store that skipped it would let every behavioural test
+        pass while only the durable ones did the work — and the two SQL twins
+        already fill it (Codex, #709).
+
+        Assigned onto the caller's object because this store keeps that
+        instance and hands it back; a provenance held anywhere else would not
+        survive the read.
+        """
+        provenance = observed_provenance(
+            run_id=outcome.run_id,
+            node_run_id=outcome.node_run_id,
+            attempt_id=outcome.attempt_id,
+        )
+        outcome.run_id = provenance.run_id
+        outcome.node_run_id = provenance.node_run_id
+        outcome.attempt_id = provenance.attempt_id
         if len(self._outcomes) >= self._max:
             self._outcomes.pop(0)
         outcome.id = self._next_id
@@ -245,6 +281,33 @@ class InMemoryOutcomeStore:
             and self._org_matches(o.org_id, org_id)
         ]
         return filtered[-limit:]
+
+    async def list_thumbs(
+        self,
+        *,
+        dag_id: str = "",
+        days: int = THUMB_WINDOW_DAYS,
+        limit: int = THUMB_LIMIT,
+        org_id: str = "",
+    ) -> list[Outcome]:
+        """Outcomes carrying a thumb, most recent first."""
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        matched = [
+            o
+            for o in self._outcomes
+            if o.thumb
+            and o.created_at >= cutoff
+            and _dag_matches(o.dag_id, dag_id)
+            and self._org_matches(o.org_id, org_id)
+        ]
+        # Sorted, not reversed. Insertion order equals timestamp order only
+        # while every write is "now"; a backfill, an import or a delayed event
+        # breaks that, and then a small `limit` would drop a newer thumb and
+        # keep an older one -- while the two SQL twins, which order by
+        # `created_at DESC`, answered correctly. Three implementations of one
+        # protocol have to agree about which thumbs are the recent ones (#696).
+        matched.sort(key=lambda o: o.created_at, reverse=True)
+        return matched[:limit]
 
     @staticmethod
     def _org_matches(record_org: str, caller_org: str) -> bool:

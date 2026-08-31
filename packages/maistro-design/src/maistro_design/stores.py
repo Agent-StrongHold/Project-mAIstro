@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from maistro.observability.correlation import observed_provenance
 from maistro_design.trust import TrustTier
 from maistro_design.types import (
     ArtifactKind,
@@ -76,6 +77,9 @@ def _coerce_design_output(row: Any) -> DesignOutput:
         url=d.get("url"),
         trust_tier=TrustTier(d.get("trust_tier", "t3")),
         metadata=metadata,
+        run_id=d.get("run_id") or "",
+        node_run_id=d.get("node_run_id") or "",
+        attempt_id=d.get("attempt_id") or "",
     )
 
 
@@ -145,11 +149,21 @@ class PgDesignProjectStore:
 
             for output in project.outputs:
                 metadata_json = json.dumps(output.metadata) if output.metadata else None
+                # Per output, not per project: outputs of one project can be
+                # produced by different Attempts -- a refinement pass is a
+                # second Attempt over the same project (#709).
+                provenance = observed_provenance(
+                    run_id=output.run_id,
+                    node_run_id=output.node_run_id,
+                    attempt_id=output.attempt_id,
+                )
                 await session.execute(
                     text("""
                         INSERT INTO design_outputs
-                        (project_id, format, content, url, trust_tier, metadata_json, created_at)
-                        VALUES (:project_id, :format, :content, :url, :trust_tier, :metadata_json::jsonb, :created_at)
+                        (project_id, format, content, url, trust_tier, metadata_json, created_at,
+                         run_id, node_run_id, attempt_id)
+                        VALUES (:project_id, :format, :content, :url, :trust_tier, :metadata_json::jsonb, :created_at,
+                                :run_id, :node_run_id, :attempt_id)
                     """),
                     {
                         "project_id": project_id,
@@ -159,6 +173,12 @@ class PgDesignProjectStore:
                         "trust_tier": output.trust_tier.value,
                         "metadata_json": metadata_json,
                         "created_at": now,
+                        # NULL rather than "": an artifact produced outside any
+                        # execution names no producer, which is different from
+                        # naming one whose id is empty (#709).
+                        "run_id": provenance.run_id or None,
+                        "node_run_id": provenance.node_run_id or None,
+                        "attempt_id": provenance.attempt_id or None,
                     },
                 )
 

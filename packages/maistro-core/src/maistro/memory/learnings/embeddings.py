@@ -179,6 +179,10 @@ class HybridLearningStore:
     async def mark_used(self, learning_ids: list[int]) -> None:
         await self._store.mark_used(learning_ids)
 
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[Learning]:
+        """Delegate: provenance is the wrapped store's to answer (#709)."""
+        return await self._store.produced_by(run_id, org_id=org_id)
+
     async def check_auto_promotions(self, threshold: int = 5) -> list[Learning]:
         return await self._store.check_auto_promotions(threshold)
 
