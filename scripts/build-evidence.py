@@ -174,7 +174,14 @@ def _validated_inputs(raw: object) -> list[dict[str, str]]:
 
 
 def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
-    expected_fields = {"schema", "command", "runtime", "tools", "inputs", "evidence_key"}
+    expected_fields = {
+        "schema",
+        "command",
+        "runtime",
+        "tools",
+        "inputs",
+        "evidence_key",
+    }
     if set(manifest) != expected_fields:
         raise EvidenceError("identity manifest fields do not match schema")
     if manifest.get("schema") != SCHEMA_VERSION:
@@ -232,11 +239,15 @@ def complete_manifest(
     }
 
 
-def _validated_result_observation(completed: Mapping[str, Any]) -> tuple[int, float, str]:
+def _validated_result_observation(
+    completed: Mapping[str, Any],
+) -> tuple[int, float, str]:
     exit_code = completed.get("exit_code")
     if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code < 0:
         raise EvidenceError("completed exit_code is malformed")
-    duration = _validated_duration(completed.get("duration_seconds"), label="completed duration_seconds")
+    duration = _validated_duration(
+        completed.get("duration_seconds"), label="completed duration_seconds"
+    )
     result = completed.get("result")
     expected_result = "success" if exit_code == 0 else "failure"
     if result != expected_result:
