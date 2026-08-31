@@ -36,20 +36,65 @@ scheduling, persistence, migrations, security/auth/vault/warden boundaries, and
 dependency manifests/lockfiles. Adding test/type/security suppressions or
 removing tests is also yellow.
 
+A tracked `quality/**` file may also be yellow when the protected-base
+`quality/branch-independence.json` registry classifies it as `base_derived` or
+`generated`. That classification means the candidate copy is evidence about the
+candidate, not the oracle used to judge it. The owning checker must first have
+moved its comparison authority to trusted-base provenance before the registry is
+changed to either of those kinds.
+
 The initial policy deliberately does **not** autonomously merge yellow changes.
 They require a human until dedicated invariant, fault-injection, and behavioral
-differential gates exist for those classes.
+differential gates exist for those classes. Reclassifying a generated quality
+file from RED to YELLOW removes the false claim that the author edited the judge;
+it does not silently expand autonomous merge authority to that class.
 
 ### Red
 
 A change to the judge or immutable evaluation surface. This includes workflows,
 local actions, branch-protection policy, the autonomous merge checker itself,
-required-check/gates-ran safety scripts, quality baselines, CODEOWNERS, and the
-Hive cage/eval trees.
+required-check/gates-ran safety scripts, CODEOWNERS, the Hive cage/eval trees,
+and quality state that is policy, durable authorization, legacy shared state,
+unknown, or ambiguously classified.
 
 Agent-authored red changes fail the gate. Human-authored red changes are allowed
 to proceed through the ordinary manual review/merge path. A red change also
 fails in merge-group mode.
+
+## Typed quality state
+
+`quality/**` is deny-by-default. The autonomous-merge checker does not carry a
+second list of exempt ledgers. It reads the protected-base
+`quality/branch-independence.json` registry and applies these rules:
+
+| Registry kind | Autonomous-merge risk | Why |
+| --- | --- | --- |
+| `base_derived`, `generated` | YELLOW | Candidate content is measurement/evidence after the owning gate is trusted-base resolved. |
+| `specification`, `per_identity_policy`, `folded_notes` | RED | The file is reviewed policy, durable decision state, or a trusted bound input rather than disposable observation. |
+| `legacy_shared_aggregate`, `retired_compat` | RED | The migration is incomplete or compatibility semantics still need explicit review. |
+| missing, malformed, unknown, or multiply matched | RED | An unavailable classification cannot safely grant less scrutiny. |
+
+The registry itself is a `specification`, so changing the classification table
+is RED. Because the judge and registry are both loaded from the protected base,
+a candidate cannot make its own quality edit safer by editing its own registry
+copy in the same PR.
+
+`quality/wiring-reads-baseline.json` is the first migrated example. Its checker
+measures the candidate but resolves the comparison ledger and any authorization
+from the trusted base, so banking on the candidate cannot approve newly unread
+wiring. Other legacy quality files remain RED until their own provenance and
+representation migrations are independently proven.
+
+AC-state is a separate transition. Since #723, ordinary PR review no longer has
+to bank every observed AC-state improvement; merge-time actual-base comparison
+owns monotonicity. The old contradiction where adding an AC-marked test forced a
+shared generated AC-state commit is therefore no longer a reason to weaken the
+quality trust boundary.
+
+Stale-branch diffs are also separate. Repository-owned queue admission compares
+the current fetched `develop` tree with the prospective merge tree, so target-side
+changes that landed after a branch was cut are not charged to that candidate.
+The quality classifier does not duplicate that merge-diff authority.
 
 ## How a PR is recognized as autonomous
 
