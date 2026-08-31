@@ -7,6 +7,7 @@ import logging
 import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from middleware.auth import origin_allowed, principal_has_permission, resolve_principal
+from services.dag_execution_scope import DagWorkspaceSelectionError, authorize_hive_dag_workspace
 
 router = APIRouter(tags=["websocket"])
 
@@ -80,9 +81,26 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
     `_PROTECTED_OPS`: this endpoint *executes* the graph, and its nodes include
     harness and synth-DAG kinds. Leaving it ungated made the socket a bypass of
     the elevation the equivalent HTTP route requires.
+
+    #766 begins the product-to-canonical scope convergence at the request
+    boundary. An explicit ``workspace_id`` is treated as a selection only and
+    is authorized before ``accept()``. Omission temporarily preserves the
+    legacy client while DagBuilder is moved onto this contract; it must become
+    required before #766 can close. Canonical Project resolution is deliberately
+    not invented here while #37 still owns the duplicate Hive Workspace store.
     """
-    if await _authenticate(websocket, permission="dags.write") is None:
+    user = await _authenticate(websocket, permission="dags.write")
+    if user is None:
         return
+
+    workspace_id = (websocket.query_params.get("workspace_id") or "").strip()
+    if workspace_id:
+        try:
+            authorize_hive_dag_workspace(workspace_id=workspace_id, user_id=str(user["id"]))
+        except DagWorkspaceSelectionError:
+            await websocket.close(code=_POLICY_VIOLATION, reason="Workspace not found")
+            return
+
     await websocket.accept()
     if dag_id not in stores.dags:
         await websocket.send_json({"error": "dag not found"})
