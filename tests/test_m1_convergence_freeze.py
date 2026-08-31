@@ -276,9 +276,7 @@ def test_live_candidate_does_not_add_unapproved_architecture() -> None:
 
     pull_request = event.get("pull_request", {})
     labels = {
-        item.get("name", "")
-        for item in pull_request.get("labels", [])
-        if isinstance(item, dict)
+        item.get("name", "") for item in pull_request.get("labels", []) if isinstance(item, dict)
     }
     base = _fetched_base(base_revision)
     command = [sys.executable, str(CHECKER), "--base", base]
