@@ -21,8 +21,7 @@
     "quality/reachability-baseline.json",
     "quality/reachability-dispositions.json",
     "quality/shell-execution.json",
-    "quality/vulture-baseline.json",
-    "quality/wiring-reads-baseline.json"
+    "quality/vulture-baseline.json"
   ],
   "surfaces": [
     {
@@ -244,12 +243,11 @@
     },
     {
       "id": "wiring-reads-baseline",
-      "kind": "legacy_shared_aggregate",
+      "kind": "base_derived",
       "paths": [
         "quality/wiring-reads-baseline.json"
       ],
-      "target_kind": "base_derived",
-      "reason": "One tracked aggregate records repository-wide wiring-read debt."
+      "reason": "The wiring-reads gate measures the candidate but resolves its comparison ledger and authorizations from the trusted base, so editing the candidate copy cannot authorize new unread wiring."
     }
   ]
 }
