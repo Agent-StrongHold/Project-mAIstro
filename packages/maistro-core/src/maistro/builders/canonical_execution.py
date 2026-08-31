@@ -15,7 +15,6 @@ canonical stores, traversal, or recovery internals.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -56,26 +55,18 @@ class _StageOutput(BaseModel):
 
 
 class _StartOutput(BaseModel):
-    route: Literal["proceed"] = "proceed"
+    ready: bool = True
 
 
 class _StartNode(BaseNode[_StageInput, _StartOutput]):
     kind: ClassVar[str] = _START_KIND
     input_schema: ClassVar[type[BaseModel]] = _StageInput
     output_schema: ClassVar[type[BaseModel]] = _StartOutput
-    display_name: ClassVar[str] = "Start Builders pipeline frontier"
-    description: ClassVar[str] = "Canonical control node for multiple independent root stages."
-    idempotent: ClassVar[bool] = True
-    external_io: ClassVar[bool] = False
+    display_name: ClassVar[str] = "Start Builders ready frontier"
+    description: ClassVar[str] = "Fan out to independent Builders root stages."
 
     async def _execute(self, inputs: _StageInput, ctx: NodeContext) -> _StartOutput:
         return _StartOutput()
-
-
-@dataclass(frozen=True)
-class _DispatchResult:
-    output: str
-    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,14 +75,43 @@ class _GateDecision:
     halt_error: str | None = None
 
 
-def _stage_node_id(name: str) -> str:
-    return f"{_STAGE_PREFIX}{name}"
+def _stage_node_id(stage_name: str) -> str:
+    return f"{_STAGE_PREFIX}{stage_name}"
 
 
 def _stage_name(node_id: str) -> str | None:
     if not node_id.startswith(_STAGE_PREFIX):
         return None
-    return node_id.removeprefix(_STAGE_PREFIX)
+    return node_id[len(_STAGE_PREFIX) :]
+
+
+def _mark_skipped(run: Any, stage_name: str) -> None:
+    if stage_name not in run.skipped_stages:
+        run.skipped_stages.append(stage_name)
+
+
+def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateDecision:
+    """Apply Builders gate domain semantics without owning canonical lifecycle."""
+    used = int(run.revisions.get(node.name, 0))
+    if used >= node.max_revisions:
+        if node.gate_exhausted == "continue":
+            if node.name not in run.gate_exhausted:
+                run.gate_exhausted.append(node.name)
+            return _GateDecision(route="proceed")
+        error = f"Gate failed after {used} revisions"
+        run.failed_stage_error = error
+        return _GateDecision(route="proceed", halt_error=error)
+
+    run.revisions[node.name] = used + 1
+    target = node.revise_target or ""
+    stale = {target} | set(graph.descendants(target))
+    run.skipped_stages[:] = [name for name in run.skipped_stages if name not in stale]
+
+    feedback = run.context.get(node.name, "")
+    for name in stale:
+        run.context.pop(name, None)
+    run.context[f"{node.name}_feedback"] = feedback
+    return _GateDecision(route="revise")
 
 
 def _skip_output(
@@ -99,21 +119,19 @@ def _skip_output(
     run: Any,
     dispatcher: PipelineDispatcher,
 ) -> _StageOutput | None:
-    should_skip = bool(node.skip_if and node.skip_if(run.context))
-    unsupported = bool(node.domain and not dispatcher.supports(node.domain))
-    if not should_skip and not unsupported:
+    should_skip = node.skip_if is not None and node.skip_if(run.context)
+    if not should_skip and dispatcher.supports(node.agent_name, node.name):
         return None
-    if node.name not in run.skipped_stages:
-        run.skipped_stages.append(node.name)
+    _mark_skipped(run, node.name)
     return _StageOutput(stage_name=node.name, skipped=True)
 
 
 def _reserve_iteration(run: Any, budget: IterationBudget) -> None:
-    if run.total_executions >= budget.max_iterations:
-        raise RuntimeError(
-            f"iteration budget exhausted ({run.total_executions}/{budget.max_iterations})"
-        )
-    run.total_executions += 1
+    if budget.consume():
+        return
+    error = "iteration budget exhausted"
+    run.failed_stage_error = error
+    raise RuntimeError(error)
 
 
 async def _dispatch_stage(
@@ -121,62 +139,45 @@ async def _dispatch_stage(
     run: Any,
     dispatcher: PipelineDispatcher,
     ctx: NodeContext,
-) -> _DispatchResult:
-    prompt = _build_prompt(node, run.context)
+) -> Any:
+    prompt = _build_prompt(node.prompt_template, run.context)
     try:
-        output = await asyncio.wait_for(
-            dispatcher.dispatch(
-                domain=node.domain,
+        async with asyncio.timeout(node.timeout_seconds):
+            result = await dispatcher.run(
+                run_id=ctx.run_id,
+                node_name=node.name,
+                agent_name=node.agent_name,
                 prompt=prompt,
                 context=run.context,
-                timeout_seconds=node.timeout_seconds,
-                execution_context=ctx.execution_context,
-            ),
-            timeout=node.timeout_seconds,
-        )
+            )
     except TimeoutError as exc:
-        raise RuntimeError(f"stage {node.name!r} timed out") from exc
-    except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
-    return _DispatchResult(output=output)
+        error = f"Stage timed out after {node.timeout_seconds:.0f}s"
+        run.failed_stage_error = error
+        raise RuntimeError(error) from exc
+
+    if not result.ok:
+        run.failed_stage_error = result.error
+        raise RuntimeError(result.error or f"{node.name} failed")
+    return result
 
 
-async def _commit_stage_result(node: PipelineNode, run: Any, result: _DispatchResult) -> None:
+async def _commit_stage_result(node: PipelineNode, run: Any, result: Any) -> None:
     run.context[node.name] = result.output
     if node.on_complete is not None:
         await node.on_complete(run, result.output)
-
-
-def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateDecision:
-    if node.gate is None:
-        return _GateDecision(route="proceed")
-    if node.gate(run.context):
-        return _GateDecision(route="proceed")
-
-    if node.revise_target is None:
-        return _GateDecision(route="proceed", halt_error=f"gate {node.name!r} rejected output")
-
-    revisions = run.revisions.get(node.name, 0)
-    if revisions >= node.max_revisions:
-        return _GateDecision(
-            route="proceed",
-            halt_error=f"gate {node.name!r} exhausted revision budget",
-        )
-
-    run.revisions[node.name] = revisions + 1
-    run.context[f"{node.name}_feedback"] = run.context.get(node.name, "")
-    for descendant in graph.descendants(node.revise_target):
-        if descendant != node.name:
-            run.context.pop(descendant, None)
-    return _GateDecision(route="revise")
+    if str(run.status).startswith("failed at "):
+        raise RuntimeError(run.failed_stage_error or f"{node.name} failed")
 
 
 def _route_stage_result(
     graph: PipelineGraph,
     node: PipelineNode,
     run: Any,
-    result: _DispatchResult,
+    result: Any,
 ) -> _StageOutput:
+    if node.gate is None or node.gate(run.context):
+        return _StageOutput(stage_name=node.name, text=result.output)
+
     decision = _gate_decision(graph, node, run)
     if decision.halt_error is not None:
         raise RuntimeError(decision.halt_error)
@@ -339,7 +340,7 @@ def _resolver(
     run: Any,
     dispatcher: PipelineDispatcher,
     budget: IterationBudget,
-) -> Callable[[str, Graph], BaseNode[Any, Any]]:
+):
     stages = {node.name: node for node in graph}
     start = _StartNode()
     stage_nodes = {
