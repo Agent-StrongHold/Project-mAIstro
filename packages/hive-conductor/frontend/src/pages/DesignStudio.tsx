@@ -1,128 +1,332 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "../components/shared";
+import { apiGet } from "../lib/api";
 
-type NodeResult = { id: string; status: "pending" | "running" | "done" | "error"; output?: string };
+type ArtifactModeId =
+  | "deck"
+  | "poster"
+  | "infographic"
+  | "flyer"
+  | "social"
+  | "card"
+  | "cover"
+  | "diagram"
+  | "custom";
 
-const PIPELINE_NODES = [
-  { id: "style_interpreter", label: "Style Interpreter", icon: "🎨" },
-  { id: "composition_planner", label: "Composition", icon: "📐" },
-  { id: "generator", label: "Generator", icon: "🖼️" },
-  { id: "compositor", label: "Compositor", icon: "🧩" },
-  { id: "critic", label: "Critic", icon: "🔍" },
-  { id: "refiner", label: "Refiner", icon: "✨" },
+type ArtifactMode = {
+  id: ArtifactModeId;
+  name: string;
+  description: string;
+  note?: string;
+};
+
+type DesignSkill = {
+  slug: string;
+  name: string;
+  mode: string;
+  description: string;
+  render_slot: string | null;
+};
+
+type DesignSystemsResponse = {
+  systems: Array<{ slug: string; name: string }>;
+  catalog: {
+    available: boolean;
+    cause: string | null;
+    count: number;
+  };
+  ready: boolean;
+  cause: string | null;
+};
+
+type CatalogState = {
+  status: "loading" | "ready" | "degraded" | "unavailable";
+  skills: DesignSkill[];
+  systemCount: number;
+  message: string;
+};
+
+const ARTIFACT_MODES: ArtifactMode[] = [
+  {
+    id: "deck",
+    name: "Presentation / Deck",
+    description: "Multi-page presentations with slide navigation, presentation mode, and deck export.",
+    note: "Deck editing is temporarily unavailable while secure rendering is enabled.",
+  },
+  {
+    id: "poster",
+    name: "Poster",
+    description: "Single fixed-page visual for print, signage, or display.",
+  },
+  {
+    id: "infographic",
+    name: "Infographic",
+    description: "Structured visual explanation combining data, text, and graphics.",
+  },
+  {
+    id: "flyer",
+    name: "Flyer",
+    description: "Compact promotional or informational one-page layout.",
+  },
+  {
+    id: "social",
+    name: "Social graphic",
+    description: "Fixed-size visual content for social channels and campaigns.",
+  },
+  {
+    id: "card",
+    name: "Card",
+    description: "Small-format announcement, invitation, or branded card.",
+  },
+  {
+    id: "cover",
+    name: "Cover",
+    description: "Cover art and title-page compositions for documents or media.",
+  },
+  {
+    id: "diagram",
+    name: "Diagram / visual",
+    description: "Explanatory diagrams, process visuals, and composed illustrations.",
+  },
+  {
+    id: "custom",
+    name: "Custom canvas",
+    description: "A custom fixed-size composition using the shared Design Studio workspace.",
+  },
 ];
 
+function failureMessage(result: PromiseSettledResult<unknown>): string | null {
+  if (result.status !== "rejected") return null;
+  return result.reason instanceof Error ? result.reason.message : String(result.reason);
+}
+
+function resourceSummary(skillCount: number, systemCount: number): string {
+  return `${skillCount} design skill${skillCount === 1 ? "" : "s"} and ${systemCount} design system${systemCount === 1 ? "" : "s"} available.`;
+}
+
 export default function DesignStudio() {
+  const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
   const [prompt, setPrompt] = useState("");
-  const [running, setRunning] = useState(false);
-  const [nodes, setNodes] = useState<NodeResult[]>(PIPELINE_NODES.map(n => ({ id: n.id, status: "pending" })));
-  const [score, setScore] = useState<number | null>(null);
-  const [error, setError] = useState("");
+  const [catalog, setCatalog] = useState<CatalogState>({
+    status: "loading",
+    skills: [],
+    systemCount: 0,
+    message: "Checking design resources…",
+  });
 
-  async function runPipeline() {
-    if (!prompt.trim()) return;
-    setRunning(true);
-    setError("");
-    setScore(null);
-    setNodes(PIPELINE_NODES.map(n => ({ id: n.id, status: "pending" })));
+  useEffect(() => {
+    let cancelled = false;
 
-    try {
-      // Simulate pipeline progression (real version calls /v1/canvas/run)
-      for (let i = 0; i < PIPELINE_NODES.length; i++) {
-        setNodes(prev => prev.map((n, idx) => idx === i ? { ...n, status: "running" } : n));
-        await new Promise(r => setTimeout(r, 800));
-        setNodes(prev => prev.map((n, idx) => idx === i ? { ...n, status: "done", output: `Generated output for ${PIPELINE_NODES[i].label}` } : n));
+    async function loadCatalog() {
+      const [skillsResult, systemsResult] = await Promise.allSettled([
+        apiGet<DesignSkill[]>("/v1/design/skills"),
+        apiGet<DesignSystemsResponse>("/v1/design/systems"),
+      ]);
+      if (cancelled) return;
+
+      const skills = skillsResult.status === "fulfilled" ? skillsResult.value : [];
+      const systems = systemsResult.status === "fulfilled" ? systemsResult.value.systems : [];
+      const failures = [failureMessage(skillsResult), failureMessage(systemsResult)].filter(
+        (message): message is string => message !== null,
+      );
+
+      if (failures.length > 0) {
+        setCatalog({
+          status: "unavailable",
+          skills,
+          systemCount: systems.length,
+          message: `Some design resources are unavailable: ${failures.join("; ")}`,
+        });
+        return;
       }
 
-      // Run eval
-      const evalRes = await fetch("/v1/canvas/eval", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ description: prompt }),
+      const optionalCatalog = systemsResult.status === "fulfilled" ? systemsResult.value.catalog : null;
+      if (optionalCatalog && !optionalCatalog.available) {
+        const cause = optionalCatalog.cause ?? "Additional design-system catalog is unavailable.";
+        setCatalog({
+          status: "degraded",
+          skills,
+          systemCount: systems.length,
+          message: `${resourceSummary(skills.length, systems.length)} Additional design systems are unavailable: ${cause}`,
+        });
+        return;
+      }
+
+      setCatalog({
+        status: "ready",
+        skills,
+        systemCount: systems.length,
+        message: resourceSummary(skills.length, systems.length),
       });
-      if (evalRes.ok) {
-        const data = await evalRes.json();
-        setScore(data.score ?? null);
-      }
-    } catch (e: any) {
-      setError(e.message || "Pipeline failed");
-      setNodes(prev => prev.map(n => n.status === "running" ? { ...n, status: "error" } : n));
-    } finally {
-      setRunning(false);
     }
-  }
+
+    void loadCatalog();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const mode = ARTIFACT_MODES.find((candidate) => candidate.id === selectedMode) ?? ARTIFACT_MODES[0];
+  const catalogBorder = catalog.status === "ready" ? "var(--ok, #5a9a4a)" : catalog.status === "loading" ? "var(--rule)" : "var(--danger, #c4452a)";
 
   return (
     <div>
-      <PageHeader title="Design Studio" subtitle="Canvas/Davinci visual pipeline — style → compose → generate → critique → refine" />
+      <PageHeader
+        title="Design Studio"
+        subtitle="Create presentations, posters, infographics, and other visual artifacts"
+      />
 
-      {/* Input */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <label htmlFor="canvas-prompt" style={{ fontFamily: "var(--hand)", fontSize: 14, display: "block", marginBottom: 8 }}>
-          Describe what you want to create:
-        </label>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            id="canvas-prompt"
-            type="text"
-            value={prompt}
-            onChange={e => setPrompt(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && runPipeline()}
-            placeholder="A whimsical forest scene with bioluminescent mushrooms..."
-            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 14 }}
-            disabled={running}
-            aria-label="Visual prompt"
-          />
-          <button
-            onClick={runPipeline}
-            disabled={running || !prompt.trim()}
-            className="btn-primary"
-            style={{ padding: "10px 20px", borderRadius: 8, fontFamily: "var(--hand)", fontSize: 14, cursor: running ? "wait" : "pointer" }}
-          >
-            {running ? "Running..." : "Generate"}
-          </button>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
+          What are you making?
         </div>
-      </div>
-
-      {/* Pipeline visualization */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ fontFamily: "var(--hand)", fontSize: 14, marginBottom: 12, fontWeight: 600 }}>Pipeline</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }} role="list" aria-label="Pipeline stages">
-          {PIPELINE_NODES.map((pn, i) => {
-            const node = nodes.find(n => n.id === pn.id);
-            const statusColor = node?.status === "done" ? "#4caf50" : node?.status === "running" ? "#ff9800" : node?.status === "error" ? "#f44336" : "#ccc";
+        <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginBottom: 12 }}>
+          Every format shares one project, brand, asset, and editing workspace. Presentations add deck-specific page and presentation tools.
+        </div>
+        <div
+          role="group"
+          aria-label="Design artifact types"
+          style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}
+        >
+          {ARTIFACT_MODES.map((artifact) => {
+            const selected = artifact.id === selectedMode;
             return (
-              <div key={pn.id} role="listitem" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <div style={{ padding: "8px 12px", borderRadius: 8, border: `2px solid ${statusColor}`, background: node?.status === "done" ? "#e8f5e9" : node?.status === "running" ? "#fff3e0" : "var(--paper)", textAlign: "center", minWidth: 80 }}>
-                  <div style={{ fontSize: 20 }}>{pn.icon}</div>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, marginTop: 4 }}>{pn.label}</div>
-                  {node?.status === "running" && <div style={{ fontSize: 10, color: "#ff9800" }} aria-live="polite">⏳</div>}
-                  {node?.status === "done" && <div style={{ fontSize: 10, color: "#4caf50" }}>✓</div>}
+              <button
+                key={artifact.id}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setSelectedMode(artifact.id)}
+                className="card"
+                style={{
+                  cursor: "pointer",
+                  textAlign: "left",
+                  border: selected ? "2px solid var(--accent)" : "1.3px solid var(--rule)",
+                  background: selected ? "var(--paper)" : undefined,
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600 }}>{artifact.name}</div>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>
+                  {artifact.description}
                 </div>
-                {i < PIPELINE_NODES.length - 1 && <span style={{ color: "var(--pencil)", fontSize: 18 }}>→</span>}
-              </div>
+              </button>
             );
           })}
         </div>
       </div>
 
-      {/* Score */}
-      {score !== null && (
-        <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--hand)", fontSize: 14, marginBottom: 8 }}>Visual Quality Score</div>
-          <div style={{ fontSize: 48, fontWeight: 700, color: score >= 75 ? "#4caf50" : score >= 50 ? "#ff9800" : "#f44336" }}>{score}</div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)" }}>/100</div>
+      <div className="card" style={{ marginBottom: 16, borderColor: catalogBorder }} aria-live="polite">
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+          <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>Design resources</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 9, textTransform: "uppercase" }}>
+            {catalog.status}
+          </div>
         </div>
-      )}
+        <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 6 }}>
+          {catalog.message}
+        </div>
+        {catalog.skills.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }} aria-label="Available design skills">
+            {catalog.skills.map((skill) => (
+              <span key={skill.slug} className="btn" style={{ fontSize: 9, padding: "2px 7px", cursor: "default" }}>
+                {skill.name}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* Error state */}
-      {error && (
-        <div className="card" role="alert" style={{ background: "#fdecea", border: "1px solid #f44336", color: "#b71c1c" }}>
-          <strong>Error:</strong> {error}
-          <button onClick={() => setError("")} style={{ marginLeft: 12, cursor: "pointer", background: "none", border: "none", color: "#b71c1c", textDecoration: "underline" }}>Dismiss</button>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
+          {mode.name}
         </div>
-      )}
+        <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginBottom: 12 }}>
+          {mode.description}
+        </div>
+        {mode.note && (
+          <div role="status" style={{ fontFamily: "var(--mono)", fontSize: 9, marginBottom: 10 }}>
+            {mode.note}
+          </div>
+        )}
+        <label htmlFor="design-prompt" style={{ fontFamily: "var(--hand)", fontSize: 13, display: "block", marginBottom: 6 }}>
+          Describe the artifact
+        </label>
+        <textarea
+          id="design-prompt"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder={`Describe the ${mode.name.toLowerCase()} you want to create…`}
+          rows={4}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--rule)",
+            fontFamily: "var(--hand)",
+            fontSize: 14,
+            resize: "vertical",
+          }}
+        />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled
+            aria-describedby="design-execution-state"
+            style={{ padding: "9px 16px", borderRadius: 8, cursor: "not-allowed", opacity: 0.55 }}
+          >
+            {selectedMode === "deck" ? "Open Deck editor" : "Generate visual"}
+          </button>
+          <span id="design-execution-state" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>
+            Visual generation is not available yet. Nothing is submitted or simulated while this control is disabled.
+          </span>
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600, marginBottom: 10 }}>
+          Availability
+        </div>
+        <div style={{ display: "grid", gap: 8 }} role="list" aria-label="Design Studio availability">
+          {[
+            {
+              label: "Design resource discovery",
+              state: catalog.status === "ready" ? "available" : catalog.status,
+              detail: "Available design skills and design systems are discovered from the connected Design service. Brief creation is not connected yet.",
+            },
+            {
+              label: "Visual generation",
+              state: "not yet available",
+              detail: "Generation stays disabled until durable execution is connected. The Studio never substitutes a local animation or placeholder result.",
+            },
+            {
+              label: "Edit + preview",
+              state: selectedMode === "deck" ? "temporarily unavailable" : "not yet available",
+              detail: selectedMode === "deck"
+                ? "Deck editing stays closed until its secure rendering path is enabled."
+                : "The fixed-page editor will use the same Design Studio project and artifact state.",
+            },
+            {
+              label: "Publish + export",
+              state: "not yet available",
+              detail: "Export will become available with the durable editor and artifact pipeline.",
+            },
+          ].map((step) => (
+            <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>
+                  {step.state}
+                </span>
+              </div>
+              <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>
+                {step.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
