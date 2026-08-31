@@ -438,7 +438,9 @@ async def test_streaming_retries_non_streaming_when_tool_leaked_as_text(
 
     llm = _LeakyLLM()
     monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: llm)
-    req = ChatCompletionRequest(messages=[{"role": "user", "content": "tasks?"}], model="test-model")
+    req = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "tasks?"}], model="test-model"
+    )
 
     with caplog.at_level("WARNING"):
         events = await _collect(run_chat_completion_streaming(req))
