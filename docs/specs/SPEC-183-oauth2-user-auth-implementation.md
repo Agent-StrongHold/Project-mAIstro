@@ -30,22 +30,19 @@ history:
   - status: Implemented
     date: 2026-07-02
   - status: In Progress
-    date: 2026-07-29
-    reason: >-
-      Status corrected from Implemented (D2/#290): phases 1-2 (OAuth2 client +
-      identity linking, maistro/auth/oauth.py) are real and tested, but no
-      /v1/auth/oauth/{provider}/start-or-callback route exists anywhere in the
-      tree (phase 3) and no audit-event wiring (phase 4).
-  - status: In Progress
     date: 2026-08-31
     reason: >-
-      Phase 3 start/callback/session wiring and the canonical product
-      auth.oauth.login/link/failed audit subset are now implemented and tested.
-      Status remains In Progress because provider-token vault persistence,
-      product refresh/token lifecycle and auth.oauth.refresh audit semantics,
-      and an authenticated account-link/provisioning product flow remain unmet;
-      the shipped login path accepts only pre-linked active users and
-      intentionally discards provider tokens.
+      Status corrected from Implemented (D2/#290): phases 1-2 (OAuth2 client +
+      identity linking, maistro/auth/oauth.py) are real and tested, but phase 3
+      routes and phase 4 audit wiring were missing when the earlier Implemented
+      claim was made. As of 2026-08-31, phase 3 start/callback/session wiring
+      and the canonical product auth.oauth.login/link/failed audit subset are
+      implemented and tested. Status remains In Progress because provider-token
+      vault persistence, product refresh/token lifecycle and
+      auth.oauth.refresh audit semantics, and an authenticated
+      account-link/provisioning product flow remain unmet; the shipped login
+      path accepts only pre-linked active users and intentionally discards
+      provider tokens.
 ---
 
 # SPEC-183: OAuth2 user authentication — implementation
