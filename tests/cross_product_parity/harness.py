@@ -191,7 +191,9 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
         failures = dependency.failures()
         if not failures:
             continue
-        owner = f"PR #{dependency.pr}" if dependency.pr is not None else f"issue #{dependency.issue}"
+        owner = (
+            f"PR #{dependency.pr}" if dependency.pr is not None else f"issue #{dependency.issue}"
+        )
         assert dependency.key.strip(), "unavailable dependency must have a stable name"
         assert dependency.issue > 0, f"{dependency.key} must name a tracking issue"
         assert failures, f"{dependency.label} cannot be unavailable without probe evidence"
@@ -245,7 +247,9 @@ async def open_durable_profile(db_path: Path, *, workspace_id: str) -> DurableIn
     project = await project_store.root_for_workspace(workspace_id)
     if project is None:
         await connection.close()
-        raise ParityContractError(f"durable profile did not create Root Project for {workspace_id!r}")
+        raise ParityContractError(
+            f"durable profile did not create Root Project for {workspace_id!r}"
+        )
     return DurableIntegrationProfile(
         db_path=db_path,
         connection=connection,
