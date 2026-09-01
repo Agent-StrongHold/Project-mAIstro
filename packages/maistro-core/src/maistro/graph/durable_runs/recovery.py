@@ -101,6 +101,67 @@ def _initial_queued_record(run: Run) -> DurableRunRecord:
     return DurableRunRecord(run=run, graph_state=state, version=1)
 
 
+async def _claim_initial_continuation(
+    store: DurableRunStore,
+    run: Run,
+) -> DurableRunRecord | None:
+    """Return the continuation this worker may resume, or None when a peer won bootstrap."""
+    current = await store.get(run.run_id)
+    if current is not None:
+        return current
+
+    try:
+        await store.create(_initial_queued_record(run))
+    except Exception:
+        # SQLite, asyncpg, and in-memory stores expose different duplicate-row
+        # exceptions. The authoritative distinction is whether a continuation
+        # now exists. If it does, another replica won checkpoint 1 and owns this
+        # tick. If it does not, this was a real persistence failure.
+        current = await store.get(run.run_id)
+        if current is None:
+            raise
+        return None
+
+    current = await store.get(run.run_id)
+    if current is None:  # pragma: no cover - persistence contract breach
+        raise RuntimeError(
+            f"initial continuation for Run {run.run_id!r} disappeared after create"
+        )
+    return current
+
+
+async def _resume_queued_candidate(
+    run: Run,
+    *,
+    store: DurableRunStore,
+    run_store: RunStore,
+    node_resolver_factory: QueuedNodeResolverFactory,
+    runtime: ExecutionRuntime | None,
+) -> bool:
+    current = await _claim_initial_continuation(store, run)
+    if current is None or current.run.status is not RunStatus.QUEUED:
+        return False
+
+    try:
+        await resume_durable_graph(
+            run.run_id,
+            store=store,
+            node_resolver=node_resolver_factory(run),
+            runtime=runtime,
+            run_store=run_store,
+        )
+    except (KeyError, ValueError):
+        latest = await store.get(run.run_id)
+        if latest is None:
+            raise
+        if latest.run.status is not RunStatus.QUEUED:
+            # Another worker advanced the optimistic continuation version and
+            # owns execution. Do not redispatch behind it.
+            return False
+        raise
+    return True
+
+
 async def recover_queued_graph_runs(
     *,
     store: DurableRunStore,
@@ -136,54 +197,15 @@ async def recover_queued_graph_runs(
 
     candidates = await run_store.list_by_status(RunStatus.QUEUED, limit=limit)
     recovered = 0
-
     for run in candidates:
-        if not eligible(run):
-            continue
-
-        current = await store.get(run.run_id)
-        if current is None:
-            try:
-                await store.create(_initial_queued_record(run))
-            except Exception:
-                # A concurrent recovery worker may have won the unique
-                # continuation insert. Re-read rather than interpreting an
-                # implementation-specific SQLite/asyncpg collision exception.
-                current = await store.get(run.run_id)
-                if current is None:
-                    raise
-                # The winner owns this tick. If it dies before dispatch, the
-                # next tick will take the existing-QUEUED branch below.
-                continue
-            current = await store.get(run.run_id)
-            if current is None:  # pragma: no cover - persistence contract breach
-                raise RuntimeError(
-                    f"initial continuation for Run {run.run_id!r} disappeared after create"
-                )
-
-        if current.run.status is not RunStatus.QUEUED:
-            continue
-
-        resolver = node_resolver_factory(run)
-        try:
-            await resume_durable_graph(
-                run.run_id,
-                store=store,
-                node_resolver=resolver,
-                runtime=runtime,
-                run_store=run_store,
-            )
-        except (KeyError, ValueError):
-            latest = await store.get(run.run_id)
-            if latest is None:
-                raise
-            if latest.run.status is not RunStatus.QUEUED:
-                # Another worker advanced the optimistic continuation version
-                # and owns execution. Do not redispatch behind it.
-                continue
-            raise
-        recovered += 1
-
+        if eligible(run) and await _resume_queued_candidate(
+            run,
+            store=store,
+            run_store=run_store,
+            node_resolver_factory=node_resolver_factory,
+            runtime=runtime,
+        ):
+            recovered += 1
     return recovered
 
 
