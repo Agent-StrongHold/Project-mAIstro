@@ -33,36 +33,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/agents/pm_fleet.py::build_task_description",
-      "path": "packages/maistro-core/src/maistro/agents/pm_fleet.py",
-      "line": 131,
-      "name": "build_task_description",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven",
-      "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
-      "line": 248,
-      "name": "_run_browser_driven",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::run_pm_task",
-      "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
-      "line": 489,
-      "name": "run_pm_task",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/agents/spawner/spawner.py::Spawner._apply_recipe",
       "path": "packages/maistro-core/src/maistro/agents/spawner/spawner.py",
       "line": 97,
