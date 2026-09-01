@@ -44,7 +44,7 @@ async def _assert_due_query(store) -> None:
             created_at=now - timedelta(minutes=3),
         ),
         _continuation(
-            "due-paused",
+            "hitl-paused",
             status=RunStatus.PAUSED,
             resume_at=now - timedelta(seconds=1),
             created_at=now - timedelta(minutes=2),
@@ -71,10 +71,11 @@ async def _assert_due_query(store) -> None:
     for row in rows:
         await store.create(row)
 
-    assert await store.list_due_run_ids(now=now, limit=10) == [
-        "due-waiting",
-        "due-paused",
-    ]
+    # PAUSED is the canonical HITL state. `resume_durable_graph` deliberately
+    # refuses it until an answer/timeout decision has been persisted, so the
+    # clock-driven wakeup query must not turn a stale deadline into a human
+    # answer. Ordinary timed waits are WAITING.
+    assert await store.list_due_run_ids(now=now, limit=10) == ["due-waiting"]
     assert await store.list_due_run_ids(now=now, limit=1) == ["due-waiting"]
 
 
