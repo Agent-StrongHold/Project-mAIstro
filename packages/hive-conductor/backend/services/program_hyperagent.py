@@ -16,6 +16,7 @@ from maistro.agents.program_context import apply_guidance
 from services import program_store as prog
 from services.agent_invocation import pulse_roster
 
+
 def user_id_from_request(request: Request) -> str:
     user = getattr(request.state, "user", None) or {}
     uid = user.get("id")
@@ -93,7 +94,10 @@ async def apply_guidance_and_pulse(
     elif queued:
         out["message"] = f"Guidance saved — {len(queued)} autonomous task(s) queued."
     elif pulse_note:
-        out["message"] = "Guidance saved — Program Pulse produced proposals without executing retired PM capability work."
+        out["message"] = (
+            "Guidance saved — Program Pulse produced proposals without executing retired PM "
+            "capability work."
+        )
     else:
         out["message"] = "Guidance saved — no autonomous actions were proposed."
     return out
