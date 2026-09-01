@@ -112,7 +112,9 @@ def test_changed_python_pairs_handles_modified_added_renamed_and_irrelevant(
     ]
 
 
-def test_changed_python_pairs_surfaces_git_diff_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_changed_python_pairs_surfaces_git_diff_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     checker = _module()
     result = SimpleNamespace(returncode=1, stderr="bad revision", stdout="")
     monkeypatch.setattr(checker.subprocess, "run", lambda *_args, **_kwargs: result)
@@ -141,10 +143,14 @@ def test_exception_plan_fails_closed_for_malformed_event(
     assert checker._exception_plan_from_environment() == ""
 
 
-def test_exception_plan_reads_pull_request_body(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_exception_plan_reads_pull_request_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     checker = _module()
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"body": "reviewed body"}}), encoding="utf-8")
+    event.write_text(
+        json.dumps({"pull_request": {"body": "reviewed body"}}), encoding="utf-8"
+    )
     monkeypatch.delenv("M1_CONVERGENCE_EXCEPTION_PLAN", raising=False)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
