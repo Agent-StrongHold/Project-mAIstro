@@ -1,6 +1,8 @@
+import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -93,16 +95,72 @@ def _isolate_workspace_authority():
 
 
 @pytest.fixture(autouse=True)
+def _workspace_route_member_helper_uses_canonical_authority(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Route tests that change roles must mutate the canonical membership seam.
+
+    `test_workspaces.py` predates #37 and its `_set_members` helper wrote the
+    legacy migration record directly. Keep those route scenarios intact while
+    moving their setup onto the same canonical authority production now uses.
+    """
+    if Path(str(request.fspath)).name != "test_workspaces.py":
+        yield
+        return
+    module = request.module
+    if module is None or not hasattr(module, "_set_members"):
+        yield
+        return
+
+    from models.workspace import WorkspaceRole
+    from services import workspace_authority
+
+    def _set_members(workspace_id: str, roles: dict[str, str]) -> None:
+        target = dict(roles)
+        if "owner" not in target.values():
+            # The canonical invariant forbids an ownerless Workspace. Tests
+            # whose point is only "the requester is not owner" get a neutral
+            # second owner so they exercise that refusal without invalid data.
+            target["__canonical_test_owner__"] = "owner"
+
+        async def _apply() -> None:
+            store = workspace_authority.canonical_store_for_tests()
+            current = {
+                membership.user_id: membership
+                for membership in await store.list_memberships(workspace_id)
+            }
+            for user_id, role in target.items():
+                if role == "owner":
+                    await workspace_authority.set_member(
+                        workspace_id,
+                        user_id=user_id,
+                        role=cast(WorkspaceRole, role),
+                    )
+            for user_id, role in target.items():
+                if role != "owner":
+                    await workspace_authority.set_member(
+                        workspace_id,
+                        user_id=user_id,
+                        role=cast(WorkspaceRole, role),
+                    )
+            for user_id in current:
+                if user_id not in target:
+                    await workspace_authority.remove_member(workspace_id, user_id=user_id)
+
+        asyncio.run(_apply())
+
+    monkeypatch.setattr(module, "_set_members", _set_members)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
     """Let legacy implementation tests exercise /register under an open policy.
 
     Since #313 the shipped route enforces the durable registration policy —
-    closed by default — and SecurityHeadersMiddleware no longer short-circuits
-    it. A few older password/credential tests are about the *registration
-    implementation* (Argon2 storage, audit rows, sessions) rather than the
-    policy. For only those named modules, write an `open` policy record for
-    the duration of the test and drop it afterwards. Production has no
-    bypass: `open` is reachable only through the admin route or setup.
+    closed by default. For only the named legacy implementation modules, write
+    an `open` policy record for the duration of the test.
     """
     legacy_modules = {
         "test_api.py",
