@@ -6,14 +6,15 @@ the spine, and this holds only what Graph traversal adds — frontier,
 blackboard, routing decisions and the commit history — keyed by the Run it
 continues.
 
-The lookup columns are denormalized from that Run on every write so "which
-graph runs are paused" is an index scan rather than a walk of every Run in the
-database. They are an index, not an authority: assembly reads status back from
-the canonical Run.
+The lookup columns are denormalized from that Run on every write so recovery
+queries are index scans rather than walks of every Run in the database. They
+are an index, not an authority: assembly reads status back from the canonical
+Run.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.evidence_json import decode_payload
@@ -101,6 +102,23 @@ class PgGraphContinuationStore:
                     LIMIT $3""",
                 status.value,
                 project_id,
+                limit,
+            )
+        return [str(row["run_id"]) for row in rows]
+
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        """Use the persisted resume deadline to find bounded wakeup candidates."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT run_id FROM graph_continuations
+                    WHERE status IN ($1, $2)
+                      AND resume_at IS NOT NULL
+                      AND resume_at <= $3
+                 ORDER BY resume_at ASC, run_id ASC
+                    LIMIT $4""",
+                RunStatus.WAITING.value,
+                RunStatus.PAUSED.value,
+                now,
                 limit,
             )
         return [str(row["run_id"]) for row in rows]
