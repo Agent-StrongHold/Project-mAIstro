@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests: +9
+  tests/: +9
 ---
 
 # #459 cross-product parity harness
