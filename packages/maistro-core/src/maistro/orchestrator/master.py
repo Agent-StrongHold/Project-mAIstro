@@ -239,6 +239,9 @@ class _WorkItemNode:
     async def _run_handler(self) -> WorkItem | NodeResult:
         if self._handler is None:
             return self._domain_failure("Work item handler unavailable.")
+        # Project in-flight status onto the canonical item so progress polling
+        # sees long-running handler work, not just the isolated handler copy.
+        self._item.status = WorkItemStatus.IN_PROGRESS
         handler_item = _handler_seed(self._handler_seed)
         handler_item.status = WorkItemStatus.IN_PROGRESS
         try:

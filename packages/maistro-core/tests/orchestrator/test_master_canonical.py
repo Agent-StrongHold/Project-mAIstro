@@ -225,6 +225,34 @@ async def test_dependency_failure_blocks_only_dependent_work_and_graph_continues
     assert blocked_run.status is RunStatus.COMPLETED
 
 
+async def test_canonical_item_reports_in_progress_during_handler() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_handler(item: WorkItem) -> WorkItem:
+        started.set()
+        await release.wait()
+        item.status = WorkItemStatus.PASSED
+        return item
+
+    orch = MasterOrchestrator()
+    orch.register_handler("mason", slow_handler)
+    orch.load_plan([[WorkItem(task_id="T1", description="slow", agent_role="mason")]])
+
+    execute_task = asyncio.create_task(orch.execute())
+    await started.wait()
+
+    progress = orch.get_progress()
+    assert progress["by_status"].get(WorkItemStatus.IN_PROGRESS) == 1
+    assert orch._items["T1"].status == WorkItemStatus.IN_PROGRESS
+
+    release.set()
+    result = await execute_task
+
+    assert result.completed == 1
+    assert orch._items["T1"].status == WorkItemStatus.PASSED
+
+
 async def test_wave_parallelism_is_graph_structure_and_respects_configured_bound() -> None:
     orch = MasterOrchestrator(max_concurrent_per_wave=2)
     running = 0
