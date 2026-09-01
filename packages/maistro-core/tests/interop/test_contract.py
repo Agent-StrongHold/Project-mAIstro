@@ -13,6 +13,7 @@ from maistro.interop import (
     ConceptSpec,
     InteropContractError,
     InteropOntology,
+    RelationshipSpec,
 )
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -49,6 +50,22 @@ def test_projection_requires_the_canonical_identity_field() -> None:
     )
 
 
+def test_goal_projection_requires_exact_revision_identity() -> None:
+    with pytest.raises(
+        InteropContractError,
+        match="Goal projection must carry canonical revision field 'goal_revision'",
+    ):
+        INTEROP_ONTOLOGY_V1.validate_projection("Goal", {"goal_id": "goal-1"})
+
+    assert (
+        INTEROP_ONTOLOGY_V1.validate_projection(
+            "Goal",
+            {"goal_id": "goal-1", "goal_revision": 3},
+        )
+        == "goal-1"
+    )
+
+
 def test_unknown_concept_is_rejected_instead_of_becoming_product_local_authority() -> None:
     with pytest.raises(InteropContractError, match="unknown interoperability concept"):
         INTEROP_ONTOLOGY_V1.validate_projection(
@@ -79,6 +96,24 @@ def test_reference_set_requires_execution_parent_and_scope_lineage() -> None:
     )
 
 
+def test_goal_scope_is_required_without_making_goal_a_graph_parent() -> None:
+    with pytest.raises(
+        InteropContractError,
+        match="Goal reference requires canonical parent Project",
+    ):
+        INTEROP_ONTOLOGY_V1.validate_reference_set(
+            {"Workspace": "ws-1", "Goal": "goal-1"}
+        )
+
+    INTEROP_ONTOLOGY_V1.validate_reference_set(
+        {
+            "Workspace": "ws-1",
+            "Project": "project-1",
+            "Graph": "graph-1",
+        }
+    )
+
+
 def test_reference_set_requires_effect_lineage() -> None:
     with pytest.raises(
         InteropContractError,
@@ -96,6 +131,32 @@ def test_reference_set_requires_effect_lineage() -> None:
             "Invocation": "invocation-1",
         }
     )
+
+
+def test_goal_relationships_keep_accountability_distinct_from_execution() -> None:
+    goal = INTEROP_ONTOLOGY_V1.concept("Goal")
+    agent = INTEROP_ONTOLOGY_V1.concept("Agent")
+
+    assert goal.owner == "maistro.goals"
+    assert goal.identity == "goal_id"
+    assert goal.parent == "Project"
+    assert goal.revision == "goal_revision"
+    assert agent.owner == "maistro.agents"
+    assert agent.scope == "Workspace"
+
+    ownership = INTEROP_ONTOLOGY_V1.relationships["agent_goal_ownership"]
+    assert ownership.source == "Agent"
+    assert ownership.target == "Goal"
+    assert ownership.kind == "accountability"
+    assert ownership.sources_per_target == "exactly-one"
+
+    selection = INTEROP_ONTOLOGY_V1.relationships["goal_graph_selection"]
+    assert selection.kind == "execution-strategy"
+    assert selection.sources_per_target == "zero-or-many"
+
+    evidence = INTEROP_ONTOLOGY_V1.relationships["goal_run_evidence"]
+    assert evidence.kind == "execution-evidence"
+    assert evidence.sources_per_target == "zero-or-one"
 
 
 def test_major_version_drift_fails_loudly() -> None:
@@ -136,6 +197,30 @@ def test_contract_rejects_unknown_parent_or_scope_concepts() -> None:
         replace(INTEROP_ONTOLOGY_V1, concepts=concepts)
 
 
+def test_contract_rejects_unknown_relationship_endpoints_and_cardinality() -> None:
+    relationships = dict(INTEROP_ONTOLOGY_V1.relationships)
+    relationships["broken"] = RelationshipSpec(
+        "Missing",
+        "Goal",
+        "accountability",
+        "exactly-one",
+        "zero-or-many",
+    )
+
+    with pytest.raises(InteropContractError, match="source references unknown concept 'Missing'"):
+        replace(INTEROP_ONTOLOGY_V1, relationships=relationships)
+
+    relationships["broken"] = RelationshipSpec(
+        "Agent",
+        "Goal",
+        "accountability",
+        "sometimes",
+        "zero-or-many",
+    )
+    with pytest.raises(InteropContractError, match="invalid sources_per_target 'sometimes'"):
+        replace(INTEROP_ONTOLOGY_V1, relationships=relationships)
+
+
 def test_contract_registry_is_immutable() -> None:
     with pytest.raises(TypeError):
         INTEROP_ONTOLOGY_V1.concepts["Run"] = ConceptSpec(  # type: ignore[index]
@@ -143,11 +228,20 @@ def test_contract_registry_is_immutable() -> None:
             identity="builders_run_id",
         )
 
+    with pytest.raises(TypeError):
+        INTEROP_ONTOLOGY_V1.relationships["goal_graph_selection"] = RelationshipSpec(  # type: ignore[index]
+            "Goal",
+            "Graph",
+            "ownership",
+            "exactly-one",
+            "exactly-one",
+        )
+
 
 def test_constructor_rejects_noncanonical_owner_and_identity() -> None:
     with pytest.raises(InteropContractError, match="canonical maistro module"):
         InteropOntology(
-            version="1.0.0",
+            version="1.1.0",
             status="test",
             issue=458,
             principles=("one owner",),
@@ -157,13 +251,14 @@ def test_constructor_rejects_noncanonical_owner_and_identity() -> None:
                     identity="run_id",
                 )
             },
+            relationships={},
             required_lineage=(),
             consumers={"builders": "M1"},
         )
 
     with pytest.raises(InteropContractError, match=r"explicit \*_id field"):
         InteropOntology(
-            version="1.0.0",
+            version="1.1.0",
             status="test",
             issue=458,
             principles=("one identity",),
@@ -173,6 +268,7 @@ def test_constructor_rejects_noncanonical_owner_and_identity() -> None:
                     identity="id",
                 )
             },
+            relationships={},
             required_lineage=(),
             consumers={"builders": "M1"},
         )
