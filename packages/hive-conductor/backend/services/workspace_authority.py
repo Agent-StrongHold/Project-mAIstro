@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from typing import Final, cast
 
 import stores
+from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
+from maistro.workspaces.store import InMemoryWorkspaceStore, WorkspaceStore
 from models.workspace import (
     AgentToolBinding,
     Workspace,
@@ -26,9 +28,6 @@ from models.workspace import (
     WorkspaceRole,
 )
 from services.model_store import JsonStore, ModelStore
-
-from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
-from maistro.workspaces.store import InMemoryWorkspaceStore, WorkspaceStore
 
 logger = logging.getLogger("hive.workspace_authority")
 
