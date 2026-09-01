@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from maistro.graph.definitions import Graph
@@ -21,7 +21,7 @@ from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
 from . import executor as traversal
@@ -32,6 +32,55 @@ from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
 NodeResolver = traversal.NodeResolver
+
+# Durable Graph execution always opts into the canonical lease/fence recovery
+# contract. The claim is deliberately longer than one lease renewal window:
+# continuation recovery may notice an elapsed claim while a long-running
+# Attempt is still alive, but the Attempt lease is the stronger physical-work
+# proof and makes that recovery worker yield.
+GRAPH_ATTEMPT_LEASE_TTL = timedelta(seconds=30)
+GRAPH_RECOVERY_CLAIM_TTL = timedelta(seconds=60)
+
+
+class LiveAttemptOwned(RunIntegrityError):
+    """A different worker still owns live physical work for this Graph Run."""
+
+
+async def _validated_admitted_run(
+    graph: Graph,
+    *,
+    run_store: RunStore,
+    run_id: str,
+):
+    """Return the admitted canonical Run without starting it.
+
+    Checkpoint 1 is the durable bootstrap claim. Moving the Run to RUNNING
+    before that row exists recreates the exact admission-to-continuation crash
+    window recovery is meant to close.
+    """
+    admitted = await run_store.get_run(run_id)
+    if admitted is None:
+        raise RunIntegrityError(
+            f"pinned run_id {run_id!r} is not on the canonical spine; "
+            "durable graph execution consumes an admitted Run"
+        )
+    if admitted.graph.content_hash != graph.content_hash:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} was admitted for a different Graph; "
+            "the supplied Graph does not match the admitted snapshot"
+        )
+    if admitted.workspace_id != graph.workspace_id or admitted.project_id != graph.project_id:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} is scoped to "
+            f"{admitted.workspace_id!r}/{admitted.project_id!r}, not "
+            f"{graph.workspace_id!r}/{graph.project_id!r}"
+        )
+    if admitted.status is not RunStatus.QUEUED:
+        raise RunIntegrityError(
+            f"pinned Run {run_id!r} must still be queued before its first "
+            f"durable Graph checkpoint, not {admitted.status.value!r}"
+        )
+    return admitted
 
 
 async def run_durable_graph(
@@ -65,14 +114,14 @@ async def run_durable_graph(
     parent's whole blackboard leaking across the Run boundary.
 
     ``run_store`` converges the Run's identity onto the canonical spine (#44,
-    ADR-082826-d9f5). With it, this consumes an already-admitted Run rather
-    than creating one -- admission owns Run identity, and a `run_id` is an
-    authority binding checked against the supplied Graph and scope before any
-    physical work. Without it, the pre-convergence in-memory mint is unchanged,
-    so a caller with no spine wired still runs.
+    ADR-082826-d9f5). With it, checkpoint 1 is persisted while the already
+    admitted Run is still QUEUED; the canonical resume seam then claims it.
+    That ordering makes process death before/after the continuation write
+    rediscoverable. Without a spine, the pre-convergence in-memory mint is
+    unchanged.
     """
     if run_store is not None:
-        run = await traversal._adopt_admitted_run(
+        run = await _validated_admitted_run(
             graph,
             run_store=run_store,
             run_id=traversal._require_admitted(run_id),
@@ -98,12 +147,21 @@ async def run_durable_graph(
     )
     record = DurableRunRecord(run=run, graph_state=state, version=1)
     await store.create(record)
+
+    if run_store is not None:
+        return await resume_durable_graph(
+            run.run_id,
+            store=store,
+            node_resolver=node_resolver,
+            runtime=runtime,
+            run_store=run_store,
+        )
     return await _walk(
         record,
         store=store,
         node_resolver=node_resolver,
         runtime=runtime or PythonExecutionRuntime(),
-        run_store=run_store,
+        run_store=None,
     )
 
 
@@ -115,7 +173,7 @@ async def resume_durable_graph(
     runtime: ExecutionRuntime | None = None,
     run_store: RunStore | None = None,
 ) -> DurableRunRecord:
-    """Resume after reconciling persisted physical evidence before redispatch."""
+    """Claim and resume persisted Graph work through canonical physical evidence."""
     record = await store.get(run_id)
     if record is None:
         raise KeyError(f"no such run: {run_id!r}")
@@ -131,15 +189,24 @@ async def resume_durable_graph(
     spine = await traversal._canonical_spine(record, run_store)
     record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine)
 
-    run = record.run
-    if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
-        run = transition_run(run, RunStatus.RUNNING)
+    claim_until = datetime.now(UTC) + GRAPH_RECOVERY_CLAIM_TTL
     record = await traversal._checkpoint(
         record,
         store=store,
-        run=run,
-        resume_at=None,
+        resume_at=claim_until,
     )
+
+    run = record.run
+    if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
+        if spine is not None:
+            canonical = await spine.transition_run(run.run_id, RunStatus.RUNNING)
+            record = traversal._replace_record(record, run=canonical)
+        else:
+            record = traversal._replace_record(
+                record,
+                run=transition_run(run, RunStatus.RUNNING),
+            )
+
     return await _walk(
         record,
         store=store,
@@ -155,19 +222,7 @@ async def _reconcile_orphaned_attempts(
     store: DurableRunStore,
     run_store: RunStore | None = None,
 ) -> DurableRunRecord:
-    """Terminalize process-lost active Attempts and reconcile their NodeRuns.
-
-    "Process-lost" is checked, not assumed (#462, ADR-082526-b36a). An active
-    Attempt holding an execution lease that has not lapsed belongs to a
-    demonstrably live worker: resuming past it would cancel the Attempt out
-    from under its holder and dispatch a duplicate physical execution — the
-    fence stops the stale worker's *write*, not the double *execution*. Such a
-    resume is refused; retry after the lease lapses (when the reclaim sweep or
-    this reconcile may take it) or after the holder finishes. An active Attempt
-    with no lease cannot outlive its process, so under an explicit resume —
-    the caller's assertion that the owning process is gone — it is genuinely
-    orphaned and is recovered as before.
-    """
+    """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
     lifecycle = AttemptLifecycleReconciler(execution_store)
     active = tuple(
@@ -179,34 +234,25 @@ async def _reconcile_orphaned_attempts(
     for attempt in active:
         lease = attempt.execution_lease
         if lease is not None and not lease_is_expired(attempt, now):
-            raise ValueError(
+            raise LiveAttemptOwned(
                 f"cannot resume run {record.run_id!r}: Attempt "
                 f"{attempt.attempt_id!r} holds a live execution lease "
                 f"(holder {lease.holder!r}); a demonstrably live worker owns "
                 "this work"
             )
 
-    # Leased Attempts settle through the lease seam: `transition_attempt`
-    # without the holder's token is refused by the execution fence — correctly,
-    # since recovery is exactly a non-holder — and `reclaim` is the one write
-    # the fence exempts because a lapsed lease is its own authority (b36a).
     reclaimed = await execution_store.reclaim_expired_attempts(now=now)
     for attempt in reclaimed:
         await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
 
     for attempt in active:
         if attempt.execution_lease is not None:
-            continue  # live ones were refused above; lapsed ones just reclaimed
+            continue
         terminal = await execution_store.transition_attempt(
             attempt.attempt_id,
             AttemptStatus.CANCELLED,
             error="orphaned physical Attempt recovered after process loss",
         )
-        # RECOVERED, stated rather than defaulted. This cancellation is
-        # bookkeeping — the process died and the physical record is being closed
-        # so a *fresh* Attempt can run — so the node must stay parked and owed.
-        # Terminalizing it would make crash recovery destroy the work it exists
-        # to resume (#230).
         await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)
     latest = await store.get(record.run_id)
     if latest is None:
@@ -214,17 +260,17 @@ async def _reconcile_orphaned_attempts(
     return latest
 
 
-def _requires_hitl_redispatch(
+def _requires_continuation_redispatch(
     record: DurableRunRecord,
     node_id: str,
     result: NodeResult,
 ) -> bool:
-    """Return whether accepted paused evidence must yield to newly submitted HITL input."""
-    return (
-        result.status == "paused"
-        and traversal._is_human_pause(result)
-        and node_id in record.hitl_answers
-    )
+    """Whether accepted pause evidence now requires a fresh physical try."""
+    if result.status != "paused":
+        return False
+    if traversal._is_human_pause(result):
+        return node_id in record.hitl_answers
+    return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
 
 
 async def _walk(
@@ -240,16 +286,13 @@ async def _walk(
     graph = record.run.graph.materialize()
     spine = await traversal._canonical_spine(record, run_store)
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=spine)
-    execution_service = AttemptExecutionService(store=execution_store, runtime=runtime)
+    execution_service = AttemptExecutionService(
+        store=execution_store,
+        runtime=runtime,
+        lease_ttl=GRAPH_ATTEMPT_LEASE_TTL,
+    )
     steps = 0
 
-    # This path never goes through `RunExecutionService`, which is where the Run
-    # is otherwise bound, so it binds its own. Without it a top-level durable
-    # execution named no Run at all -- and a *child* durable graph launched from
-    # inside a parent Attempt was worse than that: binding is additive, so with
-    # nothing overriding it the child's nodes inherited the parent's ambient
-    # `run_id` and attributed their logs, spans and blank event fields to the
-    # parent Run (Codex, #707).
     with bind_execution_context(run_id=record.run_id):
         return await _walk_until_settled(
             record,
@@ -276,11 +319,7 @@ async def _walk_until_settled(
     max_steps: int,
     steps: int,
 ) -> DurableRunRecord:
-    """Walk frontiers until the Run settles or `max_steps` is spent.
-
-    Split out only so the caller can own the correlation scope: the loop below
-    is unchanged, and everything it drives now runs under the Run's id.
-    """
+    """Walk frontiers until the Run settles or `max_steps` is spent."""
     while record.graph_state.active_node_ids and steps < max_steps:
         steps += 1
         record = await _walk_frontier(
@@ -445,7 +484,7 @@ async def _execute_frontier(
         attempts = await execution_store.list_attempts(node_run.node_run_id)
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
-            prior_completion_accepted = _requires_hitl_redispatch(
+            prior_completion_accepted = _requires_continuation_redispatch(
                 record,
                 node_id,
                 persisted_result,
@@ -507,4 +546,11 @@ async def _execute_frontier(
     )
 
 
-__all__ = ["NodeResolver", "resume_durable_graph", "run_durable_graph"]
+__all__ = [
+    "GRAPH_ATTEMPT_LEASE_TTL",
+    "GRAPH_RECOVERY_CLAIM_TTL",
+    "LiveAttemptOwned",
+    "NodeResolver",
+    "resume_durable_graph",
+    "run_durable_graph",
+]

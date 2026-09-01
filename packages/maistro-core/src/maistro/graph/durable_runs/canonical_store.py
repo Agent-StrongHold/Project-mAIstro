@@ -7,11 +7,6 @@ obtained their identities there, and the Graph continuation is persisted beside
 them. A record read back is assembled from those two halves, so there is one
 answer to "what is this Run doing" rather than two that can disagree
 (ADR-082826-d9f5).
-
-What this deliberately does not do is accept identities its caller minted.
-`create_run`, `create_node_run` and `create_attempt` take no id parameter, and
-an adapter that worked around that would put identity ownership back outside
-the system of record -- which is the defect, not the interface.
 """
 
 from __future__ import annotations
@@ -28,7 +23,9 @@ from .spine import mirror_lifecycle
 from .stores import answer_record
 from .types import DurableRunRecord
 
-_RESUMABLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED})
+_RECOVERY_VISIBLE_STATUSES = frozenset(
+    {RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING}
+)
 
 
 class CanonicalDurableRunStore:
@@ -44,14 +41,6 @@ class CanonicalDurableRunStore:
         self._lock = asyncio.Lock()
 
     async def create(self, record: DurableRunRecord) -> DurableRunRecord:
-        """Persist the continuation for a Run the spine already holds.
-
-        The Run is not created here. `run_durable_graph` obtained it from the
-        canonical store before building this record, so creating it again is
-        the duplicate identity the convergence exists to remove; a record whose
-        Run the spine has never seen is a caller that skipped that step, and
-        saying so is better than minting a second one to cover for it.
-        """
         if await self._run_store.get_run(record.run_id) is None:
             raise RunIntegrityError(
                 f"Run {record.run_id!r} is not on the canonical spine; durable graph "
@@ -67,7 +56,10 @@ class CanonicalDurableRunStore:
             return None
         run = await self._run_store.get_run(run_id)
         if run is None:
-            return None
+            raise RunIntegrityError(
+                f"graph continuation {run_id!r} has no canonical Run; "
+                "run persistence was purged without reconciling Graph continuation state"
+            )
         node_runs = await self._run_store.list_node_runs(run_id)
         attempts = await self._attempts_for(node_runs)
         return DurableRunRecord(
@@ -82,11 +74,45 @@ class CanonicalDurableRunStore:
         )
 
     async def update(self, record: DurableRunRecord) -> DurableRunRecord:
-        """Write the record's two halves to the two stores that own them."""
         async with self._lock:
             await self._continuations.update(GraphContinuation.of(record))
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
+
+    async def reconcile_persistence(self, *, limit: int = 100) -> int:
+        """Boundedly repair cross-store crash residue and purge true orphans."""
+        if limit <= 0:
+            return 0
+
+        changed = 0
+        seen: set[str] = set()
+        for status in RunStatus:
+            remaining = limit - len(seen)
+            if remaining <= 0:
+                break
+            run_ids = await self._continuations.list_run_ids_by_status(
+                status,
+                limit=remaining,
+            )
+            for run_id in run_ids:
+                if run_id in seen:
+                    continue
+                seen.add(run_id)
+                continuation = await self._continuations.get(run_id)
+                if continuation is None:
+                    continue
+                canonical = await self._run_store.get_run(run_id)
+                if canonical is None:
+                    if await self._continuations.delete(run_id):
+                        changed += 1
+                    continue
+                if (
+                    canonical.status is RunStatus.RUNNING
+                    and continuation.status in {RunStatus.WAITING, RunStatus.PAUSED}
+                ):
+                    await self._run_store.transition_run(run_id, continuation.status)
+                    changed += 1
+        return changed
 
     async def list_by_status(
         self,
@@ -96,30 +122,38 @@ class CanonicalDurableRunStore:
         project_id: str | None = None,
     ) -> list[DurableRunRecord]:
         run_ids = await self._continuations.list_run_ids_by_status(
-            status, limit=limit, project_id=project_id
+            status,
+            limit=limit,
+            project_id=project_id,
         )
         return await self._assemble_all(run_ids)
 
-    async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        """Assemble due continuation candidates against canonical Run truth.
-
-        `resume_at` is Graph-continuation state, so the indexed candidate query
-        belongs to the continuation store. Status remains canonical Run state,
-        so stale denormalized status is never sufficient to resume physical
-        work: after assembly we re-check the Run and the persisted deadline.
-        """
+    async def list_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
         run_ids = await self._continuations.list_due_run_ids(now=now, limit=limit)
         records = await self._assemble_all(run_ids)
         return [
             record
             for record in records
-            if record.run.status in _RESUMABLE_STATUSES
+            if record.run.status in _RECOVERY_VISIBLE_STATUSES
             and record.resume_at is not None
             and record.resume_at <= now
         ][:limit]
 
-    async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_run_ids_for_project(project_id, limit=limit)
+    async def list_for_project(
+        self,
+        project_id: str,
+        *,
+        limit: int = 25,
+    ) -> list[DurableRunRecord]:
+        run_ids = await self._continuations.list_run_ids_for_project(
+            project_id,
+            limit=limit,
+        )
         return await self._assemble_all(run_ids)
 
     async def submit_hitl_answer(
@@ -128,13 +162,6 @@ class CanonicalDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume.
-
-        The rule stays where it already was: `answer_record` decides which
-        paused NodeRun the answer belongs to, what the remaining pause
-        metadata is, and when the Run becomes runnable again. Only where the
-        result lands has changed.
-        """
         async with self._lock:
             current = await self.get(run_id)
             if current is None:

@@ -50,25 +50,15 @@ class PgGraphContinuationStore:
     async def get(self, run_id: str) -> GraphContinuation | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT continuation FROM graph_continuations WHERE run_id = $1", run_id
+                "SELECT continuation FROM graph_continuations WHERE run_id = $1",
+                run_id,
             )
         if row is None:
             return None
-        # `decode_payload` rather than `model_validate_json`: whether a JSONB
-        # column arrives as text or as a dict depends on how the caller built
-        # the pool. `maistro.persistence.get_pool` registers a JSON codec and
-        # hands back a dict; a bare `asyncpg.create_pool` hands back text, and
-        # #135's seam means both reach this store. Assuming either one is a
-        # store whose correctness depends on somebody else's constructor.
         return GraphContinuation.model_validate(decode_payload(row["continuation"]))
 
     async def update(self, continuation: GraphContinuation) -> GraphContinuation:
-        """Write only over a strictly older version.
-
-        The version predicate is in the statement rather than a read followed
-        by a write, so two writers racing on one Run cannot both believe they
-        won -- the same reason the canonical stores put their fences in SQL.
-        """
+        """Write only over a strictly older version."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """UPDATE graph_continuations
@@ -81,11 +71,22 @@ class PgGraphContinuationStore:
             if row is not None:
                 return continuation
             stored = await conn.fetchval(
-                "SELECT version FROM graph_continuations WHERE run_id = $1", continuation.run_id
+                "SELECT version FROM graph_continuations WHERE run_id = $1",
+                continuation.run_id,
             )
         if stored is None:
             raise KeyError(f"no such run: {continuation.run_id!r}")
-        raise ValueError(f"version regression: stored={stored} incoming={continuation.version}")
+        raise ValueError(
+            f"version regression: stored={stored} incoming={continuation.version}"
+        )
+
+    async def delete(self, run_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM graph_continuations WHERE run_id = $1",
+                run_id,
+            )
+        return result != "DELETE 0"
 
     async def list_run_ids_by_status(
         self,
@@ -107,23 +108,26 @@ class PgGraphContinuationStore:
         return [str(row["run_id"]) for row in rows]
 
     async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
-        """Use the persisted resume deadline to find bounded wakeup candidates."""
+        """Use persisted wait/claim deadlines to find bounded recovery candidates."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT run_id FROM graph_continuations
-                    WHERE status IN ($1, $2)
+                    WHERE status IN ($1, $2, $3)
                       AND resume_at IS NOT NULL
-                      AND resume_at <= $3
+                      AND resume_at <= $4
                  ORDER BY resume_at ASC, run_id ASC
-                    LIMIT $4""",
+                    LIMIT $5""",
                 RunStatus.WAITING.value,
                 RunStatus.PAUSED.value,
+                RunStatus.RUNNING.value,
                 now,
                 limit,
             )
         return [str(row["run_id"]) for row in rows]
 
-    async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
+    async def list_run_ids_for_project(
+        self, project_id: str, *, limit: int = 25
+    ) -> list[str]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT run_id FROM graph_continuations

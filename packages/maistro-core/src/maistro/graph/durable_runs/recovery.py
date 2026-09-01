@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
@@ -17,12 +18,22 @@ from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
-from .attempt_executor import NodeResolver, resume_durable_graph
+from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
 
 QueuedRunPredicate = Callable[[Run], bool]
 QueuedNodeResolverFactory = Callable[[Run], NodeResolver]
+
+
+@runtime_checkable
+class PersistenceReconciler(Protocol):
+    async def reconcile_persistence(self, *, limit: int = 100) -> int: ...
+
+
+async def _reconcile_if_supported(store: DurableRunStore, *, limit: int) -> None:
+    if isinstance(store, PersistenceReconciler):
+        await store.reconcile_persistence(limit=limit)
 
 
 async def resume_due_graph_runs(
@@ -34,30 +45,19 @@ async def resume_due_graph_runs(
     now: datetime | None = None,
     limit: int = 100,
 ) -> int:
-    """Resume at most ``limit`` elapsed durable Graph waits.
-
-    ``list_due`` may also surface overdue ``PAUSED`` records because the same
-    persisted deadline is useful to HITL timeout/cancel reconciliation. A clock
-    must never manufacture a human answer, so this executor only consumes
-    ``WAITING`` records. ``resume_durable_graph`` then reconciles orphaned
-    Attempts and refuses work protected by a live execution lease before any
-    redispatch.
-
-    Across replicas, the resume seam's first write is the continuation's
-    optimistic ``version + 1`` checkpoint. If another worker wins between this
-    indexed read and that checkpoint, re-read canonical state: an ineligible
-    record means the other worker legitimately moved it, while a still-eligible
-    record means the error was real and must remain visible.
-    """
+    """Resume elapsed durable Graph waits or expired recovery claims."""
     if limit <= 0:
         return 0
 
+    await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
     candidates = await store.list_due(now=moment, limit=limit)
     resumed = 0
 
     for candidate in candidates:
-        if candidate.run.status is not RunStatus.WAITING:
+        if candidate.run.status is RunStatus.PAUSED:
+            continue
+        if candidate.run.status not in {RunStatus.WAITING, RunStatus.RUNNING}:
             continue
         if candidate.resume_at is None or candidate.resume_at > moment:
             continue
@@ -69,12 +69,14 @@ async def resume_due_graph_runs(
                 runtime=runtime,
                 run_store=run_store,
             )
+        except LiveAttemptOwned:
+            continue
         except (KeyError, ValueError):
             current = await store.get(candidate.run_id)
             if current is None:
                 continue
             if (
-                current.run.status is not RunStatus.WAITING
+                current.run.status not in {RunStatus.WAITING, RunStatus.RUNNING}
                 or current.resume_at is None
                 or current.resume_at > moment
             ):
@@ -86,7 +88,6 @@ async def resume_due_graph_runs(
 
 
 def _initial_queued_record(run: Run) -> DurableRunRecord:
-    """Build the first continuation for an already-admitted canonical Graph Run."""
     graph = run.graph.materialize()
     state = GraphExecutionState(
         run_id=run.run_id,
@@ -105,7 +106,6 @@ async def _claim_initial_continuation(
     store: DurableRunStore,
     run: Run,
 ) -> DurableRunRecord | None:
-    """Return the continuation this worker may resume, or None when a peer won bootstrap."""
     current = await store.get(run.run_id)
     if current is not None:
         return current
@@ -113,10 +113,6 @@ async def _claim_initial_continuation(
     try:
         await store.create(_initial_queued_record(run))
     except Exception:
-        # SQLite, asyncpg, and in-memory stores expose different duplicate-row
-        # exceptions. The authoritative distinction is whether a continuation
-        # now exists. If it does, another replica won checkpoint 1 and owns this
-        # tick. If it does not, this was a real persistence failure.
         current = await store.get(run.run_id)
         if current is None:
             raise
@@ -150,13 +146,13 @@ async def _resume_queued_candidate(
             runtime=runtime,
             run_store=run_store,
         )
+    except LiveAttemptOwned:
+        return False
     except (KeyError, ValueError):
         latest = await store.get(run.run_id)
         if latest is None:
             raise
         if latest.run.status is not RunStatus.QUEUED:
-            # Another worker advanced the optimistic continuation version and
-            # owns execution. Do not redispatch behind it.
             return False
         raise
     return True
@@ -171,30 +167,11 @@ async def recover_queued_graph_runs(
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
 ) -> int:
-    """Recover admitted durable Graph Runs that died before or just after checkpoint 1.
-
-    This closes the admission-to-first-checkpoint crash window without adding a
-    second scheduler. Candidate identity and lifecycle come only from
-    ``RunStore``. Callers must provide an explicit eligibility predicate because
-    ``QUEUED`` is shared by other canonical consumers; recovery must never steal
-    work merely because it is queued.
-
-    Two persisted crash shapes are supported:
-
-    * ``QUEUED`` Run with no continuation: create checkpoint 1 as the atomic
-      bootstrap claim, then resume through the normal durable executor.
-    * ``QUEUED`` Run with checkpoint 1 already present: resume it directly.
-
-    ``store.create`` is the cross-replica bootstrap fence. Continuation stores
-    enforce one row per canonical Run. If another replica wins that insert, the
-    loser observes the row and does not execute it. If the winner dies after the
-    insert but before dispatch, a later recovery tick sees the existing QUEUED
-    continuation and resumes it. Existing continuation resumes use the normal
-    optimistic checkpoint version as their replica race fence.
-    """
+    """Recover admitted durable Graph Runs around checkpoint 1."""
     if limit <= 0:
         return 0
 
+    await _reconcile_if_supported(store, limit=limit)
     candidates = await run_store.list_by_status(RunStatus.QUEUED, limit=limit)
     recovered = 0
     for run in candidates:
