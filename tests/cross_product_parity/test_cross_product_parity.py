@@ -8,7 +8,6 @@ to its executable assertions. No missing product behavior is recreated here.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -219,15 +218,3 @@ def test_dependency_handling_contains_no_test_suppression_escape_hatch() -> None
     assert "pytest.importorskip(" not in source
     assert "pytest.mark." + "xfail" not in source
     assert "pytest.mark." + "skip" not in source
-
-
-def test_temporary_ruff_formatter_diagnostic() -> None:
-    """Emit the exact Ruff formatter delta; removed once the delta is applied."""
-    harness = Path(__file__).resolve().parent / "harness.py"
-    result = subprocess.run(
-        ["ruff", "format", "--diff", str(harness)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
