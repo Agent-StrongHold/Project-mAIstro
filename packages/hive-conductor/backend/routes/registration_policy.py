@@ -55,9 +55,7 @@ def registration_policy_status() -> dict[str, str]:
 
 
 @admin_router.put("/registration-policy")
-def update_registration_policy(
-    body: RegistrationPolicyBody, request: Request
-) -> dict[str, str]:
+def update_registration_policy(body: RegistrationPolicyBody, request: Request) -> dict[str, str]:
     result = set_policy(body.mode)
     log_audit(
         "registration_policy_update",
