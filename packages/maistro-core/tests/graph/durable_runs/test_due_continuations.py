@@ -44,7 +44,7 @@ async def _assert_due_query(store) -> None:
             created_at=now - timedelta(minutes=3),
         ),
         _continuation(
-            "hitl-paused",
+            "due-paused",
             status=RunStatus.PAUSED,
             resume_at=now - timedelta(seconds=1),
             created_at=now - timedelta(minutes=2),
@@ -71,16 +71,19 @@ async def _assert_due_query(store) -> None:
     for row in rows:
         await store.create(row)
 
-    # PAUSED is the canonical HITL state. `resume_durable_graph` deliberately
-    # refuses it until an answer/timeout decision has been persisted, so the
-    # clock-driven wakeup query must not turn a stale deadline into a human
-    # answer. Ordinary timed waits are WAITING.
-    assert await store.list_due_run_ids(now=now, limit=10) == ["due-waiting"]
+    # This is the indexed *candidate* query. PAUSED is retained here because
+    # HITL timeout/cancel reconciliation also needs to find overdue persisted
+    # pauses. The clock-driven graph executor filters to WAITING before calling
+    # resume_durable_graph; it never treats a deadline as a human answer.
+    assert await store.list_due_run_ids(now=now, limit=10) == [
+        "due-waiting",
+        "due-paused",
+    ]
     assert await store.list_due_run_ids(now=now, limit=1) == ["due-waiting"]
 
 
 @pytest.mark.asyncio
-async def test_in_memory_continuation_store_queries_only_due_resumable_rows() -> None:
+async def test_in_memory_continuation_store_queries_only_due_candidates() -> None:
     await _assert_due_query(InMemoryGraphContinuationStore())
 
 
