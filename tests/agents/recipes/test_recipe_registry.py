@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from maistro.agents.recipes import AgentRecipe, RecipeRegistry
+from maistro.agents.recipes import AgentRecipe, RecipeRegistry, agent_recipe_to_node_template
 from maistro.agents.spec.agent_spec import AgentRole
 from maistro.agents.spec.schemas import resolve_schema
 
@@ -94,13 +94,14 @@ class TestRecipeRegistry:
         (tmp_path / "saved_recipe.yaml").write_text(yaml.dump(data), encoding="utf-8")
 
         registry = RecipeRegistry(recipes_dir=tmp_path)
-        template = registry.get_node_template(
-            "saved.recipe",
+        resolved = registry.get("saved.recipe")
+        assert resolved is not None
+        template = agent_recipe_to_node_template(
+            resolved,
             workspace_id="workspace-1",
             node_type="agent.compatibility",
         )
 
-        assert template is not None
         assert template.workspace_id == "workspace-1"
         assert template.metadata["source_import_provenance"]["source_format"] == "agent_recipe"
         assert template.metadata["legacy_recipe_snapshot"]["result_schema"] == "schemas.ReviewOutput"
