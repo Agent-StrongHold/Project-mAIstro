@@ -12,8 +12,8 @@ from maistro.events.convergence import (
     event_authority_fields,
     require_metadata_only_projection,
 )
-from maistro.runtime.execution import RuntimeEventEnvelope
 from maistro.runs.recovery_events import RECOVERY_EVENT_TYPE, RecoveryDispositionEvent
+from maistro.runtime.execution import RuntimeEventEnvelope
 
 
 @dataclass(frozen=True)
