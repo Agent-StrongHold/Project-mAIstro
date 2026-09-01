@@ -1,8 +1,25 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +20
+  packages/hive-conductor/backend/tests: +22
 ---
 # chatgpt-m0-registration-policy-313-v2-e1d2
+
+## Update: +2 review regressions (20 -> 22)
+
+Codex review found two security paths the original #313 suite did not pin. Added
+`test_registration_policy_review_gaps.py` with two node IDs. One proves that a
+valid invitation supplied while global registration is open is still consumed,
+then cannot be replayed after an administrator closes registration; the same
+case also verifies policy/invitation audit records name the authenticated admin
+principal rather than a hard-coded actor. The other reproduces JsonStore's
+publish-before-persist failure shape and proves a failed attempt to open
+registration restores the previous local closed policy before propagating the
+persistence error.
+
+The Playwright credential-label spec was also corrected without adding a node
+ID: #313 intentionally hides Sign up after setup, so the accessibility spec now
+opens registration through the real admin API in a separate browser context and
+closes it in teardown instead of assuming public signup is always available.
 
 ## Update: +1 more (19 -> 20)
 
