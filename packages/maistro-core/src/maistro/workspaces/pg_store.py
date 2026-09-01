@@ -36,7 +36,7 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
@@ -51,6 +51,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
     from maistro.projects.scope_store import ProjectScopeStore
+
+
+class _WorkspaceCreateKwargs(TypedDict):
+    name: str
+    description: str
+    workspace_id: NotRequired[str]
+    created_at: NotRequired[datetime]
+    updated_at: NotRequired[datetime]
 
 
 class PgWorkspaceStore:
@@ -76,7 +84,7 @@ class PgWorkspaceStore:
         exist only for convergence imports so a durable legacy Workspace keeps
         both its canonical ID and chronology (#37).
         """
-        workspace_kwargs: dict[str, object] = {"name": name, "description": description}
+        workspace_kwargs: _WorkspaceCreateKwargs = {"name": name, "description": description}
         if workspace_id is not None:
             workspace_kwargs["workspace_id"] = workspace_id
         if created_at is not None:
