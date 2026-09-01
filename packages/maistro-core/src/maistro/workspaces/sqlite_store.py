@@ -77,17 +77,6 @@ class SqliteWorkspaceStore:
     def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
         self._conn = conn
         self.project_store: ProjectScopeStore = project_store
-        # One aiosqlite connection is shared by every caller, so two concurrent
-        # writers issue two `BEGIN IMMEDIATE`s on it and the second raises
-        # "cannot start a transaction within a transaction" -- a spurious error
-        # where the caller should simply have waited. `SqliteRunStore` already
-        # carries this lock for the same reason; this store did not (Codex,
-        # #516).
-        #
-        # Taken inside each method rather than by a decorator, for the reason
-        # `SqliteRunStore` records: a decorator's declared return type is
-        # `Coroutine`, which pyright will not accept where the protocol asks
-        # for the `CoroutineType` a plain `async def` produces.
         self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
@@ -102,10 +91,16 @@ class SqliteWorkspaceStore:
         name: str,
         description: str = "",
         workspace_id: str | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
     ) -> Workspace:
-        workspace_kwargs: dict[str, str] = {"name": name, "description": description}
+        workspace_kwargs: dict[str, object] = {"name": name, "description": description}
         if workspace_id is not None:
             workspace_kwargs["workspace_id"] = workspace_id
+        if created_at is not None:
+            workspace_kwargs["created_at"] = created_at
+        if updated_at is not None:
+            workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
         owner = WorkspaceMembership(
             workspace_id=workspace.workspace_id,
@@ -131,9 +126,6 @@ class SqliteWorkspaceStore:
         try:
             await self.project_store.create_root(workspace.workspace_id)
         except BaseException:
-            # Cascade takes the membership with it. Quiet on its own failure:
-            # this is the failure path, and an error here would replace the one
-            # the caller needs to see.
             await self._conn.execute(
                 "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
                 (workspace.workspace_id,),
@@ -181,10 +173,6 @@ class SqliteWorkspaceStore:
             await self._conn.rollback()
             raise WorkspaceNotFound(workspace_id)
         await self._conn.commit()
-        # A direct call, not `getattr(store, "purge_workspace", None)`. The
-        # optional form meant the Projects were purged in tests, where the
-        # store was the in-memory reference, and left orphaned on every durable
-        # deployment, where no implementation defined it (Codex, #516).
         await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
@@ -285,13 +273,7 @@ class SqliteWorkspaceStore:
             await self._conn.commit()
 
     async def _begin_immediate(self) -> None:
-        """Take the write lock before reading the roster, not after.
-
-        aiosqlite's implicit transaction begins deferred, so the owner count
-        would be read under a read lock and the demotion applied under a write
-        one — the same read-then-write window PostgreSQL closes with
-        `FOR UPDATE`. `BEGIN IMMEDIATE` makes the whole sequence the writer.
-        """
+        """Take the write lock before reading the roster, not after."""
         await self._conn.execute("BEGIN IMMEDIATE")
 
     async def _write_membership(self, membership: WorkspaceMembership) -> None:
@@ -343,13 +325,7 @@ class SqliteWorkspaceStore:
 
 
 def _iso(value: datetime) -> str:
-    """An ordering key that sorts the way the datetime does.
-
-    Only ever UTC here — the model builds every timestamp with
-    `datetime.now(UTC)` — so lexicographic order over the ISO text is the same
-    order as over the instants. A value carrying some other offset would not
-    have that property, so it is normalised rather than trusted.
-    """
+    """An ordering key that sorts the way the datetime does."""
     return value.astimezone(UTC).isoformat()
 
 
