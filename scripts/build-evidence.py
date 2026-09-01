@@ -16,6 +16,7 @@ import json
 import math
 import os
 import platform
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
@@ -24,6 +25,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class EvidenceError(RuntimeError):
@@ -152,12 +154,8 @@ def _validated_digest(item: object, previous_path: str) -> dict[str, str]:
         raise EvidenceError("identity input path must be non-empty")
     if path <= previous_path:
         raise EvidenceError("identity inputs are not in canonical path order")
-    if not isinstance(digest, str) or len(digest) != 64:
+    if not isinstance(digest, str) or _SHA256_HEX_RE.fullmatch(digest) is None:
         raise EvidenceError(f"identity input digest is malformed: {path}")
-    try:
-        int(digest, 16)
-    except ValueError as exc:
-        raise EvidenceError(f"identity input digest is malformed: {path}") from exc
     return {"path": path, "sha256": digest}
 
 
@@ -177,8 +175,9 @@ def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
     expected_fields = {"schema", "command", "runtime", "tools", "inputs", "evidence_key"}
     if set(manifest) != expected_fields:
         raise EvidenceError("identity manifest fields do not match schema")
-    if manifest.get("schema") != SCHEMA_VERSION:
-        raise EvidenceError(f"unsupported identity schema: {manifest.get('schema')!r}")
+    schema = manifest.get("schema")
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema != SCHEMA_VERSION:
+        raise EvidenceError(f"unsupported identity schema: {schema!r}")
 
     command = manifest.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -264,10 +263,13 @@ def verify_completed_manifest(
     }
     if set(completed_manifest) != expected_fields:
         raise EvidenceError("completed evidence fields do not match schema")
-    if completed_manifest.get("schema") != RESULT_SCHEMA_VERSION:
-        raise EvidenceError(
-            f"unsupported completed-evidence schema: {completed_manifest.get('schema')!r}"
-        )
+    schema = completed_manifest.get("schema")
+    if (
+        isinstance(schema, bool)
+        or not isinstance(schema, int)
+        or schema != RESULT_SCHEMA_VERSION
+    ):
+        raise EvidenceError(f"unsupported completed-evidence schema: {schema!r}")
 
     embedded_raw = completed_manifest.get("identity")
     if not isinstance(embedded_raw, dict):
@@ -295,7 +297,7 @@ def verify_completed_manifest(
 def _read_json(path: str) -> dict[str, Any]:
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EvidenceError(f"cannot read evidence JSON {path!r}: {exc}") from exc
     if not isinstance(raw, dict):
         raise EvidenceError(f"evidence JSON {path!r} must contain an object")
@@ -349,7 +351,7 @@ def _identity_from_args(args: argparse.Namespace) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.complete_from:
+        if args.complete_from is not None:
             if args.exit_code is None or args.duration_seconds is None:
                 raise EvidenceError("--complete-from requires --exit-code and --duration-seconds")
             if args.inputs or args.command is not None or args.tools:
@@ -369,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             raise EvidenceError(
                 "--exit-code/--duration-seconds are only valid with --complete-from"
             )
-        if args.verify_result:
+        if args.verify_result is not None:
             verify_completed_manifest(
                 _read_json(args.verify_result),
                 expected_identity=identity,
