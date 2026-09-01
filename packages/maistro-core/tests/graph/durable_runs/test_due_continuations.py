@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from maistro.graph.durable_runs.continuation import (
@@ -82,7 +84,8 @@ async def test_in_memory_continuation_store_queries_only_due_resumable_rows() ->
 
 
 @pytest.mark.asyncio
-async def test_sqlite_continuation_store_queries_resume_at_index(aiosqlite_connection) -> None:
-    store = SqliteGraphContinuationStore(aiosqlite_connection)
-    await store.ensure_schema()
-    await _assert_due_query(store)
+async def test_sqlite_continuation_store_queries_resume_at_index(tmp_path: Path) -> None:
+    async with aiosqlite.connect(tmp_path / "continuations.db") as conn:
+        store = SqliteGraphContinuationStore(conn)
+        await store.ensure_schema()
+        await _assert_due_query(store)
