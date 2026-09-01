@@ -248,7 +248,9 @@ class AddMemberBody(BaseModel):
 
 @router.post("/{workspace_id}/members", response_model=Workspace)
 async def add_workspace_member(
-    workspace_id: str, body: AddMemberBody, request: Request
+    workspace_id: str,
+    body: AddMemberBody,
+    request: Request,
 ) -> Workspace:
     requester = _user_id(request)
     if await visible_view(requester, workspace_id) is None:
@@ -275,7 +277,9 @@ async def remove_workspace_member(workspace_id: str, user_id: str, request: Requ
     try:
         return await remove_member(workspace_id, user_id=user_id)
     except WorkspaceAccessDenied as exc:
-        raise HTTPException(status_code=400, detail="cannot remove the workspace's last owner") from exc
+        raise HTTPException(
+            status_code=400, detail="cannot remove the workspace's last owner"
+        ) from exc
 
 
 class WorkspaceFeedbackBody(BaseModel):
@@ -289,7 +293,9 @@ class WorkspaceFeedbackBody(BaseModel):
 
 @router.post("/{workspace_id}/feedback", response_model=PersonaFeedback, status_code=201)
 async def submit_workspace_feedback(
-    workspace_id: str, body: WorkspaceFeedbackBody, request: Request
+    workspace_id: str,
+    body: WorkspaceFeedbackBody,
+    request: Request,
 ) -> PersonaFeedback:
     user_id = _user_id(request)
     workspace = await visible_view(user_id, workspace_id)
@@ -318,7 +324,9 @@ class UpdateWorkspaceBody(BaseModel):
 
 @router.patch("/{workspace_id}", response_model=Workspace)
 async def update_workspace(
-    workspace_id: str, body: UpdateWorkspaceBody, request: Request
+    workspace_id: str,
+    body: UpdateWorkspaceBody,
+    request: Request,
 ) -> Workspace:
     requester = _user_id(request)
     if await visible_view(requester, workspace_id) is None:
@@ -336,7 +344,9 @@ class UpdateToolBindingsBody(BaseModel):
 
 @router.put("/{workspace_id}/tool-bindings", response_model=Workspace)
 async def update_tool_bindings(
-    workspace_id: str, body: UpdateToolBindingsBody, request: Request
+    workspace_id: str,
+    body: UpdateToolBindingsBody,
+    request: Request,
 ) -> Workspace:
     requester = _user_id(request)
     if await visible_view(requester, workspace_id) is None:
