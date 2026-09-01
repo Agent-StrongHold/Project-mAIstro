@@ -27,12 +27,22 @@ let policyContext: BrowserContext;
 let page: Page;
 
 test.beforeAll(async ({ browser }) => {
-  // An explicit context, not `browser.newPage()`: AxeBuilder refuses a page
-  // whose context it did not see created.
   const baseURL = test.info().project.use.baseURL;
+
+  // Provisioning may establish an authenticated browser session as part of the
+  // first-run flow. Do it in a disposable context so the page whose login form
+  // we inspect starts genuinely anonymous instead of being redirected away
+  // from /login by a setup-created session cookie.
+  const setupContext = await browser.newContext({ baseURL });
+  const setupPage = await setupContext.newPage();
+  await setupIfNeeded(setupPage);
+  await setupContext.close();
+
+  // An explicit fresh context, not `browser.newPage()`: AxeBuilder refuses a
+  // page whose context it did not see created, and the clean context is also
+  // the isolation boundary for the anonymous login accessibility assertions.
   context = await browser.newContext({ baseURL });
   page = await context.newPage();
-  await setupIfNeeded(page);
 
   // #313 correctly closes ordinary registration after setup. This spec is
   // about the accessibility semantics of the sign-up form, so establish the
