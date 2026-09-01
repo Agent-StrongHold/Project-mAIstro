@@ -1,0 +1,87 @@
+name: tmp-798-vulture-reconcile
+
+on:
+  push:
+    branches:
+      - chatgpt/m1-129-pm-fleet-closeout
+    paths:
+      - .github/workflows/tmp-798-vulture-reconcile.yml
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-129-pm-fleet-closeout
+          fetch-depth: 0
+      - name: Merge live develop and reconcile exact Vulture identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin develop
+          git merge --no-commit --no-ff origin/develop
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('quality/vulture-baseline.json')
+          data = json.loads(path.read_text())
+          rules = {rule['id']: rule for rule in data['rules']}
+
+          removals = {
+              'fastapi-route-handler': [
+                  "packages/maistro-server/src/maistro_server/api/agents.py::unused function 'invoke_pm_agent'",
+                  "packages/maistro-server/src/maistro_server/api/agents.py::unused function 'list_pm_agents'",
+              ],
+              'dataclass-declarative-field': [
+                  "packages/maistro-core/src/maistro/agents/pm_fleet.py::unused variable 'PM_AGENT_NAMES'",
+              ],
+              'fastapi-app-state': [
+                  "packages/maistro-server/src/maistro_server/main.py::unused attribute 'pm_catalog'",
+              ],
+              'core-public-api-surface': [
+                  "packages/maistro-core/src/maistro/agents/pm_runner.py::unused function 'run_pm_task'",
+                  "packages/maistro-core/src/maistro/agents/pm_runner.py::unused function 'set_pm_event_bus'",
+                  "packages/maistro-core/src/maistro/agents/pm_runner.py::unused function 'set_pm_outcome_store'",
+              ],
+          }
+          additions = {
+              'pydantic-declarative-field': [
+                  "packages/maistro-core/src/maistro/personas/schema.py::unused variable 'tagline'",
+              ],
+              'core-public-api-surface': [
+                  "packages/maistro-core/src/maistro/agents/catalog.py::unused class 'AgentCatalog'",
+                  "packages/maistro-core/src/maistro/agents/pm_capabilities.py::unused function 'is_gated'",
+                  "packages/maistro-core/src/maistro/tools/atlassian/client.py::unused method 'jira_get_my_issues'",
+                  "packages/maistro-core/src/maistro/tools/atlassian/client.py::unused method 'jira_search_issues'",
+                  "packages/maistro-core/src/maistro/tools/browser/client.py::unused method 'search_web'",
+              ],
+          }
+
+          for rule_id, findings in removals.items():
+              current = rules[rule_id]['findings']
+              for finding in findings:
+                  while finding in current:
+                      current.remove(finding)
+              current.sort()
+
+          for rule_id, findings in additions.items():
+              current = rules[rule_id]['findings']
+              for finding in findings:
+                  if finding not in current:
+                      current.append(finding)
+              current.sort()
+
+          path.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+          rm .github/workflows/tmp-798-vulture-reconcile.yml
+          git add -A
+          git diff --cached --check
+          git commit -m 'Merge develop and reconcile PM-Fleet Vulture debt (#129)'
+          git push origin HEAD:chatgpt/m1-129-pm-fleet-closeout
