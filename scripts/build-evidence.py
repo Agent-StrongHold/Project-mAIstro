@@ -176,11 +176,7 @@ def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
     if set(manifest) != expected_fields:
         raise EvidenceError("identity manifest fields do not match schema")
     schema = manifest.get("schema")
-    if (
-        isinstance(schema, bool)
-        or not isinstance(schema, int)
-        or schema != SCHEMA_VERSION
-    ):
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema != SCHEMA_VERSION:
         raise EvidenceError(f"unsupported identity schema: {schema!r}")
 
     command = manifest.get("command")
@@ -268,11 +264,7 @@ def verify_completed_manifest(
     if set(completed_manifest) != expected_fields:
         raise EvidenceError("completed evidence fields do not match schema")
     schema = completed_manifest.get("schema")
-    if (
-        isinstance(schema, bool)
-        or not isinstance(schema, int)
-        or schema != RESULT_SCHEMA_VERSION
-    ):
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema != RESULT_SCHEMA_VERSION:
         raise EvidenceError(f"unsupported completed-evidence schema: {schema!r}")
 
     embedded_raw = completed_manifest.get("identity")
