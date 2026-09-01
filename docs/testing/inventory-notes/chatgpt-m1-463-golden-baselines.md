@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests: +8
+  tests/: +8
 ---
 # M1 #463 golden behavioral baseline evidence
 
