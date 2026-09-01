@@ -21,7 +21,10 @@ class WorkspaceStore(Protocol):
         creator_user_id: str,
         name: str,
         description: str = "",
-    ) -> Workspace: ...
+        workspace_id: str | None = None,
+    ) -> Workspace:
+        """Create a Workspace, preserving an existing ID only for convergence imports."""
+        ...
 
     async def get(self, workspace_id: str) -> Workspace | None: ...
 
@@ -65,8 +68,22 @@ class InMemoryWorkspaceStore:
         creator_user_id: str,
         name: str,
         description: str = "",
+        workspace_id: str | None = None,
     ) -> Workspace:
-        workspace = Workspace(name=name, description=description)
+        """Create canonical identity, optionally retaining a pre-convergence ID.
+
+        Ordinary callers omit ``workspace_id`` and the canonical model mints it.
+        The explicit form exists only so a product adapter can retire a durable
+        legacy Workspace without inventing an old→new identity mapping (#37).
+        It is still a canonical insert: duplicate IDs are refused and the Root
+        Project is provisioned by this store exactly as for a new Workspace.
+        """
+        workspace_kwargs: dict[str, str] = {"name": name, "description": description}
+        if workspace_id is not None:
+            workspace_kwargs["workspace_id"] = workspace_id
+        workspace = Workspace(**workspace_kwargs)
+        if workspace.workspace_id in self._workspaces:
+            raise ValueError(f"Workspace {workspace.workspace_id!r} already exists")
         owner = WorkspaceMembership(
             workspace_id=workspace.workspace_id,
             user_id=creator_user_id,
