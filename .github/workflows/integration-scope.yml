@@ -64,7 +64,7 @@ jobs:
             core.info(`candidate ${candidateSha}: waiting for ${[...required].join(', ') || '<no specialized checks>'}`);
             if (required.size === 0) return;
 
-            for (let attempt = 1; attempt <= 100; attempt += 1) {
+            for (let attempt = 1; attempt <= 130; attempt += 1) {
               const runs = await github.paginate(
                 github.rest.checks.listForRef,
                 {
