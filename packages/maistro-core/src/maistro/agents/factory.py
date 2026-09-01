@@ -46,10 +46,14 @@ def register_strategy(name: str, cls: type) -> None:
 
 def _load_preamble(agents_dir: Path) -> str:
     preamble_path = agents_dir / "PREAMBLE.md"
-    if preamble_path.exists():
-        return preamble_path.read_text(encoding="utf-8")
-    logger.warning("No PREAMBLE.md in %s", agents_dir)
-    return ""
+    if not preamble_path.is_file():
+        raise ConfigError(
+            f"agents directory {agents_dir} is missing required versioned PREAMBLE.md"
+        )
+    preamble = preamble_path.read_text(encoding="utf-8")
+    if not preamble.strip():
+        raise ConfigError(f"agents preamble {preamble_path} is empty")
+    return preamble
 
 
 _VAR_PATTERN = re.compile(r"\{\{(\w+)\}\}")
@@ -150,6 +154,36 @@ def _strict_str_tuple(value: Any, *, field: str, agent_name: str) -> tuple[str, 
     return tuple(value)
 
 
+def _manifest_sub_agents(manifest: dict[str, Any], *, agent_name: str) -> tuple[str, ...]:
+    """Read delegation from the deployment manifest schema.
+
+    ``delegation.sub_agents`` is canonical. The old flat ``sub_agents`` key is
+    accepted only as a compatibility input; if both forms are present they must
+    agree so one manifest cannot describe two different rosters.
+    """
+    delegation = manifest.get("delegation")
+    if delegation is None:
+        nested: Any = None
+    elif not isinstance(delegation, dict):
+        raise ConfigError(
+            f"agent '{agent_name}': field 'delegation' has type "
+            f"{type(delegation).__name__}; expected mapping"
+        )
+    else:
+        nested = delegation.get("sub_agents")
+
+    flat = manifest.get("sub_agents")
+    nested_values = _strict_str_tuple(
+        nested, field="delegation.sub_agents", agent_name=agent_name
+    )
+    flat_values = _strict_str_tuple(flat, field="sub_agents", agent_name=agent_name)
+    if nested is not None and flat is not None and nested_values != flat_values:
+        raise ConfigError(
+            f"agent '{agent_name}': delegation.sub_agents conflicts with legacy sub_agents"
+        )
+    return nested_values if nested is not None else flat_values
+
+
 def _build_identity_from_manifest(manifest: dict[str, Any]) -> AgentIdentity:
     name = manifest["name"]
     reasoning = manifest.get("reasoning", {}) or {}
@@ -166,9 +200,7 @@ def _build_identity_from_manifest(manifest: dict[str, Any]) -> AgentIdentity:
         tools=_strict_str_tuple(manifest.get("tools"), field="tools", agent_name=name),
         skills=_strict_str_tuple(manifest.get("skills"), field="skills", agent_name=name),
         rules=_safe_tuple(manifest.get("rules")),
-        sub_agents=_strict_str_tuple(
-            manifest.get("sub_agents"), field="sub_agents", agent_name=name
-        ),
+        sub_agents=_manifest_sub_agents(manifest, agent_name=name),
         trust_tier=manifest.get("trust_tier", "t2"),
         priority_tier=manifest.get("priority_tier", "P2"),
         max_tool_rounds=reasoning.get("max_subtasks", reasoning.get("max_rounds", 3)),
@@ -419,6 +451,7 @@ async def create_agents(
     rca_extractor: Any = None,
     learning_promoter: Any = None,
     tool_registry: Any = None,
+    require_agents: bool = False,
 ) -> dict[str, Agent]:
     _register_custom_strategies()
 
@@ -449,6 +482,8 @@ async def create_agents(
 
     agents_path = Path(agents_dir)
     if not agents_path.is_dir():
+        if require_agents:
+            raise ConfigError(f"required agents directory {agents_dir} was not found")
         logger.warning("Agents directory %s not found -- no agents loaded", agents_dir)
         return {}
 
@@ -490,6 +525,8 @@ async def create_agents(
         )
 
     if not agents:
+        if require_agents:
+            raise ConfigError(f"required agents directory {agents_dir} contains no valid agents")
         logger.warning("No agents loaded from %s", agents_dir)
 
     return agents
