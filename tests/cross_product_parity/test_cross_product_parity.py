@@ -8,6 +8,7 @@ to its executable assertions. No missing product behavior is recreated here.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -114,9 +115,9 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
         assert dependency.blockers
         return
 
-    from maistro.builders.canonical_execution import CanonicalGraphPipelineExecutor
-
-    assert CanonicalGraphPipelineExecutor.__name__ == "CanonicalGraphPipelineExecutor"
+    builders_execution = importlib.import_module("maistro.builders.canonical_execution")
+    executor = builders_execution.CanonicalGraphPipelineExecutor
+    assert executor.__name__ == "CanonicalGraphPipelineExecutor"
     route_source = (
         Path(__file__).resolve().parents[2]
         / "packages"
