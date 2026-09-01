@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,8 @@ async def test_sqlite_import_preserves_workspace_and_root_project_identity(tmp_p
     from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
     workspace_id = f"legacy-{uuid4().hex}"
+    created_at = datetime(2024, 2, 3, 4, 5, tzinfo=UTC)
+    updated_at = created_at + timedelta(days=17)
     conn = await aiosqlite.connect(tmp_path / "workspace-import.db")
     try:
         projects = SqliteProjectScopeStore(conn)
@@ -27,11 +30,17 @@ async def test_sqlite_import_preserves_workspace_and_root_project_identity(tmp_p
             creator_user_id="legacy-owner",
             name="Imported",
             workspace_id=workspace_id,
+            created_at=created_at,
+            updated_at=updated_at,
         )
         root = await projects.root_for_workspace(workspace_id)
+        reloaded = await store.get(workspace_id)
 
         assert workspace.workspace_id == workspace_id
         assert root.workspace_id == workspace_id
+        assert reloaded is not None
+        assert reloaded.created_at == created_at
+        assert reloaded.updated_at == updated_at
     finally:
         await conn.close()
 
@@ -52,6 +61,8 @@ async def test_postgres_import_preserves_workspace_and_root_project_identity() -
     from maistro.workspaces.pg_store import PgWorkspaceStore
 
     workspace_id = f"legacy-{uuid4().hex}"
+    created_at = datetime(2023, 7, 11, 12, 13, tzinfo=UTC)
+    updated_at = created_at + timedelta(days=31)
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     store = PgWorkspaceStore(pool, project_store=PgProjectScopeStore(pool))
     created = False
@@ -60,12 +71,18 @@ async def test_postgres_import_preserves_workspace_and_root_project_identity() -
             creator_user_id="legacy-owner",
             name="Imported",
             workspace_id=workspace_id,
+            created_at=created_at,
+            updated_at=updated_at,
         )
         created = True
         root = await store.project_store.root_for_workspace(workspace_id)
+        reloaded = await store.get(workspace_id)
 
         assert workspace.workspace_id == workspace_id
         assert root.workspace_id == workspace_id
+        assert reloaded is not None
+        assert reloaded.created_at == created_at
+        assert reloaded.updated_at == updated_at
     finally:
         if created:
             await store.delete(workspace_id)
