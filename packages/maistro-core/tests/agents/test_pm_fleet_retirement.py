@@ -13,8 +13,11 @@ from maistro.personas.expander import expand_persona
 from maistro.personas.rubric import load_template
 
 _CORE = Path(__file__).resolve().parents[2]
-_AGENTS = _CORE / "src" / "maistro" / "agents"
-_TEMPLATE = _CORE / "src" / "maistro" / "personas" / "templates" / "pm_fleet.yaml"
+_SRC = _CORE / "src" / "maistro"
+_AGENTS = _SRC / "agents"
+_GRAPH = _SRC / "graph"
+_TOOLS = _SRC / "tools"
+_TEMPLATE = _SRC / "personas" / "templates" / "pm_fleet.yaml"
 
 _EXPECTED_SPAWNS = {
     "intake",
@@ -49,3 +52,11 @@ def test_legacy_pm_agent_authority_modules_are_removed() -> None:
     # restart/import cannot recreate the retired POC roster or executor.
     assert not (_AGENTS / "pm_fleet.py").exists()
     assert not (_AGENTS / "pm_runner.py").exists()
+
+
+def test_retired_pm_execution_adapters_are_removed() -> None:
+    # These modules were reachable only through pm_runner. Keeping or
+    # allowlisting them would preserve a second PM-specific execution surface.
+    assert not (_AGENTS / "pm_llm_call.py").exists()
+    assert not (_GRAPH / "pm_domain.py").exists()
+    assert not (_TOOLS / "atlassian").exists()
