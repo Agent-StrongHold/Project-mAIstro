@@ -164,7 +164,6 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             return {
                 "handle_id": handle.handle_id,
                 "harness_type": handle.harness_type,
-                "dispatched_at": handle.dispatched_at.isoformat(),
             }
 
         effect_key = f"agent.spawn_harness.dispatch:{inputs.harness_type}"
