@@ -10,7 +10,7 @@ from config import OAuthProviderSettings, Settings
 from fastapi import HTTPException, Request
 from models.schemas import HiveUser
 from routes import auth
-from services.oauth_login import OAuthLoginService
+from services.oauth_login import OAuthLoginDenied, OAuthLoginService
 
 from maistro.auth.oauth import OAuthExchange, OAuthIdentity, OAuthToken
 
@@ -142,7 +142,11 @@ async def test_link_callback_uses_current_session_and_does_not_issue_new_hive_se
         "get_settings",
         lambda: SimpleNamespace(human_auth_mode="hybrid"),
     )
-    monkeypatch.setattr(auth, "get_current_user", lambda session: {"id": "user-1"} if session else None)
+    monkeypatch.setattr(
+        auth,
+        "get_current_user",
+        lambda session: {"id": "user-1"} if session else None,
+    )
     monkeypatch.setattr(auth, "get_oauth_login_service", lambda: Service())
     monkeypatch.setattr(auth, "log_audit", lambda *args, **kwargs: None)
 
@@ -233,11 +237,44 @@ async def test_service_link_uses_verified_subject_and_explicit_user_id(monkeypat
 
 @pytest.mark.asyncio
 async def test_ordinary_unlinked_login_still_does_not_auto_link(monkeypatch) -> None:
-    class Service:
-        async def authenticate(self, **kwargs):
-            raise AssertionError("ordinary login behavior is owned by the existing unlinked denial path")
+    link_calls: list[tuple[str, str, str]] = []
 
-    # This regression is structural: adding the explicit link flow must not
-    # make the normal login route infer a link from email or the current session.
-    assert not hasattr(Service(), "auto_link_by_email")
-    assert "email" not in auth.oauth_callback.__annotations__
+    class LinkStore:
+        async def resolve(self, provider: str, sub: str) -> str | None:
+            assert (provider, sub) == ("entra", SUBJECT)
+            return None
+
+        async def link(self, provider: str, sub: str, user_id: str) -> None:
+            link_calls.append((provider, sub, user_id))
+            pytest.fail("ordinary OAuth login must never auto-link an unknown identity")
+
+    exchange = OAuthExchange(
+        identity=OAuthIdentity(
+            provider="entra",
+            sub=SUBJECT,
+            email="same-as-local@example.test",
+            email_verified=True,
+        ),
+        token=OAuthToken(access_token="secret", token_type="Bearer"),
+    )
+
+    class Client:
+        async def exchange_code(self, provider: str, code: str, state: str, redirect_uri: str):
+            assert (provider, code, state) == ("entra", "code", "state")
+            return exchange
+
+    async with httpx.AsyncClient() as http:
+        service = OAuthLoginService(_settings(), http=http, link_store=LinkStore())
+        monkeypatch.setattr(service, "_client", Client())
+        with pytest.raises(OAuthLoginDenied) as exc:
+            await service.authenticate(
+                provider="entra",
+                code="code",
+                state="state",
+                browser_state="state",
+            )
+
+    assert exc.value.stage == "identity"
+    assert exc.value.reason == "unlinked_identity"
+    assert exc.value.subject == SUBJECT
+    assert link_calls == []
