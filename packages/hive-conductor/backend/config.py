@@ -274,21 +274,20 @@ class Settings(BaseSettings):
     # is only meaningful with Secure, so it is not offered as a default.
     session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
+    # Explicit human-login front-door policy. `hybrid` is the compatibility
+    # default for the generic OAuth feature that already shipped: with no OAuth
+    # providers configured it behaves exactly like local-only, while a
+    # deployment that already configured OAuth does not silently lose it.
+    # `entra` is stricter: only the provider named `entra` may be configured and
+    # ordinary password login is disabled at the route boundary.
+    human_auth_mode: Literal["local", "entra", "hybrid"] = "hybrid"
+
     # OIDC human-login providers. This object contains public endpoints,
     # client ids, and an optional *vault key name* only. Client secrets are
     # deliberately not settings values and are resolved at exchange time.
     oauth_providers: dict[str, OAuthProviderSettings] = Field(default_factory=dict)
     oauth_public_origin: str | None = None
     oauth_success_path: str = "/"
-
-    # Explicit human-login mode (#491): `local` keeps password login, `entra`
-    # denies ordinary password login (Entra-only), `hybrid` allows both. The
-    # route layer reads this through HumanAuthModePolicy instead of inferring
-    # login availability from whether a provider happens to be configured, so
-    # a misconfigured Entra-only deployment cannot silently fall back to
-    # passwords. Break-glass recovery stays a distinct operator-controlled
-    # seam, never a request parameter.
-    human_auth_mode: Literal["local", "entra", "hybrid"] = "local"
 
     # The single, explicit, greppable local-development escape. Startup refuses
     # a Secure-disabled session cookie unless this is set — see
@@ -389,6 +388,13 @@ class Settings(BaseSettings):
     def validate_oauth_wiring(self) -> Settings:
         if self.oauth_providers and self.oauth_public_origin is None:
             raise ValueError("oauth_public_origin is required when OAuth providers are configured")
+        if self.human_auth_mode == "entra":
+            if set(self.oauth_providers) != {"entra"}:
+                raise ValueError(
+                    "human_auth_mode=entra requires exactly one OAuth provider named entra"
+                )
+            if self.oauth_public_origin is None:
+                raise ValueError("human_auth_mode=entra requires oauth_public_origin")
         return self
 
     @property
