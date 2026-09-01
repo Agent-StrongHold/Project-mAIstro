@@ -15,9 +15,9 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
-from maistro.graph.durable_runs import RunStatus, run_durable_graph
+from maistro.graph.durable_runs import RunStatus, recover_queued_graph_runs, run_durable_graph
 from maistro.graph.types import AgentRole, DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS
-from maistro.runs.model import TERMINAL_RUN_STATUSES
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
@@ -344,6 +344,55 @@ def _resolver(
     return resolve
 
 
+def _recovery_resolver(run: Run):
+    """Rebuild one legacy-node resolver entirely from durable canonical Run facts."""
+    graph = run.graph.materialize()
+    raw_by_id: dict[str, dict[str, Any]] = {}
+    for node in graph.nodes:
+        raw = node.metadata.get("legacy_node")
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                f"Run {run.run_id!r} node {node.node_id!r} lacks durable legacy_node metadata"
+            )
+        raw_by_id[node.node_id] = dict(raw)
+
+    execution_mode = str(run.provenance.get("execution_mode") or "autonomous")
+    if execution_mode not in {"interactive", "autonomous"}:
+        raise ValueError(
+            f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}"
+        )
+    legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
+    return _resolver(
+        raw_by_id,
+        task_desc=graph.description or graph.name,
+        node_env=_node_env(
+            {"id": legacy_dag_id},
+            user_id=run.actor_principal_id or "",
+            # Never persist request-time credential values into Run/Graph
+            # provenance. The legacy adapter did not consume USER_CRED_* keys;
+            # durable recovery reuses deployment credentials only.
+            user_credentials=None,
+        ),
+        execution_mode=execution_mode,
+        on_response=None,
+        llm_builder=None,
+    )
+
+
+async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
+    """Recover only canonical Runs admitted by the shipped legacy DAG adapter."""
+    container = _container()
+    if container is None or container.graph_run_store is None:
+        return 0
+    return await recover_queued_graph_runs(
+        store=container.graph_run_store,
+        run_store=container.run_store,
+        node_resolver_factory=_recovery_resolver,
+        eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        limit=limit,
+    )
+
+
 def _node_results(
     record: Any, raw_by_id: Mapping[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
@@ -409,6 +458,7 @@ async def execute_dag(
         "admission_source": "hive_legacy_dag",
         "legacy_dag_id": str(dag_data.get("id") or ""),
         "executor": "durable_graph",
+        "execution_mode": execution_mode,
     }
 
     admitted_run_id = None
