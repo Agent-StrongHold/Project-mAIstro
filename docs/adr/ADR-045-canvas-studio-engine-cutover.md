@@ -36,9 +36,14 @@ history:
 
 This ADR remains **Proposed** because the Canvas server boundary and legacy-route
 cutover are only partially complete. The historical name "Canvas Studio" in
-older revisions described a separate application. That product identity is no
-longer canonical: **Design Studio** is the parent creative-production surface,
-and **Canvas** is one visual/fixed-page/rendering capability it consumes.
+older revisions described a separate application. The repository may still ship
+or run a standalone/installable `maistro-canvas` package during convergence,
+and legacy package/install documentation may continue to describe that package
+shape. What is no longer canonical is treating that package/application as the
+top-level creative-production **product authority** or as a peer lifecycle,
+storage, Goal, or execution system. **Design Studio** is the parent
+creative-production product surface, and **Canvas** is one
+visual/fixed-page/rendering capability it consumes.
 
 The live authority retained by this ADR is therefore the Canvas capability
 boundary: `maistro-server` may expose governed `/v2/canvas/*` routes over Canvas
@@ -49,7 +54,9 @@ tool semantics. Design Studio product integration is tracked by #95 under
 
 The old separate-application Phase A/B/C migration described below is preserved
 only as historical engineering context. It is not authority to recreate a
-separate Canvas Studio product.
+separate top-level Canvas Studio product. Keeping a standalone package runnable
+for compatibility, testing, or migration does not make that package the
+canonical product boundary.
 
 ## Context
 
@@ -101,9 +108,10 @@ successful generation or persistence.
 
 ### Rollback and compatibility
 
-Legacy routes may coexist while consumers migrate, but coexistence is a
-compatibility window, not a second canonical product surface. Removal requires
-behavioural parity evidence and must not strand persisted Canvas state.
+Legacy routes and standalone package entry points may coexist while consumers
+migrate, but coexistence is a compatibility window, not a second canonical
+product surface. Removal requires behavioural parity evidence and must not
+strand persisted Canvas state or downstream package users.
 
 ## Historical separate-application migration notes
 
@@ -129,6 +137,8 @@ not supersede ADR-042 or make the server the owner of Canvas domain models.
 ## Boundary contracts
 
 - Design Studio is the product; Canvas is a capability inside it.
+- A runnable/installable standalone Canvas package is a compatibility/deployment
+  form, not a second canonical product identity or state authority.
 - `maistro-server` may compose Canvas dependencies but does not create a second
   Canvas or Design Studio lifecycle.
 - Missing required Canvas dependencies fail visibly; they do not yield fake
@@ -150,14 +160,16 @@ not supersede ADR-042 or make the server the owner of Canvas domain models.
 
 ## Consequences
 
-- The old "Canvas Studio" name survives only in filenames/history and legacy
-  migration notes; it is not a current product identity.
+- The old "Canvas Studio" name may survive in filenames, package metadata,
+  install guidance, and legacy migration notes while compatibility surfaces
+  remain runnable; those references do not define a current peer product
+  authority.
 - `maistro-server` deployment wiring is part of whether the Canvas HTTP boundary
   is actually usable.
 - Design Studio's #95 cutover can consume this boundary without owning Canvas
   internals or inventing a parallel API/runtime authority.
-- Legacy database/route retirement remains separate work and requires parity
-  evidence before deletion.
+- Legacy database/route/package retirement remains separate work and requires
+  parity evidence before deletion.
 
 ## Out of scope
 
@@ -165,20 +177,20 @@ not supersede ADR-042 or make the server the owner of Canvas domain models.
 - Replacing canonical Run/NodeRun/Attempt execution semantics.
 - Implementing publish/export providers.
 - Multi-tenant Stronghold policy.
-- Recreating the former standalone Canvas Studio application.
+- Removing standalone `maistro-canvas` packaging solely to enforce product
+  naming; package retirement requires its own compatibility evidence.
+- Recreating the former standalone Canvas Studio application as a peer product
+  authority.
 
 ## Source references
 
 - `packages/maistro-server/src/maistro_server/api/canvas.py` — mounted server
   Canvas proxy surface.
-- `packages/maistro-server/tests/api/test_canvas.py` — server boundary evidence.
+- `packages/maistro-server/tests/api/test_canvas.py` — implementation exercise;
+  contract-marker registration remains incomplete in SPEC-070226-8239.
 - `packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py` — accepted
   lower-level Canvas asset route surface (ADR-042).
 - `packages/maistro-canvas/src/maistro_canvas/canvas/routes.py` — legacy Canvas
   route surface retained during convergence.
 
 ## Links
-
-- Design Studio product cutover: #95 under #286.
-- Canvas execution convergence: #52 / #735.
-- Accepted Canvas asset routes: ADR-042.
