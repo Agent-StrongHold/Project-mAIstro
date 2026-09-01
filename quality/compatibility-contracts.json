@@ -46,11 +46,24 @@
     {
       "identity": "events/envelope.py::EventEnvelope",
       "required_fields": ["event_id", "workspace_id"]
+    },
+    {
+      "identity": "capabilities/invocation.py::Invocation",
+      "required_fields": [
+        "invocation_id",
+        "run_id",
+        "node_run_id",
+        "attempt_id",
+        "effect_key",
+        "status"
+      ]
     }
   ],
   "compatibility_aliases": [
     {
       "identity": "builders/dag.py::GraphSpec=GraphConfig",
+      "old_identity": "builders/dag.py::GraphSpec",
+      "replacement_identity": "builders/dag.py::GraphConfig",
       "scope": "python-import",
       "persisted_data": false,
       "strategy": "import-alias",
@@ -62,6 +75,8 @@
     },
     {
       "identity": "types/config.py::MaistroConfig=AgentConfig",
+      "old_identity": "types/config.py::MaistroConfig",
+      "replacement_identity": "types/config.py::AgentConfig",
       "scope": "python-import",
       "persisted_data": false,
       "strategy": "import-alias",
@@ -73,6 +88,8 @@
     },
     {
       "identity": "types/errors.py::MaistroError=AgentError",
+      "old_identity": "types/errors.py::MaistroError",
+      "replacement_identity": "types/errors.py::AgentError",
       "scope": "python-import",
       "persisted_data": false,
       "strategy": "import-alias",
@@ -84,6 +101,8 @@
     },
     {
       "identity": "types/errors.py::StrongholdError=AgentError",
+      "old_identity": "types/errors.py::StrongholdError",
+      "replacement_identity": "types/errors.py::AgentError",
       "scope": "python-import",
       "persisted_data": false,
       "strategy": "import-alias",
@@ -95,6 +114,8 @@
     },
     {
       "identity": "workspaces/model.py::WorkspaceMember=WorkspaceMembership",
+      "old_identity": "workspaces/model.py::WorkspaceMember",
+      "replacement_identity": "workspaces/model.py::WorkspaceMembership",
       "scope": "python-import",
       "persisted_data": false,
       "strategy": "import-alias",
@@ -104,5 +125,6 @@
       "removal_condition": "Behavioral parity and importer migration are proven before the alias is deleted.",
       "release_note": "Removal is a breaking import-contract change and must be called out in release notes."
     }
-  ]
+  ],
+  "compatibility_migrations": []
 }
