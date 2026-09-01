@@ -11,24 +11,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from services import legacy_dag_node as _legacy_dag_node
 from services.canonical_dag_runner import execute_dag as _canonical_execute_dag
 from services.canonical_dag_runner import genome_to_dag
-from services.legacy_dag_node import (
-    STUB_LLM_REFUSAL,
-    StubLLMNotAllowedError,
-    _NODE_SCRIPT,
-    _build_dependency_graph,
-    _build_llm_call,
-    _classify_node_execution,
-    _invoke_subprocess_usage_hooks,
-    _parse_node_script_output,
-    _run_llm_node,
-    _run_node_subprocess,
-    _run_subprocess_wave,
-    _run_tool_node,
-    llm_gateway_configured,
-    stub_llm_allowed,
-)
+
+# Historical helper imports remain available for existing tests and downstream
+# callers, but their implementation now lives with the one-node compatibility
+# adapter. Explicit aliases keep this facade truthful: none of these helpers
+# participate in graph traversal or Run lifecycle here.
+STUB_LLM_REFUSAL = _legacy_dag_node.STUB_LLM_REFUSAL
+StubLLMNotAllowedError = _legacy_dag_node.StubLLMNotAllowedError
+_NODE_SCRIPT = _legacy_dag_node._NODE_SCRIPT
+_build_dependency_graph = _legacy_dag_node._build_dependency_graph
+_build_llm_call = _legacy_dag_node._build_llm_call
+_classify_node_execution = _legacy_dag_node._classify_node_execution
+_invoke_subprocess_usage_hooks = _legacy_dag_node._invoke_subprocess_usage_hooks
+_parse_node_script_output = _legacy_dag_node._parse_node_script_output
+_run_llm_node = _legacy_dag_node._run_llm_node
+_run_node_subprocess = _legacy_dag_node._run_node_subprocess
+_run_subprocess_wave = _legacy_dag_node._run_subprocess_wave
+_run_tool_node = _legacy_dag_node._run_tool_node
+llm_gateway_configured = _legacy_dag_node.llm_gateway_configured
+stub_llm_allowed = _legacy_dag_node.stub_llm_allowed
 
 
 class CanonicalDagExecutionError(RuntimeError):
@@ -127,16 +131,3 @@ async def execute_champion() -> dict[str, Any]:
     result["fitness"] = champion.fitness_score
     result["generation"] = champion.generation
     return result
-
-
-__all__ = [
-    "CanonicalDagExecutionError",
-    "STUB_LLM_REFUSAL",
-    "StubLLMNotAllowedError",
-    "execute_champion",
-    "execute_dag",
-    "execute_dag_streaming",
-    "genome_to_dag",
-    "llm_gateway_configured",
-    "stub_llm_allowed",
-]
