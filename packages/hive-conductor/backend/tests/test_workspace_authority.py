@@ -8,7 +8,8 @@ from models.schemas import Agent
 from models.workspace import Workspace, WorkspaceMember
 from services import workspace_authority
 
-from maistro.workspaces.model import WorkspaceMembership, WorkspaceRole as CanonicalWorkspaceRole
+from maistro.workspaces.model import WorkspaceMembership
+from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
 from maistro.workspaces.store import InMemoryWorkspaceStore
 
 
