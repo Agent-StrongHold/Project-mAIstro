@@ -16,19 +16,21 @@ The diff is limited to `tests/cross_product_parity/**` plus this #459-specific e
 
 ## Ownership audit
 
-Before mutation the existing #459 branch was verified as a zero-diff released lane with no open PR. The live open-PR set was audited for Builders, Evolve, scheduler, Conductor/DAG, ontology, golden baselines, Canvas and Invocation ownership.
+Before mutation the existing #459 branch was verified as a zero-diff released lane with no open PR. The live open-PR set was audited for Builders, Evolve, scheduler, Conductor/DAG, ontology, golden baselines, Canvas and Invocation ownership. Ownership was rechecked while the branch was active so replacement PRs are recorded rather than stale draft numbers.
 
 Relevant active dependencies observed during the audit:
 
 - Builders canonical execution: PR #744 / issue #734.
-- Evolve canonical execution: PR #733.
-- scheduler canonical admission: PR #759.
+- Evolve canonical execution: PR #733 / issue #51.
+- scheduler canonical admission: PR #759 / issue #231.
 - Conductor Workspace/DAG scope prerequisite: PR #770 / issue #766.
 - Conductor canonical live Run inspection: issue #65, currently with no open PR. Its acceptance explicitly requires canonical stores/events rather than product-private execution state and visibility of Run/NodeRun/Attempt, Invocation, artifact, event and provenance evidence.
-- importable interoperability ontology: PR #758 / issue #458.
-- immutable golden behavioral baselines: PR #771 / issue #463.
+- importable interoperability ontology: replacement PR #870 / issue #458. Closed draft #758 was superseded on the same implementation lane.
+- immutable golden behavioral baselines: replacement PR #869 / issue #463. Draft #771 was superseded by the replacement PR.
 - Canvas canonical execution: PR #746, audited only; product implementation remains out of scope.
 - Invocation convergence: PR #762, audited only; product implementation remains out of scope.
+
+A branch discovered from CI, `chatgpt/issue-736-canonical-dag-run-route`, was also audited. Issue #736 and its closed draft PR #743 document the shipped DAG Run-button convergence attempt, but that lane stopped at the missing authorized Workspace/Project selection seam and carried no production route change. It is therefore a dependency-history signal, not a competing #459 implementation owner.
 
 The current `GET /v1/dag-runs/{run_id}` route still resolves `services.dag_run_store.get_dag_run_store`, so the shared Conductor inspection plane required for scenarios 1-3 is genuinely unavailable on this base. The harness records that as a source-level dependency on #65 rather than constructing a test-only substitute.
 
