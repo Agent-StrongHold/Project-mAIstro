@@ -176,7 +176,11 @@ def _validated_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
     if set(manifest) != expected_fields:
         raise EvidenceError("identity manifest fields do not match schema")
     schema = manifest.get("schema")
-    if isinstance(schema, bool) or not isinstance(schema, int) or schema != SCHEMA_VERSION:
+    if (
+        isinstance(schema, bool)
+        or not isinstance(schema, int)
+        or schema != SCHEMA_VERSION
+    ):
         raise EvidenceError(f"unsupported identity schema: {schema!r}")
 
     command = manifest.get("command")
