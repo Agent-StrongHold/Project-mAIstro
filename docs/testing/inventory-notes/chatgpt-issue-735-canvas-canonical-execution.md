@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +22
+  packages/maistro-canvas/tests: +22
 ---
 
 # #735 Canvas canonical execution evidence
