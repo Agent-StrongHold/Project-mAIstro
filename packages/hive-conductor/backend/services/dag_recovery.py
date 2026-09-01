@@ -57,8 +57,4 @@ async def stop_dag_recovery() -> None:
         pass
 
 
-def recovery_running() -> bool:
-    return _task is not None and not _task.done()
-
-
-__all__ = ["recovery_running", "start_dag_recovery", "stop_dag_recovery"]
+__all__ = ["start_dag_recovery", "stop_dag_recovery"]
