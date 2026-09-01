@@ -6,13 +6,13 @@ import pytest
 import stores
 from models.schemas import Agent
 from models.workspace import Workspace, WorkspaceMember
+from services import workspace_authority
 
 from maistro.workspaces.model import (
     WorkspaceMembership,
     WorkspaceRole as CanonicalWorkspaceRole,
 )
 from maistro.workspaces.store import InMemoryWorkspaceStore
-from services import workspace_authority
 
 
 @pytest.fixture(autouse=True)
