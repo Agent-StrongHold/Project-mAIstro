@@ -28,6 +28,17 @@ _TOOL_PREFIX = "@tool/"
 TOOLING_DIR = "scripts"
 WORKFLOW_GLOB = ".github/workflows/*.yml"
 
+# Explicit package-local developer utilities. Everything else under packages/
+# that is production-shaped Python must belong to either a packaged src root or
+# a declared flat application. This is intentionally tiny and reviewed: an
+# ignored directory would recreate the source-universe blind spot this gate is
+# meant to prevent.
+_EXCLUDED_PACKAGE_PYTHON = frozenset(
+    {
+        "packages/hive-conductor/run_hill_climb.py",
+    }
+)
+
 
 @dataclass(frozen=True)
 class FlatApp:
@@ -42,9 +53,11 @@ class FlatApp:
     report_prefix: str = ""
 
 
-# Standalone production processes outside packages/*/src. Keep this explicit:
-# collection validates every packages/*/backend Python tree has a declaration,
-# so adding another flat backend cannot silently put it outside the analysis.
+# Standalone production processes outside packages/*/src. Keep their runtime
+# roots explicit, but validate coverage against every production-shaped Python
+# file under packages/ rather than assuming all standalone apps are named
+# `backend`. That makes a new `frontend/server`, worker, or other shipped tree
+# fail closed until it is deliberately classified here.
 FLAT_APPS = (
     FlatApp(
         name="hive-conductor",
@@ -69,6 +82,12 @@ FLAT_APPS = (
         path="packages/maistro-turing/backend",
         roots=("main",),
         report_prefix="maistro-turing-backend",
+    ),
+    FlatApp(
+        name="maistro-canvas-frontend-server",
+        path="packages/maistro-canvas/frontend/server",
+        roots=("lulu.service",),
+        report_prefix="maistro-canvas-frontend-server",
     ),
 )
 
@@ -162,28 +181,62 @@ def _production_python_files(base: Path) -> list[Path]:
     return [path for path in base.rglob("*.py") if _is_production_python(path, base)]
 
 
+def _all_package_python_files(root: Path) -> set[Path]:
+    """Every production-shaped Python source file under packages/.
+
+    This is the source-universe guard. It is deliberately independent of the
+    package/flat-app declarations that the graph later uses, so a new directory
+    layout cannot disappear merely because collection forgot to glob it.
+    """
+    packages = root / "packages"
+    if not packages.exists():
+        return set()
+    files: set[Path] = set()
+    for path in packages.rglob("*.py"):
+        rel = path.relative_to(root)
+        if "tests" in rel.parts or path.name.startswith("test_"):
+            continue
+        if rel.as_posix() in _EXCLUDED_PACKAGE_PYTHON:
+            continue
+        files.add(path)
+    return files
+
+
+def _declared_source_files(root: Path, flat_apps: tuple[FlatApp, ...]) -> set[Path]:
+    covered: set[Path] = set()
+    for src in sorted(root.glob("packages/*/src")):
+        covered.update(_production_python_files(src))
+    for app in flat_apps:
+        covered.update(_production_python_files(root / app.path))
+    return covered
+
+
 def _validate_flat_apps(root: Path, flat_apps: tuple[FlatApp, ...]) -> None:
     declared = {app.path for app in flat_apps}
-    discovered = {
-        path.relative_to(root).as_posix()
-        for path in root.glob("packages/*/backend")
-        if _production_python_files(path)
-    }
-    undeclared = sorted(discovered - declared)
-    missing = sorted(declared - discovered)
-    if undeclared:
-        raise RuntimeError(
-            "standalone backend(s) are outside reachability analysis; declare them in "
-            f"FLAT_APPS: {', '.join(undeclared)}"
-        )
+    missing = sorted(
+        path for path in declared if not _production_python_files(root / path)
+    )
     if missing:
         raise RuntimeError(
-            "declared standalone backend(s) contain no production Python modules: "
+            "declared standalone Python tree(s) contain no production modules: "
             f"{', '.join(missing)}"
         )
 
+    uncovered = sorted(
+        path.relative_to(root).as_posix()
+        for path in _all_package_python_files(root) - _declared_source_files(root, flat_apps)
+    )
+    if uncovered:
+        raise RuntimeError(
+            "production Python source is outside reachability analysis; cover it with a "
+            "packaged src root, declare its standalone application root in FLAT_APPS, or "
+            "record a reviewed developer-utility exclusion: " + ", ".join(uncovered)
+        )
 
-def _validate_no_shadowed_modules(root: Path) -> None:
+
+def _validate_no_shadowed_modules(
+    root: Path, flat_apps: tuple[FlatApp, ...] = FLAT_APPS
+) -> None:
     """Refuse a flat module sitting beside a package directory of the same name.
 
     `foo.py` next to `foo/__init__.py` is not a warning — Python resolves
@@ -195,7 +248,8 @@ def _validate_no_shadowed_modules(root: Path) -> None:
     reports as unreachable.
     """
     collisions: list[str] = []
-    for base in [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]:
+    bases = [*root.glob("packages/*/src"), *(root / app.path for app in flat_apps)]
+    for base in bases:
         for directory in base.rglob("*"):
             if not directory.is_dir() or directory.name == "__pycache__":
                 continue
@@ -227,7 +281,7 @@ def _collect_modules(
 ) -> dict[str, Path]:
     """Return scoped module identity → file for every production module."""
     _validate_flat_apps(root, flat_apps)
-    _validate_no_shadowed_modules(root)
+    _validate_no_shadowed_modules(root, flat_apps)
     mods: dict[str, Path] = {}
 
     def add_tree(base: Path, prefix: str, app_name: str | None = None) -> None:
