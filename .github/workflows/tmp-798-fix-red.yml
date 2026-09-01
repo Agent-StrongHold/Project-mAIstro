@@ -1,0 +1,68 @@
+name: tmp-798-fix-red
+
+on:
+  push:
+    branches:
+      - chatgpt/m1-129-pm-fleet-closeout
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-129-pm-fleet-closeout
+          fetch-depth: 0
+      - name: Preserve live work-item stub and shrink Radon debt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          work_items = Path("packages/maistro-core/src/maistro/agents/work_items.py")
+          text = work_items.read_text(encoding="utf-8")
+          old = '''    from maistro.tools.pm_stubs import stub_create_work_item\n\n    result = stub_create_work_item(\n        draft.work_type,\n        draft.fields.model_dump(),\n        draft.capability,\n    )\n'''
+          new = '''    result = _stub_create_work_item(\n        draft.work_type,\n        draft.fields.model_dump(),\n        draft.capability,\n    )\n'''
+          if text.count(old) != 1:
+              raise SystemExit("expected one pm_stubs import/call block")
+          text = text.replace(old, new)
+
+          marker = '\ndef confirm_post_stub(draft: WorkItemDraft) -> tuple[WorkItemDraft, dict[str, Any]]:\n'
+          helper = '''\ndef _stub_create_work_item(\n    work_type: str,\n    fields: dict[str, Any],\n    capability: str,\n) -> dict[str, Any]:\n    """Simulate the confirmed Jira create without the retired PM POC runtime."""\n    project = fields.get("project_key") or "PM"\n    parent = fields.get("parent_key")\n    seq = abs(hash(fields.get("summary", work_type))) % 900 + 100\n    key = f"{project}-{seq}"\n    return {\n        "status": "ok",\n        "issue_key": key,\n        "work_type": work_type,\n        "capability": capability,\n        "parent_key": parent,\n        "summary": fields.get("summary"),\n        "posted_to": "jira",\n        "source": "stub",\n    }\n\n\n'''
+          if text.count(marker) != 1:
+              raise SystemExit("expected one confirm_post_stub marker")
+          text = text.replace(marker, helper + marker.lstrip("\n"))
+          if "maistro.tools.pm_stubs" in text:
+              raise SystemExit("retired pm_stubs import survived")
+          work_items.write_text(text, encoding="utf-8")
+
+          radon = Path("quality/radon-baseline.json")
+          data = json.loads(radon.read_text(encoding="utf-8"))
+          stale = {
+              "packages/maistro-core/src/maistro/agents/pm_fleet.py::build_task_description",
+              "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven",
+              "packages/maistro-core/src/maistro/agents/pm_runner.py::run_pm_task",
+          }
+          before = len(data["entries"])
+          data["entries"] = [entry for entry in data["entries"] if entry.get("key") not in stale]
+          removed = before - len(data["entries"])
+          if removed != 3:
+              raise SystemExit(f"expected to prune 3 Radon entries, pruned {removed}")
+          remaining = stale & {entry.get("key") for entry in data["entries"]}
+          if remaining:
+              raise SystemExit(f"stale Radon entries survived: {sorted(remaining)}")
+          radon.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          rm .github/workflows/tmp-798-fix-red.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/maistro-core/src/maistro/agents/work_items.py quality/radon-baseline.json .github/workflows/tmp-798-fix-red.yml
+          git commit -m "Fix PM closeout live work-item seam and Radon debt (#129)"
+          git push origin HEAD:chatgpt/m1-129-pm-fleet-closeout
