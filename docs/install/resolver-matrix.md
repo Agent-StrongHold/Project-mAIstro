@@ -78,7 +78,7 @@ dry_run: true
 - `features`: list of checkbox ids from the table.
 - `compose_addons`: optional list of add-on ids (see **Compose add-ons** above).
 - `product`: for `single-tenant-multi-user` and `autonoetic`, the CLI prints a root-dispatcher
-  command such as `uv run copier copy --data product_template=autonoetic . ../my-product`.
+  command such as `uv run copier copy --data product_template=autonoetic https://github.com/Agent-StrongHold/Project-mAIstro.git ../my-product`.
   The repository-root `copier.yml` selects the matching payload under `templates/` with
   `_subdirectory`, preserving Git template metadata for future `copier update` runs. Copying a
   nested template path directly renders files but cannot record an updateable monorepo template

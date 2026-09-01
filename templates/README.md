@@ -17,7 +17,7 @@ Use from repo root:
 
 ```bash
 uv sync
-uv run copier copy --data product_template=single-tenant-multi-user . ./out/my-product
+uv run copier copy --data product_template=single-tenant-multi-user https://github.com/Agent-StrongHold/Project-mAIstro.git ./out/my-product
 ```
 
 Using the repository root is required for update metadata: Copier stores the

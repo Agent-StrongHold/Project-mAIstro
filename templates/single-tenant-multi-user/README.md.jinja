@@ -42,7 +42,9 @@ container does not install packages.
 ## systemd
 
 Build and install the wheel into `/opt/{{ project_slug }}/.venv`, provision
-`/etc/{{ project_slug }}.env` with mode `0600`, then install
+`/etc/{{ project_slug }}.env` with mode `0600`, install
+`deploy/systemd/maistro.conf` under `/etc/sysusers.d/` (or run
+`systemd-sysusers deploy/systemd/maistro.conf`), then install
 `deploy/systemd/{{ project_slug }}.service`.
 {% endif %}
 

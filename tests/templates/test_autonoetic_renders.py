@@ -25,6 +25,11 @@ def _answers(project: Path) -> dict[str, object]:
     return loaded
 
 
+def test_python_keyword_project_slug_is_rejected(render_template) -> None:
+    with pytest.raises(Exception, match="Python keyword"):
+        render_template("autonoetic", {"project_slug": "class"})
+
+
 def test_nested_questionnaire_matches_root_dispatcher() -> None:
     nested = yaml.safe_load((ROOT / "templates/autonoetic/copier.yml").read_text(encoding="utf-8"))
     dispatcher = yaml.safe_load((ROOT / "copier.yml").read_text(encoding="utf-8"))
@@ -142,6 +147,10 @@ def test_alternate_knobs_survive_copier_update(render_template, generated_tests)
     rendered_compose = yaml.safe_load(compose)
     assert "OBSIDIAN_VAULT_PATH=" in environment
     assert "${OBSIDIAN_VAULT_PATH:?" in compose
+    assert (
+        rendered_compose["services"]["continuity-agent"]["environment"]["OBSIDIAN_VAULT_PATH"]
+        == "/data/dossier"
+    )
     assert "dossier-data:/data/dossier:rw" not in compose
     assert rendered_compose["services"]["continuity-agent"]["volumes"] == [
         "${OBSIDIAN_VAULT_PATH:?set OBSIDIAN_VAULT_PATH}:/data/dossier:rw"

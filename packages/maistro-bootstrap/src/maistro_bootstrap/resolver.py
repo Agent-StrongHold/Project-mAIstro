@@ -5,6 +5,8 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 
+CANONICAL_ENGINE_SRC = "https://github.com/Agent-StrongHold/Project-mAIstro.git"
+
 
 @dataclass(frozen=True)
 class Feature:
@@ -196,4 +198,7 @@ def copier_command(product: str, dest: str) -> str | None:
     if product == "multi-tenant":
         _title, path = PRODUCTS[product]
         return f"uv run copier copy {path} {shlex.quote(dest)}"
-    return f"uv run copier copy --data product_template={product} . {shlex.quote(dest)}"
+    return (
+        f"uv run copier copy --data product_template={product} "
+        f"{CANONICAL_ENGINE_SRC} {shlex.quote(dest)}"
+    )

@@ -24,7 +24,8 @@ def test_human_plan_prints_copier_command_when_present(
     plan = {
         "shell_commands": ["# === maistro-install plan (default: print only) ==="],
         "copier_command": (
-            "uv run copier copy --data product_template=autonoetic . '../my product'"
+            "uv run copier copy --data product_template=autonoetic "
+            "https://github.com/Agent-StrongHold/Project-mAIstro.git '../my product'"
         ),
     }
 

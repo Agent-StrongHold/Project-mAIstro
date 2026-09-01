@@ -23,6 +23,9 @@ services:
       TURING_SELF_ID: "${TURING_SELF_ID:?set TURING_SELF_ID}"
       LITELLM_BASE_URL: "${LITELLM_BASE_URL:-}"
       LITELLM_VIRTUAL_KEY: "${LITELLM_VIRTUAL_KEY:-}"
+{% if dossier_store == 'obsidian' %}
+      OBSIDIAN_VAULT_PATH: "/data/dossier"
+{% endif %}
     volumes:
 {% if dossier_store == 'obsidian' %}
       # SECURITY-REVIEW: Operator-controlled bind path; dedicate and permission the vault.

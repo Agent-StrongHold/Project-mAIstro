@@ -15,7 +15,10 @@ pytestmark = [
 def test_product_uses_root_dispatcher_without_blanket_trust() -> None:
     command = copier_command("autonoetic", "../my product")
 
-    assert command == ("uv run copier copy --data product_template=autonoetic . '../my product'")
+    assert command == (
+        "uv run copier copy --data product_template=autonoetic "
+        "https://github.com/Agent-StrongHold/Project-mAIstro.git '../my product'"
+    )
     assert "--trust" not in command
 
 

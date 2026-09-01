@@ -8,6 +8,8 @@ project_slug:
   validator: >-
     {% if not (project_slug | regex_search('^[a-z][a-z0-9-]*\Z')) %}
     Use lowercase letters, digits, and dashes; start with a letter.
+    {% elif (project_slug | replace('-', '_')) in ['False', 'None', 'True', '_', 'and', 'as', 'assert', 'async', 'await', 'break', 'case', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'match', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield'] %}
+    project_slug cannot be a Python keyword when dashes are converted to underscores.
     {% endif %}
 
 users_max:

@@ -67,7 +67,8 @@ def test_plan_uses_updateable_root_copier_dispatcher() -> None:
     )
 
     assert plan["copier_command"] == (
-        "uv run copier copy --data product_template=autonoetic . '../my product'"
+        "uv run copier copy --data product_template=autonoetic "
+        "https://github.com/Agent-StrongHold/Project-mAIstro.git '../my product'"
     )
 
 

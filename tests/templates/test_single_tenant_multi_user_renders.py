@@ -138,6 +138,7 @@ def test_alternate_knobs_survive_copier_update(render_template, generated_tests)
 
     assert (project / "round-trip.txt").read_text(encoding="utf-8") == "updated household-ai\n"
     assert (project / "deploy/systemd/household-ai.service").is_file()
+    assert (project / "deploy/systemd/maistro.conf").is_file()
     assert not (project / "Dockerfile").exists()
     assert not (project / "deploy/compose.yml").exists()
 
