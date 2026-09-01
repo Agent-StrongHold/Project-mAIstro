@@ -147,6 +147,7 @@ class CanvasCanonicalExecution:
             await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
         except BaseException:
             with contextlib.suppress(Exception):
+                await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
                 await self._runs.delete_run(run.run_id)
             raise
         return run.run_id
