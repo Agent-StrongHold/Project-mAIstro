@@ -114,7 +114,7 @@ def _validate_acyclic_and_reachable(
     entry: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
 ) -> None:
     adjacency: dict[str, list[str]] = {str(node["id"]): [] for node in nodes}
-    indegree: dict[str, int] = {node_id: 0 for node_id in adjacency}
+    indegree: dict[str, int] = dict.fromkeys(adjacency, 0)
     for edge in edges:
         src, dst = str(edge["from_node"]), str(edge["to_node"])
         adjacency[src].append(dst)
