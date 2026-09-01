@@ -5,6 +5,7 @@ from maistro.interop.contract import (
     ConceptSpec,
     InteropContractError,
     InteropOntology,
+    RelationshipSpec,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "ConceptSpec",
     "InteropContractError",
     "InteropOntology",
+    "RelationshipSpec",
 ]
