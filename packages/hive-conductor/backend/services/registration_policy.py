@@ -17,6 +17,7 @@ _POLICY_KEY = "__registration_policy__"
 _INVITE_PREFIX = "__registration_invite__:"
 _VALID_MODES = frozenset({"closed", "open"})
 RegistrationMode = Literal["closed", "open"]
+_MISSING = object()
 
 
 def _kv() -> Any:
@@ -42,12 +43,37 @@ def get_policy() -> dict[str, Any]:
     return {"mode": raw["mode"]}
 
 
+def _restore_local_policy_after_failed_write(kv: Any, previous: object) -> None:
+    """Undo JsonStore's publish-before-persist mutation without another I/O attempt.
+
+    ``JsonStore.__setitem__`` currently updates its local dictionary before the
+    backing writer is called. If that writer raises, using ``pop``/``__setitem__``
+    to roll back would invoke the same broken persistence path again. Registration
+    is security policy, so restore only the already-mutated local cache and let
+    the original persistence exception propagate. This is intentionally local to
+    #313 rather than changing JsonStore semantics under other active state work.
+    """
+    data = getattr(kv, "_data", None)
+    if not isinstance(data, dict):
+        return
+    if previous is _MISSING:
+        data.pop(_POLICY_KEY, None)
+    else:
+        data[_POLICY_KEY] = previous
+
+
 def set_policy(mode: RegistrationMode) -> dict[str, Any]:
-    """Persist an operator-selected policy; invalid modes are never stored."""
+    """Persist an operator-selected policy; failed persistence changes nothing."""
     if mode not in _VALID_MODES:
         raise ValueError(f"unsupported registration mode: {mode}")
+    kv = _kv()
+    previous: object = kv.get(_POLICY_KEY, _MISSING)
     record = {"mode": mode, "updated_at": _now().isoformat()}
-    _kv()[_POLICY_KEY] = record
+    try:
+        kv[_POLICY_KEY] = record
+    except Exception:
+        _restore_local_policy_after_failed_write(kv, previous)
+        raise
     return {"mode": mode}
 
 
