@@ -1,10 +1,10 @@
 """Canonical execution adapter for Hive's legacy stored DAG shape.
 
-The stored/UI DAG schema predates canonical ``Graph`` definitions. This module
-translates that definition and then hands all traversal, concurrency,
+The stored/UI DAG schemas predate canonical ``Graph`` definitions. This module
+normalizes those definitions and hands all traversal, concurrency,
 NodeRun/Attempt creation, failure folding, and terminal-state authority to
-``run_durable_graph``. The only legacy behavior retained is one-node execution
-via :class:`services.legacy_dag_node.LegacyConductorNode`.
+``run_durable_graph``. Only one-node compatibility behavior remains outside the
+canonical executor.
 """
 
 from __future__ import annotations
@@ -45,6 +45,18 @@ def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _edge_endpoints(raw: Mapping[str, Any]) -> tuple[str, Any]:
+    """Normalize both shipped edge dialects.
+
+    The CRUD route stores ``from_node``/``to_node`` while substrate-created
+    workflows historically store ``source``/``target``. Both are product data,
+    so convergence must read both without preserving two execution engines.
+    """
+    src = raw.get("from_node") if "from_node" in raw else raw.get("source")
+    dst = raw.get("to_node") if "to_node" in raw else raw.get("target")
+    return str(src or "").strip(), dst
+
+
 def _raw_edges(dag_data: Mapping[str, Any], node_ids: set[str]) -> list[dict[str, Any]]:
     edges = dag_data.get("edges", [])
     if not isinstance(edges, list):
@@ -53,38 +65,44 @@ def _raw_edges(dag_data: Mapping[str, Any], node_ids: set[str]) -> list[dict[str
     for index, raw in enumerate(edges):
         if not isinstance(raw, Mapping):
             raise ValueError("DAG edge must be an object")
-        edge = dict(raw)
-        src = str(edge.get("from_node") or "").strip()
-        dst_value = edge.get("to_node")
-        # Historical evolution genomes use to_node=None as a terminal marker.
+        src, dst_value = _edge_endpoints(raw)
+        # Evolution genomes historically use a null destination as a terminal
+        # marker. It does not represent a dependency edge in the canonical DAG.
         if dst_value in (None, ""):
             continue
         dst = str(dst_value).strip()
         if src not in node_ids or dst not in node_ids:
             raise ValueError(
-                f"edge {edge.get('id', index)!r} references node outside DAG: {src!r}->{dst!r}"
+                f"edge {raw.get('id', index)!r} references node outside DAG: {src!r}->{dst!r}"
             )
-        normalized.append(edge)
+        normalized.append(
+            {
+                **dict(raw),
+                "id": str(raw.get("id") or f"{src}->{dst}"),
+                "from_node": src,
+                "to_node": dst,
+            }
+        )
     return normalized
 
 
-def _entry_node(dag_data: Mapping[str, Any], nodes: list[dict[str, Any]]) -> str:
+def _entry_node(
+    dag_data: Mapping[str, Any],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> str:
     explicit = str(dag_data.get("entry_node") or "").strip()
     ids = {str(node["id"]) for node in nodes}
     if explicit:
         if explicit not in ids:
             raise ValueError(f"DAG entry node {explicit!r} does not exist")
         return explicit
-    incoming = {
-        str(edge.get("to_node"))
-        for edge in dag_data.get("edges", [])
-        if isinstance(edge, Mapping) and edge.get("to_node")
-    }
+    incoming = {str(edge["to_node"]) for edge in edges}
     roots = [str(node["id"]) for node in nodes if str(node["id"]) not in incoming]
     if len(roots) == 1:
         return roots[0]
     if not roots:
-        # The cycle validator below will produce the more useful message.
+        # The cycle validator below will emit the more useful diagnosis.
         return str(nodes[0]["id"])
     raise ValueError(
         "DAG has multiple disconnected entry roots; choose one entry_node or connect the graph: "
@@ -132,11 +150,11 @@ def _validate_acyclic_and_reachable(
 def graph_from_legacy_dag(
     dag_data: Mapping[str, Any], *, workspace_id: str, project_id: str
 ) -> Graph:
-    """Translate one legacy stored DAG into an immutable canonical Graph definition."""
+    """Translate one shipped legacy DAG into an immutable canonical Graph."""
     nodes = _raw_nodes(dag_data)
     node_ids = {str(node["id"]) for node in nodes}
     raw_edges = _raw_edges(dag_data, node_ids)
-    entry = _entry_node(dag_data, nodes)
+    entry = _entry_node(dag_data, nodes, raw_edges)
     _validate_acyclic_and_reachable(entry, nodes, raw_edges)
 
     graph_nodes = [
@@ -153,13 +171,13 @@ def graph_from_legacy_dag(
     ]
     graph_edges = [
         Edge(
-            edge_id=str(raw.get("id") or f"{raw['from_node']}->{raw['to_node']}"),
+            edge_id=str(raw["id"]),
             from_node=str(raw["from_node"]),
             to_node=str(raw["to_node"]),
             condition=raw.get("condition"),
-            # Legacy DAG edges were dependency edges, so every eligible
-            # outgoing edge participates in fan-out. Canonical Graph defaults
-            # to first sequential edge unless this is explicit.
+            # Legacy edges are dependency edges. Marking each selected edge as
+            # parallel preserves fan-out while the canonical executor owns the
+            # frontier, concurrency cap, fan-in readiness, and terminal state.
             metadata={"parallel": True, "legacy_dependency_edge": True},
         )
         for raw in raw_edges
@@ -188,13 +206,12 @@ async def _scope(
     *,
     workspace_id: str | None,
     project_id: str | None,
-) -> tuple[str, str, Any, Any]:
+) -> tuple[str, str, Any]:
     container = _container()
     if container is None:
         return (
             workspace_id or str(dag_data.get("workspace_id") or _COMPAT_SCOPE),
             project_id or str(dag_data.get("project_id") or _COMPAT_SCOPE),
-            None,
             None,
         )
 
@@ -207,7 +224,7 @@ async def _scope(
     if resolved_project is None:
         root = await container.project_scope_store.root_for_workspace(resolved_workspace)
         resolved_project = root.project_id
-    return resolved_workspace, resolved_project, container.run_store, container
+    return resolved_workspace, resolved_project, container.run_store
 
 
 def _node_env(
@@ -271,7 +288,6 @@ def _node_results(
 
 def _project(record: Any, raw_by_id: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
     status = record.run.status
-    blackboard = record.graph_state.blackboard_snapshot
     node_results = _node_results(record, raw_by_id)
     error = record.run.error
     if not error:
@@ -284,7 +300,7 @@ def _project(record: Any, raw_by_id: Mapping[str, dict[str, Any]]) -> dict[str, 
         "run_id": record.run_id,
         "cycles": record.graph_state.cycle,
         "node_results": node_results,
-        "annotations": dict(blackboard.get("node_annotations") or {}),
+        "annotations": dict(record.graph_state.blackboard_snapshot.get("node_annotations") or {}),
         **({"error": str(error)} if error else {}),
     }
 
@@ -300,8 +316,8 @@ async def execute_dag(
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
 ) -> dict[str, Any]:
-    """Run a legacy Hive DAG as one canonical durable Graph Run."""
-    resolved_workspace, resolved_project, canonical_run_store, _ = await _scope(
+    """Run a shipped Hive DAG as one canonical durable Graph Run."""
+    resolved_workspace, resolved_project, canonical_run_store = await _scope(
         dag_data,
         workspace_id=workspace_id,
         project_id=project_id,
@@ -314,12 +330,13 @@ async def execute_dag(
     raw_nodes = _raw_nodes(dag_data)
     raw_by_id = {str(raw["id"]): raw for raw in raw_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
-    admitted_run_id = None
     provenance = {
         "admission_source": "hive_legacy_dag",
         "legacy_dag_id": str(dag_data.get("id") or ""),
         "executor": "durable_graph",
     }
+
+    admitted_run_id = None
     if canonical_run_store is not None:
         admitted = await canonical_run_store.create_run(
             graph,
