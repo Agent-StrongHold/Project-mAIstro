@@ -145,8 +145,8 @@ def recovery_event(
 
 
 __all__ = [
-    "CanonicalRecoveryEventSink",
     "RECOVERY_EVENT_TYPE",
+    "CanonicalRecoveryEventSink",
     "RecoveryDispositionEvent",
     "RecoveryEventSink",
     "disposition_of",
