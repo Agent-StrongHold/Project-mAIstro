@@ -155,20 +155,27 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 ### Hive Conductor distribution & frontend (migrated from archived `cutover/MASTER-PLAN.md` + `design/PRODUCT-SPEC.md`)
 
 **[engine-100] Hosted curl installer + web wizard — Proposed**
-- `get.hiveconductor.com/install.sh` and `install.hiveconductor.com` web wizard never built
-- Local `get.sh`/`install.sh` cover a manual-clone install path; the hosted one-liner distribution does not exist
+- The repository ships a release-aware `get.sh` and a local interactive `install.sh`; checksum verification is opt-in via `MAISTRO_SHA256SUMS_URL`
+- The historical `get.hiveconductor.com/install.sh` endpoint and `install.hiveconductor.com` browser wizard are not established by repository or release evidence
 
-**[engine-101] GHCR image publishing pipeline — Implemented — Proposed; `gap-impl`**
-- Cross-check `packages/hive-conductor/frontend/src` against the archived 10-page spec; several shared components exist (`AppShell.tsx`, `AgentFleetCard.tsx`, `WidgetMicroChat.tsx`) but full page coverage (Missions, Schedules, Skills marketplace, MCP discovery, CLI terminal, Container Builder, Memory Explorer) is unverified/incomplete
+**[engine-101] GHCR image publishing pipeline — Implemented**
+- `.github/workflows/release.yml` builds and pushes the engine and Hive Conductor images, emits SBOMs, and signs and verifies image digests with cosign
+- No tag or release has exercised the workflow yet; end-to-end proof remains owned by [#84](https://github.com/Agent-StrongHold/Project-mAIstro/issues/84)
+
+**[engine-102] Frontend completion vs. archived PRODUCT-SPEC — Proposed; `gap-impl`**
+
+- Shared components such as `AppShell.tsx` and `WidgetMicroChat.tsx` exist, but no page-by-page verification establishes complete coverage of the archived 10-page spec
 
 **[engine-103] MCP server implementations — Proposed**
 - `mcp-sandbox`, `mcp-git`, `mcp-browser`, `mcp-ha`, `mcp-utils`, `mcp-trading`, `mcp-reminders` were planned as standalone MCP servers; core already has overlapping in-process tools (`tools/sandbox`, `tools/git`, `tools/browser`) — decide wrap-existing vs. build-new before scoping
 
 **[engine-104] Port remaining legacy experimental features — Proposed**
-- Shipped: Bouncer, Agent Factory, Spawner, Skill Forge, Message Board. Superseded: Heartbeat (replaced by `reactor.py`). Outstanding: APM, Red Team — feature-flagged off, not yet ported into the consolidated monorepo
+- Shipped: Bouncer, Agent Factory, Spawner, Skill Forge, Message Board. Heartbeat was replaced by `reactor.py`
+- Generic APM is not an unported engine feature: [ADR-037](docs/adr/ADR-037-observability-taxonomy.md) defines vendor-neutral observability and per-product backends, and [ADR-055](docs/adr/ADR-055-observability-replay-and-pii-tiers.md) leaves vendor APM choice per product. Red Team remains the historical port candidate; no consolidated generic port is evidenced
 
 **[engine-105] Wire Master Orchestrator security gate + API dispatch — Accepted; `gap-impl`**
-- `orchestrator/master.py` + `orchestrator/planner.py` exist (Group J1–J4 done), but the Security Scanner gate (J5) and wiring into the `maistro-server` API (J6) from the archived consolidation plan are still open
+- J1–J4 exist in `orchestrator/master.py` and `orchestrator/planner.py`; J5's injectable security gate and its accept, reject, and exception behavior are implemented and tested
+- `MasterOrchestrator` is now a compatibility projection over canonical Graph → Run → NodeRun → Attempt execution per [#548](https://github.com/Agent-StrongHold/Project-mAIstro/issues/548). The archived J6 intent therefore does not call for a second Master Orchestrator HTTP API; remaining Conductor/Hive canonical dispatch is owned by [#53](https://github.com/Agent-StrongHold/Project-mAIstro/issues/53), including the live DAG route in [#736](https://github.com/Agent-StrongHold/Project-mAIstro/issues/736)
 
 ### NEW — from May 2026 catalog review (engine)
 

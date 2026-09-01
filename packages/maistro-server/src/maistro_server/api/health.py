@@ -1,18 +1,21 @@
-"""Health check endpoints — liveness and readiness probes."""
+"""Health check endpoints — startup, liveness, and readiness probes."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends
+import asyncpg
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import maistro.agents.circuit_breaker as circuit_breaker
 from maistro.config.settings import Settings, get_settings
 from maistro.http import shared_client_stats
 from maistro_server.api.schemas import HealthResponse
+from maistro_server.startup import StartupPhase, get_startup_phase
 
 router = APIRouter(tags=["health"])
 
@@ -23,6 +26,11 @@ class ProbeResult(BaseModel):
     status: str  # "ok" or "error"
     latency_ms: float = 0
     detail: str = ""
+
+
+class StartupHealthResponse(BaseModel):
+    status: Literal["ok", "starting", "failed"]
+    startup_complete: bool
 
 
 class DetailedHealthResponse(BaseModel):
@@ -37,8 +45,6 @@ class DetailedHealthResponse(BaseModel):
 async def _check_postgres(settings: Settings) -> ProbeResult:
     """Check PostgreSQL connectivity."""
     try:
-        import asyncpg
-
         conn = await asyncio.wait_for(
             asyncpg.connect(
                 host=settings.db.host,
@@ -83,16 +89,14 @@ async def _check_docker() -> ProbeResult:
 
 
 @router.get("/health")
-async def health_check() -> HealthResponse:
+async def health_check(request: Request) -> HealthResponse:
     """Lightweight liveness probe."""
-    from maistro_server.main import APP_VERSION
-
     uptime = time.monotonic() - _start_time
     return HealthResponse(
         status="ok",
         uptime_seconds=round(uptime, 1),
         service="maistro-engine",
-        version=APP_VERSION,
+        version=request.app.version,
     )
 
 
@@ -102,14 +106,30 @@ async def liveness() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get(
+    "/health/startup",
+    response_model=StartupHealthResponse,
+    responses={503: {"model": StartupHealthResponse}},
+)
+async def startup(request: Request, response: Response) -> StartupHealthResponse:
+    """Report whether mandatory lifespan bootstrap has completed."""
+    phase = get_startup_phase(request.app)
+    if phase is StartupPhase.COMPLETE:
+        return StartupHealthResponse(status="ok", startup_complete=True)
+
+    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    if phase is StartupPhase.FAILED:
+        # SECURITY-REVIEW: Never expose the initialization exception or internal paths.
+        return StartupHealthResponse(status="failed", startup_complete=False)
+    return StartupHealthResponse(status="starting", startup_complete=False)
+
+
 @router.get("/health/ready", response_model=None)
 async def readiness(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> DetailedHealthResponse | JSONResponse:
     """Readiness probe — checks Docker, Postgres, LLM, and HTTP pool state."""
-    from maistro.agents.circuit_breaker import llm_circuit
-    from maistro_server.main import APP_VERSION
-
     uptime = time.monotonic() - _start_time
     docker_result = (
         await _check_docker()
@@ -118,7 +138,7 @@ async def readiness(
     )
     postgres_result = await _check_postgres(settings)
 
-    circuit_state = llm_circuit.state
+    circuit_state = circuit_breaker.llm_circuit.state
     llm_result = ProbeResult(
         status="ok" if circuit_state == "closed" else "error",
         detail=f"circuit={circuit_state}",
@@ -151,7 +171,7 @@ async def readiness(
         status="ok" if all_ok else "degraded",
         uptime_seconds=round(uptime, 1),
         service="maistro-engine",
-        version=APP_VERSION,
+        version=request.app.version,
         checks=checks,
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
     )

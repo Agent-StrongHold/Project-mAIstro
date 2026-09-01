@@ -11,8 +11,11 @@ import io
 import logging
 
 import logging_setup
+from logging_setup import OAuthCallbackQueryFilter
 
 SECRET = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+_PROVIDER = "test"
+_CALLBACK_PATH = f"/v1/auth/oauth/{_PROVIDER}/callback"
 
 
 def _reconfigure(monkeypatch) -> io.StringIO:
@@ -47,6 +50,70 @@ def test_configure_logging_reports_redaction_active(monkeypatch):
         assert logging_setup.redaction_active() is True
     finally:
         root.handlers = getattr(logging, "_maistro_saved_handlers", [])
+
+
+def test_oauth_callback_filter_sanitizes_string_message() -> None:
+    secret = "sentinel-msg-code-material"
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=f'GET {_CALLBACK_PATH}?code={secret} HTTP/1.1" 303',
+        args=(),
+        exc_info=None,
+    )
+
+    assert OAuthCallbackQueryFilter().filter(record) is True
+    assert secret not in record.msg
+    assert _CALLBACK_PATH in record.msg
+    assert "?code=" not in record.msg
+
+
+def test_oauth_callback_filter_skips_non_string_message() -> None:
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="ignored",
+        args=(),
+        exc_info=None,
+    )
+    record.msg = 404
+
+    assert OAuthCallbackQueryFilter().filter(record) is True
+    assert record.msg == 404
+
+
+def test_oauth_callback_filter_skips_non_tuple_non_dict_args() -> None:
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="plain access log",
+        args=None,
+        exc_info=None,
+    )
+
+    assert OAuthCallbackQueryFilter().filter(record) is True
+    assert record.args is None
+
+
+def test_oauth_callback_filter_preserves_non_string_format_args() -> None:
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="%s %s",
+        args=("127.0.0.1:1", 303),
+        exc_info=None,
+    )
+
+    assert OAuthCallbackQueryFilter().filter(record) is True
+    assert record.args == ("127.0.0.1:1", 303)
 
 
 def test_health_publishes_redaction_state(authed_client):
