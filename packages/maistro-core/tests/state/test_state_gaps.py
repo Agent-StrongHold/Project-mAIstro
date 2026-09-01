@@ -253,7 +253,9 @@ class TestPersistedStore:
         assert store.get_raw("raws", "r1") == '{"owner": "first"}'
         state.close()
 
-    def test_put_raw_if_absent_times_out(self, db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_put_raw_if_absent_times_out(
+        self, db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         state = State(db_path=str(db_path))
         store = PersistedStore(state)
         store.initialize()

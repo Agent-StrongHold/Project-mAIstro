@@ -1131,7 +1131,9 @@ def test_empty_oauth_public_origin_with_no_providers_loads() -> None:
         ),
         (
             {
-                "oauth_providers": {f"provider-{index}": _provider_document()[_PROVIDER] for index in range(17)},
+                "oauth_providers": {
+                    f"provider-{index}": _provider_document()[_PROVIDER] for index in range(17)
+                },
                 "oauth_public_origin": _PUBLIC_ORIGIN,
             },
             "at most 16 OAuth providers",
@@ -1160,7 +1162,11 @@ def test_oauth_public_origin_strips_trailing_slash() -> None:
 
 def test_invalid_identity_link_record_is_rejected(oauth_harness: OAuthHarness) -> None:
     key = oauth_login._identity_link_key(_PROVIDER, "bad-subject")
-    stores.oauth_identity_links[key] = {"provider": _PROVIDER, "subject": "wrong-subject", "local_user_id": "user"}
+    stores.oauth_identity_links[key] = {
+        "provider": _PROVIDER,
+        "subject": "wrong-subject",
+        "local_user_id": "user",
+    }
 
     with pytest.raises(IdentityLinkConflictError, match="invalid"):
         asyncio.run(oauth_harness.links.resolve(_PROVIDER, "bad-subject"))
@@ -1194,11 +1200,7 @@ def test_oauth_service_unknown_provider_and_public_client_paths(
     assert denied.value.reason == "unknown_provider"
 
     public_provider = OAuthProviderSettings.model_validate(
-        {
-            k: v
-            for k, v in _provider_document()[_PROVIDER].items()
-            if k != "client_secret_vault_key"
-        }
+        {k: v for k, v in _provider_document()[_PROVIDER].items() if k != "client_secret_vault_key"}
     )
     assert public_provider.client_secret_vault_key is None
     public_service = OAuthLoginService(
@@ -1271,9 +1273,7 @@ def test_complete_login_maps_unexpected_errors(
 
     monkeypatch.setattr(oauth_login, "complete_login", _boom)
     with pytest.raises(OAuthLoginDenied) as denied:
-        asyncio.run(
-            oauth_harness.service._complete_login(_PROVIDER, "code", "state")
-        )
+        asyncio.run(oauth_harness.service._complete_login(_PROVIDER, "code", "state"))
     assert denied.value.stage == "provider"
 
 
