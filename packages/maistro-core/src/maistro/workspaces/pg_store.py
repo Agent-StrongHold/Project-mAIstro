@@ -58,10 +58,6 @@ class PgWorkspaceStore:
 
     def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
         self._pool = pool
-        #: Public for the same reason `InMemoryWorkspaceStore` exposes it: the
-        #: Root Project a Workspace owns is reached through the Workspace, and a
-        #: caller that resolved a second scope store of its own would be filing
-        #: Projects in a tree this store never provisions.
         self.project_store: ProjectScopeStore = project_store
 
     async def create(
@@ -71,23 +67,22 @@ class PgWorkspaceStore:
         name: str,
         description: str = "",
         workspace_id: str | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
     ) -> Workspace:
         """Write the Workspace, its owner membership, and its Root Project.
 
-        The two row writes share a transaction, so a Workspace never exists
-        without the owner that was created with it. The Root Project is the
-        other store's write and cannot join that transaction, so it keeps the
-        reference's compensating delete: if `create_root` raises, the Workspace
-        and its membership go back out. Making all three atomic is a
-        cross-store question, and it belongs with #38 rather than here.
-
-        ``workspace_id`` is omitted by ordinary callers. The explicit form is
-        reserved for convergence imports so an existing durable Hive ID can be
-        retained instead of introducing a forbidden old→new identity map (#37).
+        Ordinary callers omit the explicit identity/timestamps. Those values
+        exist only for convergence imports so a durable legacy Workspace keeps
+        both its canonical ID and chronology (#37).
         """
-        workspace_kwargs: dict[str, str] = {"name": name, "description": description}
+        workspace_kwargs: dict[str, object] = {"name": name, "description": description}
         if workspace_id is not None:
             workspace_kwargs["workspace_id"] = workspace_id
+        if created_at is not None:
+            workspace_kwargs["created_at"] = created_at
+        if updated_at is not None:
+            workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
         owner = WorkspaceMembership(
             workspace_id=workspace.workspace_id,
@@ -137,8 +132,6 @@ class PgWorkspaceStore:
                 updated.updated_at,
                 json_of(updated),
             )
-        # `UPDATE 0` rather than a preceding SELECT: one round trip, and no
-        # window in which the row is found and then gone.
         if status.endswith(" 0"):
             raise WorkspaceNotFound(workspace.workspace_id)
         return updated
@@ -152,12 +145,6 @@ class PgWorkspaceStore:
             )
         if status.endswith(" 0"):
             raise WorkspaceNotFound(workspace_id)
-        # Memberships go with the Workspace by `ON DELETE CASCADE`. The Projects
-        # do not: they are the other store's rows, and it owns how they go.
-        # A direct call, not `getattr(store, "purge_workspace", None)`. The
-        # optional form meant the Projects were purged in tests, where the
-        # store was the in-memory reference, and left orphaned on every durable
-        # deployment, where no implementation defined it (Codex, #516).
         await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
@@ -261,20 +248,6 @@ class PgWorkspaceStore:
                 user_id,
             )
 
-    #: Two whole statements rather than one assembled from a fragment. The
-    #: assembled version was flagged by bandit (B608, string-based query
-    #: construction) and the finding was fair even though the only two values
-    #: it could interpolate were literals in this module: a reader has to
-    #: reconstruct the query to see that, and the next edit is one f-slot away
-    #: from being a real injection. Each statement is now readable as what
-    #: PostgreSQL receives.
-    #: `$5::text::jsonb`, not a bare `$5`. `json_of` returns text, and the
-    #: container's pool registers a JSON codec -- so a bare JSONB parameter is
-    #: encoded a second time and the row stores a JSON *string* rather than an
-    #: object. A reader on a raw caller-supplied pool then gets the outer
-    #: representation back and `model_of` fails. The cast makes the write mean
-    #: the same thing on either pool, which is what `runs/pg_store.py` has done
-    #: throughout and this store did not follow (Codex, #516).
     _INSERT_MEMBERSHIP: Final = """
         INSERT INTO canonical_workspace_memberships
             (workspace_id, user_id, role, added_at, payload)
@@ -307,13 +280,7 @@ class PgWorkspaceStore:
         )
 
     async def _lock_workspace(self, conn: Any, workspace_id: str) -> None:
-        """Serialise membership writes for one Workspace, or refuse.
-
-        `FOR UPDATE` on the Workspace row rather than on the membership rows:
-        the rule is about how many owner rows exist, so the thing that has to
-        be serialised is the *set*, and the parent row is the only object every
-        writer for this Workspace touches.
-        """
+        """Serialise membership writes for one Workspace, or refuse."""
         locked = await conn.fetchval(
             "SELECT workspace_id FROM canonical_workspaces WHERE workspace_id = $1 FOR UPDATE",
             workspace_id,
@@ -344,12 +311,7 @@ class PgWorkspaceStore:
             raise WorkspaceAccessDenied("a Workspace must retain at least one owner")
 
     async def _purge(self, workspace_id: str) -> None:
-        """Undo `create`'s rows after the Root Project failed.
-
-        Deliberately quiet about a Workspace that is already gone: this runs on
-        the failure path, and raising here would replace the error the caller
-        needs to see with one about the cleanup.
-        """
+        """Undo `create`'s rows after the Root Project failed."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
