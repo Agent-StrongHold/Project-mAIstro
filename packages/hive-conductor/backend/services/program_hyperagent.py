@@ -51,40 +51,19 @@ def user_id_from_request(request: Request) -> str:
     return str(uid)
 
 
-#: The program store's project id for a caller in no workspace.
-#:
-#: Not reachable from a request any more (#129 refuses those), but
-#: `program_store` still defaults to it and pre-existing rows carry it.
 GLOBAL_PROJECT_ID = "default"
 
 
 def _scope(workspace_id: str | None) -> str:
-    """Which program context a workspace-scoped call reads and writes.
-
-    A workspace's guidance, interview progress and proposed actions belong to
-    that workspace. Reading `default` while the caller named `ws-a` writes
-    their guidance somewhere they will never see it again, and reports a
-    completed `ws-a` interview as incomplete.
-    """
+    """Which program context a workspace-scoped call reads and writes."""
     return workspace_id or GLOBAL_PROJECT_ID
 
 
-def require_program_access(user_id: str, workspace_id: str | None = None) -> None:
-    """Gate the program hyperagent surface on workspace membership (#129).
-
-    The interview itself was generalized to any persona long ago, through
-    `program_context.py`'s per-use_case `INTERVIEW_TEMPLATES`; the gate in front
-    of it was the last thing here that still asked an environment variable.
-    `user_id` is required rather than optional now: the optional form existed
-    only so a caller that had not been re-pointed yet could fall through to
-    `is_pm_poc_mode()`, and there is no such caller left.
-
-    Renamed from `require_pm_poc` because the name was the claim -- nothing
-    about this surface is PM-specific, and any persona's workspace reaches it.
-    """
+async def require_program_access(user_id: str, workspace_id: str | None = None) -> None:
+    """Gate the program hyperagent surface on canonical Workspace membership."""
     from services.workspace_mode import is_workspace_request_authorized
 
-    if not is_workspace_request_authorized(user_id, workspace_id):
+    if not await is_workspace_request_authorized(user_id, workspace_id):
         raise HTTPException(
             status_code=404,
             detail=(
@@ -101,12 +80,7 @@ async def apply_guidance_and_pulse(
     workspace_id: str | None = None,
     max_pulse_actions: int = 2,
 ) -> dict[str, Any]:
-    """Record guidance and optionally queue autonomous fleet work.
-
-    `workspace_id` names the roster the queued work resolves against (#129).
-    The pulse proposes bare agent names (`delivery`), and those only mean
-    something within a workspace whose persona materialized them.
-    """
+    """Record guidance and optionally queue autonomous fleet work."""
     project_id = _scope(workspace_id)
     ctx = apply_guidance(prog.get_context(user_id, project_id), text)
     ctx = prog.save_context(ctx)
@@ -151,17 +125,7 @@ def _empty_pulse_note(
     unavailable: list[str],
     actions: list[Any],
 ) -> str:
-    """Why a pulse queued nothing, or empty when it queued something.
-
-    Said once, plainly, rather than inferred from an empty `queued` beside a
-    full `proposed` — and saying which of two different things happened (#221).
-
-    Before the pulse read this workspace's own roster, "nothing here can do
-    what was proposed" was the ordinary case and had one message. Now it is a
-    race — the roster changed between proposing and queueing — and the ordinary
-    empty pulse is the second message: this workspace has agents, and none of
-    them declares a capability that may run without approval.
-    """
+    """Why a pulse queued nothing, or empty when it queued something."""
     if queued or failed:
         return ""
     if unavailable:
@@ -193,9 +157,6 @@ async def run_program_pulse(
             "interview": interview_status(ctx),
         }
 
-    # The workspace's own roster decides who is proposed (#221). Before this
-    # the pulse named PM Fleet's agents to every workspace, so any other
-    # persona got a list of actions that could not run here.
     roster = pulse_roster(workspace_id)
     actions = propose_autonomous_actions(ctx, roster=roster, max_actions=max_actions)
     suggestions = propose_work_item_suggestions(ctx, user_id)
@@ -230,18 +191,12 @@ async def run_program_pulse(
             from maistro.agents.program_context import context_for_task
 
             pctx = context_for_task(ctx)
-            # Inject user's Atlassian PATs from encrypted credential store
-            # so pm_runner can make real Jira/Confluence calls.
             pctx["atlassian_pats"] = _get_atlassian_pats(user_id)
 
             rec = await engine.submit_task(
                 agent_id,
                 description,
                 user_id=user_id,
-                # The Run is filed in the workspace the pulse was requested for.
-                # `submit_task` reads an omitted workspace as the deployment's
-                # default, so autonomous work asked for in `ws-a` was admitted
-                # into another Project while carrying a `ws-a` agent.
                 workspace_id=workspace_id,
                 task_type=task_type,
                 agent_id=agent_id,
@@ -257,12 +212,6 @@ async def run_program_pulse(
                 }
             )
         except ValueError as exc:
-            # An action was proposed for an agent this workspace turns out not
-            # to have, or for a capability it does not declare. Since #221 the
-            # proposals come from this workspace's own roster, so the ordinary
-            # cause of this is gone — what remains is a roster that changed
-            # between proposing and queueing, which is a real race and worth
-            # reporting rather than assuming away.
             logger.warning(
                 "pulse action %s/%s not available in workspace %s: %s",
                 action.agent_id,
