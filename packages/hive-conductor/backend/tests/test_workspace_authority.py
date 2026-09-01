@@ -9,7 +9,10 @@ from models.schemas import Agent
 from models.workspace import Workspace, WorkspaceMember
 from services import workspace_authority
 
-from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
+from maistro.workspaces.model import (
+    WorkspaceMembership,
+    WorkspaceRole as CanonicalWorkspaceRole,
+)
 from maistro.workspaces.store import InMemoryWorkspaceStore
 
 
@@ -110,8 +113,12 @@ async def test_live_membership_authority_does_not_follow_legacy_store_mutation(
 async def test_fallback_created_workspace_survives_adapter_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    canonical = InMemoryWorkspaceStore()
-    monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+    canonical_ref = [InMemoryWorkspaceStore()]
+    monkeypatch.setattr(
+        workspace_authority,
+        "_engine_workspace_store",
+        lambda: canonical_ref[0],
+    )
 
     view = await workspace_authority.create_workspace(
         creator_user_id="alice",
@@ -122,13 +129,13 @@ async def test_fallback_created_workspace_survives_adapter_restart(
         voice_tone_override=None,
     )
 
-    assert await canonical.get(view.id) is not None
+    assert await canonical_ref[0].get(view.id) is not None
     assert view.id in workspace_authority.presentation_store()
-    # This is restart recovery input for an ephemeral canonical fallback, not
-    # an authorization source. The next assertion proves it is replayed only
-    # after the canonical process state is deliberately reset.
     assert view.id in stores.workspaces
 
+    # Simulate process-local canonical state disappearing while the persisted
+    # Hive recovery record remains available to the next process.
+    canonical_ref[0] = InMemoryWorkspaceStore()
     workspace_authority.reset_for_tests()
     recovered = await workspace_authority.visible_view("alice", view.id)
 
@@ -136,6 +143,7 @@ async def test_fallback_created_workspace_survives_adapter_restart(
     assert recovered.id == view.id
     assert recovered.name == "Canonical"
     assert recovered.members == [WorkspaceMember(user_id="alice", role="owner")]
+    assert await canonical_ref[0].get(view.id) is not None
 
 
 @pytest.mark.asyncio
@@ -145,7 +153,13 @@ async def test_interrupted_membership_import_resumes_instead_of_dropping_members
     class _FailOnceStore(InMemoryWorkspaceStore):
         failed = False
 
-        async def set_membership(self, workspace_id, *, user_id, role):
+        async def set_membership(
+            self,
+            workspace_id: str,
+            *,
+            user_id: str,
+            role: CanonicalWorkspaceRole,
+        ) -> WorkspaceMembership:
             if user_id == "bob" and not self.failed:
                 self.failed = True
                 raise RuntimeError("transient membership write failure")
