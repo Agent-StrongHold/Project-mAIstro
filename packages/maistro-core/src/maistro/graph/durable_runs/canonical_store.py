@@ -17,6 +17,7 @@ the system of record -- which is the defect, not the interface.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from maistro.runs.model import Attempt, NodeRun, RunStatus
@@ -26,6 +27,8 @@ from .continuation import GraphContinuation, GraphContinuationStore
 from .spine import mirror_lifecycle
 from .stores import answer_record
 from .types import DurableRunRecord
+
+_RESUMABLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED})
 
 
 class CanonicalDurableRunStore:
@@ -96,6 +99,24 @@ class CanonicalDurableRunStore:
             status, limit=limit, project_id=project_id
         )
         return await self._assemble_all(run_ids)
+
+    async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        """Assemble due continuation candidates against canonical Run truth.
+
+        `resume_at` is Graph-continuation state, so the indexed candidate query
+        belongs to the continuation store. Status remains canonical Run state,
+        so stale denormalized status is never sufficient to resume physical
+        work: after assembly we re-check the Run and the persisted deadline.
+        """
+        run_ids = await self._continuations.list_due_run_ids(now=now, limit=limit)
+        records = await self._assemble_all(run_ids)
+        return [
+            record
+            for record in records
+            if record.run.status in _RESUMABLE_STATUSES
+            and record.resume_at is not None
+            and record.resume_at <= now
+        ][:limit]
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         run_ids = await self._continuations.list_run_ids_for_project(project_id, limit=limit)
