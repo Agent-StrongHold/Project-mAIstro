@@ -100,6 +100,8 @@ class CircuitBreaker:
         self._probe_started_at: float | None = None
         self._probe_generation = 0
         self._active_probe_generation: int | None = None
+        self._probe_task: asyncio.Task[Any] | None = None
+        self._probe_done_callback: Callable[[asyncio.Task[Any]], None] | None = None
         self._publish_state()
 
     @staticmethod
@@ -140,6 +142,10 @@ class CircuitBreaker:
         self._publish_state()
 
     def _clear_probe_locked(self) -> None:
+        if self._probe_task is not None and self._probe_done_callback is not None:
+            self._probe_task.remove_done_callback(self._probe_done_callback)
+        self._probe_task = None
+        self._probe_done_callback = None
         self._probe_owner = None
         self._probe_started_at = None
         self._active_probe_generation = None
@@ -166,7 +172,10 @@ class CircuitBreaker:
         self._active_probe_generation = generation
         task = owner[1]
         if task is not None:
-            task.add_done_callback(partial(self._release_finished_probe, generation))
+            callback = partial(self._release_finished_probe, generation)
+            self._probe_task = task
+            self._probe_done_callback = callback
+            task.add_done_callback(callback)
 
     def _prune_failures_locked(self, now: float) -> None:
         # The boundary is inclusive: a failure exactly W seconds old remains in
@@ -236,6 +245,7 @@ class CircuitBreaker:
         """
         owner = self._caller_identity()
         with self._lock:
+            self._refresh_state_locked(self._now())
             self._success_count += 1
             if self._state == CircuitState.CLOSED:
                 self._failures.clear()
