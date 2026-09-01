@@ -31,13 +31,32 @@ from services.legacy_dag_node import (
 )
 
 
+class CanonicalDagExecutionError(RuntimeError):
+    """The canonical Run reached a non-success terminal state."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        status = str(result.get("status") or "failed")
+        detail = str(result.get("error") or f"canonical Run ended {status}")
+        super().__init__(detail)
+
+
 async def execute_dag(dag_data: dict, **kwargs: Any) -> dict[str, Any]:
-    """Compatibility call path backed by the canonical durable Graph executor."""
-    return await _canonical_execute_dag(
+    """Run through the canonical durable executor and fail closed on failure.
+
+    Historical callers treated a normal return as successful execution. Keep
+    that contract truthful by raising when canonical Run truth is not
+    ``completed`` instead of letting old wrappers stamp a failed Run as
+    completed.
+    """
+    result = await _canonical_execute_dag(
         dag_data,
         llm_builder=_build_llm_call,
         **kwargs,
     )
+    if result.get("status") != "completed":
+        raise CanonicalDagExecutionError(result)
+    return result
 
 
 async def execute_dag_streaming(dag_data: dict, **kwargs: Any):
@@ -52,6 +71,23 @@ async def execute_dag_streaming(dag_data: dict, **kwargs: Any):
     }
     try:
         result = await execute_dag(dag_data, **kwargs)
+    except CanonicalDagExecutionError as exc:
+        result = exc.result
+        for node_id, node_result in result.get("node_results", {}).items():
+            yield {
+                "status": "node_complete",
+                "node_id": node_id,
+                "role": node_result.get("role", "worker"),
+                "response": node_result.get("response", ""),
+                "success": bool(node_result.get("success")),
+                "run_id": result.get("run_id"),
+            }
+        yield {
+            "status": result.get("status", "failed"),
+            "run_id": result.get("run_id"),
+            "error": str(exc),
+        }
+        return
     except Exception as exc:
         yield {"status": "failed", "error": str(exc)}
         return
@@ -65,21 +101,12 @@ async def execute_dag_streaming(dag_data: dict, **kwargs: Any):
             "success": bool(node_result.get("success")),
             "run_id": result.get("run_id"),
         }
-
-    terminal = result.get("status", "failed")
-    if terminal == "completed":
-        yield {
-            "status": "completed",
-            "run_id": result.get("run_id"),
-            "cycles": result.get("cycles", 0),
-            "annotations": result.get("annotations", {}),
-        }
-    else:
-        yield {
-            "status": terminal,
-            "run_id": result.get("run_id"),
-            "error": result.get("error", f"canonical Run ended {terminal}"),
-        }
+    yield {
+        "status": "completed",
+        "run_id": result.get("run_id"),
+        "cycles": result.get("cycles", 0),
+        "annotations": result.get("annotations", {}),
+    }
 
 
 async def execute_champion() -> dict[str, Any]:
@@ -103,6 +130,7 @@ async def execute_champion() -> dict[str, Any]:
 
 
 __all__ = [
+    "CanonicalDagExecutionError",
     "STUB_LLM_REFUSAL",
     "StubLLMNotAllowedError",
     "execute_champion",
