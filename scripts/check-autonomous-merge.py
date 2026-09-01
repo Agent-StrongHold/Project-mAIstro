@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import re
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BRANCH_INDEPENDENCE_REGISTRY = ROOT / "quality" / "branch-independence.json"
+BRANCH_INDEPENDENCE_CHECKER = ROOT / "scripts" / "check-branch-independence.py"
 QUALITY_PREFIX = "quality/"
 BRANCH_INDEPENDENT_EVIDENCE_KINDS = frozenset({"base_derived", "generated"})
 
@@ -148,6 +150,37 @@ def _matches(path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
+def _branch_independence_errors(raw: dict[str, object]) -> list[str] | None:
+    """Validate registry policy with the canonical protected-base validator."""
+    version = raw.get("version")
+    # bool is an int subclass; JSON true must not satisfy a numeric schema version.
+    if type(version) is not int or version != 1:
+        return ["registry version must be the integer 1"]
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_autonomous_branch_independence",
+            BRANCH_INDEPENDENCE_CHECKER,
+        )
+        if spec is None or spec.loader is None:
+            return None
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+    except (ImportError, OSError, RuntimeError, SyntaxError, ValueError):
+        return None
+
+    validator = getattr(checker, "registry_errors", None)
+    if not callable(validator):
+        return None
+    try:
+        errors = validator(raw)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return None
+    if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
+        return None
+    return errors
+
+
 def _quality_surfaces() -> list[tuple[str, tuple[str, ...]]] | None:
     """Read quality-state classes from the protected-base registry.
 
@@ -160,10 +193,14 @@ def _quality_surfaces() -> list[tuple[str, tuple[str, ...]]] | None:
         raw = json.loads(BRANCH_INDEPENDENCE_REGISTRY.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(raw, dict) or raw.get("version") != 1:
+    if not isinstance(raw, dict):
         return None
+    schema_errors = _branch_independence_errors(raw)
+    if schema_errors is None or schema_errors:
+        return None
+
     surfaces = raw.get("surfaces")
-    if not isinstance(surfaces, list) or not surfaces:
+    if not isinstance(surfaces, list):
         return None
 
     classified: list[tuple[str, tuple[str, ...]]] = []
@@ -172,11 +209,9 @@ def _quality_surfaces() -> list[tuple[str, tuple[str, ...]]] | None:
             return None
         kind = surface.get("kind")
         paths = surface.get("paths")
-        if not isinstance(kind, str) or not kind:
+        if not isinstance(kind, str) or not isinstance(paths, list):
             return None
-        if not isinstance(paths, list) or not paths or any(
-            not isinstance(path, str) or not path for path in paths
-        ):
+        if any(not isinstance(path, str) for path in paths):
             return None
         classified.append((kind, tuple(paths)))
     return classified
