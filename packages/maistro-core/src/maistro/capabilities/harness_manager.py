@@ -128,6 +128,10 @@ class HarnessSessionManager:
         for this session, so Warden and the per-session outbound ActionGate remain
         mandatory. The resolver re-checks slot enablement, provider health, and
         the Binding constraints that can be proven for an already-created session.
+
+        Unreached: this is the one caller of the canonical Invocation seam and
+        nothing calls it outside tests, so no harness turn in a running
+        deployment crosses that seam. #55 is what will call it.
         """
 
         bound = self._bound_session(session_id, binding)

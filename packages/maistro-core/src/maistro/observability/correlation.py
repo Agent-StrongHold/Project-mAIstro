@@ -214,3 +214,62 @@ def install_log_correlation(logger_names: tuple[str, ...] = ("",)) -> int:
             handler.setFormatter(CorrelatingFormatter(handler.formatter or logging.Formatter()))
             wrapped += 1
     return wrapped
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionProvenance:
+    """Who produced a record: the Run, NodeRun and Attempt it came out of.
+
+    A record's producer is a narrower question than the whole context — a
+    learning does not care which HTTP request was in flight, it cares which
+    execution taught it — so this is three fields rather than eight, and the
+    stores that persist it carry three columns rather than eight (#709).
+    """
+
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
+
+    def __bool__(self) -> bool:
+        """True when any id is set — a record produced outside any execution."""
+        return bool(self.run_id or self.node_run_id or self.attempt_id)
+
+    def as_columns(self) -> tuple[str | None, str | None, str | None]:
+        """The three ids as a database row holds them: absent, not empty.
+
+        `None` and not `""` because a provenance column holding an empty string
+        reads as "produced by a Run whose id is empty", which is a claim, where
+        NULL reads as "no execution was in scope" — what actually happened.
+
+        Here rather than at each call site: six stores were each spelling the
+        same `or None` three times, which is the same rule written in eighteen
+        places and three extra branches per store for the complexity gate to
+        notice. It noticed (#709).
+        """
+        return (self.run_id or None, self.node_run_id or None, self.attempt_id or None)
+
+
+def observed_provenance(
+    *,
+    run_id: str = "",
+    node_run_id: str = "",
+    attempt_id: str = "",
+) -> ExecutionProvenance:
+    """Return a record's producer: what the caller named, else what is in scope.
+
+    The same rule as `EventEnvelope.correlated`, and for the same reason: a
+    caller recording a fact *about* another execution knows something the
+    ambient context does not, so what it sets is never overwritten; a caller
+    that simply did not think about it gets the truth for free.
+
+    A record produced outside any execution comes back all-blank, and the
+    stores write that as SQL NULL. An empty string in a provenance column
+    would read as "produced by a Run with no id", which is a claim; absence
+    reads as "no execution was in scope", which is what happened.
+    """
+    context = current_execution_context()
+    return ExecutionProvenance(
+        run_id=run_id or context.run_id,
+        node_run_id=node_run_id or context.node_run_id,
+        attempt_id=attempt_id or context.attempt_id,
+    )

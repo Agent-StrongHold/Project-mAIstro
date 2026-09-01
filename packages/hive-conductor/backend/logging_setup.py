@@ -4,10 +4,47 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
+
+from settings_defaults import is_pm_poc_mode
+
+from maistro.security.log_redaction import install_log_redaction
 
 _CONFIGURED = False
 _REDACTION_ACTIVE = False
+_OAUTH_CALLBACK_QUERY_RE = re.compile(
+    r'(?P<path>/v1/auth/oauth/[^/?#\s"]{1,128}/callback)\?[^\s"]*'
+)
+
+
+def _sanitize_access_log_value(value: str) -> str:
+    return _OAUTH_CALLBACK_QUERY_RE.sub(r"\g<path>", value)
+
+
+class OAuthCallbackQueryFilter(logging.Filter):
+    """Remove the entire sensitive query from Uvicorn callback access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _sanitize_access_log_value(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _sanitize_access_log_value(value) if isinstance(value, str) else value
+                for value in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = {
+                key: _sanitize_access_log_value(value) if isinstance(value, str) else value
+                for key, value in record.args.items()
+            }
+        return True
+
+
+def _install_oauth_access_log_filter() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, OAuthCallbackQueryFilter) for item in access_logger.filters):
+        access_logger.addFilter(OAuthCallbackQueryFilter())
 
 
 def _install_redaction() -> None:
@@ -21,8 +58,6 @@ def _install_redaction() -> None:
     """
     global _REDACTION_ACTIVE
     try:
-        from maistro.security.log_redaction import install_log_redaction
-
         install_log_redaction()
         _REDACTION_ACTIVE = True
     except Exception as exc:  # pragma: no cover - requires a broken maistro-core
@@ -49,9 +84,10 @@ def configure_logging() -> str:
     """Apply log level from HIVE_LOG_LEVEL / PM mode. Returns active level name."""
     global _CONFIGURED
     if _CONFIGURED:
-        return logging.getLogger().level
-
-    from settings_defaults import is_pm_poc_mode
+        # Uvicorn may have reconfigured its logger after the app module import;
+        # lifespan calls this again, so restore the callback-query guard.
+        _install_oauth_access_log_filter()
+        return logging.getLevelName(logging.getLogger().level).lower()
 
     level_name = os.getenv("HIVE_LOG_LEVEL", "").strip().lower()
     if not level_name and is_pm_poc_mode():
@@ -81,6 +117,7 @@ def configure_logging() -> str:
     logging.getLogger("uvicorn.access").setLevel(
         logging.INFO if level <= logging.DEBUG else logging.WARNING
     )
+    _install_oauth_access_log_filter()
 
     # ADR-064 — must be the last thing that touches the handler chain, since it
     # wraps the formatters that exist at this moment. The Conductor's own handler

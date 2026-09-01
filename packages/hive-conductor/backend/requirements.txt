@@ -23,6 +23,9 @@ httpx>=0.27.0,<1
 argon2-cffi>=23.1.0,<25
 bcrypt>=4.0.0,<6
 cryptography>=50.0.0,<51
+# maistro-core's OAuth module imports PyJWT at import time; hive-conductor
+# consumes core via sys.path, so core's deps must be restated here (#839).
+pyjwt[crypto]>=2.10,<3
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2

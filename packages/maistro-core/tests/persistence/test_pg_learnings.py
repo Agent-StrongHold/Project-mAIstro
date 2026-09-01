@@ -163,6 +163,12 @@ async def test_store_inserts_new_learning_when_no_existing_match(
         "",
         0,
         0,
+        # The producer, written as NULL rather than "" because this learning was
+        # made with no execution in scope: an empty string would name a Run
+        # whose id is empty, which is a claim (#709).
+        None,
+        None,
+        None,
     )
 
 

@@ -11,6 +11,7 @@ from typing import Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.memory.types import Outcome
+from maistro.observability.correlation import observed_provenance
 
 MAX_OUTCOMES = 10_000
 
@@ -59,6 +60,26 @@ class InMemoryOutcomeStore:
         self._max = max_outcomes
 
     async def record(self, outcome: Outcome) -> int:
+        """Record an outcome, naming the execution that produced it.
+
+        The ambient provenance is resolved here too, for the reason
+        `InMemoryLearningStore.store` gives: this is the backend `memory://`
+        selects, so a store that skipped it would let every behavioural test
+        pass while only the durable ones did the work — and the two SQL twins
+        already fill it (Codex, #709).
+
+        Assigned onto the caller's object because this store keeps that
+        instance and hands it back; a provenance held anywhere else would not
+        survive the read.
+        """
+        provenance = observed_provenance(
+            run_id=outcome.run_id,
+            node_run_id=outcome.node_run_id,
+            attempt_id=outcome.attempt_id,
+        )
+        outcome.run_id = provenance.run_id
+        outcome.node_run_id = provenance.node_run_id
+        outcome.attempt_id = provenance.attempt_id
         if len(self._outcomes) >= self._max:
             self._outcomes.pop(0)
         outcome.id = self._next_id

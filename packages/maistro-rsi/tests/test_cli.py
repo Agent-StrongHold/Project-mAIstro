@@ -224,59 +224,45 @@ class TestCliWiringSmoke:
 
 
 class TestCliNewWiring:
-    """The CLI must hand RsiCycle a real llm_call when LiteLLM is configured,
+    """The CLI must wire RsiCycle correctly when LiteLLM is configured,
     and must fail closed on --open-prs if the quarantine gate can't be built."""
 
-    def test_rsi_cycle_receives_llm_call_and_quarantine_when_configured(
-        self, tmp_path, monkeypatch
-    ):
+    def test_rsi_cycle_receives_llm_call_and_quarantine_when_configured(self, monkeypatch):
         monkeypatch.setenv("LITELLM_BASE_URL", "http://gateway:4000")
         monkeypatch.setenv("LITELLM_VIRTUAL_KEY", "vk-1")
-
-        origin = tmp_path / "origin"
-        origin.mkdir()
-        _init_repo(origin)
 
         captured: dict = {}
         import maistro_rsi.cli as cli_mod
 
-        real_cycle = cli_mod.RsiCycle
-
-        class SpyCycle(real_cycle):
+        class SpyCycle:
             def __init__(self, *args, **kwargs):
                 captured["llm_call"] = kwargs.get("llm_call")
                 captured["quarantine_check"] = kwargs.get("quarantine_check")
-                super().__init__(*args, **kwargs)
+
+            async def run(self, baseline, candidate, models):
+                from types import SimpleNamespace
+
+                captured["models"] = models
+                return SimpleNamespace(
+                    run_id="test-run",
+                    model_used=models[0],
+                    branch_result=SimpleNamespace(tests_passed=True, pr_url=None, error=None),
+                    benchmarks_won=0,
+                    battles=(),
+                    improved=False,
+                )
 
         monkeypatch.setattr(cli_mod, "RsiCycle", SpyCycle)
-
-        # With LITELLM_* set, the builders agent's LiteLLMCallable is
-        # "configured" and would attempt a real HTTP call to the bogus
-        # gateway — stub the patch fn; this test asserts construction wiring.
-        async def noop_patch(sandbox, workspace, model=None):
-            return None
-
-        monkeypatch.setattr(cli_mod, "make_builders_apply_patch", lambda *a, **k: noop_patch)
-
-        workspace_root = tmp_path / "maistro-workspace"
-        monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (workspace_root,))
-
-        async def fake_create(workspace, settings=None, env=None, backend=None):
-            return _FakeMicroVmSandbox()
-
-        monkeypatch.setattr("maistro_rsi.runner.create_rsi_sandbox", fake_create)
 
         code = main(
             [
                 "run",
                 "--repo-url",
-                f"file://{origin}",
+                "https://example.com/unused",
                 "--goal",
                 "g",
                 "--test-command",
                 "true",
-                "--workspace-root",
-                str(workspace_root),
                 "--models",
                 "fake/m",
                 "--open-prs",
@@ -284,16 +270,14 @@ class TestCliNewWiring:
             ]
         )
 
-        # The quarantine gate was wired in. llm_call is deliberately NOT
-        # passed by the CLI anymore: RsiCycle.run() auto-builds a gateway call
-        # per scheduler-picked model (see maistro_rsi.gateway).
+        # This is a construction-wiring test. The separate CLI smoke test above
+        # owns clone/workspace/cycle execution. Keeping this boundary hermetic
+        # means a Git, sandbox, DNS, or gateway failure cannot masquerade as a
+        # regression in the constructor contract asserted here.
         assert captured["llm_call"] is None
         assert captured["quarantine_check"] is not None
-        # open_prs + passing tests + quarantine over a real (non-empty) diff:
-        # the stub LLM makes no changes, so diff is empty → Warden scan of ""
-        # clears, but no push happens against file:// remotes in this test if
-        # tests failed; either way the CLI must complete without crashing.
-        assert code in (0, 1)
+        assert captured["models"] == ["fake/m"]
+        assert code == 0
 
     def test_open_prs_fails_closed_when_quarantine_unbuildable(self, monkeypatch, capsys):
         monkeypatch.setenv("LITELLM_BASE_URL", "http://gateway:4000")

@@ -1302,6 +1302,23 @@ def _report_stale_grants(stale: list[str]) -> None:
     )
 
 
+def _report_superseded_grants(superseded: dict[str, list[str]]) -> None:
+    if not superseded:
+        return
+    print("\nFAIL: authorized floor(s) independent landings have superseded\n")
+    for counter, names in sorted(superseded.items()):
+        print(f"  - {counter}: {len(names)} note(s) already clear it on their own:")
+        for name in names:
+            print(f"      {name}")
+    print(
+        "\nNone of these needed the grant, and none of them are the note it "
+        "corrects -- each\nlanded through its own review, independently of "
+        "this one and of each other.\nA correction this durably overtaken is "
+        "no longer what holds the floor up; prune it\nfrom "
+        "quality/ratchet-authorizations.json."
+    )
+
+
 def _report_removed_grants(removed: list[str]) -> None:
     if not removed:
         return
@@ -1670,6 +1687,7 @@ def _removed_binding_grants(
     counters: dict[str, float],
     floors: dict[str, float],
     present: dict[str, float],
+    superseded: dict[str, list[str]],
 ) -> list[str]:
     """Grants this change is spending that it also deletes (#662 review).
 
@@ -1682,13 +1700,23 @@ def _removed_binding_grants(
     A grant that is *binding* -- one actually lowering the comparison -- has to
     survive the change that uses it. A spent one may go; that is the pruning
     `_stale_grants` asks for.
+
+    `superseded` is the other pruning `_superseded_grants` asks for, and this
+    refusal must not undo it (SPEC-083026-fcc9): a grant several independent
+    already-landed notes have grown past is exactly the case where nobody
+    downstream needs the record "why the number moved" to point at this
+    file any more -- those notes are that record, and they will keep
+    existing, in git history, whether or not the grant does.
     """
     return [
         f"{counter}@{floor}: this change spends that authorization and removes it. "
         "A grant that is still lowering the floor has to stay, or the fall lands "
         "with no record of who permitted it"
         for counter, floor in sorted(floors.items())
-        if counter in counters and counters[counter] > floor and present.get(counter) != floor
+        if counter in counters
+        and counters[counter] > floor
+        and present.get(counter) != floor
+        and counter not in superseded
     ]
 
 
@@ -1746,6 +1774,223 @@ def _stale_grants(counters: dict[str, float], floors: dict[str, float]) -> list[
         for counter, floor in sorted(floors.items())
         if counter in counters and counters[counter] <= floor
     ]
+
+
+#: How many notes must, each on its own, already clear a grant's floor before
+#: the grant counts as superseded rather than merely exceeded (SPEC-083026-fcc9).
+#: One note above the floor is the ordinary "unbanked improvement" every PR
+#: hits and clears with `--bank` -- it says nothing about the grant's own
+#: correction. A single contributor can never manufacture more than one note
+#: at a time, so three *independently landed* ones agreeing the floor is
+#: behind the repository is the same trust a merge already represents,
+#: taken three times over -- deliberately higher than a bare majority, since
+#: a threshold this ratchet gets wrong in either direction is expensive:
+#: too low lets a short run of related PRs retire a correction that still
+#: matters, too high leaves a genuinely dead grant blocking merges longer
+#: than it has to.
+MIN_SUPERSEDING_NOTES = 3
+
+
+def _note_landing_commits(notes_dir: Path, at: str, *, root: Path | None = None) -> dict[str, str]:
+    """The most recent commit, as of `at`, that touched each note file.
+
+    One `git log --name-only` walk over the notes directory, not one call per
+    note: a PR touching dozens of notes should not multiply this into dozens
+    of subprocesses. `git log` lists newest first, so the first commit seen
+    for a given filename is its most recent touch; later mentions of the same
+    name are older and ignored.
+
+    `root` resolved inside the body, not as a default argument: a default of
+    `ac_state_notes.ROOT` would bind once, at import time, before any test's
+    `monkeypatch.setattr(ac_state_notes, "ROOT", ...)` runs, and every call
+    afterwards would keep running git against the real repository regardless.
+    """
+    root = ac_state_notes.ROOT if root is None else root
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--format=commit %H", "--name-only", at, "--", str(notes_dir)],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    landing: dict[str, str] = {}
+    current: str | None = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("commit "):
+            current = line.removeprefix("commit ").strip()
+            continue
+        name = line.strip()
+        if name and current is not None:
+            landing.setdefault(Path(name).name, current)
+    return landing
+
+
+def _grants_file_landing_commit(at: str, *, root: Path | None = None) -> str | None:
+    """The most recent commit, as of `at`, that touched the grants file.
+
+    A cheap, deliberately imprecise stand-in for "when this specific grant
+    entry was authorized": the file also carries the unrelated `wiring-reads`
+    ratchet, so an edit to that section shifts this later than the counter's
+    own grant actually landed. That only ever makes the exclusion *more*
+    conservative -- a note landing between the grant and the unrelated later
+    edit reads as pre-dating the grant and is not counted -- which is the safe
+    direction for a check whose job is to refuse pruning it is not sure about.
+
+    `root` resolved inside the body -- see `_note_landing_commits` for why a
+    default argument would not track a test's monkeypatched `ac_state_notes.ROOT`.
+    """
+    root = ac_state_notes.ROOT if root is None else root
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "log",
+                "-1",
+                "--format=%H",
+                at,
+                "--",
+                "quality/ratchet-authorizations.json",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def _commit_timestamps(shas: set[str], *, root: Path | None = None) -> dict[str, int]:
+    """Unix commit time for each of `shas`, one call per distinct commit.
+
+    Bounded by how many *distinct* commits are actually involved -- typically
+    a handful, since several notes sharing one bulk landing collapse to the
+    same sha -- not by how many notes exist.
+
+    `root` resolved inside the body -- see `_note_landing_commits` for why a
+    default argument would not track a test's monkeypatched `ac_state_notes.ROOT`.
+    """
+    root = ac_state_notes.ROOT if root is None else root
+    timestamps: dict[str, int] = {}
+    for sha in shas:
+        try:
+            proc = subprocess.run(
+                ["git", "show", "-s", "--format=%ct", sha],
+                capture_output=True,
+                text=True,
+                cwd=root,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0:
+            continue
+        text = proc.stdout.strip()
+        if text.isdigit():
+            timestamps[sha] = int(text)
+    return timestamps
+
+
+def _superseded_grants(
+    notes: list[Any], floors: dict[str, float], *, base_sha: str | None, root: Path | None = None
+) -> dict[str, list[str]]:
+    """Grants that independent, already-landed work has grown past and stayed
+    past, mapped to the note names that did it.
+
+    `_stale_grants` is `SPEC-082926-6f49`'s answer to one direction: the fold
+    fell back to the grant, so lowering it does nothing. It has no answer for
+    the other direction, and that spec says so in its own consequences --
+    "a grant... is permanent for as long as those notes are... which is
+    honest, because the record it corrects is still there." That was written
+    against a grant tied to one specific corrected note; it did not anticipate
+    a floored counter that only ever grows, corrected via a rare fall and then
+    climbing again on entirely unrelated work that keeps landing above the
+    grant forever. `_removed_binding_grants` refuses to let such a grant go
+    (`counters[counter] > floor` is true of every future base once this
+    happens, regardless of what the removing change touches), so
+    `_stale_grants` never fires and no PR, however constructed, can prune it
+    under the original design. Verified against develop on 2026-08-30: a
+    grant at 27.8791 from #631/#662, a base fold of 31.7134, and nineteen
+    already-merged notes independently above the grant -- none of them the
+    note the grant corrects, none of them written to spend or influence this
+    check, each landed through the same review this repository already
+    trusts.
+
+    The count is deliberately per-note, not "the fold exceeds the floor":
+    `max`-folding already means one high note is enough to raise the fold, and
+    that one note could be wrong, or unrelated to what the grant corrects, or
+    -- worst case -- written specifically to game this check. Two refinements
+    close the gaps Codex found in the first version, on #720:
+
+    A note counts only if its own landing commit is strictly *later* than the
+    grant's (`_grants_file_landing_commit`), by commit timestamp, not merely
+    "already merged". Without this, the note the grant itself corrects --
+    which by construction still records a value the correction proved wrong,
+    and by construction is *above* the corrected floor, or there would have
+    been nothing to correct -- counted as evidence against the very grant it
+    motivated.
+
+    The count is also of *distinct landing commits*, not distinct filenames.
+    `SPEC-082926-6f49` and the docstring above both lean on "a single
+    contributor can add at most one note per PR" for why this cannot be
+    self-served -- true only if a PR is one note. A batch commit adding three
+    note files in one landing is one review, not three, and this repository's
+    own squash-merge convention (`docs/ci/REQUIRED-CHECKS.md`) makes "one
+    commit" and "one merged PR" the same fact, so collapsing by commit is
+    exactly collapsing by review.
+
+    Both refinements are keyed off `base_sha`: with none given (a synthetic
+    tree outside a real repository, or the worktree-origin case `bounds()`
+    can return), landing history cannot be resolved and this refuses to guess
+    -- no notes are ever counted, which is the safe direction for a check
+    whose whole job is deciding whether a correction is safe to let go.
+    """
+    if base_sha is None:
+        return {}
+    grant_commit = _grants_file_landing_commit(base_sha, root=root)
+    if grant_commit is None:
+        return {}
+    note_landing = _note_landing_commits(ac_state_notes.NOTES_DIR, base_sha, root=root)
+    relevant = {note_landing[n.name] for n in notes if n.name in note_landing}
+    timestamps = _commit_timestamps({grant_commit, *relevant}, root=root)
+    grant_time = timestamps.get(grant_commit)
+    if grant_time is None:
+        return {}
+
+    supersede_by: dict[str, list[str]] = {counter: [] for counter in floors}
+    seen_commits: dict[str, set[str]] = {counter: set() for counter in floors}
+    for note in notes:
+        commit = note_landing.get(note.name)
+        if commit is None:
+            continue
+        time = timestamps.get(commit)
+        if time is None or time <= grant_time:
+            continue
+        for counter, floor in floors.items():
+            value = note.counters.get(counter)
+            if value is None or value <= floor:
+                continue
+            if commit in seen_commits[counter]:
+                continue
+            seen_commits[counter].add(commit)
+            supersede_by[counter].append(note.name)
+    return {
+        counter: sorted(names)
+        for counter, names in supersede_by.items()
+        if len(names) >= MIN_SUPERSEDING_NOTES
+    }
 
 
 def _compare(ceilings: dict[str, Any], totals: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -1946,11 +2191,37 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
         print(f"FAIL: {exc}")
         return 1
     stale = _stale_grants(bound.counters, present)
-    removed = _removed_binding_grants(bound.counters, floors, present)
+    # The notes at the same base `floors` and `bound` were already read from,
+    # so a grant's supersession is judged against the same reviewed history
+    # everything else here is (SPEC-083026-fcc9). Computed twice against two
+    # sources for the same reason `stale`/`removed` split base from candidate:
+    # `by_floor` answers the base question `_removed_binding_grants` asks
+    # ("is the grant this change spends actually still needed"), `by_present`
+    # answers the candidate one `_report_superseded_grants` asks ("is the
+    # grant still sitting in this tree's own file after independent work has
+    # already overtaken it"). They agree except in the one run that prunes --
+    # where `by_present` is correctly empty, because there is nothing left in
+    # the file to report on.
+    notes, _origin, _base_sha = ac_state_notes.load_notes(base=bound.base_sha)
+    superseded_by_floor = _superseded_grants(notes, floors, base_sha=bound.base_sha)
+    superseded_by_present = _superseded_grants(notes, present, base_sha=bound.base_sha)
+    removed = _removed_binding_grants(bound.counters, floors, present, superseded_by_floor)
+
+    # A superseded grant is excluded from every comparison, not only from the
+    # removal refusal (SPEC-083026-fcc9). `superseded_by_floor` is computed purely
+    # from the base's own notes -- the same self-approval-proof source
+    # `floors` itself comes from -- so honouring it here is not the candidate
+    # loosening its own bound; it is recognising that the base's own history
+    # has already, collectively, made the grant's original permission moot.
+    # Without this, the one PR that prunes the grant would still measure
+    # against the un-pruned floor for want of a fresh note of its own, and
+    # every PR after it would need to re-litigate the same "unbanked
+    # improvement" this whole mechanism exists to stop asking.
+    effective_floors = {c: v for c, v in floors.items() if c not in superseded_by_floor}
 
     # The grants have to be in hand before the exact target can be composed:
     # the target *is* the inherited bound as they correct it (#691).
-    target, refusal = _exact_target(bound, measured, floors)
+    target, refusal = _exact_target(bound, measured, effective_floors)
     if refusal is not None:
         print(refusal)
         return 1
@@ -1966,7 +2237,7 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     # carries the owner, the issue and the reason. What the exact comparison
     # still enforces is that the measurement *is* the authorized value: below it
     # is a regression the grant does not cover, above it is slack to bank.
-    regressions, _ = _compare(_lowered(bound.counters, floors), totals)
+    regressions, _ = _compare(_lowered(bound.counters, effective_floors), totals)
     # `target` already carries the grants and this tree's banked values (#691),
     # so it is compared as it stands. Lowering it again here is what turned a
     # grant into a cap: the exact target was pulled back to the granted value
@@ -1974,9 +2245,10 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     exact_regressions, improvements = _compare(target, totals)
     regressions = list(dict.fromkeys([*regressions, *exact_regressions]))
     improvements = _slack_this_run_enforces(improvements)
-    if regressions or improvements or stale or removed:
+    if regressions or improvements or stale or removed or superseded_by_present:
         _report_movement(regressions, improvements, bound)
         _report_stale_grants(stale)
+        _report_superseded_grants(superseded_by_present)
         _report_removed_grants(removed)
         return 1
     for counter, floor in sorted(floors.items()):

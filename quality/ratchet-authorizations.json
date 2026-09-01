@@ -7,10 +7,10 @@
     }
   },
   "ac-state": {
-    "design_coverage@27.8791": {
+    "design_coverage@33.9095": {
       "owner": "@BlakeMatthews-dev",
-      "issue": "#631",
-      "reason": "#631 makes an `ac-modules` anchor required to resolve to a module the reachability graph knows. Four specs on develop anchor to script filenames or bare names, and the `reachable` rung decides by membership in the *unreachable* set -- so absence read as reachable, and every criterion anchored that way cleared the top rung the ladder exists to enforce. Correcting them regrades those criteria honestly and design coverage falls 28.2327 -> 27.8791. The fall is the correction: the higher number counted criteria nothing proved were wired, which is the exact over-count the rung was built to prevent. Banking cannot record it -- `ac_state_notes.fold` takes `max` across notes, and the floor is held by notes from branches that have already merged."
+      "issue": "#729",
+      "reason": "Retiring the duplicate SQLite-only maistro.events checkpoint authority removes one previously taken checkpoint decision while accepting the canonical RunStore + GraphContinuationStore recovery authority. The replacement is fully linked and its newly touched criteria are proven, but the corpus-level design-coverage denominator changes from 34.1434% to 33.9095%; this grant authorizes exactly that intentional checkpoint-authority transition and no deeper fall."
     }
   }
 }

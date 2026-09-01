@@ -115,6 +115,8 @@ user_provider_config: JsonStore = JsonStore("user_provider_config")
 #: deployment configures for durability (#340, ADR-082926-3b80); the route
 #: used to keep its own file inside the image.
 dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
+#: Stable OIDC identity links. Records contain no provider token or email.
+oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
 #: DAG run history — the records behind the "Live DAG Runs" page. In-memory
 #: until #697; the page presented a 100-entry deque as history, empty after
 #: every restart.
@@ -147,6 +149,7 @@ _all_json_stores: list[JsonStore] = [
     optimizer_proposals,
     user_provider_config,
     dashboard_layouts,
+    oauth_identity_links,
     dag_runs,
 ]
 

@@ -153,13 +153,13 @@ class TestTheShippedRuleset:
         assert gate.main([]) == 0
 
     def test_main_requires_a_superset_of_develop(self, gate):
-        """develop's set is the checks that run everywhere; main adds the ones
-        that only run there. A check required on develop and not on main would
-        mean the published branch is the more weakly gated of the two."""
+        """Aside from develop's integration aggregate, main requires every
+        direct check develop requires and adds its release-only checks."""
         rules = gate.load_ruleset()["branches"]
         develop = set(rules["develop"]["required_status_checks"]["contexts"])
         main = set(rules["main"]["required_status_checks"]["contexts"])
-        assert develop < main
+        assert "integration-scope" in develop
+        assert develop - {"integration-scope"} < main
 
     def test_the_ruleset_matches_ADR_095s_protection_table(self, gate) -> None:
         """The table in `docs/adr/ADR-095-four-tier-branch-model.md`, pinned.
@@ -194,16 +194,16 @@ class TestTheShippedRuleset:
             assert rule["required_conversation_resolution"] is True, branch
 
     def test_main_requires_a_superset_of_the_other_tiers(self, gate) -> None:
-        """Every lower tier requires what runs everywhere; main adds the ones
-        that only run there. A check required on a lower tier and not on main
-        would make the published branch the more weakly gated one. With
-        `integration` retired (ADR-095 as amended) the lower tiers are just
-        `develop`; the loop stays so a reintroduced tier is covered the day
-        its entry appears."""
+        """Lower tiers may aggregate specialized checks, but every direct lower
+        tier requirement must still be present on main."""
         rules = gate.load_ruleset()["branches"]
         main = set(rules["main"]["required_status_checks"]["contexts"])
         for lower in set(rules) - {"main"}:
-            assert set(rules[lower]["required_status_checks"]["contexts"]) < main, lower
+            lower_contexts = set(rules[lower]["required_status_checks"]["contexts"])
+            if lower == "develop":
+                assert "integration-scope" in lower_contexts
+                lower_contexts -= {"integration-scope"}
+            assert lower_contexts < main, lower
 
     def test_the_apply_payload_carries_no_comment_keys(self, gate, capsys):
         """`$comment` keys are for the reader; GitHub's API rejects unknown
