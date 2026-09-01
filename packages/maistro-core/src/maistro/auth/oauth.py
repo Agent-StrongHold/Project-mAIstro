@@ -10,8 +10,7 @@ Security invariants (tested):
 - ``state`` is single-use and TTL-bound; replay or expiry raises.
 - PKCE ``code_challenge`` is always S256.
 - OIDC ``id_token`` issuer/audience/expiry/nonce are always validated; the
-  signature is validated against the provider JWKS when PyJWT is available
-  (see ``JWKSIdTokenVerifier`` / ``UnverifiedJWTClaimsValidator``).
+  production verifier validates its signature against the provider JWKS.
 - Client secrets are resolved via an injected callable, never stored on config.
 - Tokens are never placed in emitted events or logs (ADR-044).
 """
@@ -29,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
+import jwt as pyjwt
 
 from maistro.security.outbound import configure_outbound_policy
 
@@ -95,6 +95,7 @@ class OAuthProviderConfig:
     userinfo_url: str | None = None
     issuer: str | None = None
     scopes: tuple[str, ...] = ("openid", "profile", "email")
+    require_id_token: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,13 +149,28 @@ class StateStore(Protocol):
 
 
 class InMemoryStateStore:
-    """Default in-process StateStore with TTL expiry on consume."""
+    """Default in-process StateStore with bounded, eager TTL cleanup."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        *,
+        max_entries: int = 1024,
+    ) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
         self._entries: dict[str, OAuthStateEntry] = {}
         self._clock = clock
+        self._max_entries = max_entries
 
     async def put(self, state: str, entry: OAuthStateEntry) -> None:
+        now = self._clock()
+        self._entries = {
+            key: value for key, value in self._entries.items() if now < value.expires_at
+        }
+        if state not in self._entries and len(self._entries) >= self._max_entries:
+            oldest = min(self._entries, key=lambda key: self._entries[key].expires_at)
+            self._entries.pop(oldest)
         self._entries[state] = entry
 
     async def consume(self, state: str) -> OAuthStateEntry | None:
@@ -189,6 +205,9 @@ def _validate_oidc_claims(
     exp = claims.get("exp")
     if not isinstance(exp, (int, float)) or now >= float(exp):
         raise OAuthTokenValidationError("id_token is expired or has no exp claim")
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub:
+        raise OAuthTokenValidationError("id_token has no stable subject")
     if nonce is not None and claims.get("nonce") != nonce:
         raise OAuthTokenValidationError("id_token nonce mismatch")
 
@@ -211,9 +230,8 @@ class IdTokenVerifier(Protocol):
 class JWKSIdTokenVerifier:
     """Full OIDC verification: JWKS signature + issuer/audience/expiry/nonce.
 
-    Requires PyJWT with its ``crypto`` extra (``cryptography`` is already a
-    maistro-core dependency; PyJWT itself arrives transitively via the ``llm``
-    extra). Import is lazy so the module stays importable without it.
+    PyJWT's ``crypto`` extra is a direct maistro-core dependency so production
+    cannot silently fall back to claims-only validation.
     """
 
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
@@ -226,20 +244,17 @@ class JWKSIdTokenVerifier:
         http: httpx.AsyncClient,
         nonce: str | None,
     ) -> dict[str, Any]:
-        try:
-            import jwt as pyjwt
-        except ImportError as exc:  # pragma: no cover - environment-dependent
-            raise OAuthTokenValidationError(
-                "JWKSIdTokenVerifier requires PyJWT; install pyjwt[crypto] or "
-                "inject UnverifiedJWTClaimsValidator explicitly."
-            ) from exc
         if not config.jwks_url:
             raise OAuthTokenValidationError(
                 f"provider {config.name!r} has no jwks_url; cannot verify id_token signature"
             )
         try:
+            # SECURITY-REVIEW: External JWKS I/O is restricted to the
+            # deployment-configured provider URL and checked by outbound policy.
             resp = await http.get(config.jwks_url)
             resp.raise_for_status()
+            # SECURITY-REVIEW: Provider JSON is untrusted and is consumed only
+            # by PyJWT's JWK parser before signature verification.
             jwks = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise OAuthTokenValidationError(f"failed to fetch JWKS: {exc}") from exc
@@ -259,7 +274,10 @@ class JWKSIdTokenVerifier:
                 algorithms=["RS256", "ES256", "PS256"],
                 audience=config.client_id,
                 issuer=config.issuer,
-                options={"verify_iss": config.issuer is not None},
+                options={
+                    "verify_iss": config.issuer is not None,
+                    "require": ["aud", "exp", "sub"],
+                },
             )
         except OAuthTokenValidationError:
             raise
@@ -272,13 +290,10 @@ class JWKSIdTokenVerifier:
 class UnverifiedJWTClaimsValidator:
     """LOUD WARNING — signature is NOT verified.
 
-    Fallback seam for environments where PyJWT is unavailable: it base64-parses
-    the id_token payload WITHOUT verifying the signature, then validates
-    issuer / audience / expiry / nonce claims. Because the token arrives over
-    the TLS-protected token endpoint response (not from the browser), this is
-    tolerable but weaker than JWKS verification. Prefer JWKSIdTokenVerifier
-    whenever PyJWT is installed; do not inject this class in production unless
-    you understand the trade-off.
+    Explicit compatibility/test seam only: it base64-parses the id_token
+    payload WITHOUT verifying the signature, then validates issuer / audience /
+    expiry / nonce claims. PyJWT crypto is mandatory and the default verifier
+    never selects this class. Do not inject it in production.
     """
 
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
@@ -311,16 +326,7 @@ class UnverifiedJWTClaimsValidator:
 
 
 def default_id_token_verifier() -> IdTokenVerifier:
-    """JWKS verification when PyJWT is importable, otherwise the loud
-    claims-only fallback (a warning is logged on every use of the fallback)."""
-    try:
-        import jwt  # noqa: F401
-    except ImportError:  # pragma: no cover - environment-dependent
-        logger.warning(
-            "PyJWT not installed: OIDC id_token signatures will NOT be verified "
-            "(UnverifiedJWTClaimsValidator fallback)."
-        )
-        return UnverifiedJWTClaimsValidator()
+    """Return the mandatory cryptographic JWKS verifier."""
     return JWKSIdTokenVerifier()
 
 
@@ -425,6 +431,8 @@ class OAuth2Client:
         if secret is not None:
             data["client_secret"] = secret
         try:
+            # SECURITY-REVIEW: Token exchange targets only a
+            # deployment-configured provider URL registered with outbound policy.
             resp = await self._http.post(
                 config.token_url, data=data, headers={"Accept": "application/json"}
             )
@@ -485,6 +493,14 @@ class OAuth2Client:
             event="exchange",
         )
         claims: dict[str, Any] = {}
+        if config.require_id_token and token.id_token is None:
+            self._audit(
+                "auth.oauth.failed",
+                provider=provider,
+                stage="token_validation",
+                reason="no_id_token",
+            )
+            raise OAuthTokenValidationError("provider returned no required id_token")
         if token.id_token is not None:
             claims = await self._verifier.verify(token.id_token, config, self._http, entry.nonce)
         userinfo = await self._fetch_userinfo(config, token)
@@ -509,6 +525,8 @@ class OAuth2Client:
         if not config.userinfo_url:
             return {}
         try:
+            # SECURITY-REVIEW: Userinfo I/O targets only the configured
+            # provider URL; the bearer token is never logged or returned.
             resp = await self._http.get(
                 config.userinfo_url,
                 headers={"Authorization": f"{token.token_type} {token.access_token}"},

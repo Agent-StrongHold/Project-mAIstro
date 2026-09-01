@@ -93,6 +93,26 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
+      "key": "packages/maistro-core/src/maistro/auth/oauth.py::_validate_oidc_claims",
+      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
+      "line": 190,
+      "name": "_validate_oidc_claims",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/auth/oauth.py::OAuth2Client.exchange_code",
+      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
+      "line": 471,
+      "name": "exchange_code",
+      "classname": "OAuth2Client",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "SPEC-183 Authorization Code + PKCE exchange seam; state validation, token POST, id_token verify, and userinfo merge are sequential security checks. Tracked under SPEC-264 pending split of audit/error branches."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py::BuildersLearningStrategy._run_pr_diagnostics",
       "path": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py",
       "line": 207,

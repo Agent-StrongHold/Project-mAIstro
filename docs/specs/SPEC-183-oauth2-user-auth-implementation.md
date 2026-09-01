@@ -20,6 +20,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/auth/test_oauth.py
+  - packages/hive-conductor/backend/tests/test_oauth_product_wiring.py
 layer: Identity
 owners:
   - '@BlakeMatthews-dev'
@@ -29,12 +30,19 @@ history:
   - status: Implemented
     date: 2026-07-02
   - status: In Progress
-    date: 2026-07-29
+    date: 2026-08-31
     reason: >-
       Status corrected from Implemented (D2/#290): phases 1-2 (OAuth2 client +
-      identity linking, maistro/auth/oauth.py) are real and tested, but no
-      /v1/auth/oauth/{provider}/start-or-callback route exists anywhere in the
-      tree (phase 3) and no audit-event wiring (phase 4).
+      identity linking, maistro/auth/oauth.py) are real and tested, but phase 3
+      routes and phase 4 audit wiring were missing when the earlier Implemented
+      claim was made. As of 2026-08-31, phase 3 start/callback/session wiring
+      and the canonical product auth.oauth.login/link/failed audit subset are
+      implemented and tested. Status remains In Progress because provider-token
+      vault persistence, product refresh/token lifecycle and
+      auth.oauth.refresh audit semantics, and an authenticated
+      account-link/provisioning product flow remain unmet; the shipped login
+      path accepts only pre-linked active users and intentionally discards
+      provider tokens.
 ---
 
 # SPEC-183: OAuth2 user authentication — implementation
@@ -61,8 +69,13 @@ Phased PRs to `integration`, TDD throughout. Negative tests (no token on bad inp
 - Tests: first-time identity gets no admin/no privileged auto-provision; explicit link resolves to existing user; email is not used as the join key.
 
 ### Phase 3 — hive-conductor routes + middleware
-- Add `/v1/auth/oauth/{provider}/start` and `/v1/auth/oauth/{provider}/callback` (public prefixes); callback exchanges code, resolves/links identity, and issues the **existing** `hive_session` via the current `_issue_session` path.
-- `AuthMiddleware` unchanged for protected routes (OAuth output is a normal session).
+- Add exact `/v1/auth/oauth/{provider}/start` and `/v1/auth/oauth/{provider}/callback`
+  `GET` routes; only validated configured providers are public. Callback exchanges
+  code, resolves/links identity, and issues the **existing** `hive_session` via
+  the current `_issue_session` path.
+- `AuthMiddleware` remains unchanged for protected-route session handling
+  (OAuth output is a normal session); only the exact start/callback public-route
+  decision is added.
 - Tests (TestClient): full start→callback→authenticated-request happy path with a stubbed provider; stubbed provider error → 401, no session.
 
 ### Phase 4 — audit + observability
@@ -71,31 +84,45 @@ Phased PRs to `integration`, TDD throughout. Negative tests (no token on bad inp
   (ADR-019 CI grep)"*; ADR-068 **supersedes** it and ADR-019 §"Scope vs. tenancy" records the
   correction, so `org` is a soft scope axis core may carry and there is no such grep (#386).
 
-## Implementation status (2026-07-02, status corrected 2026-07-29)
+## Implementation status (updated 2026-08-31)
 
 Phases 1 and 2 are implemented in `packages/maistro-core/src/maistro/auth/oauth.py`
-with tests in `packages/maistro-core/tests/auth/test_oauth.py`. **Phase 3
-(hive-conductor start/callback routes + middleware public prefixes) and Phase 4
-(audit-event wiring into the product event bus) are follow-up work.** Front matter
-was corrected from `Implemented` to `In Progress` (D2/#290): there is no
-`/v1/auth/oauth/{provider}/start`-or-`/callback` route anywhere in the tree, so
-this spec's own two-phase gap makes the feature unreachable end-to-end today,
-which `Implemented` did not convey.
+with tests in `packages/maistro-core/tests/auth/test_oauth.py`. Phase 3 is now
+implemented in Hive Conductor: exact configured-provider `GET` start/callback
+routes use Authorization Code + PKCE, a browser-bound and server-side single-use
+state, durable conflict-safe `(provider, sub) → HiveUser.id` links, and the
+existing `_issue_session`/`hive_session` path. The end-to-end and negative
+coverage is in
+`packages/hive-conductor/backend/tests/test_oauth_product_wiring.py`.
+
+Phase 4 is **partial**, not complete. Product `log_audit` records normalized
+`auth.oauth.login` only after local session issuance, `auth.oauth.link` when a
+new durable link wins, and sanitized `auth.oauth.failed` outcomes. Provider
+access/id/refresh tokens are intentionally discarded after identity resolution,
+so there is no provider-token vault persistence, product refresh/token lifecycle,
+or canonical product `auth.oauth.refresh` event. The product also exposes no
+authenticated account-link or OAuth provisioning route; login is limited to
+pre-linked active users. Those gaps keep front matter `status: In Progress`.
 
 Deviations from the phase text above:
 
-- id_token verification uses PyJWT (`JWKSIdTokenVerifier`) behind an
-  `IdTokenVerifier` protocol; PyJWT arrives transitively (no new pyproject
-  dependency). If PyJWT is absent, `default_id_token_verifier()` falls back to
-  `UnverifiedJWTClaimsValidator` (claims-only, loud warning) — inject the JWKS
-  verifier in production.
-- Vault integration is via injection, not direct import: client secrets are
-  resolved through a `SecretResolver` callable and audit events through an
-  `EventEmitter` callable (payloads never carry tokens, ADR-044). The product
-  wires these to `vault.py` and its event bus in Phase 3/4.
-- Unknown identity with open registration is provisioned via an injected
-  `UserProvisioner` (product creates the `role="user"`, empty-permissions
-  record); core never creates users or grants admin.
+- `PyJWT[crypto]` is a direct `maistro-core` dependency.
+  `default_id_token_verifier()` always returns `JWKSIdTokenVerifier`; there is
+  no claims-only fallback and production injection is unnecessary.
+  `UnverifiedJWTClaimsValidator` remains only as an explicitly selected
+  compatibility/test seam and is not selected by the product.
+- Client-secret resolution remains protocol-driven in core. Hive resolves the
+  configured vault key through its canonical vault-first secrets service at
+  exchange time; no secret is a provider-config value. Provider tokens are not
+  stored at all in the current product wiring, which is an acknowledged unmet
+  criterion rather than evidence of vault persistence.
+- Core retains open-registration and explicit-link seams, but the shipped Hive
+  route wires `open_registration=False` and accepts pre-linked active users
+  only. It never auto-provisions an admin.
+- Core's pre-resolution `auth.oauth.login` event is not treated as product
+  success. Hive emits canonical login audit only after `_issue_session`
+  succeeds, and emits the implemented link/failed subset with normalized,
+  non-secret fields.
 
 ## Out of scope (this spec)
 - Provider-credential OAuth for LLM providers (SPEC-014).

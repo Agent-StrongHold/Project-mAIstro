@@ -8,9 +8,15 @@ Protected ops require elevation bound to a task — permissions die with the tas
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
+from typing import Any
 
+from config import get_settings, is_valid_oauth_provider_name
 from fastapi import Request
+from routes import auth as auth_routes
+from routes import setup as setup_routes
+from services import voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
@@ -34,6 +40,7 @@ _PUBLIC_PREFIXES_LOOSE = (
     "/openapi",
     "/redoc",
 )
+_OAUTH_PUBLIC_GET_RE = re.compile(r"^/v1/auth/oauth/(?P<provider>[^/]{1,128})/(?:start|callback)$")
 
 _PUBLIC_EXACT = frozenset(
     {
@@ -180,7 +187,24 @@ def _matches_public_prefix(path: str, prefix: str) -> bool:
     return path == stripped or path.startswith(stripped + "/")
 
 
-def resolve_principal(cookies: Mapping[str, str], authorization: str | None) -> dict | None:
+def _is_public_oauth_get(method: str, path: str) -> bool:
+    """Expose only exact GET routes for providers enabled in typed settings."""
+    if method != "GET":
+        return False
+    match = _OAUTH_PUBLIC_GET_RE.fullmatch(path)
+    if match is None:
+        return False
+    provider = match.group("provider")
+    if not is_valid_oauth_provider_name(provider):
+        return False
+    # SECURITY-REVIEW: This is the anonymous authentication boundary. A path
+    # parameter is public only after exact syntax and configured-provider checks.
+    return provider in get_settings().oauth_providers
+
+
+def resolve_principal(
+    cookies: Mapping[str, str], authorization: str | None
+) -> dict[str, Any] | None:
     session_id = cookies.get("hive_session")
     if not session_id:
         auth_header = authorization or ""
@@ -189,14 +213,12 @@ def resolve_principal(cookies: Mapping[str, str], authorization: str | None) -> 
     if not session_id:
         return None
     try:
-        from routes.auth import get_current_user
-
-        return get_current_user(session_id)
+        return auth_routes.get_current_user(session_id)
     except Exception:
         return None
 
 
-def principal_has_permission(user: dict, perm: str) -> bool:
+def principal_has_permission(user: dict[str, Any], perm: str) -> bool:
     if user.get("role") == "admin":
         return True
     user_perms = user.get("permissions", [])
@@ -229,8 +251,6 @@ def origin_allowed(origin: str | None, host: str | None = None) -> bool:
     """
     if not origin:
         return True
-    from config import get_settings
-
     allowed = get_settings().cors_origins
     if "*" in allowed or origin in allowed:
         return True
@@ -249,6 +269,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         if (
             path in _PUBLIC_EXACT
+            or _is_public_oauth_get(request.method, path)
             or any(_matches_public_prefix(path, p) for p in _PUBLIC_PREFIXES)
             or any(path.startswith(p) for p in _PUBLIC_PREFIXES_LOOSE)
         ):
@@ -310,14 +331,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     def _setup_complete(self) -> bool:
         try:
-            from routes.setup import _is_setup_complete
-
-            return _is_setup_complete()
+            return bool(setup_routes._is_setup_complete())
         except Exception:
             # Fail closed: if setup state can't be read, require auth.
             return True
 
-    def _get_user(self, request: Request) -> dict | None:
+    def _get_user(self, request: Request) -> dict[str, Any] | None:
         authorization = request.headers.get("Authorization")
         user = resolve_principal(request.cookies, authorization)
         if user is not None:
@@ -328,9 +347,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # else, and a caller holding it still gets that account's own
         # authorization for everything downstream.
         if _matches_public_prefix(request.url.path, _VOICE_PREFIX):
-            from services.voice_identity import principal_for
-
-            return principal_for(authorization)
+            return voice_identity.principal_for(authorization)
         return None
 
     def _is_chat(self, path: str) -> bool:
@@ -362,5 +379,5 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return perm
         return None
 
-    def _check_permission(self, user: dict, perm: str) -> bool:
+    def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)
