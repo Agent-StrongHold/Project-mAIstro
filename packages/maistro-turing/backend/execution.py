@@ -174,8 +174,9 @@ class TuringExecutionPlane:
             current = await self.run_store.get_run(run_id)
             if current is None or current.status in TERMINAL_RUN_STATUSES:
                 return
-            if current.status not in {RunStatus.CREATED, RunStatus.QUEUED}:
-                return
+            # Canonical adoption advances a QUEUED Run to RUNNING before the
+            # first continuation checkpoint. Until node resolution begins, that
+            # RUNNING state is still incomplete admission, not dispatched work.
             await self.run_store.transition_run(
                 run_id,
                 RunStatus.CANCELLED,
