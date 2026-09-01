@@ -14,7 +14,7 @@ from maistro.security.log_redaction import install_log_redaction
 _CONFIGURED = False
 _REDACTION_ACTIVE = False
 _OAUTH_CALLBACK_QUERY_RE = re.compile(
-    r'(?P<path>/v1/auth/oauth/[^/?#\s"]{1,128}/callback)\?[^\s"]*'
+    r'(?P<path>/v1/auth/oauth/[^/?#\s"]{1,128}/callback)/?\?[^\s"]*'
 )
 
 

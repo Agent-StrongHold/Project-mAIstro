@@ -70,6 +70,24 @@ def test_oauth_callback_filter_sanitizes_string_message() -> None:
     assert "?code=" not in record.msg
 
 
+def test_oauth_callback_filter_sanitizes_trailing_slash_path() -> None:
+    secret = "sentinel-slash-code-material"
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=f'GET {_CALLBACK_PATH}/?code={secret}&state=opaque HTTP/1.1" 303',
+        args=(),
+        exc_info=None,
+    )
+
+    assert OAuthCallbackQueryFilter().filter(record) is True
+    assert secret not in record.msg
+    assert _CALLBACK_PATH in record.msg
+    assert "?code=" not in record.msg
+
+
 def test_oauth_callback_filter_skips_non_string_message() -> None:
     record = logging.LogRecord(
         name="uvicorn.access",
