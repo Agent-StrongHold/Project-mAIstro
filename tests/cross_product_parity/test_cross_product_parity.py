@@ -230,4 +230,4 @@ def test_temporary_ruff_formatter_diagnostic() -> None:
         capture_output=True,
         text=True,
     )
-    assert not result.stdout, result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
