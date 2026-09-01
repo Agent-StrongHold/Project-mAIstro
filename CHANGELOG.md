@@ -10,6 +10,14 @@ the same version as the root `VERSION` file.
 
 ## [Unreleased]
 
+### Changed
+
+- **HALF_OPEN circuit-breaker success is now caller-bound.** `record_success()`
+  closes a HALF_OPEN circuit only when called by the thread or asyncio task
+  whose `allow_request()` call acquired the current exclusive probe lease;
+  successes from other callers are ignored. A probe owner can call
+  `release_probe()` to let another caller claim the probe.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release

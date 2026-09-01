@@ -34,6 +34,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from config import get_settings
+from services.csp_policy import conductor_policy
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
 
@@ -59,8 +61,6 @@ def _is_https(request: Request) -> bool:
     an HSTS header that would force browsers to upgrade every future request is
     still what the gate is for.
     """
-    from config import get_settings
-
     return request_is_https(
         scheme=request.url.scheme,
         headers=request.headers,
@@ -84,9 +84,6 @@ def _content_security_policy() -> tuple[ContentSecurityPolicy, bool]:
     nobody ever promotes is a header that protects nothing while looking like
     it does.
     """
-    from config import get_settings
-    from services.csp_policy import conductor_policy
-
     settings = get_settings()
     return (
         conductor_policy(development=settings.allow_insecure_transport),
@@ -126,7 +123,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if "Referrer-Policy" not in response.headers:
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
 
         policy, report_only = _content_security_policy()
