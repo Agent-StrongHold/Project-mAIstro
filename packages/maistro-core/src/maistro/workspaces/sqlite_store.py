@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from maistro.workspaces.model import (
     Workspace,
@@ -38,6 +38,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
 
     from maistro.projects.scope_store import ProjectScopeStore
+
+
+class _WorkspaceCreateKwargs(TypedDict):
+    name: str
+    description: str
+    workspace_id: NotRequired[str]
+    created_at: NotRequired[datetime]
+    updated_at: NotRequired[datetime]
+
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -94,7 +103,7 @@ class SqliteWorkspaceStore:
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
     ) -> Workspace:
-        workspace_kwargs: dict[str, object] = {"name": name, "description": description}
+        workspace_kwargs: _WorkspaceCreateKwargs = {"name": name, "description": description}
         if workspace_id is not None:
             workspace_kwargs["workspace_id"] = workspace_id
         if created_at is not None:
