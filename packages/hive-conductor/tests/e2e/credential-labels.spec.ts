@@ -18,22 +18,45 @@
 
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { ADMIN_PASS, ADMIN_USER, loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
 let context: BrowserContext;
+let policyContext: BrowserContext;
 let page: Page;
 
 test.beforeAll(async ({ browser }) => {
   // An explicit context, not `browser.newPage()`: AxeBuilder refuses a page
   // whose context it did not see created.
-  context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  const baseURL = test.info().project.use.baseURL;
+  context = await browser.newContext({ baseURL });
   page = await context.newPage();
   await setupIfNeeded(page);
+
+  // #313 correctly closes ordinary registration after setup. This spec is
+  // about the accessibility semantics of the sign-up form, so establish the
+  // precondition through the real admin policy API in a separate context. Do
+  // not share its admin cookie with the page whose login behavior we inspect.
+  policyContext = await browser.newContext({ baseURL });
+  const login = await policyContext.request.post("/v1/auth/login", {
+    data: { username: ADMIN_USER, password: ADMIN_PASS },
+  });
+  expect(login.status()).toBe(200);
+  const opened = await policyContext.request.put("/v1/settings/registration-policy", {
+    data: { mode: "open" },
+  });
+  expect(opened.status()).toBe(200);
 });
 
 test.afterAll(async () => {
+  // Restore the product default so this accessibility fixture cannot alter
+  // registration semantics for another e2e spec sharing the same server.
+  const closed = await policyContext.request.put("/v1/settings/registration-policy", {
+    data: { mode: "closed" },
+  });
+  expect(closed.status()).toBe(200);
+  await policyContext.close();
   await context.close();
 });
 
