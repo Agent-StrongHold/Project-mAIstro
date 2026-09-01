@@ -135,7 +135,7 @@ class PgDesignProjectStore:
                     (id, name, skill_slug, design_system_slug, org_id, team_id,
                      trust_tier, canvas_id, discovery_json, created_at, updated_at)
                     VALUES (:id, :name, :skill_slug, :design_system_slug, :org_id,
-                            :team_id, :trust_tier, :canvas_id, :discovery_json::jsonb,
+                            :team_id, :trust_tier, :canvas_id, CAST(:discovery_json AS jsonb),
                             :created_at, :updated_at)
                 """),
                 {
@@ -168,7 +168,8 @@ class PgDesignProjectStore:
                         INSERT INTO design_outputs
                         (project_id, format, content, url, trust_tier, metadata_json, created_at,
                          run_id, node_run_id, attempt_id)
-                        VALUES (:project_id, :format, :content, :url, :trust_tier, :metadata_json::jsonb, :created_at,
+                        VALUES (:project_id, :format, :content, :url, :trust_tier,
+                                CAST(:metadata_json AS jsonb), :created_at,
                                 :run_id, :node_run_id, :attempt_id)
                     """),
                     {
@@ -316,7 +317,8 @@ class PgDesignProjectStore:
                 text("""
                     UPDATE design_projects
                     SET name = :name, trust_tier = :trust_tier,
-                        canvas_id = :canvas_id, discovery_json = :discovery_json::jsonb,
+                        canvas_id = :canvas_id,
+                        discovery_json = CAST(:discovery_json AS jsonb),
                         updated_at = :updated_at
                     WHERE id = :id AND org_id = :org_id
                 """),
