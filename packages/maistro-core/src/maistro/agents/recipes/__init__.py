@@ -79,7 +79,7 @@ def agent_recipe_to_node_template(
 
 
 class RecipeRegistry:
-    """Read/project compatibility adapter for legacy AgentRecipe definitions.
+    """Read-only durable compatibility adapter for legacy AgentRecipe definitions.
 
     Legacy YAML may still be consumed while callers migrate, and Persona
     expansion may register transient recipes in memory for the legacy spawner.
@@ -95,26 +95,6 @@ class RecipeRegistry:
         if name in self._cache:
             return self._cache[name]
         return self._load_from_disk(name)
-
-    def get_node_template(
-        self,
-        name: str,
-        *,
-        workspace_id: str,
-        node_type: str,
-        parameters: dict[str, Any] | None = None,
-    ) -> NodeTemplate | None:
-        """Resolve a legacy recipe and project it onto the canonical definition surface."""
-
-        recipe = self.get(name)
-        if recipe is None:
-            return None
-        return agent_recipe_to_node_template(
-            recipe,
-            workspace_id=workspace_id,
-            node_type=node_type,
-            parameters=parameters,
-        )
 
     def list_recipes(self) -> list[AgentRecipe]:
         self._load_all()
