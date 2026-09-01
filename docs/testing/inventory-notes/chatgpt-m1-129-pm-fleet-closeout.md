@@ -57,6 +57,8 @@ Deletion is intentional. Keeping any removed module, route, or fake handler regi
 
 Deleting PM-Fleet authority removes stale debt entries for the retired route handlers, hardcoded fleet symbol, private server catalog, and PM-runner functions. It also exposes package-public/declarative surfaces that had previously been kept alive incidentally by the retired runner. The candidate ledger records those exact identities under the existing rules rather than deleting valid APIs or weakening the checker.
 
+The final reconciliation merged `develop@80b0d82794f15db970c61f7f915a46001b251b88`, applied exactly the Vulture identities reported by the exact-debt gate, and self-removed its temporary workflow before pushing. The resulting PR file set contains no temporary workflow and no shared reachability ledger or disposition file.
+
 The reconciliation does not modify #721's ratchet checker/workflow implementation. In particular, this lane does not edit `quality/reachability-baseline.json`, `quality/reachability-dispositions.json`, or the reachability/provenance enforcement scripts.
 
 ## Expected shared-reachability decreases
