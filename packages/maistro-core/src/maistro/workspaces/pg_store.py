@@ -70,6 +70,7 @@ class PgWorkspaceStore:
         creator_user_id: str,
         name: str,
         description: str = "",
+        workspace_id: str | None = None,
     ) -> Workspace:
         """Write the Workspace, its owner membership, and its Root Project.
 
@@ -79,8 +80,15 @@ class PgWorkspaceStore:
         reference's compensating delete: if `create_root` raises, the Workspace
         and its membership go back out. Making all three atomic is a
         cross-store question, and it belongs with #38 rather than here.
+
+        ``workspace_id`` is omitted by ordinary callers. The explicit form is
+        reserved for convergence imports so an existing durable Hive ID can be
+        retained instead of introducing a forbidden old→new identity map (#37).
         """
-        workspace = Workspace(name=name, description=description)
+        workspace_kwargs: dict[str, str] = {"name": name, "description": description}
+        if workspace_id is not None:
+            workspace_kwargs["workspace_id"] = workspace_id
+        workspace = Workspace(**workspace_kwargs)
         owner = WorkspaceMembership(
             workspace_id=workspace.workspace_id,
             user_id=creator_user_id,
