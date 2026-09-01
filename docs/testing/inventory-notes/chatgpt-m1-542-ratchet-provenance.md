@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests: +66
+  tests/: +66
 ---
 # chatgpt-m1-542-ratchet-provenance
 
