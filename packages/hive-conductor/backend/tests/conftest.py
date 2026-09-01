@@ -94,6 +94,45 @@ def _isolate_workspace_authority():
     reset_for_tests()
 
 
+def _set_canonical_workspace_members(workspace_id: str, roles: dict[str, str]) -> None:
+    """Apply a legacy route-test member map through canonical Workspace authority."""
+    from models.workspace import WorkspaceRole
+    from services import workspace_authority
+
+    target = dict(roles)
+    if "owner" not in target.values():
+        # The canonical invariant forbids an ownerless Workspace. Tests whose
+        # point is only "the requester is not owner" get a neutral second owner
+        # so they exercise that refusal without invalid data.
+        target["__canonical_test_owner__"] = "owner"
+
+    async def _apply() -> None:
+        store = workspace_authority.canonical_store_for_tests()
+        current = {
+            membership.user_id: membership
+            for membership in await store.list_memberships(workspace_id)
+        }
+        for user_id, role in target.items():
+            if role == "owner":
+                await workspace_authority.set_member(
+                    workspace_id,
+                    user_id=user_id,
+                    role=cast(WorkspaceRole, role),
+                )
+        for user_id, role in target.items():
+            if role != "owner":
+                await workspace_authority.set_member(
+                    workspace_id,
+                    user_id=user_id,
+                    role=cast(WorkspaceRole, role),
+                )
+        for user_id in current:
+            if user_id not in target:
+                await workspace_authority.remove_member(workspace_id, user_id=user_id)
+
+    asyncio.run(_apply())
+
+
 @pytest.fixture(autouse=True)
 def _workspace_route_member_helper_uses_canonical_authority(
     request: pytest.FixtureRequest,
@@ -113,44 +152,7 @@ def _workspace_route_member_helper_uses_canonical_authority(
         yield
         return
 
-    from models.workspace import WorkspaceRole
-    from services import workspace_authority
-
-    def _set_members(workspace_id: str, roles: dict[str, str]) -> None:
-        target = dict(roles)
-        if "owner" not in target.values():
-            # The canonical invariant forbids an ownerless Workspace. Tests
-            # whose point is only "the requester is not owner" get a neutral
-            # second owner so they exercise that refusal without invalid data.
-            target["__canonical_test_owner__"] = "owner"
-
-        async def _apply() -> None:
-            store = workspace_authority.canonical_store_for_tests()
-            current = {
-                membership.user_id: membership
-                for membership in await store.list_memberships(workspace_id)
-            }
-            for user_id, role in target.items():
-                if role == "owner":
-                    await workspace_authority.set_member(
-                        workspace_id,
-                        user_id=user_id,
-                        role=cast(WorkspaceRole, role),
-                    )
-            for user_id, role in target.items():
-                if role != "owner":
-                    await workspace_authority.set_member(
-                        workspace_id,
-                        user_id=user_id,
-                        role=cast(WorkspaceRole, role),
-                    )
-            for user_id in current:
-                if user_id not in target:
-                    await workspace_authority.remove_member(workspace_id, user_id=user_id)
-
-        asyncio.run(_apply())
-
-    monkeypatch.setattr(module, "_set_members", _set_members)
+    monkeypatch.setattr(module, "_set_members", _set_canonical_workspace_members)
     yield
 
 
