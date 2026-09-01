@@ -86,7 +86,7 @@ may coexist until parity and supported deployment wiring are proven.
 
 ## Current API surface (`/v2/canvas/*`)
 
-The server proxy exposes Canvas design/capability operations such as:
+The currently registered `maistro-server` handlers are:
 
 ```text
 GET    /v2/canvas/designs
@@ -96,15 +96,17 @@ PUT    /v2/canvas/designs/{design_id}
 DELETE /v2/canvas/designs/{design_id}
 POST   /v2/canvas/designs/{design_id}/publish
 GET    /v2/canvas/designs/{design_id}/export/{format}
-POST   /v2/canvas/designs/{design_id}/thumbnail
 GET    /v2/canvas/assets
-POST   /v2/canvas/designs/{design_id}/generate-ai
 ```
 
-The exact currently implemented handlers and response models in
-`packages/maistro-server/src/maistro_server/api/canvas.py` are authoritative for
-reachability until this proposal is fully accepted. This spec constrains their
-boundary behavior; it does not make every listed optional effect available.
+There are currently **no** `/thumbnail` or `/generate-ai` handlers on this
+server boundary. Future generation, thumbnail, or refinement endpoints must be
+added explicitly and proven before being listed as reachable API surface.
+
+`packages/maistro-server/src/maistro_server/api/canvas.py` is authoritative for
+current reachability until this proposal is fully accepted. This spec constrains
+that boundary behavior; it does not turn a `501` stub or an unconfigured provider
+into an available product effect.
 
 ### Dependency injection
 
@@ -139,16 +141,23 @@ scheme. API version and package version remain independent.
 
 ### Phase 1 — Server boundary exists, dependencies may be unconfigured
 
-`maistro-server` mounts the Canvas router and tests its behavior against injected
-fakes. This phase is **partial** in the shipped deployment because required
-Canvas dependencies are not wired by default.
+`maistro-server` mounts the Canvas router and has tests that exercise behavior
+against injected fakes. This phase is **partial** in the shipped deployment
+because required Canvas dependencies are not wired by default. Those existing
+tests are not yet registered as contract evidence for this spec because they do
+not carry the contract markers required by ADR-032.
 
 Done when:
 
-- the mounted routes have stable tests for request/response/error behavior;
-- missing required dependencies fail explicitly;
+- the mounted routes have stable, registered contract evidence for
+  request/response/error behavior;
+- missing required dependencies fail explicitly and that behavior is registered
+  as contract evidence;
 - configured dependencies are exercised without bypassing Canvas protocols;
-- no success-shaped placeholder substitutes for unavailable work.
+- no success-shaped placeholder substitutes for unavailable work;
+- optional event-delivery failure cannot turn an already-persisted mutation into
+  an ambiguous failure response unless event delivery is itself part of the
+  governed effect contract.
 
 ### Phase 2 — Design Studio and supported deployments bind the capability
 
@@ -183,20 +192,30 @@ compatibility decision.
 
 - Reads are side-effect free unless an endpoint explicitly documents otherwise.
 - Mutations report real persistence failures and do not acknowledge success
-  before the underlying operation has succeeded at the contract boundary.
+  before the underlying persistence operation has succeeded at the contract
+  boundary.
 - Soft-delete and update semantics remain consistent with the server models and
   tests for the mounted routes.
 - A configured export returns the documented media type; an unconfigured export
   reports unsupported/unavailable behavior rather than placeholder bytes.
-- Optional event emission does not change the success semantics of the primary
-  persisted mutation unless the event is part of the governed effect contract.
+- **Not yet satisfied:** the current `_emit()` path propagates a configured
+  `canvas_events` callback failure after create/update/delete persistence has
+  already succeeded. Until isolated or governed transactionally, a client can
+  receive `500` after a successful mutation and may retry ambiguous work.
+- Target behavior is that optional event emission does not change the success
+  semantics of the primary persisted mutation unless that event is part of the
+  governed effect contract.
 
 ## Acceptance criteria
 
 - [x] `maistro-server` mounts a `/v2/canvas` router.
-- [x] Route tests exercise an injected Canvas store and the server auth boundary.
-- [x] Missing required Canvas store wiring fails visibly rather than returning
-      success-shaped empty data.
+- [ ] Route behavior is registered as contract evidence with ADR-032-compatible
+      `boundary`/`behavioral` markers.
+- [ ] Missing required Canvas store behavior is registered as contract evidence
+      rather than only existing as an unregistered implementation test.
+- [ ] Optional `canvas_events` callback failure cannot turn an already-persisted
+      mutation into an ambiguous failure response unless event delivery is part
+      of the governed transaction/effect contract.
 - [ ] A supported shipped deployment injects the required Canvas dependencies.
 - [ ] Design Studio consumes the authorized Canvas capability boundary under
       #95 without direct/package-private side channels.
@@ -209,8 +228,10 @@ compatibility decision.
 
 ## Testing
 
-- Unit/integration: each server route against injected fake/protocol-compatible
-  dependencies, including missing-dependency behavior.
+- Existing implementation exercise: `packages/maistro-server/tests/api/test_canvas.py`
+  covers route behavior against injected fakes, including missing-store handling,
+  but it is **not** listed in front matter as contract evidence until the tests
+  carry the contract markers required by ADR-032.
 - Auth: Canvas server routes use the same required bearer/session boundary as
   the surrounding server surface.
 - Compatibility: stable wire fields and status mappings remain covered when
