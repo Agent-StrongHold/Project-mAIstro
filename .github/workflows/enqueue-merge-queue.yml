@@ -2,7 +2,8 @@ name: Enqueue Merge Queue
 
 # Repository-owned merge-queue admission. This workflow runs only from the
 # protected default branch after Gates Ran completes. It never checks out or
-# executes pull-request-controlled code.
+# executes pull-request-controlled code. Candidate git objects are fetched only
+# for trusted diff inspection by the base-owned controller.
 on:
   workflow_run:
     workflows: ["Gates Ran"]
@@ -29,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Create short-lived merge-bot token
