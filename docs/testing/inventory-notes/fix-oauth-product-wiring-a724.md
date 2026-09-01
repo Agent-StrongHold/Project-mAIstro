@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +78
+  packages/hive-conductor/backend/tests: +82
   packages/maistro-core/tests: +7
 ---
 # fix-oauth-product-wiring-a724
@@ -10,7 +10,7 @@ presence, bounded pending OAuth state, invalid state-store capacity, atomic
 insert-without-overwrite persistence, and conflict-safe insert timeout/error
 paths.
 
-The Hive backend gains 78 node IDs from the OAuth product-wiring matrix:
+The Hive backend gains 82 node IDs from the OAuth product-wiring matrix:
 start/callback/session success, exact anonymous-route boundaries, start
 throttling before state allocation, browser/state replay defenses, signature
 and provider failures, durable conflict-safe identity links, canonical
