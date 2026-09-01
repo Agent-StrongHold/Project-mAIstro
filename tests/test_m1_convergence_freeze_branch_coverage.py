@@ -112,9 +112,7 @@ def test_changed_python_pairs_handles_modified_added_renamed_and_irrelevant(
     ]
 
 
-def test_changed_python_pairs_surfaces_git_diff_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_changed_python_pairs_surfaces_git_diff_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     checker = _module()
     result = SimpleNamespace(returncode=1, stderr="bad revision", stdout="")
     monkeypatch.setattr(checker.subprocess, "run", lambda *_args, **_kwargs: result)
