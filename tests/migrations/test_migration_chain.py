@@ -63,6 +63,7 @@ EXPECTED_TABLES = frozenset(
         # because a Run whose Project vanished is the orphan the foreign keys
         # exist to refuse.
         "canonical_attempts",
+        "canonical_event_log",
         "canonical_node_runs",
         "canonical_project_memberships",
         "canonical_project_resources",
