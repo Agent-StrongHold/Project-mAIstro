@@ -222,7 +222,7 @@ INTEROP_ONTOLOGY_V1 = InteropOntology(
         "Attempt": ConceptSpec("maistro.runs", "attempt_id", parent="NodeRun"),
         "ExecutionRuntime": ConceptSpec("maistro.runtime", "execution_id", parent="Attempt"),
         "Capability": ConceptSpec("maistro.capabilities", "capability_id"),
-        "Provider": ConceptSpec("maistro.capabilities", "provider_id"),
+        "Provider": ConceptSpec("maistro.capabilities", "provider_id", parent="Capability"),
         "Binding": ConceptSpec("maistro.capabilities", "binding_id", parent="Provider"),
         "Invocation": ConceptSpec("maistro.capabilities", "invocation_id", parent="Binding"),
     },
