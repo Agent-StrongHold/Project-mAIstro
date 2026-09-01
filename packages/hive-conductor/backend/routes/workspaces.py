@@ -24,12 +24,8 @@ from services.persona_authoring import (
 )
 from services.persona_feedback import PersonaFeedbackSummary, summarize
 from services.themes import THEME_CATALOG, ThemeOption, is_valid_theme_id
-from services.workspace_authority import (
-    create_workspace as create_canonical_workspace,
-)
-from services.workspace_authority import (
-    delete_workspace as delete_canonical_workspace,
-)
+from services.workspace_authority import create_workspace as create_canonical_workspace
+from services.workspace_authority import delete_workspace as delete_canonical_workspace
 from services.workspace_authority import (
     list_views_for_user,
     member_role,
