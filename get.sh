@@ -176,9 +176,31 @@ resolve_ref() {
     fi
 }
 
+# Existing checkouts may still point at a retired default remote. REPO is the
+# source of truth for where updates should come from, so converge origin before
+# fetch.
+ensure_git_origin() {
+    local current expected current_slug expected_slug
+    expected="$REPO_URL"
+    current="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ -z "$current" ]]; then
+        info "Adding origin remote ${expected}..."
+        git -C "$INSTALL_DIR" remote add origin "$expected"
+        return
+    fi
+    current_slug="$(printf '%s\n' "${current%.git}" \
+        | sed -nE 's|^https://github.com/([^/]+/[^/]+)$|\1|p;s|^git@github.com:([^/]+/[^/]+)$|\1|p')"
+    expected_slug="$REPO"
+    if [[ "$current_slug" != "$expected_slug" ]]; then
+        info "Retargeting checkout remote from ${current} to ${expected}..."
+        git -C "$INSTALL_DIR" remote set-url origin "$expected"
+    fi
+}
+
 download_with_git() {
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         info "Updating existing maistro-engine checkout at $INSTALL_DIR..."
+        ensure_git_origin
         if [[ "$REF_KIND" == "tag" ]]; then
             # --force so re-running with the same tag after an upstream retag
             # (which should never happen — tags are immutable per ADR §2 — but

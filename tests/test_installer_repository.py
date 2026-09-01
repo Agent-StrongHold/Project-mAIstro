@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -99,6 +100,60 @@ def test_posix_installer_uses_default_or_environment_repository(
         f"archive=https://github.com/{expected}/archive/refs/tags/{RELEASE_TAG}.tar.gz"
         in result.stdout
     )
+
+
+def _init_checkout_with_origin(tmp_path: Path, repository: str) -> Path:
+    install_dir = tmp_path / "checkout"
+    install_dir.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=install_dir, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", f"https://github.com/{repository}.git"],
+        cwd=install_dir,
+        check=True,
+    )
+    return install_dir
+
+
+def _run_ensure_git_origin(tmp_path: Path, install_dir: Path, repository: str) -> str:
+    harness = (
+        _without_entrypoint(GET_SH, 'main "$@"')
+        + f"""
+INSTALL_DIR={shlex.quote(str(install_dir))}
+REPO={shlex.quote(repository)}
+REPO_URL="https://github.com/{repository}.git"
+ensure_git_origin
+printf 'origin=%s\\n' "$(git -C "$INSTALL_DIR" remote get-url origin)"
+"""
+    )
+    result = subprocess.run(
+        ["bash"],
+        cwd=ROOT,
+        env=_clean_environment(),
+        input=harness,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    match = re.search(r"^origin=(.+)$", result.stdout, flags=re.MULTILINE)
+    assert match is not None, result.stdout
+    return match.group(1)
+
+
+def test_existing_checkout_retargets_obsolete_origin(tmp_path: Path) -> None:
+    install_dir = _init_checkout_with_origin(tmp_path, OBSOLETE_REPOSITORY)
+
+    origin = _run_ensure_git_origin(tmp_path, install_dir, CANONICAL_REPOSITORY)
+
+    assert origin == f"https://github.com/{CANONICAL_REPOSITORY}.git"
+
+
+def test_existing_checkout_keeps_canonical_origin(tmp_path: Path) -> None:
+    install_dir = _init_checkout_with_origin(tmp_path, CANONICAL_REPOSITORY)
+
+    origin = _run_ensure_git_origin(tmp_path, install_dir, CANONICAL_REPOSITORY)
+
+    assert origin == f"https://github.com/{CANONICAL_REPOSITORY}.git"
 
 
 def _ps_quote(value: str) -> str:
