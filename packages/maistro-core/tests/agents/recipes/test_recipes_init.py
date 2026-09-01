@@ -59,7 +59,7 @@ class TestGet:
 
 
 class TestNodeTemplateProjection:
-    def test_registry_projects_recipe_to_workspace_owned_node_template(self) -> None:
+    def test_registry_recipe_projects_to_workspace_owned_node_template(self) -> None:
         recipe = AgentRecipe(
             name="scout",
             role=AgentRole.SCOUT,
@@ -72,15 +72,16 @@ class TestNodeTemplateProjection:
         )
         registry = RecipeRegistry()
         registry.register(recipe)
+        resolved = registry.get("scout")
+        assert resolved is recipe
 
-        template = registry.get_node_template(
-            "scout",
+        template = agent_recipe_to_node_template(
+            resolved,
             workspace_id="workspace-1",
             node_type="agent.runtime_selected_by_caller",
             parameters={"adapter": "chosen-elsewhere"},
         )
 
-        assert template is not None
         assert template.workspace_id == "workspace-1"
         assert template.name == "scout"
         assert template.node_type == "agent.runtime_selected_by_caller"
