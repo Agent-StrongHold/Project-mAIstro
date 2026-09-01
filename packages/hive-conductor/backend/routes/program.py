@@ -31,7 +31,8 @@ logger = logging.getLogger("hive.program")
 
 
 async def _resolve_program_scope(
-    user_id: str, workspace_id: str | None
+    user_id: str,
+    workspace_id: str | None,
 ) -> tuple[str, str, tuple[dict[str, str], ...] | None]:
     """Map an authorized Workspace to program context and persona interview."""
     if workspace_id:
@@ -52,9 +53,7 @@ async def _resolve_program_scope(
 
 @router.get("/context")
 @router.get("/cpntext")
-async def get_program_context(
-    request: Request, workspace_id: str | None = None
-) -> dict[str, Any]:
+async def get_program_context(request: Request, workspace_id: str | None = None) -> dict[str, Any]:
     uid = user_id_from_request(request)
     await require_program_access(uid, workspace_id)
     project_id, use_case, custom_steps = await _resolve_program_scope(uid, workspace_id)
@@ -73,7 +72,9 @@ class InterviewAnswerBody(BaseModel):
 
 @router.post("/interview/answer")
 async def post_interview_answer(
-    body: InterviewAnswerBody, request: Request, workspace_id: str | None = None
+    body: InterviewAnswerBody,
+    request: Request,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     uid = user_id_from_request(request)
     await require_program_access(uid, workspace_id)
@@ -82,7 +83,9 @@ async def post_interview_answer(
     ctx = apply_interview_answer(ctx, body.answer, use_case=use_case, custom_steps=custom_steps)
     ctx = prog.save_context(ctx)
     log_audit(
-        "program_interview", uid, detail={"step": ctx.interview_step, "workspace_id": workspace_id}
+        "program_interview",
+        uid,
+        detail={"step": ctx.interview_step, "workspace_id": workspace_id},
     )
 
     queued: list[dict[str, str]] = []
@@ -106,7 +109,9 @@ class GuidanceBody(BaseModel):
 
 @router.post("/guidance")
 async def post_guidance(
-    body: GuidanceBody, request: Request, workspace_id: str | None = None
+    body: GuidanceBody,
+    request: Request,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Human guidance for the meta hyperagent within an authorized Workspace."""
     uid = user_id_from_request(request)
@@ -124,7 +129,9 @@ class PulseBody(BaseModel):
 
 @router.post("/pulse")
 async def post_pulse(
-    body: PulseBody, request: Request, workspace_id: str | None = None
+    body: PulseBody,
+    request: Request,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Proactive fleet tick — queue autonomous agent work only."""
     uid = user_id_from_request(request)
