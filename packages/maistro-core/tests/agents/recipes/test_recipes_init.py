@@ -15,6 +15,12 @@ def _make_recipe(name: str = "scout") -> AgentRecipe:
     return AgentRecipe(name=name, role=AgentRole.SCOUT, prompt_name="agent.scout.prompt")
 
 
+def _write_recipe(path: Path, recipe: AgentRecipe) -> None:
+    data = recipe.model_dump(exclude_defaults=True)
+    data["role"] = recipe.role.value
+    path.write_text(yaml.dump(data), encoding="utf-8")
+
+
 class TestGet:
     def test_returns_cached_recipe_without_disk_access(self, tmp_path: Path) -> None:
         registry = RecipeRegistry(recipes_dir=tmp_path)
@@ -28,20 +34,17 @@ class TestGet:
         assert registry.get("scout") is None
 
     def test_loads_from_disk_by_exact_filename(self, tmp_path: Path) -> None:
-        registry = RecipeRegistry(recipes_dir=tmp_path)
         recipe = _make_recipe("agent.scout")
-        registry.save(recipe)
+        _write_recipe(tmp_path / "agent_scout.yaml", recipe)
 
-        fresh = RecipeRegistry(recipes_dir=tmp_path)
-        loaded = fresh.get("agent.scout")
+        registry = RecipeRegistry(recipes_dir=tmp_path)
+        loaded = registry.get("agent.scout")
         assert loaded is not None
         assert loaded.name == "agent.scout"
 
     def test_falls_back_to_glob_scan_when_filename_does_not_match(self, tmp_path: Path) -> None:
         recipe = _make_recipe("scout")
-        data = recipe.model_dump(exclude_defaults=True)
-        data["role"] = recipe.role.value
-        (tmp_path / "weirdly_named.yaml").write_text(yaml.dump(data), encoding="utf-8")
+        _write_recipe(tmp_path / "weirdly_named.yaml", recipe)
 
         registry = RecipeRegistry(recipes_dir=tmp_path)
         loaded = registry.get("scout")
@@ -49,17 +52,14 @@ class TestGet:
         assert loaded.name == "scout"
 
     def test_no_matching_file_returns_none(self, tmp_path: Path) -> None:
-        recipe = _make_recipe("scout")
-        data = recipe.model_dump(exclude_defaults=True)
-        data["role"] = recipe.role.value
-        (tmp_path / "other.yaml").write_text(yaml.dump(data), encoding="utf-8")
+        _write_recipe(tmp_path / "other.yaml", _make_recipe("scout"))
 
         registry = RecipeRegistry(recipes_dir=tmp_path)
         assert registry.get("nobody") is None
 
 
 class TestNodeTemplateProjection:
-    def test_recipe_projects_to_workspace_owned_node_template(self) -> None:
+    def test_registry_projects_recipe_to_workspace_owned_node_template(self) -> None:
         recipe = AgentRecipe(
             name="scout",
             role=AgentRole.SCOUT,
@@ -70,14 +70,17 @@ class TestNodeTemplateProjection:
             max_tier=4,
             temperature=0.2,
         )
+        registry = RecipeRegistry()
+        registry.register(recipe)
 
-        template = agent_recipe_to_node_template(
-            recipe,
+        template = registry.get_node_template(
+            "scout",
             workspace_id="workspace-1",
             node_type="agent.runtime_selected_by_caller",
             parameters={"adapter": "chosen-elsewhere"},
         )
 
+        assert template is not None
         assert template.workspace_id == "workspace-1"
         assert template.name == "scout"
         assert template.node_type == "agent.runtime_selected_by_caller"
@@ -152,12 +155,11 @@ class TestListRecipes:
         assert registry.list_recipes() == []
 
     def test_loads_all_yaml_files_in_dir(self, tmp_path: Path) -> None:
-        registry = RecipeRegistry(recipes_dir=tmp_path)
-        registry.save(_make_recipe("scout"))
-        registry.save(_make_recipe("coder"))
+        _write_recipe(tmp_path / "scout.yaml", _make_recipe("scout"))
+        _write_recipe(tmp_path / "coder.yaml", _make_recipe("coder"))
 
-        fresh = RecipeRegistry(recipes_dir=tmp_path)
-        names = sorted(r.name for r in fresh.list_recipes())
+        registry = RecipeRegistry(recipes_dir=tmp_path)
+        names = sorted(r.name for r in registry.list_recipes())
         assert names == ["coder", "scout"]
 
 
@@ -173,19 +175,12 @@ class TestRegister:
         assert registry.get("scout") is second
 
 
-class TestSave:
-    def test_creates_dir_and_writes_yaml_file(self, tmp_path: Path) -> None:
-        target_dir = tmp_path / "nested" / "yaml"
-        registry = RecipeRegistry(recipes_dir=target_dir)
-        recipe = _make_recipe("agent.with.dots")
+class TestCompatibilityBoundary:
+    def test_registry_has_no_durable_write_api(self, tmp_path: Path) -> None:
+        registry = RecipeRegistry(recipes_dir=tmp_path)
 
-        path = registry.save(recipe)
-
-        assert path == target_dir / "agent_with_dots.yaml"
-        assert path.exists()
-        on_disk = yaml.safe_load(path.read_text())
-        assert on_disk["role"] == "scout"
-        assert registry.get("agent.with.dots") is recipe
+        assert not hasattr(registry, "save")
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestParseYaml:
