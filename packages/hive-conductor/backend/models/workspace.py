@@ -53,6 +53,11 @@ class WorkspacePresentation(BaseModel):
     active: bool = True
     updated_at: datetime
 
+    @property
+    def id(self) -> str:
+        """Generic Hive persistence key, derived from the canonical identity."""
+        return self.workspace_id
+
 
 class Workspace(BaseModel):
     """Compatibility response composed from canonical + Hive-owned records."""
