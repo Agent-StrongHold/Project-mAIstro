@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.workspaces.model import (
@@ -11,6 +11,14 @@ from maistro.workspaces.model import (
     WorkspaceNotFound,
     WorkspaceRole,
 )
+
+
+class _WorkspaceCreateKwargs(TypedDict):
+    name: str
+    description: str
+    workspace_id: NotRequired[str]
+    created_at: NotRequired[datetime]
+    updated_at: NotRequired[datetime]
 
 
 @runtime_checkable
@@ -81,7 +89,7 @@ class InMemoryWorkspaceStore:
         product adapter can retire a durable legacy Workspace without inventing
         an old→new identity map or rewriting its chronology (#37).
         """
-        workspace_kwargs: dict[str, object] = {"name": name, "description": description}
+        workspace_kwargs: _WorkspaceCreateKwargs = {"name": name, "description": description}
         if workspace_id is not None:
             workspace_kwargs["workspace_id"] = workspace_id
         if created_at is not None:
