@@ -9,14 +9,6 @@ import pytest
 # `Secure` cookie is never sent back over `http://`, and every route test that
 # needs a logged-in session would fail with no session rather than with a
 # meaningful error.
-#
-# So the suite declares itself, using the same two settings a developer running
-# `uvicorn main:app --reload` sets — rather than the production default being
-# weakened to suit the tests, which is the arrangement #369 exists to undo.
-#
-# The production shape is asserted separately and deliberately, by
-# `test_session_cookie_policy.py`, which reads `Settings()` directly rather
-# than through this environment.
 os.environ.setdefault("SESSION_COOKIE_SECURE", "false")
 os.environ.setdefault("ALLOW_INSECURE_TRANSPORT", "true")
 
@@ -57,19 +49,17 @@ def _init_engine() -> None:
 
     cred_svc.init_credential_store(tempfile.mkdtemp(prefix="hive-cred-test-"))
 
-    # Initialize design render service for tests that need it
     try:
         from services.design_render import init_design_render_service
 
         init_design_render_service()
     except Exception:
-        pass  # Service may not be available in all test environments
+        pass
 
 
 @pytest.fixture(autouse=True)
 def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Redirect wizard-authored persona templates to tmp_path so tests never
-    write YAML files into the developer's real ~/.conductor."""
+    """Redirect wizard-authored persona templates to tmp_path."""
     import services.persona_authoring as persona_authoring
 
     monkeypatch.setattr(
@@ -79,12 +69,7 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 @pytest.fixture(autouse=True)
 def _isolate_dashboard_layouts():
-    """Give each test its own layout store.
-
-    There is no file to redirect any more (#340): layouts are a `JsonStore` in
-    `stores`, unbacked in tests, so isolation is restoring the dict rather than
-    pointing a path at tmp_path.
-    """
+    """Give each test its own layout store."""
     import copy
 
     import stores
@@ -95,6 +80,16 @@ def _isolate_dashboard_layouts():
         stores.dashboard_layouts.pop(key)
     for key, value in snapshot.items():
         stores.dashboard_layouts[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace_authority():
+    """Do not let the canonical fallback/presentation adapter leak across tests."""
+    from services.workspace_authority import reset_for_tests
+
+    reset_for_tests()
+    yield
+    reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -130,13 +125,7 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
 
 @pytest.fixture(autouse=True)
 def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
-    """Keep older API tests' service-level LLM patches effective after #488.
-
-    The containment route imports build_llm_port into routes.chat so production
-    requests cannot fall back into the tool loop. Some pre-existing tests patch
-    services.chat_completion.build_llm_port. Route the test alias through that
-    service symbol dynamically so those mocks still test the current route.
-    """
+    """Keep older API tests' service-level LLM patches effective after #488."""
     import routes.chat as chat_routes
     import services.chat_completion as chat_service
 
@@ -152,7 +141,6 @@ def _seed_test_user() -> None:
     from datetime import UTC, datetime
 
     now_ts = datetime.now(UTC)
-    # Precomputed bcrypt hashes (legacy); login auto-upgrades to Argon2id on success.
     stores.users["user"] = stores.users._model_class(
         id="user",
         username="testuser",
@@ -197,8 +185,7 @@ def admin_client():
 
 @pytest.fixture(autouse=True)
 def _isolate_vault_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Redirect first-run vault provisioning to tmp_path so tests never write
-    age keys or vault files into the developer's real ~/.conductor."""
+    """Redirect first-run vault provisioning to tmp_path."""
     import routes.setup as setup_routes
 
     monkeypatch.setattr(
