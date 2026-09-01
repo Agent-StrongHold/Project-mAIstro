@@ -5,7 +5,9 @@ import json
 import sys
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check-autonomous-merge.py"
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "check-autonomous-merge.py"
+REGISTRY = ROOT / "quality" / "branch-independence.json"
 SPEC = importlib.util.spec_from_file_location("check_autonomous_merge_quality_classes", SCRIPT)
 assert SPEC and SPEC.loader
 mod = importlib.util.module_from_spec(SPEC)
@@ -17,12 +19,26 @@ def cf(path: str, status: str = "M", old_path: str | None = None):
     return mod.ChangedFile(status=status, path=path, old_path=old_path)
 
 
-def test_base_derived_quality_evidence_is_yellow_not_red() -> None:
-    result = mod.assess(
+def _registry_payload() -> dict:
+    return json.loads(REGISTRY.read_text(encoding="utf-8"))
+
+
+def _write_registry(tmp_path: Path, payload: object) -> Path:
+    registry = tmp_path / "branch-independence.json"
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+    return registry
+
+
+def _assess_wiring_reads():
+    return mod.assess(
         [cf("quality/wiring-reads-baseline.json")],
         "",
         head_ref="chatgpt/x",
     )
+
+
+def test_base_derived_quality_evidence_is_yellow_not_red() -> None:
+    result = _assess_wiring_reads()
 
     assert result.risk == "yellow"
     assert not result.eligible
@@ -80,11 +96,68 @@ def test_malformed_quality_registry_fails_closed_red(
     registry.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_REGISTRY", registry)
 
-    result = mod.assess(
-        [cf("quality/wiring-reads-baseline.json")],
-        "",
-        head_ref="chatgpt/x",
+    result = _assess_wiring_reads()
+
+    assert result.risk == "red"
+    assert not result.eligible
+    assert "classification unavailable" in result.red_reasons[0]
+
+
+def test_canonical_registry_schema_is_required_before_yellow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cases = (
+        "missing-id",
+        "blank-reason",
+        "invalid-kind",
+        "invalid-path",
     )
+
+    for case in cases:
+        payload = _registry_payload()
+        surface = next(item for item in payload["surfaces"] if item["id"] == "wiring-reads-baseline")
+        if case == "missing-id":
+            surface.pop("id")
+        elif case == "blank-reason":
+            surface["reason"] = "   "
+        elif case == "invalid-kind":
+            surface["kind"] = "candidate_says_safe"
+        else:
+            surface["paths"] = ["outside-quality/not-json.txt"]
+
+        registry = _write_registry(tmp_path, payload)
+        monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_REGISTRY", registry)
+        result = _assess_wiring_reads()
+
+        assert result.risk == "red", case
+        assert not result.eligible, case
+        assert "classification unavailable" in result.red_reasons[0], case
+
+
+def test_boolean_registry_version_cannot_equal_integer_one(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = _registry_payload()
+    payload["version"] = True
+    registry = _write_registry(tmp_path, payload)
+    monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_REGISTRY", registry)
+
+    result = _assess_wiring_reads()
+
+    assert result.risk == "red"
+    assert not result.eligible
+    assert "classification unavailable" in result.red_reasons[0]
+
+
+def test_registry_validator_load_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_CHECKER", tmp_path / "missing-checker.py")
+
+    result = _assess_wiring_reads()
 
     assert result.risk == "red"
     assert not result.eligible
@@ -95,32 +168,19 @@ def test_ambiguous_quality_classification_fails_closed_red(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    registry = tmp_path / "branch-independence.json"
-    registry.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "surfaces": [
-                    {
-                        "kind": "base_derived",
-                        "paths": ["quality/*.json"],
-                    },
-                    {
-                        "kind": "generated",
-                        "paths": ["quality/wiring-reads-baseline.json"],
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
+    payload = _registry_payload()
+    payload["surfaces"].append(
+        {
+            "id": "overlapping-generated-evidence",
+            "kind": "generated",
+            "paths": ["quality/wiring-reads-baseline.json"],
+            "reason": "Test-only overlapping classification must fail closed.",
+        }
     )
+    registry = _write_registry(tmp_path, payload)
     monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_REGISTRY", registry)
 
-    result = mod.assess(
-        [cf("quality/wiring-reads-baseline.json")],
-        "",
-        head_ref="chatgpt/x",
-    )
+    result = _assess_wiring_reads()
 
     assert result.risk == "red"
     assert not result.eligible
@@ -128,7 +188,7 @@ def test_ambiguous_quality_classification_fails_closed_red(
 
 
 def test_wiring_reads_migration_left_the_frozen_legacy_set() -> None:
-    registry = json.loads(mod.BRANCH_INDEPENDENCE_REGISTRY.read_text(encoding="utf-8"))
+    registry = _registry_payload()
     surface = next(item for item in registry["surfaces"] if item["id"] == "wiring-reads-baseline")
 
     assert surface["kind"] == "base_derived"
