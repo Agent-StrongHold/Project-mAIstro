@@ -91,10 +91,12 @@ owns monotonicity. The old contradiction where adding an AC-marked test forced a
 shared generated AC-state commit is therefore no longer a reason to weaken the
 quality trust boundary.
 
-Stale-branch diffs are also separate. Repository-owned queue admission compares
-the current fetched `develop` tree with the prospective merge tree, so target-side
-changes that landed after a branch was cut are not charged to that candidate.
-The quality classifier does not duplicate that merge-diff authority.
+Stale-branch merge freshness is also separate. Repository-owned queue admission
+verifies the required `gates-ran` evidence on the PR head and asks GitHub to
+enqueue that PR. GitHub, not the enqueue controller or quality classifier,
+constructs the merge-group candidate; required merge-group checks then judge
+that candidate. The quality classifier therefore makes no claim that it builds
+or pre-evaluates the prospective merge diff itself.
 
 ## How a PR is recognized as autonomous
 
