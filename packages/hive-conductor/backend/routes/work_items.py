@@ -7,15 +7,12 @@ support the Jira/work-item capabilities.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from adapters.task_backend import WORKSPACE_NOT_ROUTABLE_DETAIL, WorkspaceNotRoutable
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import program_store as prog
 from services.agent_invocation import resolve_agent_task
-from services.engine import get_engine
 from services.workspace_mode import is_workspace_member, workspace_has_pm_fleet_agents
 
 from maistro.agents.pm_capabilities import WORK_ITEM_LABELS, WorkItemType
@@ -29,7 +26,6 @@ from maistro.agents.work_items import (
 from routes.audit import log_audit
 
 router = APIRouter(tags=["work-items"])
-logger = logging.getLogger("hive.work_items")
 
 
 def _user_id(request: Request) -> str:
@@ -226,7 +222,7 @@ async def patch_work_item(
 async def confirm_work_item(
     draft_id: str, request: Request, workspace_id: str | None = None
 ) -> dict[str, Any]:
-    """User-approved post to Jira (stub) — only after clarify + edit."""
+    """User-approved Jira stub post; retired PM execution is not queued."""
     uid = _user_id(request)
     await _require_submittable_workspace(uid, workspace_id)
     draft = _load_draft(draft_id, uid)
@@ -238,6 +234,9 @@ async def confirm_work_item(
             detail="this draft was suggested under a different workspace",
         )
     await _require_submittable_workspace(uid, scope)
+
+    # Resolve before the posting side effect. Persona ownership remains real
+    # even though the old PM-specific downstream executor is retired.
     try:
         resolve_agent_task(
             draft.agent_id,
@@ -253,53 +252,29 @@ async def confirm_work_item(
                 f"{draft.capability!r}; the draft was not posted"
             ),
         ) from exc
+
     try:
         posted, result = confirm_post_stub(draft)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _save_draft(posted)
 
-    engine = get_engine()
-    task_type, description, agent_id = resolve_agent_task(
-        posted.agent_id,
-        posted.capability,
-        {
-            "title": posted.fields.summary,
-            "summary": posted.fields.description,
-            "program": prog.context_dict(uid, posted.project_id),
-            "jira_issue_key": result.get("issue_key"),
-            "confirmed": True,
-        },
-        workspace_id=posted.project_id,
+    execution_note = (
+        "Downstream PM capability execution was retired with PM-Fleet POC mode; "
+        "no generic conductor task was queued."
     )
-    prog_ctx = prog.context_dict(uid, posted.project_id)
-    prog_ctx["confirmed"] = True
-    prog_ctx["jira_issue_key"] = result.get("issue_key")
-    try:
-        rec = await engine.submit_task(
-            posted.agent_id,
-            description,
-            user_id=uid,
-            workspace_id=scope,
-            task_type=task_type,
-            agent_id=agent_id,
-            capability=posted.capability,
-            program_context=prog_ctx,
-        )
-    except WorkspaceNotRoutable as exc:
-        logger.warning("workspace_not_routable %s", exc)
-        raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
     log_audit(
         "work_item_confirm",
         uid,
         target=posted.id,
-        detail={"issue_key": result.get("issue_key"), "task_id": rec.id},
+        detail={"issue_key": result.get("issue_key"), "execution": "retired"},
     )
     return {
         "draft": posted.as_dict(),
         "jira": result,
-        "task_id": rec.id,
-        "message": f"Posted {result.get('issue_key')} to Jira (stub).",
+        "task_id": None,
+        "execution_note": execution_note,
+        "message": f"Posted {result.get('issue_key')} to Jira (stub). No downstream PM task queued.",
     }
 
 

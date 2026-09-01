@@ -77,36 +77,17 @@ async def test_program_pulse_keeps_proposals_but_never_queues_pm_capabilities(
                 "reason": self.reason,
             }
 
-    submitted = [0]
-
-    class _Engine:
-        _backend = object()
-
-        async def submit_task(self, *args: Any, **kwargs: Any) -> Any:
-            submitted[0] += 1
-            return type("Rec", (), {"id": "should-not-exist"})()
-
     ctx = _Ctx()
     monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
     monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-    monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
     monkeypatch.setattr(
         ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
     )
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
     monkeypatch.setattr(ph, "pulse_roster", lambda workspace_id: [])
-    monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-    monkeypatch.setattr(
-        ph,
-        "resolve_agent_task",
-        lambda a, c, p, workspace_id=None: ("program_manager", "desc", "program_manager"),
-    )
-    monkeypatch.setattr(ph, "_get_atlassian_pats", lambda uid: {})
-    monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
 
     out = await ph.run_program_pulse("u1", workspace_id="ws-1")
 
-    assert submitted[0] == 0
     assert out["queued"] == []
     assert out["proposed"][0]["capability"] == "poll_jira"
     assert "retired" in out["note"].lower()
@@ -117,17 +98,6 @@ def test_work_item_confirm_posts_stub_without_launching_retired_pm_task(
     monkeypatch: pytest.MonkeyPatch,
     clear_pm_state,
 ) -> None:
-    import routes.work_items as work_items_routes
-
-    submitted = [0]
-
-    class _Engine:
-        async def submit_task(self, *args: Any, **kwargs: Any) -> Any:
-            submitted[0] += 1
-            return type("Rec", (), {"id": "should-not-exist"})()
-
-    monkeypatch.setattr(work_items_routes, "get_engine", lambda: _Engine())
-
     ws = admin_client.post(
         "/v1/workspaces",
         json={"persona_template_id": "pm_fleet", "name": "Truthful PM WS"},
@@ -157,7 +127,6 @@ def test_work_item_confirm_posts_stub_without_launching_retired_pm_task(
     confirmed = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
 
     assert confirmed.status_code == 200
-    assert submitted[0] == 0
     assert confirmed.json()["task_id"] is None
     assert "retired" in confirmed.json()["execution_note"].lower()
     assert confirmed.json()["jira"]["issue_key"]

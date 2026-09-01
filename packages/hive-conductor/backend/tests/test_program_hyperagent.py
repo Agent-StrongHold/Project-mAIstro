@@ -208,81 +208,37 @@ async def test_run_program_pulse_interview_incomplete_returns_skipped(
     assert out["skipped"] == "interview_incomplete"
 
 
-async def test_run_program_pulse_no_queue_returns_note(
+async def test_run_program_pulse_keeps_proposals_without_queueing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.program_hyperagent as ph
-
-    ctx = _StubCtx()
-    ctx.interview_complete = True
-    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, roster, max_actions: [])
-    monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-
-    class _Engine:
-        _backend = None  # not running
-
-    monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-    out = await ph.run_program_pulse("u1")
-    assert out["queued"] == []
-    assert out["note"] == "Task engine not running"
-
-
-async def test_run_program_pulse_submits_autonomous_action(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import services.program_hyperagent as ph
-
-    ctx = _StubCtx()
-    ctx.interview_complete = True
-    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-    monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-    monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
 
     class _Action:
-        agent_id = "agent-1"
-        capability = "auto_capability"
-        reason = "because"
+        agent_id = "program_manager"
+        capability = "poll_jira"
+        reason = "refresh"
         payload: ClassVar[dict[str, Any]] = {}
 
         def as_dict(self) -> dict[str, Any]:
             return {"agent_id": self.agent_id, "capability": self.capability}
 
-    class _Sugg:
-        def as_dict(self) -> dict[str, Any]:
-            return {"s": True}
-
+    ctx = _StubCtx()
+    ctx.interview_complete = True
+    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
+    monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
     monkeypatch.setattr(
         ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
     )
-    monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [_Sugg()])
-    monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
-    monkeypatch.setattr(
-        ph,
-        "resolve_agent_task",
-        lambda a, c, p, workspace_id=None: ("tt", "desc", "agent-1"),
-    )
-    monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
+    monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
 
-    submitted: list[Any] = []
+    out = await ph.run_program_pulse("u1", workspace_id="ws-a")
 
-    class _Rec:
-        id = "task-1"
-
-    class _Engine:
-        _backend = object()
-
-        async def submit_task(self, *a: Any, **kw: Any) -> Any:
-            submitted.append((a, kw))
-            return _Rec()
-
-    monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-    out = await ph.run_program_pulse("u1")
-    assert len(submitted) == 1
-    assert out["queued"][0]["task_id"] == "task-1"
+    assert out["queued"] == []
+    assert out["proposed"][0]["capability"] == "poll_jira"
+    assert "retired" in out["note"].lower()
 
 
-async def test_run_program_pulse_submit_failure_swallowed(
+async def test_run_program_pulse_no_actions_explains_no_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.program_hyperagent as ph
@@ -291,93 +247,16 @@ async def test_run_program_pulse_submit_failure_swallowed(
     ctx.interview_complete = True
     monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
     monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-    monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
-
-    class _Action:
-        agent_id = "a"
-        capability = "c"
-        reason = "r"
-        payload: ClassVar[dict[str, Any]] = {}
-
-        def as_dict(self) -> dict[str, Any]:
-            return {"a": "x"}
-
-    monkeypatch.setattr(
-        ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
-    )
+    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, roster, max_actions: [])
     monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-    monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
-    monkeypatch.setattr(
-        ph, "resolve_agent_task", lambda a, c, p, workspace_id=None: ("tt", "desc", "agent")
-    )
-    monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
 
-    class _Engine:
-        _backend = object()
+    out = await ph.run_program_pulse("u1", workspace_id="ws-a")
 
-        async def submit_task(self, *a: Any, **kw: Any) -> Any:
-            raise RuntimeError("queue rejected")
-
-    monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-    out = await ph.run_program_pulse("u1")
-    # Submission failed → queued is empty but no exception bubbled
     assert out["queued"] == []
-
-
-async def test_run_program_pulse_skips_non_autonomous_actions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import services.program_hyperagent as ph
-
-    ctx = _StubCtx()
-    ctx.interview_complete = True
-    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-    monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-    monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
-
-    class _Action:
-        agent_id = "a"
-        capability = "needs_human"
-        reason = "r"
-        payload: ClassVar[dict[str, Any]] = {}
-
-        def as_dict(self) -> dict[str, Any]:
-            return {}
-
-    monkeypatch.setattr(
-        ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
-    )
-    monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-    monkeypatch.setattr(ph, "is_autonomous", lambda cap: False)
-
-    submitted = [0]
-
-    class _Engine:
-        _backend = object()
-
-        async def submit_task(self, *a: Any, **kw: Any) -> Any:
-            submitted[0] += 1
-
-    monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-    out = await ph.run_program_pulse("u1")
-    assert submitted[0] == 0  # non-autonomous → never submitted
-    assert out["queued"] == []
-
-
-# --- workspace scoping (Codex P1 x3 on #216) --------------------------------
+    assert "No agent in this workspace" in out["note"]
 
 
 class TestTheWorkspaceReachesEverythingItShould:
-    """`workspace_id` arrived for agent resolution and stopped there.
-
-    Three consequences, each its own P1: guidance was written to the default
-    program context while the caller named a workspace; the pulse read that
-    same default context, so a completed `ws-a` interview could report as
-    incomplete; and `submit_task` omitted the workspace, which
-    `EngineService.submit_task` reads as the deployment's default — filing
-    autonomous work in another Project while carrying a `ws-a` agent.
-    """
-
     async def test_guidance_is_written_to_the_named_workspaces_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -398,7 +277,6 @@ class TestTheWorkspaceReachesEverythingItShould:
         monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])
 
         await ph.apply_guidance_and_pulse("u1", "go", workspace_id="ws-a")
-
         assert seen == ["ws-a"]
 
     async def test_the_pulse_reads_the_named_workspaces_context(
@@ -418,149 +296,26 @@ class TestTheWorkspaceReachesEverythingItShould:
         monkeypatch.setattr(ph, "interview_status", lambda c: {"done": False})
 
         await ph.run_program_pulse("u1", workspace_id="ws-a")
-
         assert seen == ["ws-a"]
-
-    async def test_a_queued_pulse_task_names_the_workspace(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import services.program_hyperagent as ph
-
-        captured: dict[str, object] = {}
-
-        class _Rec:
-            id = "t1"
-
-        class _Engine:
-            _backend = object()
-
-            async def submit_task(self, *args, **kwargs):
-                captured.update(kwargs)
-                return _Rec()
-
-        class _Action:
-            agent_id = "delivery"
-            capability = "poll_jira"
-            reason = "r"
-            payload: ClassVar[dict[str, Any]] = {}
-
-            def as_dict(self) -> dict[str, Any]:
-                return {}
-
-        ctx = _StubCtx()
-        ctx.interview_complete = True
-        monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-        monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
-        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-        monkeypatch.setattr(
-            ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
-        )
-        monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-        monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
-        monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-        monkeypatch.setattr(
-            ph,
-            "resolve_agent_task",
-            lambda a, c, p, workspace_id=None: ("delivery", "d", "delivery"),
-        )
-        monkeypatch.setattr(ph, "_get_atlassian_pats", lambda uid: {})
-        monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
-
-        await ph.run_program_pulse("u1", workspace_id="ws-a")
-
-        assert captured.get("workspace_id") == "ws-a"
-
-    async def test_a_roster_that_changed_mid_pulse_is_told_so(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import services.program_hyperagent as ph
-
-        class _Engine:
-            _backend = object()
-
-        class _Action:
-            agent_id = "program_manager"
-            capability = "fetch_program_state"
-            reason = "r"
-            payload: ClassVar[dict[str, Any]] = {}
-
-            def as_dict(self) -> dict[str, Any]:
-                return {}
-
-        ctx = _StubCtx()
-        ctx.interview_complete = True
-        monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-        monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})
-        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-        monkeypatch.setattr(
-            ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]
-        )
-        monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-        monkeypatch.setattr(ph, "is_autonomous", lambda cap: True)
-        monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-
-        def _unavailable(a, c, p, workspace_id=None):
-            raise ValueError(f"Unknown agent: {a}")
-
-        monkeypatch.setattr(ph, "resolve_agent_task", _unavailable)
-
-        out = await ph.run_program_pulse("u1", workspace_id="ws-a")
-
-        assert out["queued"] == []
-        assert "program_manager" in out["note"]
-        assert "roster changed" in out["note"]
-
-    async def test_a_workspace_with_no_autonomous_capable_agents_is_told_that(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import services.program_hyperagent as ph
-
-        class _Engine:
-            _backend = object()
-
-        ctx = _StubCtx()
-        ctx.interview_complete = True
-        monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
-        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
-        monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, roster, max_actions: [])
-        monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-        monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
-
-        out = await ph.run_program_pulse("u1", workspace_id="ws-a")
-
-        assert out["queued"] == []
-        assert out["note"] == (
-            "No agent in this workspace declares a capability the pulse can run "
-            "without approval. No autonomous work was queued."
-        )
 
     async def test_the_pulse_reads_the_workspaces_own_roster(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import services.program_hyperagent as ph
 
-        class _Engine:
-            _backend = object()
-
         seen: dict[str, Any] = {}
+        ctx = _StubCtx()
+        ctx.interview_complete = True
 
         def _propose(c: Any, roster: Any, max_actions: int) -> list[Any]:
             seen["roster"] = roster
             return []
 
-        ctx = _StubCtx()
-        ctx.interview_complete = True
         monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)
         monkeypatch.setattr(ph.prog, "save_context", lambda c: c)
-        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": True})
         monkeypatch.setattr(ph, "propose_autonomous_actions", _propose)
         monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])
-        monkeypatch.setattr(ph, "get_engine", lambda: _Engine())
         monkeypatch.setattr(ph, "pulse_roster", lambda ws: [f"roster-for-{ws}"])
 
         await ph.run_program_pulse("u1", workspace_id="ws-a")
-
         assert seen["roster"] == ["roster-for-ws-a"]

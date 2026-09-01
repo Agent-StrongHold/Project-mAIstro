@@ -322,7 +322,12 @@ class EngineService:
         """
         if self._backend is None:
             raise RuntimeError("TaskQueue not available")
-        from maistro.agents.pm_capabilities import is_gated, normalize_capability
+        from maistro.agents.pm_capabilities import (
+            AUTONOMOUS_CAPABILITIES,
+            GATED_CAPABILITIES,
+            is_gated,
+            normalize_capability,
+        )
         from maistro.tasks.models import TaskCreate
 
         cap = normalize_capability(capability or "")
@@ -330,6 +335,11 @@ class EngineService:
         if is_gated(cap) and not pctx_probe.get("confirmed"):
             raise ValueError(
                 f"Capability {cap!r} must use the work-item draft flow (POST /v1/work-items/suggest → confirm)"
+            )
+        if cap in AUTONOMOUS_CAPABILITIES or cap in GATED_CAPABILITIES:
+            raise ValueError(
+                f"PM capability execution {cap!r} through the generic task queue is retired; "
+                "keep it as a Workspace Persona proposal until canonical Graph execution owns it"
             )
 
         pctx = program_context
