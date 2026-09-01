@@ -109,8 +109,7 @@ class TestRecipeRegistry:
         assert template.workspace_id == "workspace-1"
         assert template.metadata["source_import_provenance"]["source_format"] == "agent_recipe"
         assert (
-            template.metadata["legacy_recipe_snapshot"]["result_schema"]
-            == "schemas.ReviewOutput"
+            template.metadata["legacy_recipe_snapshot"]["result_schema"] == "schemas.ReviewOutput"
         )
 
     def test_list_recipes_returns_all(self) -> None:
