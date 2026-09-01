@@ -1,8 +1,8 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
-  packages/maistro-core/tests/tasks: +1
-  packages/maistro-server/tests/api: +3
+  packages/maistro-core/tests: +1
+  packages/maistro-server/tests: +3
 ---
 # Issue #234 follow-up test inventory
 
