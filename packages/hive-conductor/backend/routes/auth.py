@@ -260,6 +260,10 @@ def _cookie_samesite() -> Literal["lax", "strict", "none"]:
     return get_settings().session_cookie_samesite
 
 
+def _human_auth_policy() -> HumanAuthModePolicy:
+    return HumanAuthModePolicy(mode=get_settings().human_auth_mode)
+
+
 def _users() -> list[HiveUser]:
     return cast(list[HiveUser], list(stores.users.values()))
 
@@ -422,6 +426,11 @@ def _single_callback_value(request: Request, name: str, max_length: int) -> str 
 async def oauth_start(provider: str, request: Request) -> Response:
     """Begin fixed-redirect Authorization Code + PKCE login."""
     await _charge_oauth_start(request)
+    if not _human_auth_policy().oauth_provider_enabled(provider):
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="unknown_provider"),
+        )
     try:
         service = get_oauth_login_service()
         authorization_url, state = await service.start(provider)
@@ -453,6 +462,11 @@ async def oauth_callback(provider: str, request: Request) -> Response:
     # SECURITY-REVIEW: OAuth query/cookie values are untrusted authentication
     # inputs. They are bounded, browser-bound, single-use, and never logged.
     await _charge_oauth_callback(request)
+    if not _human_auth_policy().oauth_provider_enabled(provider):
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="unknown_provider"),
+        )
     if request.query_params.getlist("error"):
         state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
         if state is None:
@@ -607,15 +621,15 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
 @router.post("/login")
 def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
     _enforce(_LOGIN_THROTTLE, request, body.username, "login")
-
-    # The deployment's explicit login mode decides before any credential is
-    # read (#491). An Entra-only deployment denies ordinary password login
-    # here rather than "falling back" to passwords because no provider was
-    # reachable; break-glass recovery is a separate operator-controlled seam,
-    # never a request parameter.
-    if not HumanAuthModePolicy(mode=get_settings().human_auth_mode).password_login_enabled():
-        log_audit("login_password_denied", body.username, severity="warning")
-        raise HTTPException(status_code=403, detail="Password login is disabled")
+    policy = _human_auth_policy()
+    if not policy.ordinary_password_login_enabled:
+        log_audit(
+            "login_auth_mode_denied",
+            "password",
+            target=policy.mode,
+            severity="warning",
+        )
+        raise HTTPException(status_code=403, detail="Password login is disabled for this deployment.")
 
     # Find the account first, then ALWAYS verify exactly once — against a decoy
     # when there is no account (#366). The previous form was:
