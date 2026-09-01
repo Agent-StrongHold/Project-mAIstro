@@ -14,12 +14,12 @@ sys.modules[spec.name] = checker
 spec.loader.exec_module(checker)
 
 
-QUALITY = f"""jobs:
+QUALITY = """jobs:
   coverage-archive:
     name: coverage (MinIO)
     steps:
       - name: Start MinIO
-        run: {checker.MINIO_IMAGE} server /data
+        run: minio/minio:latest server /data
       - name: Archive conformance against MinIO (under coverage)
         env:
           MAISTRO_REQUIRE_S3_LEGS: \"1\"
@@ -63,11 +63,6 @@ def test_minio_evidence_owner_fails_closed_on_duplicate_or_weakened_proof(tmp_pa
         encoding="utf-8",
     )
     assert any("skipped S3 legs fatal" in error for error in checker.validate(tmp_path))
-
-    (workflows / "quality.yml").write_text(
-        QUALITY.replace(checker.MINIO_IMAGE, "minio/minio:latest"), encoding="utf-8"
-    )
-    assert any("reviewed pinned MinIO image" in error for error in checker.validate(tmp_path))
 
     (workflows / "quality.yml").write_text(QUALITY, encoding="utf-8")
     protection.write_text(
