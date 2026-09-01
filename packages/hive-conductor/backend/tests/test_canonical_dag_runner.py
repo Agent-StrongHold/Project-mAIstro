@@ -61,6 +61,78 @@ def test_graph_normalizes_crud_and_substrate_edge_dialects() -> None:
     assert substrate.metadata["entry_node"] == "a"
 
 
+def test_legacy_outcome_tokens_preserve_dependency_edge_behavior() -> None:
+    """Bare evolution tokens were labels to the old wave runner, not predicates."""
+    from services.canonical_dag_runner import graph_from_legacy_dag
+
+    graph = graph_from_legacy_dag(
+        {
+            "id": "legacy-condition",
+            "nodes": [_safe_node("a"), _safe_node("b")],
+            "edges": [
+                {
+                    "id": "e1",
+                    "from_node": "a",
+                    "to_node": "b",
+                    "condition": "success",
+                }
+            ],
+        },
+        workspace_id="w",
+        project_id="p",
+    )
+
+    assert graph.edges[0].condition is None
+    assert graph.edges[0].metadata["legacy_condition"] == "success"
+
+
+def test_canonical_comparison_condition_is_preserved() -> None:
+    from services.canonical_dag_runner import graph_from_legacy_dag
+
+    graph = graph_from_legacy_dag(
+        {
+            "id": "predicate-condition",
+            "nodes": [_safe_node("a"), _safe_node("b")],
+            "edges": [
+                {
+                    "id": "e1",
+                    "from_node": "a",
+                    "to_node": "b",
+                    "condition": "response == 'ready'",
+                }
+            ],
+        },
+        workspace_id="w",
+        project_id="p",
+    )
+
+    assert graph.edges[0].condition == "response == 'ready'"
+    assert graph.edges[0].metadata["legacy_condition"] == "response == 'ready'"
+
+
+def test_run_scout_becomes_a_canonical_pre_entry_node() -> None:
+    from services.canonical_dag_runner import graph_from_legacy_dag
+
+    graph = graph_from_legacy_dag(
+        {
+            "id": "with-scout",
+            "run_scout": True,
+            "nodes": [_safe_node("entry")],
+            "edges": [],
+            "entry_node": "entry",
+        },
+        workspace_id="w",
+        project_id="p",
+    )
+
+    assert graph.metadata["legacy_run_scout"] is True
+    assert graph.metadata["entry_node"] == "__hive_legacy_scout__"
+    assert {node.node_id for node in graph.nodes} == {"__hive_legacy_scout__", "entry"}
+    assert [(edge.from_node, edge.to_node) for edge in graph.edges] == [
+        ("__hive_legacy_scout__", "entry")
+    ]
+
+
 def test_empty_dag_cannot_report_success_with_zero_work() -> None:
     from services.canonical_dag_runner import graph_from_legacy_dag
 
@@ -148,6 +220,39 @@ async def test_fanout_runs_under_one_canonical_run(
     record = await store.get(result["run_id"])
     assert record is not None
     assert {node_run.node_id for node_run in record.node_runs} == {"root", "left", "right"}
+    assert {node_run.run_id for node_run in record.node_runs} == {result["run_id"]}
+
+
+@pytest.mark.asyncio
+async def test_run_scout_executes_under_the_same_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+
+    result = await runner.execute_dag(
+        {
+            "id": "scouted-run",
+            "name": "scouted-run",
+            "run_scout": True,
+            "entry_node": "entry",
+            "nodes": [_safe_node("entry")],
+            "edges": [],
+        },
+        llm_builder=_fake_llm_builder(),
+    )
+
+    assert result["status"] == "completed"
+    assert set(result["node_results"]) == {"__hive_legacy_scout__", "entry"}
+    record = await store.get(result["run_id"])
+    assert record is not None
+    assert [node_run.node_id for node_run in record.node_runs] == [
+        "__hive_legacy_scout__",
+        "entry",
+    ]
     assert {node_run.run_id for node_run in record.node_runs} == {result["run_id"]}
 
 
