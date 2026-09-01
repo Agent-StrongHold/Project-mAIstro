@@ -66,6 +66,7 @@ def _continuation(
     status: RunStatus = RunStatus.RUNNING,
     project_id: str = "proj-1",
     minutes: int = 0,
+    resume_at: datetime | None = None,
 ) -> GraphContinuation:
     return GraphContinuation(
         run_id=run_id,
@@ -74,6 +75,7 @@ def _continuation(
         status=status,
         project_id=project_id,
         created_at=datetime(2026, 8, 29, tzinfo=UTC) + timedelta(minutes=minutes),
+        resume_at=resume_at,
     )
 
 
@@ -153,3 +155,47 @@ async def test_the_listings_agree_across_backends(store: GraphContinuationStore)
     assert await store.list_run_ids_for_project("proj-1") == ["run-c", "run-a"]
     assert await store.list_run_ids_for_project("proj-1", limit=1) == ["run-c"]
     assert await store.list_run_ids_for_project("proj-3") == []
+
+
+async def test_due_deadline_query_agrees_across_backends(store: GraphContinuationStore) -> None:
+    """The restart wakeup path must be identical on memory, SQLite and PG.
+
+    PostgreSQL is the production case that makes this test load-bearing: its
+    `resume_at` is a native timestamp while SQLite persists ISO text. Both must
+    make the same bounded, deadline-ordered candidate decision.
+    """
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    await store.create(
+        _continuation(
+            "run-waiting",
+            status=RunStatus.WAITING,
+            resume_at=now - timedelta(seconds=2),
+        )
+    )
+    await store.create(
+        _continuation(
+            "run-paused",
+            status=RunStatus.PAUSED,
+            resume_at=now - timedelta(seconds=1),
+        )
+    )
+    await store.create(
+        _continuation(
+            "run-future",
+            status=RunStatus.WAITING,
+            resume_at=now + timedelta(seconds=1),
+        )
+    )
+    await store.create(
+        _continuation("run-no-deadline", status=RunStatus.WAITING, resume_at=None)
+    )
+    await store.create(
+        _continuation(
+            "run-terminal",
+            status=RunStatus.COMPLETED,
+            resume_at=now - timedelta(minutes=1),
+        )
+    )
+
+    assert await store.list_due_run_ids(now=now, limit=10) == ["run-waiting", "run-paused"]
+    assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
