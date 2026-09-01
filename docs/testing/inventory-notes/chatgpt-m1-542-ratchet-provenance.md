@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  tests: +65
+  tests: +66
 ---
 # chatgpt-m1-542-ratchet-provenance
 
-Sixty-five root tests are added for #542.
+Sixty-six root tests are added for #542.
 
-Thirteen tests in `tests/test_check_ratchet_provenance.py` pin the inventory mechanism:
+Fourteen tests in `tests/test_check_ratchet_provenance.py` pin the inventory mechanism:
 candidate-controlled ledgers fail; direct trusted resolution passes; `ROOT`, `REPO`,
 and `REPO_ROOT` path aliases and direct function path expressions are discovered;
 deliberate candidate-authored specifications are accepted only when explicitly
