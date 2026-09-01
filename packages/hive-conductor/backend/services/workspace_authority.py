@@ -15,10 +15,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, cast
 
 import stores
-from models.workspace import Workspace, WorkspaceMember, WorkspacePresentation, WorkspaceRole
+from models.workspace import (
+    AgentToolBinding,
+    Workspace,
+    WorkspaceMember,
+    WorkspacePresentation,
+    WorkspaceRole,
+)
 from services.model_store import ModelStore
 
 from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
@@ -37,9 +43,10 @@ _CANONICAL_TO_HIVE_ROLE: Final = {
     CanonicalWorkspaceRole.OWNER: "owner",
 }
 
-_presentations: ModelStore = ModelStore("workspace_presentations", WorkspacePresentation)
+_presentations: ModelStore[WorkspacePresentation] = ModelStore(
+    "workspace_presentations", WorkspacePresentation
+)
 _fallback_store: InMemoryWorkspaceStore | None = None
-_bound_store: WorkspaceStore | None = None
 _initialized_persistence: object | None = None
 _migration_lock = asyncio.Lock()
 _migrated_store_identity: int | None = None
@@ -66,7 +73,7 @@ def _engine_workspace_store() -> WorkspaceStore:
     container = getattr(getattr(engine, "_agent_port", None), "container", None)
     store = getattr(container, "workspace_store", None)
     if store is not None:
-        return store
+        return cast(WorkspaceStore, store)
     if _fallback_store is None:
         _fallback_store = InMemoryWorkspaceStore()
     return _fallback_store
@@ -83,7 +90,7 @@ def _initialize_presentations() -> None:
     _initialized_persistence = persisted
 
 
-def presentation_store() -> ModelStore:
+def presentation_store() -> ModelStore[WorkspacePresentation]:
     """Testing/adapter seam for the Hive-owned half only."""
     _initialize_presentations()
     return _presentations
@@ -94,7 +101,7 @@ def _canonical_role(role: WorkspaceRole) -> CanonicalWorkspaceRole:
 
 
 def _hive_role(role: CanonicalWorkspaceRole) -> WorkspaceRole:
-    return _CANONICAL_TO_HIVE_ROLE[role]  # type: ignore[return-value]
+    return cast(WorkspaceRole, _CANONICAL_TO_HIVE_ROLE[role])
 
 
 def _presentation_from_legacy(legacy: Workspace) -> WorkspacePresentation:
@@ -153,9 +160,8 @@ async def _migrate_one(store: WorkspaceStore, legacy: Workspace, *, retire_sourc
 
 
 async def _ensure_ready() -> WorkspaceStore:
-    global _bound_store, _migrated_store_identity
+    global _migrated_store_identity
     store = _engine_workspace_store()
-    _bound_store = store
     _initialize_presentations()
     identity = id(store)
     if _migrated_store_identity == identity:
@@ -283,7 +289,7 @@ async def update_presentation(
     workspace_id: str,
     *,
     active: bool | None = None,
-    tool_bindings: list[object] | None = None,
+    tool_bindings: list[AgentToolBinding] | None = None,
 ) -> Workspace:
     await _ensure_ready()
     presentation = _presentations.get(workspace_id)
@@ -293,7 +299,7 @@ async def update_presentation(
     if active is not None:
         updates["active"] = active
     if tool_bindings is not None:
-        updates["tool_bindings"] = tool_bindings
+        updates["tool_bindings"] = list(tool_bindings)
     _presentations[workspace_id] = presentation.model_copy(update=updates)
     view = await get_view(workspace_id)
     if view is None:
@@ -309,9 +315,8 @@ async def delete_workspace(workspace_id: str) -> None:
 
 def reset_for_tests() -> None:
     """Drop process-local adapter state; persisted source data is untouched."""
-    global _fallback_store, _bound_store, _initialized_persistence, _migrated_store_identity
+    global _fallback_store, _initialized_persistence, _migrated_store_identity
     _fallback_store = None
-    _bound_store = None
     _initialized_persistence = None
     _migrated_store_identity = None
     _presentations._data.clear()
