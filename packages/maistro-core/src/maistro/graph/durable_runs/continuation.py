@@ -7,10 +7,11 @@ frontier, a blackboard and a routing history are not execution lifecycle
 (ADR-062, ADR-082826-d9f5). This module is that second half, stored beside the
 canonical rows rather than wrapped around them.
 
-The index columns (`status`, `project_id`, `created_at`) are denormalized from
-the canonical Run on every write. They exist so "which graph runs are paused"
-is one query rather than a scan of every Run on the spine; the Run remains the
-authority, and assembly always reads the status back from it.
+The index columns (`status`, `project_id`, `created_at`, `resume_at`) are
+denormalized from the canonical Run/continuation on every write. They exist so
+recovery can find eligible graph runs with bounded indexed queries rather than
+a scan of every Run on the spine; the Run remains the lifecycle authority, and
+assembly always reads the status back from it.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from .types import DurableRunRecord
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
+
+_RESUMABLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED})
 
 
 class GraphContinuation(BaseModel):
@@ -82,6 +85,10 @@ class GraphContinuationStore(Protocol):
         project_id: str | None = None,
     ) -> list[str]: ...
 
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        """Return WAITING/PAUSED continuations whose persisted deadline is due."""
+        ...
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]: ...
 
 
@@ -132,6 +139,17 @@ class InMemoryGraphContinuationStore:
             if row.status is status and (project_id is None or row.project_id == project_id)
         ]
         rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id))
+        return [row.run_id for row in rows[:limit]]
+
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        rows = [
+            row
+            for row in self._rows.values()
+            if row.status in _RESUMABLE_STATUSES
+            and row.resume_at is not None
+            and row.resume_at <= now
+        ]
+        rows.sort(key=lambda row: (row.resume_at, row.run_id))
         return [row.run_id for row in rows[:limit]]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
@@ -222,6 +240,18 @@ class SqliteGraphContinuationStore:
                 "ORDER BY created_at ASC, run_id ASC LIMIT ?",
                 (status.value, project_id, limit),
             )
+        return [str(row[0]) for row in await cursor.fetchall()]
+
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        cursor = await self._conn.execute(
+            """SELECT run_id FROM graph_continuations
+                WHERE status IN (?, ?)
+                  AND resume_at IS NOT NULL
+                  AND resume_at <= ?
+             ORDER BY resume_at ASC, run_id ASC
+                LIMIT ?""",
+            (RunStatus.WAITING.value, RunStatus.PAUSED.value, now.isoformat(), limit),
+        )
         return [str(row[0]) for row in await cursor.fetchall()]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
