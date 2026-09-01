@@ -87,9 +87,7 @@ async def post_interview_answer(
 
     queued: list[dict[str, str]] = []
     if ctx.interview_complete:
-        pulse_result = await run_program_pulse(
-            uid, workspace_id=workspace_id, max_actions=2
-        )
+        pulse_result = await run_program_pulse(uid, workspace_id=workspace_id, max_actions=2)
         queued = pulse_result.get("queued", [])
 
     return {
