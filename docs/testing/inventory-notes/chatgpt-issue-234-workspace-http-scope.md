@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +2
-  packages/maistro-server/tests/api: +3
+  packages/maistro-server/tests: +3
 ---
 # Issue #234 production Workspace scope
 
