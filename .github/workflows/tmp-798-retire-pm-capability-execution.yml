@@ -1,0 +1,164 @@
+name: tmp-798-retire-pm-capability-execution
+
+on:
+  push:
+    branches:
+      - chatgpt/m1-129-pm-fleet-closeout
+
+permissions:
+  contents: write
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/m1-129-pm-fleet-closeout
+          fetch-depth: 0
+      - name: Retire false-success PM capability execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          # Engine: PM capability metadata must never fall through to the generic
+          # engineering conductor now that the PM executor is retired.
+          path = Path("packages/hive-conductor/backend/services/engine.py")
+          text = path.read_text(encoding="utf-8")
+          old_import = "from maistro.agents.pm_capabilities import is_gated, normalize_capability"
+          new_import = """from maistro.agents.pm_capabilities import (\n            AUTONOMOUS_CAPABILITIES,\n            GATED_CAPABILITIES,\n            is_gated,\n            normalize_capability,\n        )"""
+          if text.count(old_import) != 1:
+              raise SystemExit("engine PM capability import shape changed")
+          text = text.replace(old_import, new_import)
+          marker = '''        if is_gated(cap) and not pctx_probe.get("confirmed"):\n            raise ValueError(\n                f"Capability {cap!r} must use the work-item draft flow (POST /v1/work-items/suggest → confirm)"\n            )\n'''
+          guard = marker + '''        if cap in AUTONOMOUS_CAPABILITIES or cap in GATED_CAPABILITIES:\n            raise ValueError(\n                f"PM capability execution {cap!r} through the generic task queue is retired; "\n                "keep it as a Workspace Persona proposal until canonical Graph execution owns it"\n            )\n'''
+          if text.count(marker) != 1:
+              raise SystemExit("engine gated guard shape changed")
+          text = text.replace(marker, guard)
+          path.write_text(text, encoding="utf-8")
+
+          # Program Pulse: retain workspace-scoped proposals and suggestions, but
+          # do not invent a replacement PM executor or queue generic plans.
+          path = Path("packages/hive-conductor/backend/services/program_hyperagent.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace("import logging\n", "")
+          text = text.replace("from maistro.agents.pm_capabilities import is_autonomous\n", "")
+          text = text.replace(
+              "from services.agent_invocation import pulse_roster, resolve_agent_task\nfrom services.engine import get_engine\n",
+              "from services.agent_invocation import pulse_roster\n",
+          )
+          text = text.replace('logger = logging.getLogger("hive.services.program_hyperagent")\n\n\n', "")
+          helper_start = text.index("def _use_secret(")
+          user_start = text.index("def user_id_from_request(")
+          text = text[:helper_start] + text[user_start:]
+          apply_start = text.index("async def apply_guidance_and_pulse(")
+          prefix = text[:apply_start]
+          tail = '''_RETIRED_PM_EXECUTION_NOTE = (\n    "Autonomous PM capability execution was retired with PM-Fleet POC mode; "\n    "Workspace Persona proposals remain visible until canonical Graph execution owns these capabilities."\n)\n\n\nasync def apply_guidance_and_pulse(\n    user_id: str,\n    text: str,\n    *,\n    workspace_id: str | None = None,\n    max_pulse_actions: int = 2,\n) -> dict[str, Any]:\n    """Record guidance and generate workspace-scoped Program Pulse proposals."""\n    project_id = _scope(workspace_id)\n    ctx = apply_guidance(prog.get_context(user_id, project_id), text)\n    ctx = prog.save_context(ctx)\n\n    queued: list[dict[str, str]] = []\n    pulse_note: str | None = None\n    if ctx.interview_complete and max_pulse_actions > 0:\n        try:\n            pulse_result = await run_program_pulse(\n                user_id, workspace_id=workspace_id, max_actions=max_pulse_actions\n            )\n            queued = pulse_result.get("queued", [])\n            note = pulse_result.get("note")\n            pulse_note = str(note) if note else None\n        except Exception:\n            pulse_note = "Program pulse proposal generation failed."\n\n    out: dict[str, Any] = {\n        "context": ctx.model_dump(mode="json"),\n        "interview": interview_status(ctx),\n        "proposed_actions": [\n            a.as_dict()\n            for a in propose_actions(ctx, roster=pulse_roster(workspace_id), max_actions=5)\n        ],\n        "queued_tasks": queued,\n    }\n    if pulse_note:\n        out["pulse_note"] = pulse_note\n    if not ctx.interview_complete:\n        out["message"] = "Guidance saved. Complete the Program interview to generate proposals."\n    elif queued:\n        out["message"] = f"Guidance saved — {len(queued)} autonomous task(s) queued."\n    elif pulse_note:\n        out["message"] = "Guidance saved — Program Pulse produced proposals without executing retired PM capability work."\n    else:\n        out["message"] = "Guidance saved — no autonomous actions were proposed."\n    return out\n\n\nasync def run_program_pulse(\n    user_id: str, *, workspace_id: str | None = None, max_actions: int = 4\n) -> dict[str, Any]:\n    """Generate Program Pulse proposals without reviving PM-Fleet execution authority."""\n    from datetime import UTC, datetime\n\n    project_id = _scope(workspace_id)\n    ctx = prog.get_context(user_id, project_id)\n    if not ctx.interview_complete:\n        return {\n            "queued": [],\n            "skipped": "interview_incomplete",\n            "interview": interview_status(ctx),\n        }\n\n    roster = pulse_roster(workspace_id)\n    actions = propose_autonomous_actions(ctx, roster=roster, max_actions=max_actions)\n    suggestions = propose_work_item_suggestions(ctx, user_id)\n\n    now = datetime.now(UTC).isoformat()\n    prog.save_context(ctx.model_copy(update={"last_pulse_at": now, "updated_at": now}))\n\n    note = (\n        _RETIRED_PM_EXECUTION_NOTE\n        if actions\n        else (\n            "No agent in this workspace declares a capability the pulse can run "\n            "without approval. No autonomous work was queued."\n        )\n    )\n    return {\n        "queued": [],\n        "proposed": [a.as_dict() for a in actions],\n        "work_item_suggestions": [s.as_dict() for s in suggestions],\n        "context": ctx.model_dump(mode="json"),\n        "note": note,\n    }\n'''
+          path.write_text(prefix + tail, encoding="utf-8")
+
+          # Work-item confirmation keeps the explicit Jira stub side effect, but
+          # does not queue a task whose executor can no longer honor PM metadata.
+          path = Path("packages/hive-conductor/backend/routes/work_items.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace("import logging\n", "")
+          text = text.replace(
+              "from adapters.task_backend import WORKSPACE_NOT_ROUTABLE_DETAIL, WorkspaceNotRoutable\n",
+              "",
+          )
+          text = text.replace("from services.engine import get_engine\n", "")
+          text = text.replace('logger = logging.getLogger("hive.work_items")\n', "")
+          confirm_start = text.index('@router.post("/{draft_id}/confirm")')
+          delete_start = text.index('@router.delete("/{draft_id}", status_code=204)')
+          confirm = '''@router.post("/{draft_id}/confirm")\nasync def confirm_work_item(\n    draft_id: str, request: Request, workspace_id: str | None = None\n) -> dict[str, Any]:\n    """User-approved Jira stub post; retired PM execution is not queued."""\n    uid = _user_id(request)\n    _require_submittable_workspace(uid, workspace_id)\n    draft = _load_draft(draft_id, uid)\n    _require_pm_for_draft(uid, draft)\n    scope = _draft_workspace(draft)\n    if workspace_id and workspace_id != scope:\n        raise HTTPException(\n            status_code=409,\n            detail="this draft was suggested under a different workspace",\n        )\n    _require_submittable_workspace(uid, scope)\n\n    # Resolve before the posting side effect. Persona ownership remains real\n    # even though the old PM-specific downstream executor is retired.\n    try:\n        resolve_agent_task(\n            draft.agent_id,\n            draft.capability,\n            {},\n            workspace_id=draft.project_id,\n        )\n    except ValueError as exc:\n        raise HTTPException(\n            status_code=409,\n            detail=(\n                f"this workspace's persona has no agent {draft.agent_id!r} able to "\n                f"{draft.capability!r}; the draft was not posted"\n            ),\n        ) from exc\n\n    try:\n        posted, result = confirm_post_stub(draft)\n    except ValueError as exc:\n        raise HTTPException(status_code=400, detail=str(exc)) from exc\n    _save_draft(posted)\n\n    execution_note = (\n        "Downstream PM capability execution was retired with PM-Fleet POC mode; "\n        "no generic conductor task was queued."\n    )\n    log_audit(\n        "work_item_confirm",\n        uid,\n        target=posted.id,\n        detail={"issue_key": result.get("issue_key"), "execution": "retired"},\n    )\n    return {\n        "draft": posted.as_dict(),\n        "jira": result,\n        "task_id": None,\n        "execution_note": execution_note,\n        "message": f"Posted {result.get('issue_key')} to Jira (stub). No downstream PM task queued.",\n    }\n\n\n'''
+          path.write_text(text[:confirm_start] + confirm + text[delete_start:], encoding="utf-8")
+
+          # Frontend truthfully models the now-absent downstream task id.
+          path = Path("packages/hive-conductor/frontend/src/components/WorkItemDraftModal.tsx")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              "onPosted?: (issueKey: string, taskId: string) => void;",
+              "onPosted?: (issueKey: string, taskId: string | null) => void;",
+          )
+          text = text.replace(
+              "        task_id: string;\n        message: string;",
+              "        task_id: string | null;\n        execution_note?: string;\n        message: string;",
+          )
+          path.write_text(text, encoding="utf-8")
+
+          # Existing engine success coverage now uses a genuinely generic
+          # capability; PM capability refusal is covered by the new test file.
+          path = Path("packages/hive-conductor/backend/tests/test_engine_service.py")
+          text = path.read_text(encoding="utf-8")
+          target = '        capability="route_to_pm_agent",\n'
+          if text.count(target) != 1:
+              raise SystemExit("expected one PM capability in generic engine success test")
+          text = text.replace(target, '        capability="generic_capability",\n')
+          path.write_text(text, encoding="utf-8")
+
+          # Rewrite obsolete queue-centric Program Pulse tests around the new
+          # proposal-only contract, retaining workspace-scope characterization.
+          path = Path("packages/hive-conductor/backend/tests/test_program_hyperagent.py")
+          text = path.read_text(encoding="utf-8")
+          marker = "# --- run_program_pulse --------------------------------------------------\n"
+          head, sep, _old_tail = text.partition(marker)
+          if not sep:
+              raise SystemExit("program_hyperagent test marker missing")
+          tail = '''# --- run_program_pulse --------------------------------------------------\n\n\nasync def test_run_program_pulse_interview_incomplete_returns_skipped(\n    monkeypatch: pytest.MonkeyPatch,\n) -> None:\n    import services.program_hyperagent as ph\n\n    ctx = _StubCtx()\n    ctx.interview_complete = False\n    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)\n    monkeypatch.setattr(ph, "interview_status", lambda c: {"done": False})\n\n    out = await ph.run_program_pulse("u1")\n    assert out["queued"] == []\n    assert out["skipped"] == "interview_incomplete"\n\n\nasync def test_run_program_pulse_keeps_proposals_without_queueing(\n    monkeypatch: pytest.MonkeyPatch,\n) -> None:\n    import services.program_hyperagent as ph\n\n    class _Action:\n        agent_id = "program_manager"\n        capability = "poll_jira"\n        reason = "refresh"\n        payload: ClassVar[dict[str, Any]] = {}\n\n        def as_dict(self) -> dict[str, Any]:\n            return {"agent_id": self.agent_id, "capability": self.capability}\n\n    ctx = _StubCtx()\n    ctx.interview_complete = True\n    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)\n    monkeypatch.setattr(ph.prog, "save_context", lambda c: c)\n    monkeypatch.setattr(\n        ph, "propose_autonomous_actions", lambda c, roster, max_actions: [_Action()]\n    )\n    monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])\n\n    out = await ph.run_program_pulse("u1", workspace_id="ws-a")\n\n    assert out["queued"] == []\n    assert out["proposed"][0]["capability"] == "poll_jira"\n    assert "retired" in out["note"].lower()\n\n\nasync def test_run_program_pulse_no_actions_explains_no_queue(\n    monkeypatch: pytest.MonkeyPatch,\n) -> None:\n    import services.program_hyperagent as ph\n\n    ctx = _StubCtx()\n    ctx.interview_complete = True\n    monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)\n    monkeypatch.setattr(ph.prog, "save_context", lambda c: c)\n    monkeypatch.setattr(ph, "propose_autonomous_actions", lambda c, roster, max_actions: [])\n    monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])\n\n    out = await ph.run_program_pulse("u1", workspace_id="ws-a")\n\n    assert out["queued"] == []\n    assert "No agent in this workspace" in out["note"]\n\n\nclass TestTheWorkspaceReachesEverythingItShould:\n    async def test_guidance_is_written_to_the_named_workspaces_context(\n        self, monkeypatch: pytest.MonkeyPatch\n    ) -> None:\n        import services.program_hyperagent as ph\n\n        seen: list[str] = []\n        ctx = _StubCtx()\n        ctx.interview_complete = False\n\n        def _get(uid: str, project_id: str = "default"):\n            seen.append(project_id)\n            return ctx\n\n        monkeypatch.setattr(ph.prog, "get_context", _get)\n        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)\n        monkeypatch.setattr(ph, "apply_guidance", lambda c, t: c)\n        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": False})\n        monkeypatch.setattr(ph, "propose_actions", lambda c, roster, max_actions: [])\n\n        await ph.apply_guidance_and_pulse("u1", "go", workspace_id="ws-a")\n        assert seen == ["ws-a"]\n\n    async def test_the_pulse_reads_the_named_workspaces_context(\n        self, monkeypatch: pytest.MonkeyPatch\n    ) -> None:\n        import services.program_hyperagent as ph\n\n        seen: list[str] = []\n        ctx = _StubCtx()\n        ctx.interview_complete = False\n\n        def _get(uid: str, project_id: str = "default"):\n            seen.append(project_id)\n            return ctx\n\n        monkeypatch.setattr(ph.prog, "get_context", _get)\n        monkeypatch.setattr(ph, "interview_status", lambda c: {"done": False})\n\n        await ph.run_program_pulse("u1", workspace_id="ws-a")\n        assert seen == ["ws-a"]\n\n    async def test_the_pulse_reads_the_workspaces_own_roster(\n        self, monkeypatch: pytest.MonkeyPatch\n    ) -> None:\n        import services.program_hyperagent as ph\n\n        seen: dict[str, Any] = {}\n        ctx = _StubCtx()\n        ctx.interview_complete = True\n\n        def _propose(c: Any, roster: Any, max_actions: int) -> list[Any]:\n            seen["roster"] = roster\n            return []\n\n        monkeypatch.setattr(ph.prog, "get_context", lambda uid, project_id="default": ctx)\n        monkeypatch.setattr(ph.prog, "save_context", lambda c: c)\n        monkeypatch.setattr(ph, "propose_autonomous_actions", _propose)\n        monkeypatch.setattr(ph, "propose_work_item_suggestions", lambda c, uid: [])\n        monkeypatch.setattr(ph, "pulse_roster", lambda ws: [f"roster-for-{ws}"])\n\n        await ph.run_program_pulse("u1", workspace_id="ws-a")\n        assert seen["roster"] == ["roster-for-ws-a"]\n'''
+          path.write_text(head + tail, encoding="utf-8")
+
+          # The route's old test asserted queued-task program context. Replace it
+          # with the truthful post-without-execution contract.
+          path = Path("packages/hive-conductor/backend/tests/test_work_items_routes.py")
+          text = path.read_text(encoding="utf-8")
+          start = text.index("def test_confirm_reads_back_the_drafts_own_project_id")
+          end = text.index("def test_confirm_refuses_before_posting_when_the_persona_lacks_the_agent")
+          replacement = '''def test_confirm_preserves_draft_scope_without_queuing_retired_executor(admin_client) -> None:\n    ws_id = _create_workspace(admin_client, "pm_fleet")\n    r = admin_client.post(\n        f"/v1/work-items/suggest?workspace_id={ws_id}",\n        json={"work_type": "epic", "reason": "test"},\n    )\n    draft_id = r.json()["draft"]["id"]\n    admin_client.post(\n        f"/v1/work-items/{draft_id}/clarify",\n        json={\n            "answers": {\n                "summary": "Do the thing",\n                "description": "Because reasons",\n                "parent_key": "X-1",\n            }\n        },\n    )\n\n    r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")\n\n    assert r.status_code == 200\n    body = r.json()\n    assert body["draft"]["project_id"] == ws_id\n    assert body["task_id"] is None\n    assert "retired" in body["execution_note"].lower()\n\n\n'''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+
+          # New test module no longer patches implementation symbols intentionally removed.
+          path = Path("packages/hive-conductor/backend/tests/test_pm_poc_execution_truthfulness.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace('    monkeypatch.setattr(ph.prog, "context_dict", lambda uid, project_id="default": {})\n', "")
+          text = text.replace('    monkeypatch.setattr(ph, "pulse_roster", lambda workspace_id: [])\n', '    monkeypatch.setattr(ph, "pulse_roster", lambda workspace_id: [])\n')
+          # Remove engine/legacy-dispatch patches from the pulse test.
+          legacy = '''    monkeypatch.setattr(ph, "get_engine", lambda: _Engine())\n    monkeypatch.setattr(\n        ph,\n        "resolve_agent_task",\n        lambda a, c, p, workspace_id=None: ("program_manager", "desc", "program_manager"),\n    )\n    monkeypatch.setattr(ph, "_get_atlassian_pats", lambda uid: {})\n    monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})\n'''
+          text = text.replace(legacy, "")
+          # Remove the no-longer-needed fake engine class from that test.
+          fake_engine = '''    submitted = [0]\n\n    class _Engine:\n        _backend = object()\n\n        async def submit_task(self, *args: Any, **kwargs: Any) -> Any:\n            submitted[0] += 1\n            return type("Rec", (), {"id": "should-not-exist"})()\n\n'''
+          text = text.replace(fake_engine, "")
+          text = text.replace("    assert submitted[0] == 0\n", "")
+          # Work-item integration no longer needs to patch a route-local engine.
+          route_fake = '''    submitted = [0]\n\n    class _Engine:\n        async def submit_task(self, *args: Any, **kwargs: Any) -> Any:\n            submitted[0] += 1\n            return type("Rec", (), {"id": "should-not-exist"})()\n\n    monkeypatch.setattr(work_items_routes, "get_engine", lambda: _Engine())\n\n'''
+          text = text.replace("    import routes.work_items as work_items_routes\n\n", "")
+          text = text.replace(route_fake, "")
+          text = text.replace("    assert submitted[0] == 0\n", "")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python -m compileall -q \
+            packages/hive-conductor/backend/services/engine.py \
+            packages/hive-conductor/backend/services/program_hyperagent.py \
+            packages/hive-conductor/backend/routes/work_items.py \
+            packages/hive-conductor/backend/tests/test_pm_poc_execution_truthfulness.py \
+            packages/hive-conductor/backend/tests/test_engine_service.py \
+            packages/hive-conductor/backend/tests/test_program_hyperagent.py \
+            packages/hive-conductor/backend/tests/test_work_items_routes.py
+
+          rm .github/workflows/tmp-798-retire-pm-capability-execution.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            packages/hive-conductor/backend/services/engine.py \
+            packages/hive-conductor/backend/services/program_hyperagent.py \
+            packages/hive-conductor/backend/routes/work_items.py \
+            packages/hive-conductor/frontend/src/components/WorkItemDraftModal.tsx \
+            packages/hive-conductor/backend/tests/test_pm_poc_execution_truthfulness.py \
+            packages/hive-conductor/backend/tests/test_engine_service.py \
+            packages/hive-conductor/backend/tests/test_program_hyperagent.py \
+            packages/hive-conductor/backend/tests/test_work_items_routes.py \
+            .github/workflows/tmp-798-retire-pm-capability-execution.yml
+          git commit -m "Retire false-success PM capability execution (#129)"
+          git push origin HEAD:chatgpt/m1-129-pm-fleet-closeout
