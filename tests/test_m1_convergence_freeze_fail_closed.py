@@ -159,3 +159,62 @@ def test_exception_plan_reads_pull_request_body(
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
     assert checker._exception_plan_from_environment() == "reviewed body"
+
+
+def _stub_main_dependencies(
+    checker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    gate_failures: list[str],
+    freeze_failures: list[str],
+    owner_failures: list[str],
+) -> None:
+    args = SimpleNamespace(base="base-sha", exception=False)
+    parser = SimpleNamespace(parse_args=lambda: args)
+    monkeypatch.setattr(checker, "build_parser", lambda: parser)
+    monkeypatch.setattr(checker, "_policy", lambda: {})
+    monkeypatch.setattr(checker, "_ontology", lambda: {})
+    monkeypatch.setattr(checker, "validate_authoritative_gate_map", lambda _policy: gate_failures)
+    monkeypatch.setattr(checker, "_git_show", lambda _base, _path: "base matrix")
+    monkeypatch.setattr(checker, "check", lambda *_args, **_kwargs: freeze_failures)
+    monkeypatch.setattr(
+        checker,
+        "shared_owner_failures",
+        lambda *_args, **_kwargs: owner_failures,
+    )
+
+
+def test_main_reports_all_failures(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    checker = _module()
+    _stub_main_dependencies(
+        checker,
+        monkeypatch,
+        gate_failures=["bad gate"],
+        freeze_failures=["bad freeze"],
+        owner_failures=["bad owner"],
+    )
+
+    assert checker.main() == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "ERROR: bad gate",
+        "ERROR: bad freeze",
+        "ERROR: bad owner",
+    ]
+
+
+def test_main_reports_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    checker = _module()
+    _stub_main_dependencies(
+        checker,
+        monkeypatch,
+        gate_failures=[],
+        freeze_failures=[],
+        owner_failures=[],
+    )
+
+    assert checker.main() == 0
+    assert capsys.readouterr().out == "M1 convergence freeze: no unapproved new architecture island\n"
