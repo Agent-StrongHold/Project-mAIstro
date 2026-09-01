@@ -1,11 +1,9 @@
-"""Workspace — a live, per-user/shared instance of an adopted Persona.
+"""Hive presentation models over the canonical MAIstro Workspace authority.
 
-Persona/Workspace system (replaces the hardcoded, globally-toggled PM Fleet
-mode): a `PersonaTemplate` (maistro.personas, kind: workspace) declares a
-persona's brand/voice/tools/scoped-UI. A Workspace is a specific instantiation
-of one persona as a tab a user sees and switches between — deliberately thin,
-carrying only what's per-instance: which persona, who owns/shares it, the
-accepted capability checklist, and any per-workspace tool-binding overrides.
+`maistro.workspaces` owns Workspace identity, name, and membership. Hive keeps
+only persona/UI choices that are specific to this product, keyed by the
+canonical ``workspace_id``. `Workspace` remains the HTTP response shape so the
+existing frontend does not have to learn where each field is persisted.
 """
 
 from __future__ import annotations
@@ -19,6 +17,8 @@ WorkspaceRole = Literal["owner", "editor", "viewer"]
 
 
 class WorkspaceMember(BaseModel):
+    """HTTP projection of a canonical WorkspaceMembership."""
+
     model_config = ConfigDict(extra="ignore")
 
     user_id: str
@@ -26,9 +26,7 @@ class WorkspaceMember(BaseModel):
 
 
 class AgentToolBinding(BaseModel):
-    """Phase E: per-workspace "sticky" override on top of the persona's
-    declared spawns[].tools for one agent. Empty by default — a workspace
-    with no bindings just inherits its persona's defaults."""
+    """Per-workspace Hive override on top of the persona's declared tools."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -37,21 +35,37 @@ class AgentToolBinding(BaseModel):
     prompt_fragment: str = ""
 
 
+class WorkspacePresentation(BaseModel):
+    """Hive-owned fields attached to one canonical Workspace identity.
+
+    The key is a foreign identity reference, not another Workspace ID owner.
+    Name, membership, and creation time are deliberately absent.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_id: str
+    persona_template_id: str
+    checklist: list[str] = Field(default_factory=list)
+    tool_bindings: list[AgentToolBinding] = Field(default_factory=list)
+    theme_id: str = "default"
+    voice_tone_override: str | None = None
+    active: bool = True
+    updated_at: datetime
+
+
 class Workspace(BaseModel):
+    """Compatibility response composed from canonical + Hive-owned records."""
+
     model_config = ConfigDict(extra="ignore")
 
     id: str
     persona_template_id: str
     name: str
     members: list[WorkspaceMember] = Field(default_factory=list)
-    # Phase C: subset of the persona's declared tools/skills the user accepted.
     checklist: list[str] = Field(default_factory=list)
-    # Phase E: per-workspace overrides; empty = pure persona defaults.
     tool_bindings: list[AgentToolBinding] = Field(default_factory=list)
-    # Phase D: visual accent, one of services.themes.THEME_CATALOG's ids.
     theme_id: str = "default"
-    # Phase D: overrides the persona's voice.tone for this workspace only;
-    # None means "use the persona's declared tone as-is".
     voice_tone_override: str | None = None
     active: bool = True
     created_at: datetime
