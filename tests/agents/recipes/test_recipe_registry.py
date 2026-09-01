@@ -7,7 +7,11 @@ from pathlib import Path
 
 import yaml
 
-from maistro.agents.recipes import AgentRecipe, RecipeRegistry, agent_recipe_to_node_template
+from maistro.agents.recipes import (
+    AgentRecipe,
+    RecipeRegistry,
+    agent_recipe_to_node_template,
+)
 from maistro.agents.spec.agent_spec import AgentRole
 from maistro.agents.spec.schemas import resolve_schema
 
@@ -104,7 +108,10 @@ class TestRecipeRegistry:
 
         assert template.workspace_id == "workspace-1"
         assert template.metadata["source_import_provenance"]["source_format"] == "agent_recipe"
-        assert template.metadata["legacy_recipe_snapshot"]["result_schema"] == "schemas.ReviewOutput"
+        assert (
+            template.metadata["legacy_recipe_snapshot"]["result_schema"]
+            == "schemas.ReviewOutput"
+        )
 
     def test_list_recipes_returns_all(self) -> None:
         registry = RecipeRegistry()
