@@ -22,8 +22,10 @@ class WorkspaceStore(Protocol):
         name: str,
         description: str = "",
         workspace_id: str | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
     ) -> Workspace:
-        """Create a Workspace, preserving an existing ID only for convergence imports."""
+        """Create a Workspace, preserving identity/timestamps only for convergence imports."""
         ...
 
     async def get(self, workspace_id: str) -> Workspace | None: ...
@@ -69,18 +71,23 @@ class InMemoryWorkspaceStore:
         name: str,
         description: str = "",
         workspace_id: str | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
     ) -> Workspace:
-        """Create canonical identity, optionally retaining a pre-convergence ID.
+        """Create canonical identity, optionally retaining convergence metadata.
 
-        Ordinary callers omit ``workspace_id`` and the canonical model mints it.
-        The explicit form exists only so a product adapter can retire a durable
-        legacy Workspace without inventing an old→new identity mapping (#37).
-        It is still a canonical insert: duplicate IDs are refused and the Root
-        Project is provisioned by this store exactly as for a new Workspace.
+        Ordinary callers omit ``workspace_id`` and both timestamps, so the
+        canonical model mints/stamps them. The explicit forms exist only so a
+        product adapter can retire a durable legacy Workspace without inventing
+        an old→new identity map or rewriting its chronology (#37).
         """
-        workspace_kwargs: dict[str, str] = {"name": name, "description": description}
+        workspace_kwargs: dict[str, object] = {"name": name, "description": description}
         if workspace_id is not None:
             workspace_kwargs["workspace_id"] = workspace_id
+        if created_at is not None:
+            workspace_kwargs["created_at"] = created_at
+        if updated_at is not None:
+            workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
         if workspace.workspace_id in self._workspaces:
             raise ValueError(f"Workspace {workspace.workspace_id!r} already exists")
