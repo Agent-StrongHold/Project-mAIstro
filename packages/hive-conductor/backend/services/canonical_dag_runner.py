@@ -16,6 +16,7 @@ from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import RunStatus, run_durable_graph
+from maistro.graph.types import AgentRole, DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from services.dag_agents import _container, get_run_store
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
@@ -23,6 +24,14 @@ from services.node_metrics_store import record_run_completion
 
 logger = logging.getLogger(__name__)
 _COMPAT_SCOPE = "hive-standalone-compat"
+_SCOUT_NODE_ID = "__hive_legacy_scout__"
+_SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
+# These are historical evolution tokens, not expressions in the canonical
+# predicate language. The shipped dependency-wave runner ignored edge
+# conditions entirely, so treating them as predicates would silently skip work
+# that ran before convergence. Preserve that behavior while retaining the token
+# as provenance on the canonical edge.
+_LEGACY_DEPENDENCY_CONDITIONS = frozenset({"success", "failure", "timeout"})
 
 
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -147,15 +156,75 @@ def _validate_acyclic_and_reachable(
         )
 
 
+def _legacy_scout_node() -> dict[str, Any]:
+    """Represent the old pre-entry Scout as ordinary canonical physical work."""
+    return {
+        "id": _SCOUT_NODE_ID,
+        "name": "Scout",
+        "role": AgentRole.SCOUT.value,
+        "prompt": DEFAULT_SYSTEM_PROMPTS[AgentRole.SCOUT]
+        + JSON_OUTPUT_SCHEMAS.get(AgentRole.SCOUT, ""),
+        "config": {"execution_tier": "safe"},
+        "compat_synthetic": "legacy_run_scout",
+    }
+
+
+def _execution_shape(
+    dag_data: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Return validated nodes, dependency edges, and canonical entry.
+
+    ``run_scout`` used to execute a Scout NodeRun before the configured entry.
+    It is represented as a synthetic canonical node rather than being ignored
+    or run out-of-band, so it gets the same Run/NodeRun/Attempt provenance as
+    every other physical step.
+    """
+    nodes = _raw_nodes(dag_data)
+    node_ids = {str(node["id"]) for node in nodes}
+    if _SCOUT_NODE_ID in node_ids:
+        raise ValueError(f"DAG node id {_SCOUT_NODE_ID!r} is reserved for run_scout compatibility")
+    edges = _raw_edges(dag_data, node_ids)
+    entry = _entry_node(dag_data, nodes, edges)
+    _validate_acyclic_and_reachable(entry, nodes, edges)
+    if not dag_data.get("run_scout"):
+        return nodes, edges, entry
+
+    scout = _legacy_scout_node()
+    scout_edge = {
+        "id": _SCOUT_EDGE_ID,
+        "from_node": _SCOUT_NODE_ID,
+        "to_node": entry,
+        "condition": None,
+        "compat_synthetic": "legacy_run_scout",
+    }
+    return [scout, *nodes], [scout_edge, *edges], _SCOUT_NODE_ID
+
+
+def _canonical_condition(raw: Mapping[str, Any]) -> str | None:
+    """Translate a legacy edge condition without inventing new routing semantics."""
+    value = raw.get("condition")
+    if value is None:
+        return None
+    condition = str(value).strip()
+    if not condition or condition.lower() in _LEGACY_DEPENDENCY_CONDITIONS:
+        return None
+    return condition
+
+
+def _edge_metadata(raw: Mapping[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"parallel": True, "legacy_dependency_edge": True}
+    if raw.get("condition") not in (None, ""):
+        metadata["legacy_condition"] = str(raw["condition"])
+    if raw.get("compat_synthetic"):
+        metadata["compat_synthetic"] = str(raw["compat_synthetic"])
+    return metadata
+
+
 def graph_from_legacy_dag(
     dag_data: Mapping[str, Any], *, workspace_id: str, project_id: str
 ) -> Graph:
     """Translate one shipped legacy DAG into an immutable canonical Graph."""
-    nodes = _raw_nodes(dag_data)
-    node_ids = {str(node["id"]) for node in nodes}
-    raw_edges = _raw_edges(dag_data, node_ids)
-    entry = _entry_node(dag_data, nodes, raw_edges)
-    _validate_acyclic_and_reachable(entry, nodes, raw_edges)
+    nodes, raw_edges, entry = _execution_shape(dag_data)
 
     graph_nodes = [
         Node(
@@ -165,6 +234,11 @@ def graph_from_legacy_dag(
             metadata={
                 "role": str(raw.get("role") or "worker"),
                 "legacy_node": dict(raw),
+                **(
+                    {"compat_synthetic": str(raw["compat_synthetic"])}
+                    if raw.get("compat_synthetic")
+                    else {}
+                ),
             },
         )
         for raw in nodes
@@ -174,11 +248,11 @@ def graph_from_legacy_dag(
             edge_id=str(raw["id"]),
             from_node=str(raw["from_node"]),
             to_node=str(raw["to_node"]),
-            condition=raw.get("condition"),
+            condition=_canonical_condition(raw),
             # Legacy edges are dependency edges. Marking each selected edge as
             # parallel preserves fan-out while the canonical executor owns the
             # frontier, concurrency cap, fan-in readiness, and terminal state.
-            metadata={"parallel": True, "legacy_dependency_edge": True},
+            metadata=_edge_metadata(raw),
         )
         for raw in raw_edges
     ]
@@ -193,6 +267,7 @@ def graph_from_legacy_dag(
             "entry_node": entry,
             "source": "hive_legacy_dag",
             "legacy_dag_id": str(dag_data.get("id") or ""),
+            "legacy_run_scout": bool(dag_data.get("run_scout")),
         },
     }
     legacy_id = str(dag_data.get("id") or "").strip()
@@ -327,8 +402,8 @@ async def execute_dag(
         workspace_id=resolved_workspace,
         project_id=resolved_project,
     )
-    raw_nodes = _raw_nodes(dag_data)
-    raw_by_id = {str(raw["id"]): raw for raw in raw_nodes}
+    execution_nodes, _, _ = _execution_shape(dag_data)
+    raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
     provenance = {
         "admission_source": "hive_legacy_dag",
