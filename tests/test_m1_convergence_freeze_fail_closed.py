@@ -217,4 +217,5 @@ def test_main_reports_success(
     )
 
     assert checker.main() == 0
-    assert capsys.readouterr().out == "M1 convergence freeze: no unapproved new architecture island\n"
+    output = capsys.readouterr().out
+    assert output == "M1 convergence freeze: no unapproved new architecture island\n"
