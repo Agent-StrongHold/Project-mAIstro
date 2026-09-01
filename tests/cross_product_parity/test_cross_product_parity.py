@@ -215,7 +215,11 @@ def test_dependency_handling_contains_no_test_suppression_escape_hatch() -> None
         path.read_text(encoding="utf-8")
         for path in (suite_dir / "harness.py", suite_dir / "test_cross_product_parity.py")
     )
-    assert "pytest.skip(" not in source
-    assert "pytest.importorskip(" not in source
-    assert "pytest.mark." + "xfail" not in source
-    assert "pytest.mark." + "skip" not in source
+    forbidden = (
+        "pytest." + "skip(",
+        "pytest." + "importorskip(",
+        "pytest.mark." + "xfail",
+        "pytest.mark." + "skip",
+    )
+    for token in forbidden:
+        assert token not in source
