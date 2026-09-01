@@ -32,6 +32,7 @@ async def test_design_persisted_output_round_trips_on_postgres() -> None:
     store = PgDesignProjectStore(session_factory=factory)
     org_id = f"design-row-{uuid.uuid4()}"
     project = DesignProject(
+        id=f"design-project-{uuid.uuid4()}",
         name="SQLAlchemy row round-trip",
         skill_slug="poster",
         design_system_slug="default",
