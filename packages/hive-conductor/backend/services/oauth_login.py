@@ -331,6 +331,45 @@ class OAuthLoginService:
         user_id, exchange = await self._complete_login(provider, code, state)
         return self._resolve_active_user(provider, user_id, exchange)
 
+    async def link_authenticated_user(
+        self,
+        *,
+        provider: str,
+        code: str,
+        state: str,
+        browser_state: str | None,
+        user_id: str,
+    ) -> OAuthLoginResult:
+        """Explicitly link a verified provider identity to the current Hive user."""
+        self._provider(provider)
+        self._validate_browser_state(state, browser_state)
+        try:
+            exchange = await self._client.exchange_code(
+                provider,
+                code,
+                state,
+                self.callback_uri(provider),
+            )
+            await self._links.link(provider, exchange.identity.sub, user_id)
+        except OAuthClientSecretUnavailableError as exc:
+            raise OAuthLoginDenied(
+                stage="configuration",
+                reason="secret_unavailable",
+            ) from exc
+        except OAuthStateError as exc:
+            raise OAuthLoginDenied(stage="state", reason="invalid") from exc
+        except OAuthTokenValidationError as exc:
+            raise OAuthLoginDenied(stage="token_validation", reason="invalid") from exc
+        except OAuthExchangeError as exc:
+            raise OAuthLoginDenied(stage="exchange", reason="provider_rejected") from exc
+        except IdentityLinkConflictError as exc:
+            raise OAuthLoginDenied(stage="identity", reason="link_conflict") from exc
+        except OAuthError as exc:
+            raise OAuthLoginDenied(stage="provider", reason="provider_rejected") from exc
+        except Exception as exc:
+            raise OAuthLoginDenied(stage="provider", reason="provider_rejected") from exc
+        return self._resolve_active_user(provider, user_id, exchange)
+
     @staticmethod
     def _validate_browser_state(state: str, browser_state: str | None) -> None:
         if browser_state is None:
