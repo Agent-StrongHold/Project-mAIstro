@@ -735,6 +735,7 @@
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'from_identity'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'list_by_priority_tier'",
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'list_by_trust_tier'",
+        "packages/maistro-core/src/maistro/agents/circuit_breaker.py::unused method 'release_probe'",
         "packages/maistro-core/src/maistro/agents/factory.py::unused function 'create_agents'",
         "packages/maistro-core/src/maistro/agents/feedback/extractor.py::unused class 'ReviewFeedbackExtractor'",
         "packages/maistro-core/src/maistro/agents/feedback/loop.py::unused class 'FeedbackLoop'",
