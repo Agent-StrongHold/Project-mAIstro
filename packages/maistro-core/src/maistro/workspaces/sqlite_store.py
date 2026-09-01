@@ -101,8 +101,12 @@ class SqliteWorkspaceStore:
         creator_user_id: str,
         name: str,
         description: str = "",
+        workspace_id: str | None = None,
     ) -> Workspace:
-        workspace = Workspace(name=name, description=description)
+        workspace_kwargs: dict[str, str] = {"name": name, "description": description}
+        if workspace_id is not None:
+            workspace_kwargs["workspace_id"] = workspace_id
+        workspace = Workspace(**workspace_kwargs)
         owner = WorkspaceMembership(
             workspace_id=workspace.workspace_id,
             user_id=creator_user_id,
