@@ -35,6 +35,46 @@ def test_planted_package_event_authority_is_rejected() -> None:
     )
 
 
+class _PlainAnnotatedProjection:
+    """Non-dataclass projection declaring authority-shaped fields by annotation."""
+
+    stream_id: str
+    causation_id: str
+    payload: dict[str, object]
+
+
+def test_plain_class_annotations_are_inspected_for_authority_fields() -> None:
+    """The contract is not escapable by dropping @dataclass."""
+    assert event_authority_fields(_PlainAnnotatedProjection) == frozenset(
+        {"stream_id", "causation_id"}
+    )
+    with pytest.raises(ParallelEventAuthority) as exc:
+        require_metadata_only_projection(_PlainAnnotatedProjection)
+
+    assert (
+        str(exc.value) == "package event projection owns canonical fields: causation_id, stream_id"
+    )
+
+
+def test_instances_are_inspected_through_their_type() -> None:
+    """An instance resolves via type(model); a dataclass shape is not assumed."""
+    instance = _PlainAnnotatedProjection()
+
+    assert event_authority_fields(instance) == frozenset({"stream_id", "causation_id"})
+    require_metadata_only_projection(
+        instance, metadata_fields=frozenset({"stream_id", "causation_id"})
+    )
+
+
+def test_a_plain_projection_without_authority_fields_is_metadata_only() -> None:
+    class _InnocentPayloadCarrier:
+        note: str
+        tags: dict[str, str]
+
+    assert event_authority_fields(_InnocentPayloadCarrier) == frozenset()
+    require_metadata_only_projection(_InnocentPayloadCarrier)
+
+
 def test_recovery_domain_fact_owns_no_universal_event_fields() -> None:
     assert event_authority_fields(RecoveryDispositionEvent) == frozenset()
     require_metadata_only_projection(RecoveryDispositionEvent)

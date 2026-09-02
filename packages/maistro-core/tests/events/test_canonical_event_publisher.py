@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from maistro.events.bus import EventBus, Trigger
+from maistro.events.bus import EventBus, EventCategory, Trigger
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore
-from maistro.events.publisher import CANONICAL_EVENT_METADATA, CanonicalEventPublisher
+from maistro.events.publisher import (
+    CANONICAL_EVENT_METADATA,
+    CanonicalEventPublisher,
+    project_legacy_event,
+)
 
 
 async def test_real_publisher_path_persists_before_legacy_consumer() -> None:
@@ -57,7 +61,6 @@ async def test_real_publisher_path_persists_before_legacy_consumer() -> None:
 async def test_publisher_uses_one_sequence_authority_per_workspace() -> None:
     store = InMemoryEventStore()
     publisher = CanonicalEventPublisher(store)
-
     first = await publisher.emit(
         EventEnvelope(event_id="a-1", type="one", workspace_id="workspace-a")
     )
@@ -83,3 +86,37 @@ async def test_legacy_projection_refuses_unpersisted_envelope() -> None:
         assert "persisted canonical Event sequence" in str(exc)
     else:  # pragma: no cover - the assertion above is the contract
         raise AssertionError("unpersisted Event was projected onto the legacy bus")
+
+
+def test_the_publisher_exposes_its_single_sequence_authority() -> None:
+    """There is exactly one durable sequencing authority per publisher."""
+    store = InMemoryEventStore()
+
+    assert CanonicalEventPublisher(store).store is store
+
+
+def test_legacy_projection_carries_a_declared_category() -> None:
+    persisted = EventEnvelope(
+        event_id="canonical-trading-1",
+        type="order.filled",
+        workspace_id="workspace-a",
+        sequence=1,
+        provenance={"legacy_event_category": "trading"},
+    )
+
+    assert project_legacy_event(persisted).category is EventCategory.TRADING
+
+
+def test_an_unknown_category_name_falls_back_to_system() -> None:
+    persisted = EventEnvelope(
+        event_id="canonical-odd-1",
+        type="order.filled",
+        workspace_id="workspace-a",
+        sequence=1,
+        provenance={"legacy_event_category": "galactic"},
+    )
+
+    projected = project_legacy_event(persisted)
+
+    assert projected.category is EventCategory.SYSTEM
+    assert projected.event_id == "canonical-odd-1"

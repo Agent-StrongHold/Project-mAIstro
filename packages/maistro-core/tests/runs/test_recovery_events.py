@@ -16,6 +16,7 @@ from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.recovery_events import (
     RECOVERY_EVENT_TYPE,
     CanonicalRecoveryEventSink,
+    RecoveryDispositionEvent,
 )
 
 
@@ -28,6 +29,13 @@ class _RecordingCanonicalSink:
     async def emit(self, event: EventEnvelope) -> EventEnvelope:
         self.events.append(event)
         return event
+
+
+class _UnknownRunLookup:
+    """RunLookup double answering "no such Run": scope must not be invented."""
+
+    async def get_run(self, run_id: str) -> Any:
+        return None
 
 
 async def _running_node() -> tuple[InMemoryRunStore, str, str]:
@@ -169,6 +177,29 @@ async def test_the_lease_sweep_announces_what_it_reclaimed() -> None:
     assert recorded.events[0].source == "maistro.container.recover_abandoned_attempts"
     assert recorded.events[0].run_id == run_id
     assert recorded.events[0].workspace_id == "ws-recovery-events"
+
+
+async def test_a_recovery_fact_for_an_unknown_run_is_refused() -> None:
+    """Recovery may not mint Workspace scope for a Run that does not exist."""
+    recorded = _RecordingCanonicalSink()
+    sink = CanonicalRecoveryEventSink(_UnknownRunLookup(), recorded)
+    fact = RecoveryDispositionEvent(
+        run_id="run-does-not-exist",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        attempt_status="failed",
+        node_run_status="waiting",
+        cancellation_cause="recovered",
+        disposition="parked",
+        error="worker exited",
+        source="recovery-test",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        await sink.emit(fact)
+
+    assert "unknown Run 'run-does-not-exist'" in str(exc.value)
+    assert recorded.events == []
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
