@@ -16,7 +16,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import maistro.agents.conductor as conductor
+import maistro.config.settings as settings_module
+import maistro.memory.store as memory_store
+import maistro.persistence as persistence
+from maistro.agents.catalog import AgentCatalog
+from maistro.agents.pm_fleet import register_pm_fleet
+from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
+from maistro.container import POSTGRES_SCHEMES, create_container
 from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
@@ -45,6 +53,8 @@ from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
 from maistro_server.api.schemas import ErrorDetail, ErrorResponse
+from maistro_server.conductor_agent import CONDUCTOR_AGENT_NAME, ConductorAgent
+from maistro_server.startup import StartupPhase, get_startup_phase, set_startup_phase
 
 if TYPE_CHECKING:
     from maistro.agents.base import Agent
@@ -103,15 +113,11 @@ async def _run_store_pool() -> Any:
     lands in the database the migrations describe rather than in whichever one a
     second reading of the environment happened to name.
     """
-    from maistro.config.database import resolve_database_url, to_asyncpg_dsn
-    from maistro.container import POSTGRES_SCHEMES
-
     database_url = resolve_database_url()
     if not database_url.startswith(POSTGRES_SCHEMES):
         return None
-    from maistro.persistence import get_pool
 
-    return await get_pool(to_asyncpg_dsn(database_url))
+    return await persistence.get_pool(to_asyncpg_dsn(database_url))
 
 
 def _router_api_key() -> str:
@@ -123,9 +129,7 @@ def _router_api_key() -> str:
     loaded, and fall back to the variable itself when it has not — a server
     started without a YAML file still has the environment.
     """
-    from maistro.config.settings import get_yaml_config
-
-    yaml_config = get_yaml_config()
+    yaml_config = settings_module.get_yaml_config()
     if yaml_config is not None and yaml_config.router_api_key:
         return yaml_config.router_api_key
     return os.getenv("ROUTER_API_KEY", "")
@@ -133,9 +137,7 @@ def _router_api_key() -> str:
 
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
-    from maistro.config.settings import get_yaml_config
-
-    yaml_config = get_yaml_config()
+    yaml_config = settings_module.get_yaml_config()
     return yaml_config.agents_dir if yaml_config is not None else ""
 
 
@@ -157,8 +159,6 @@ def _agent_config(settings: Settings) -> AgentConfig:
     server that changed its default Workspace and a core that did not would
     then disagree about where unscoped Runs live, with nothing saying so.
     """
-    from maistro.config.database import resolve_database_url
-
     return AgentConfig(
         router_api_key=_router_api_key(),
         litellm_url=settings.litellm.base_url,
@@ -190,9 +190,6 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     than meeting it. The setting is carried on the config so that whoever does
     want one starts from a Container that already has it.
     """
-    from maistro.container import create_container
-    from maistro_server.conductor_agent import CONDUCTOR_AGENT_NAME, ConductorAgent
-
     container = await create_container(_agent_config(settings), pg_pool=pg_pool)
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
     # base class rather than a protocol — but `Conduit` uses the map
@@ -206,7 +203,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start/stop the background task runner with the app lifecycle."""
     global _runner
 
@@ -237,13 +234,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # accident.
     configure_outbound_policy(*configured_endpoints(settings))
 
-    # Wire executor via import — the runner no longer imports conductor directly
-    from maistro.agents.conductor import run_task
-
     # Initialise database engine (no-op if DATABASE_URL unset)
-    from maistro.memory.store import get_engine
-
-    get_engine()
+    memory_store.get_engine()
 
     # Canonical execution identity (#41): every task submitted through /tasks
     # gets a Run over a one-node Graph, and the response carries its run_id.
@@ -285,9 +277,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     chat_completions.configure_container(container)
 
     if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
-        from maistro.agents.catalog import AgentCatalog
-        from maistro.agents.pm_fleet import register_pm_fleet
-
         catalog = AgentCatalog()
         register_pm_fleet(catalog)
         app.state.pm_catalog = catalog
@@ -302,7 +291,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _runner = TaskRunner(
         queue,
-        executor=run_task,
+        executor=conductor.run_task,
         progress_webhook=progress_wh,
         # Same store the admitter files Runs in, so a task's NodeRun and
         # Attempt land under the Run `POST /tasks` already returned (#143).
@@ -314,37 +303,56 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Register graceful shutdown handler
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_graceful_shutdown(s)))  # type: ignore[misc]
+        loop.add_signal_handler(
+            sig,
+            lambda s=sig: asyncio.create_task(_graceful_shutdown(s)),  # type: ignore[misc]
+        )
 
-    yield
+    try:
+        yield
+    finally:
+        # Graceful shutdown: drain tasks → cleanup containers → flush observability
+        if _runner:
+            await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
 
-    # Graceful shutdown: drain tasks → cleanup containers → flush observability
-    if _runner:
-        await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+        # Drop the queue singleton after draining, so a later lifespan in the same
+        # interpreter can install a fresh one. Startup refuses to replace a queue
+        # that has accepted tasks — correctly, since a queued task cannot be given a
+        # Run afterwards — and without this that guard latched permanently.
+        reset_task_queue()
+        runs.configure_run_store(None)
+        workspaces.configure_workspace_store(None)
 
-    # Drop the queue singleton after draining, so a later lifespan in the same
-    # interpreter can install a fresh one. Startup refuses to replace a queue
-    # that has accepted tasks — correctly, since a queued task cannot be given a
-    # Run afterwards — and without this that guard latched permanently.
-    reset_task_queue()
-    runs.configure_run_store(None)
-    workspaces.configure_workspace_store(None)
+        await cleanup_all_containers()
 
-    await cleanup_all_containers()
+        # Release pooled outbound connections. After the runner has drained, so
+        # in-flight tasks still have their client.
+        await aclose_shared_clients()
 
-    # Release pooled outbound connections. After the runner has drained, so
-    # in-flight tasks still have their client.
-    await aclose_shared_clients()
+        # Dispose database engine
+        engine = memory_store.get_engine()
+        if engine:
+            await engine.dispose()
+        memory_store.reset_engine_cache()
 
-    # Dispose database engine
-    from maistro.memory.store import get_engine, reset_engine_cache
+        await logger.ainfo("maistro_engine_stopped")
 
-    engine = get_engine()
-    if engine:
-        await engine.dispose()
-    reset_engine_cache()
 
-    await logger.ainfo("maistro_engine_stopped")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Expose deterministic startup state around the real runtime lifespan."""
+    set_startup_phase(app, StartupPhase.STARTING)
+    try:
+        async with _runtime_lifespan(app):
+            set_startup_phase(app, StartupPhase.COMPLETE)
+            try:
+                yield
+            finally:
+                set_startup_phase(app, StartupPhase.NOT_STARTED)
+    except BaseException:
+        if get_startup_phase(app) is StartupPhase.STARTING:
+            set_startup_phase(app, StartupPhase.FAILED)
+        raise
 
 
 async def _graceful_shutdown(sig: signal.Signals) -> None:
@@ -360,6 +368,7 @@ app = FastAPI(
     version=APP_VERSION,
     lifespan=lifespan,
 )
+set_startup_phase(app, StartupPhase.NOT_STARTED)
 
 # --- Middleware (applied in reverse order — last added = first executed) ---
 

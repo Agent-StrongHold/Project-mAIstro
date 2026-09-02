@@ -14,6 +14,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.runs.store import RunIntegrityError
 
 pytestmark = [pytest.mark.contract("boundary")]
 
@@ -57,5 +58,6 @@ async def test_task_private_checkpoint_key_cannot_restore_as_a_canonical_run() -
         )
     )
 
-    assert await store.get(task_private_id) is None
+    with pytest.raises(RunIntegrityError):
+        await store.get(task_private_id)
     assert await store.get(canonical_run_id) is None

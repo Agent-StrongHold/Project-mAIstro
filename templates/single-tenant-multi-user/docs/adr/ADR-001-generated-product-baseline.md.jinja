@@ -1,0 +1,59 @@
+---
+id: ADR-001
+title: Generated single-tenant multi-user product baseline
+repo: {{ project_slug }}
+kind: adr
+status: Accepted
+created: 2026-08-31
+accepted: 2026-08-31
+substrate:
+  - maistro-engine#ADR-019
+  - maistro-engine#ADR-032
+  - maistro-engine#ADR-033
+implements: []
+related: []
+supersedes: []
+blocks: []
+blocked-by: []
+contracts:
+  - boundary
+  - behavioral
+tests:
+  - tests/test_config.py::test_rendered_contract
+  - tests/test_config.py::test_missing_credentials_fail_closed
+layer: Foundation
+owners:
+  - '@maintainers'
+history:
+  - status: Proposed
+    date: 2026-08-31
+  - status: Accepted
+    date: 2026-08-31
+---
+
+# ADR-001: Generated single-tenant multi-user product baseline
+
+## Context
+
+This product is a downstream overlay on the Maistro engine. Product-specific
+configuration must remain explicit without copying engine internals.
+
+## Decision
+
+Adopt the generated contract of `users_max={{ users_max }}`,
+`auth_backend={{ auth_backend }}`, `channels={{ channels | join(',') }}`, and
+`host_target={{ host_target }}`. Credentials are supplied only through the
+runtime environment, and readiness fails closed when a selected integration is
+not configured.
+
+## Acceptance criteria
+
+- Rendered values are importable as a typed, immutable configuration.
+- Missing credential variables are reported by name without reading them into
+  the configuration object.
+- The engine dependency remains pinned to the reviewed substrate ref.
+
+## Out of scope
+
+Channel transports and identity-provider implementations remain
+product-specific work; this scaffold defines their integration contracts only.

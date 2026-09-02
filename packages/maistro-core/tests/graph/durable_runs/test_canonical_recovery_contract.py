@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import executor as traversal
+from maistro.graph.durable_runs import run_durable_graph
 from maistro.graph.durable_runs.execution_store import DurableRunExecutionStore
 from maistro.graph.durable_runs.stores import InMemoryDurableRunStore
 from maistro.graph.durable_runs.types import DurableRunRecord
@@ -292,3 +293,67 @@ async def test_scoped_reclaim_settles_canonical_attempt_before_immediate_retry()
         attempt.attempt_id,
         retry.attempt_id,
     ]
+
+
+async def _admitted(run_store: InMemoryRunStore, graph: Graph) -> str:
+    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    return run.run_id
+
+
+async def test_a_pinned_run_that_is_not_on_the_spine_is_refused() -> None:
+    run_store, workspace_id, project_id = await _spine()
+
+    with pytest.raises(RunIntegrityError, match="not on the canonical spine"):
+        await run_durable_graph(
+            _graph(workspace_id, project_id),
+            store=InMemoryDurableRunStore(),
+            node_resolver=lambda node_id, graph: _Step(),
+            run_id="never-admitted",
+            run_store=run_store,
+        )
+
+
+async def test_a_pinned_run_admitted_for_a_different_graph_is_refused() -> None:
+    run_store, workspace_id, project_id = await _spine()
+    run_id = await _admitted(run_store, _graph(workspace_id, project_id))
+
+    with pytest.raises(RunIntegrityError, match="admitted for a different Graph"):
+        await run_durable_graph(
+            _graph(workspace_id, project_id, name="a different graph"),
+            store=InMemoryDurableRunStore(),
+            node_resolver=lambda node_id, graph: _Step(),
+            run_id=run_id,
+            run_store=run_store,
+        )
+
+
+async def test_a_pinned_run_admitted_under_another_scope_is_refused() -> None:
+    run_store, workspace_id, project_id = await _spine()
+    run_id = await _admitted(run_store, _graph(workspace_id, project_id))
+
+    with pytest.raises(RunIntegrityError, match="is scoped to"):
+        await run_durable_graph(
+            _graph("ws-somewhere-else", project_id),
+            store=InMemoryDurableRunStore(),
+            node_resolver=lambda node_id, graph: _Step(),
+            run_id=run_id,
+            run_store=run_store,
+        )
+
+
+async def test_a_pinned_run_that_already_left_the_queue_is_refused() -> None:
+    """Execution must consume the admission, not race it: a Run that already
+    started under another worker is not a fresh checkpoint to claim."""
+    run_store, workspace_id, project_id = await _spine()
+    graph = _graph(workspace_id, project_id)
+    run_id = await _admitted(run_store, graph)
+    await run_store.transition_run(run_id, RunStatus.RUNNING)
+
+    with pytest.raises(RunIntegrityError, match="must still be queued"):
+        await run_durable_graph(
+            graph,
+            store=InMemoryDurableRunStore(),
+            node_resolver=lambda node_id, graph: _Step(),
+            run_id=run_id,
+            run_store=run_store,
+        )

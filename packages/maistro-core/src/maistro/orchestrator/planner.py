@@ -11,7 +11,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from maistro.orchestrator.master import MasterOrchestrator, WorkItem
+from maistro.orchestrator.master import MasterOrchestrator, StageHandler, WorkItem
+from maistro.orchestrator.output_security import build_output_security_gate
 from maistro.orchestrator.validation import (
     PlanValidationFinding,
     PlanValidationReport,
@@ -260,6 +261,18 @@ def _topological_sort(items: list[SubsystemDef]) -> list[list[SubsystemDef]]:
     return waves
 
 
+def _resolve_output_security_gate(
+    *,
+    sentinel: Sentinel | None,
+    security_gate: StageHandler | None,
+) -> StageHandler:
+    if sentinel is not None and security_gate is not None:
+        raise ValueError("security_gate cannot be combined with an injected sentinel")
+    if security_gate is not None:
+        return security_gate
+    return build_output_security_gate(sentinel=sentinel)
+
+
 class SuperPlanner:
     """Decomposes a goal into parallel-safe waves for the Master Orchestrator."""
 
@@ -292,11 +305,18 @@ class SuperPlanner:
         *,
         max_concurrent: int = 5,
         max_retries: int = 2,
+        sentinel: Sentinel | None = None,
+        security_gate: StageHandler | None = None,
     ) -> MasterOrchestrator:
-        """Create a MasterOrchestrator loaded with this plan."""
+        """Create a MasterOrchestrator loaded with this plan and an output gate."""
+        resolved_security_gate = _resolve_output_security_gate(
+            sentinel=sentinel,
+            security_gate=security_gate,
+        )
         orchestrator = MasterOrchestrator(
             max_concurrent_per_wave=max_concurrent,
             max_retries=max_retries,
+            security_gate=resolved_security_gate,
         )
         orchestrator.load_plan(self.plan())
         return orchestrator
@@ -309,12 +329,17 @@ class SuperPlanner:
         max_total_cost: float | None = None,
         principal: Principal | None = None,
         sentinel: Sentinel | None = None,
+        security_gate: StageHandler | None = None,
     ) -> MasterOrchestrator:
         """Validate the plan (SPEC-062126-a05f) before building a MasterOrchestrator.
 
         Raises PlanValidationError if the plan fails validation (cycle, over-budget,
         or authority-exceeded) — refuses to hand back an orchestrator for an invalid plan.
         """
+        resolved_security_gate = _resolve_output_security_gate(
+            sentinel=sentinel,
+            security_gate=security_gate,
+        )
         try:
             waves = self.plan()
         except ValueError as exc:
@@ -333,6 +358,7 @@ class SuperPlanner:
         orchestrator = MasterOrchestrator(
             max_concurrent_per_wave=max_concurrent,
             max_retries=max_retries,
+            security_gate=resolved_security_gate,
         )
         orchestrator.load_plan(waves)
         return orchestrator

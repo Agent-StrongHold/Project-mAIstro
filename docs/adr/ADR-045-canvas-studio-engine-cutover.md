@@ -1,6 +1,6 @@
 ---
 id: ADR-045
-title: Canvas Studio ↔ maistro-server /v2/canvas Cutover
+title: Canvas capability ↔ maistro-server /v2/canvas boundary
 repo: maistro-engine
 kind: adr
 status: Proposed
@@ -30,167 +30,167 @@ history:
     date: 2026-05-09
 ---
 
-# ADR-045: Canvas Studio ↔ Engine Cutover
+# ADR-045: Canvas capability ↔ maistro-server /v2/canvas boundary
+
+## Current interpretation
+
+This ADR remains **Proposed** because the Canvas server boundary and legacy-route
+cutover are only partially complete. The historical name "Canvas Studio" in
+older revisions described a separate application. The repository may still ship
+or run a standalone/installable `maistro-canvas` package during convergence,
+and legacy package/install documentation may continue to describe that package
+shape. What is no longer canonical is treating that package/application as the
+top-level creative-production **product authority** or as a peer lifecycle,
+storage, Goal, or execution system. **Design Studio** is the parent
+creative-production product surface, and **Canvas** is one
+visual/fixed-page/rendering capability it consumes.
+
+The live authority retained by this ADR is therefore the Canvas capability
+boundary: `maistro-server` may expose governed `/v2/canvas/*` routes over Canvas
+stores/services, and product consumers migrate to that boundary without
+creating a second product state model or bypassing canonical execution and
+tool semantics. Design Studio product integration is tracked by #95 under
+#286.
+
+The old separate-application Phase A/B/C migration described below is preserved
+only as historical engineering context. It is not authority to recreate a
+separate top-level Canvas Studio product. Keeping a standalone package runnable
+for compatibility, testing, or migration does not make that package the
+canonical product boundary.
 
 ## Context
 
-`canvas-studio-poc` PR #5 retired `server.js` and replaced it with a
-local FastAPI app (`server/main.py`) that preserves the legacy
-`/api/books`, `/api/templates`, `/api/characters`, `/api/print/*`,
-`/api/export`, `/api/generation-attempts`, `/api/layout-versions` shape
-against the same Postgres on `:5440`. That was a **Node-tier removal**,
-not a model unification — the data is still legacy JSONB blobs.
+The original Canvas book-maker POC had a local FastAPI/Node-facing surface and
+legacy JSONB state, while `maistro-canvas` introduced typed Canvas capability
+models and routes. That split established a real architectural need for a
+stable server boundary even though the old separate-product framing is no
+longer valid.
 
-Meanwhile `maistro-server` mounts the typed `/v2/canvas/*` routes from
-ADR-042 against the new `asset_*` tables. The two halves don't yet
-talk to each other.
+`maistro-server` now mounts a `/v2/canvas` proxy surface. In the default shipped
+configuration it does **not** inject the required Canvas store, so data routes
+fail closed with `503`; optional compositor and other providers likewise remain
+unavailable when not configured. The existence of a mounted route is not proof
+that Design Studio or a supported deployment is fully cut over.
 
 ## Decision
 
-Cut canvas-studio-poc's FastAPI over to the engine's typed routes in
-**three phases**, sequenced after ADR-044's Phase 3 (so legacy data is
-migrated before frontend call sites move).
+Use `maistro-server` as the HTTP boundary for Canvas capability operations that
+are exposed to product consumers. The boundary wraps/injects Canvas services;
+it does not own a second Canvas lifecycle, Design Studio state model, or
+execution system.
 
-### Phase A — Read-side mirror (~1 week)
+The current migration obligation is:
 
-`server/main.py` adds a thin proxy layer: when `MAISTRO_ENGINE_URL` is
-set, every read endpoint (GET books / templates / characters / etc.)
-calls the corresponding `/v2/canvas/*` route on the engine in addition
-to its local DB query, compares both, and logs divergences. Writes
-remain local-only.
+1. keep the typed Canvas capability contract stable for callers that configure
+   the required dependencies;
+2. wire supported deployments truthfully rather than returning success-shaped
+   placeholders;
+3. move Design Studio and other product consumers onto the governed Canvas
+   capability boundary under their owning convergence issues;
+4. retire legacy/direct route paths only after behavioural parity and supported
+   deployment wiring are proven.
 
-The proxy is **opt-in via env var**; default behaviour is unchanged.
-Output is structured logs the operator can grep.
+### Dependency injection and truthful unavailability
 
-Done when:
+`maistro-server` owns the HTTP composition layer, while Canvas remains the
+capability implementation. Required dependencies must be injected explicitly.
+A missing required store is a service-unavailable condition, not an empty
+Canvas. Optional export/render/event providers may report unsupported behavior
+when absent rather than fabricating results.
 
-- Production canvas-studio-poc runs in mirror mode for one week with
-  zero unexplained divergences.
-- The `frontend/server/lulu` and `frontend/server/mcp` callers
-  unchanged — they're orthogonal Python services using their own
-  FastAPI surfaces.
+### Auth and policy
 
-### Phase B — Read-side cutover (~1 week)
+Canvas routes inherit the server's normal authentication/authorization and
+policy boundaries. A product consumer does not gain a privileged direct path to
+`maistro-canvas` merely because the same process can import it. External effects
+such as publish/export remain governed capabilities and are not implied by
+successful generation or persistence.
 
-Reads switch to engine-first; the local DB becomes a fallback only.
-Frontend code is unchanged (the FastAPI proxy translates between the
-legacy JSONB shape and the new typed shape, using the bridge from
-ADR-044 §"Bridge").
+### Rollback and compatibility
 
-Done when:
+Legacy routes and standalone package entry points may coexist while consumers
+migrate, but coexistence is a compatibility window, not a second canonical
+product surface. Removal requires behavioural parity evidence and must not
+strand persisted Canvas state or downstream package users.
 
-- All `GET /api/...` calls on canvas-studio-poc resolve via
-  `/v2/canvas/*` first, with the local DB only used when the engine
-  is unreachable.
-- p99 latency overhead from the extra hop is below 50ms in the
-  default-deployment topology (engine and POC on the same machine).
+## Historical separate-application migration notes
 
-### Phase C — Write cutover (~2 weeks)
-
-Writes follow reads. Each `POST /api/...` is rewritten to translate
-into one or more `/v2/canvas/*` calls. The local Postgres tables on
-`:5440` become read-only and eventually drop out of the deployment.
-
-Done when:
-
-- `pg` references in `canvas-studio-poc/server/main.py` are removed.
-- The `:5440` Postgres instance can be shut down without the frontend
-  noticing (verified by integration test).
-- canvas-studio-poc's `package.json` no longer pins a Postgres image
-  in its docker-compose.
-
-### Auth and CORS
-
-The engine's `/v2/canvas/*` routes inherit `maistro-canvas/auth.py`'s
-API-key scheme. canvas-studio-poc's FastAPI proxy holds an
-engine-issued service key in an env var (`MAISTRO_ENGINE_KEY`). CORS
-on the engine side allows the canvas-studio origin only; the
-existing `*` policy on canvas-studio-poc's FastAPI stays in place
-behind the proxy.
-
-### Rollback
-
-Each phase ships behind a feature flag:
-
-- Phase A: `MAISTRO_MIRROR=on/off`
-- Phase B: `MAISTRO_READS=engine|local`
-- Phase C: `MAISTRO_WRITES=engine|local|both`
-
-Reverting any phase is a flag flip and a redeploy. No data migration
-is required to revert; the legacy schema stays present until the
-end of Phase C.
+Older revisions proposed three phases for the former standalone Canvas Studio
+application: mirror reads, cut reads over to the engine, then cut writes over
+and retire its separate Postgres. Those steps are not the current product plan.
+Where the observations still match live code they may inform #95 or a legacy
+route-retirement task, but they must be revalidated against the current Design
+Studio/Canvas boundary before implementation.
 
 ## Cross-service contracts
 
-The engine's `/v2/canvas/*` endpoints are the consumer-driven
-contract per ADR-032 §3. canvas-studio-poc publishes its expected
-schema as `canvas-studio-poc/contracts/maistro-engine.json`; the
-engine's CI runs the contract suite on every PR touching
-`asset_routes.py` or `asset_store.py`.
+The `/v2/canvas/*` server surface is a consumer-facing Canvas capability
+contract. Request/response models, status-code semantics, auth behavior, and
+configured dependency requirements are compatibility-sensitive. Adding a
+required request field, removing a response field, or silently changing a
+stable error mapping requires the normal API compatibility process.
 
-Specific contracts:
-
-- `POST /v2/canvas/asset-instances` accepts the wire shape defined
-  in `AssetInstanceIn` (ADR-042). Adding required fields is a major
-  bump.
-- `POST /v2/canvas/canvases/{id}/plan` returns the wire shape
-  defined in `RenderPlanModel`. Removing fields is a major bump.
-- Status code mapping (ADR-042 §"Status code mapping") is part of
-  the contract; changing a 422 to a 400 (or vice versa) is a major
-  bump.
+The accepted lower-level Canvas asset route contract remains ADR-042. This ADR
+covers the additional `maistro-server` composition/cutover boundary; it does
+not supersede ADR-042 or make the server the owner of Canvas domain models.
 
 ## Boundary contracts
 
-- The proxy in Phase A is **read-only**; it must not double-write
-  during the mirror window.
-- The bridge in Phase B is **lossless on the legacy fields**: every
-  field present on a legacy `Book` JSONB row survives the round-trip
-  through `/v2/canvas/books` and back.
-- Phase C's write rewrite is **transactional per top-level POST**:
-  either every engine call succeeds, or the proxy rolls back (best-
-  effort) and reports the failure. There is no partial state where
-  half the writes landed on the engine and half remained local.
+- Design Studio is the product; Canvas is a capability inside it.
+- A runnable/installable standalone Canvas package is a compatibility/deployment
+  form, not a second canonical product identity or state authority.
+- `maistro-server` may compose Canvas dependencies but does not create a second
+  Canvas or Design Studio lifecycle.
+- Missing required Canvas dependencies fail visibly; they do not yield fake
+  success or placeholder artifacts.
+- Direct legacy routes may remain only as an explicitly transitional surface.
+- Product cutover must preserve authorization, durable state, execution
+  identity, cancellation semantics, and provenance owned by their canonical
+  systems.
 
 ## Behavioural contracts
 
-- During Phase A, the canvas-studio frontend's user-visible behaviour
-  is **byte-identical** to pre-Phase-A.
-- During Phase B, divergence between the engine and the local DB is
-  **logged but not enforced**; the frontend continues to work even
-  if the engine returns an unexpected shape.
-- After Phase C closes, the `:5440` Postgres can be removed without
-  a frontend restart.
+- Reads must not mutate Canvas state merely because they cross the proxy
+  boundary.
+- Mutations must report real persistence/provider failures.
+- A configured server proxy and the underlying Canvas capability must agree on
+  the stable wire semantics they both expose.
+- A consumer refresh/reconnect must observe durable state rather than a new
+  locally simulated operation once the production cutover is complete.
 
 ## Consequences
 
-- The `:5440` Postgres becomes a transitional artefact. Operations
-  teams need a runbook for graceful shutdown.
-- Engine-side latency budgets matter: the canvas-studio frontend
-  expects writes under 200ms p99 on auto-save; the engine must hold
-  that. Performance review is part of Phase B exit criteria.
-- The engine becomes the source of truth for canvas data; backups
-  shift to the engine's Postgres. canvas-studio's `:5440` Postgres
-  becomes a stale read-replica for the deprecation window.
+- The old "Canvas Studio" name may survive in filenames, package metadata,
+  install guidance, and legacy migration notes while compatibility surfaces
+  remain runnable; those references do not define a current peer product
+  authority.
+- `maistro-server` deployment wiring is part of whether the Canvas HTTP boundary
+  is actually usable.
+- Design Studio's #95 cutover can consume this boundary without owning Canvas
+  internals or inventing a parallel API/runtime authority.
+- Legacy database/route/package retirement remains separate work and requires
+  parity evidence before deletion.
 
 ## Out of scope
 
-- Multi-tenant per-org cutover sequencing for `stronghold` — separate
-  ADR. canvas-studio-poc is single-tenant.
-- Replacing the Lulu print proxy (`/api/print/*`) — that's already
-  a thin pass-through to the Python Lulu service, not engine-bound.
-- Switching the BookWizard frontend to the engine's `LayerKind`
-  taxonomy in the UI — separate ADR after the data is migrated.
+- Defining Design Studio's Goal, CreativeBrief, artifact, or control model.
+- Replacing canonical Run/NodeRun/Attempt execution semantics.
+- Implementing publish/export providers.
+- Multi-tenant Stronghold policy.
+- Removing standalone `maistro-canvas` packaging solely to enforce product
+  naming; package retirement requires its own compatibility evidence.
+- Recreating the former standalone Canvas Studio application as a peer product
+  authority.
 
 ## Source references
 
-- `canvas-studio-poc/server/main.py` — current local FastAPI.
-- `packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py`
-  — engine's `/v2/canvas/*` surface.
-- `packages/maistro-canvas/src/maistro_canvas/canvas/asset_store.py`
-  — bridge target.
+- `packages/maistro-server/src/maistro_server/api/canvas.py` — mounted server
+  Canvas proxy surface.
+- `packages/maistro-server/tests/api/test_canvas.py` — implementation exercise;
+  contract-marker registration remains incomplete in SPEC-070226-8239.
+- `packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py` — accepted
+  lower-level Canvas asset route surface (ADR-042).
+- `packages/maistro-canvas/src/maistro_canvas/canvas/routes.py` — legacy Canvas
+  route surface retained during convergence.
 
 ## Links
-
-- PR: (this PR)
-- Follow-up: ADR-046 (legacy schema removal in canvas-studio-poc),
-  ADR-047 (frontend Mantine + LayerKind UI swap).

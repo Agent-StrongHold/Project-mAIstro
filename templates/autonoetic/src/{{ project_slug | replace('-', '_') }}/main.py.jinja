@@ -1,0 +1,57 @@
+"""Console entry point for the rendered autonoetic overlay."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from importlib.metadata import PackageNotFoundError, version
+
+from maistro_turing.runtime import TuringConfig
+
+from .config import load_config
+
+
+def _package_version(distribution: str) -> str | None:
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+
+
+def main() -> int:
+    """Validate the overlay and print a non-secret readiness document."""
+    parser = argparse.ArgumentParser(description="{{ project_slug }} readiness check")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate the rendered autonoetic contract",
+    )
+    parser.parse_args()
+
+    config = load_config()
+    engine_config = TuringConfig(tick_rate_hz=config.awareness_loop_hz)
+    engine_config.validate()
+    core_version = _package_version("maistro-core")
+    turing_version = _package_version("maistro-turing")
+    ready = config.ready and core_version is not None and turing_version is not None
+    print(
+        json.dumps(
+            {
+                "project": "{{ project_slug }}",
+                "maistro_core_version": core_version,
+                "maistro_turing_version": turing_version,
+                "awareness_loop_hz": config.awareness_loop_hz,
+                "self_model": config.self_model,
+                "memory_consolidator_enabled": config.memory_consolidator_enabled,
+                "dossier_store": config.dossier_store,
+                "missing_environment": config.missing_environment,
+                "ready": ready,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if ready else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

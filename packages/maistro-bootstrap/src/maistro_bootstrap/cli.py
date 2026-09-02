@@ -8,12 +8,13 @@ from typing import Annotated, Any
 
 import typer
 import yaml
+from pydantic import ValidationError
 from rich.console import Console
 
 from maistro_bootstrap.materialize import materialize_install_artifacts
 from maistro_bootstrap.plan import build_install_plan, run_apply_spec
 from maistro_bootstrap.repo_root import find_maistro_engine_root
-from maistro_bootstrap.schema import InstallAnswersV1, parse_answers_dict
+from maistro_bootstrap.schema import InstallAnswersV1, describe_validation_error, parse_answers_dict
 from maistro_bootstrap.wizard import collect_answers_interactive
 
 console = Console()
@@ -28,7 +29,13 @@ def _load_raw_answers(path: Path) -> dict[str, Any]:
 
 def _resolve_answers(answers_file: Path | None) -> InstallAnswersV1:
     if answers_file is not None:
-        return parse_answers_dict(_load_raw_answers(answers_file))
+        try:
+            return parse_answers_dict(_load_raw_answers(answers_file))
+        except ValidationError as exc:
+            # #810: unknown keys are errors that name the key, not silent defaults.
+            raise typer.BadParameter(
+                describe_validation_error(exc), param_hint="--answers-file"
+            ) from exc
     if not sys.stdin.isatty():
         console.print(
             "[red]No TTY and no --answers-file. Pass --answers-file or run interactively.[/red]"
@@ -41,14 +48,15 @@ def _maybe_stage_bootstrap_credentials(answers: InstallAnswersV1, target_dir: Pa
     """Interactively stage first-run credentials next to the plan artifacts.
 
     Skipped when: not a TTY (headless installs stage their own file and set
-    MAISTRO_BOOTSTRAP_CREDENTIALS_FILE), an external file is already staged,
-    or the operator declines (UI Setup wizard remains the fallback).
+    MAISTRO_BOOTSTRAP_CREDENTIALS_FILE), a validly staged file is already
+    present, or the operator declines (UI Setup wizard remains the fallback).
     """
     import os
 
     from maistro_bootstrap.credentials import (
         BOOTSTRAP_CREDENTIALS_FILENAME,
         ENV_CREDENTIALS_FILE,
+        staged_credentials_valid,
         write_bootstrap_credentials,
     )
     from maistro_bootstrap.wizard import collect_bootstrap_credentials
@@ -60,7 +68,7 @@ def _maybe_stage_bootstrap_credentials(answers: InstallAnswersV1, target_dir: Pa
             f"{external}; skipping prompts.[/dim]"
         )
         return
-    if (target_dir / BOOTSTRAP_CREDENTIALS_FILENAME).exists():
+    if staged_credentials_valid(target_dir / BOOTSTRAP_CREDENTIALS_FILENAME):
         console.print("[dim]bootstrap-credentials.json already staged; skipping prompts.[/dim]")
         return
     if not sys.stdin.isatty():
@@ -97,7 +105,7 @@ def _print_human_plan(plan: dict[str, Any], answers: InstallAnswersV1, repo: str
 
     cc = plan.get("copier_command")
     if cc:
-        console.print("\n# Copier (install copier: uv tool install copier)", markup=False)
+        console.print("\n# Copier (available after `uv sync`)", markup=False)
         console.print(cc, markup=False, highlight=False)
 
     spec = plan.get("apply_spec")
