@@ -20,12 +20,20 @@ _app = typer.Typer()
 _app.command()(main)
 
 
+_ANSI = __import__("re").compile(r"\x1b\\[[0-9;]*m")
+
+
 def _combined(result) -> str:
-    """stdout + stderr across click's CliRunner variants."""
+    """stdout + stderr across click's CliRunner variants, ANSI-stripped.
+
+    Rich colorizes flags mid-word in CI (non-TTY included), so raw
+    substring assertions on flag names must run on stripped text.
+    """
     try:
-        return result.output + result.stderr
+        raw = result.output + result.stderr
     except ValueError:
-        return result.output
+        raw = result.output
+    return _ANSI.sub("", raw)
 
 
 def _write_answers(tmp_path: Path, body: str) -> Path:
