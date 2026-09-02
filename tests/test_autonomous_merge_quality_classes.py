@@ -47,6 +47,7 @@ def _assess_wiring_reads():
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-1")
+@pytest.mark.ac("SPEC-083126-5e62/AC-1")
 def test_base_derived_quality_evidence_is_yellow_not_red() -> None:
     result = _assess_wiring_reads()
 
@@ -60,6 +61,7 @@ def test_base_derived_quality_evidence_is_yellow_not_red() -> None:
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-1")
+@pytest.mark.ac("SPEC-083126-5e62/AC-3")
 def test_merge_group_may_carry_base_derived_quality_evidence() -> None:
     result = mod.assess([cf("quality/wiring-reads-baseline.json")], "", merge_group=True)
 
@@ -68,6 +70,7 @@ def test_merge_group_may_carry_base_derived_quality_evidence() -> None:
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-1")
+@pytest.mark.ac("SPEC-083126-5e62/AC-2")
 def test_quality_specification_stays_red() -> None:
     result = mod.assess(
         [cf("quality/ratchet-authorizations.json")],
@@ -81,6 +84,7 @@ def test_quality_specification_stays_red() -> None:
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-1")
+@pytest.mark.ac("SPEC-083126-5e62/AC-2")
 def test_unmigrated_quality_aggregate_stays_red() -> None:
     result = mod.assess(
         [cf("quality/vulture-baseline.json")],
@@ -94,6 +98,7 @@ def test_unmigrated_quality_aggregate_stays_red() -> None:
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-2")
+@pytest.mark.ac("SPEC-083126-5e62/AC-2")
 def test_unknown_quality_surface_fails_closed_red() -> None:
     result = mod.assess([cf("quality/new-output.json")], "", head_ref="chatgpt/x")
 
@@ -103,6 +108,7 @@ def test_unknown_quality_surface_fails_closed_red() -> None:
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-2")
+@pytest.mark.ac("SPEC-083126-5e62/AC-2")
 def test_malformed_quality_registry_fails_closed_red(
     tmp_path: Path,
     monkeypatch,
@@ -183,6 +189,7 @@ def test_registry_validator_load_failure_fails_closed(
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-2")
+@pytest.mark.ac("SPEC-083126-5e62/AC-2")
 def test_ambiguous_quality_classification_fails_closed_red(
     tmp_path: Path,
     monkeypatch,
@@ -206,6 +213,7 @@ def test_ambiguous_quality_classification_fails_closed_red(
     assert "ambiguously classified" in result.red_reasons[0]
 
 
+@pytest.mark.ac("SPEC-083126-5e62/AC-4")
 def test_wiring_reads_migration_left_the_frozen_legacy_set() -> None:
     registry = _registry_payload()
     surface = next(item for item in registry["surfaces"] if item["id"] == "wiring-reads-baseline")
