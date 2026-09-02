@@ -62,6 +62,11 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "checker compares candidate architecture against the PR base separately and "
         "resolves the shared-ontology owner oracle from the trusted base"
     ),
+    ("check-autonomous-merge.py", "quality/branch-independence.json"): (
+        "the autonomous-merge judge is executed by its workflow from the trusted base "
+        "checkout, so the candidate's copy of the reviewed representation registry "
+        "cannot weaken the verdict on its own quality edits"
+    ),
     ("check_direct_effects.py", "quality/direct-effect-call-sites.json"): (
         "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
         "match both directions and every live site must state disposition, owner and rationale"
