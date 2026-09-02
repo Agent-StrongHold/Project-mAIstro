@@ -90,6 +90,14 @@
       "reason": "Versioned interoperability ontology is a reviewed specification."
     },
     {
+      "id": "shipped-surface-truth",
+      "kind": "specification",
+      "paths": [
+        "quality/shipped-surface-truth.json"
+      ],
+      "reason": "Reviewed per-surface disposition specification; changing a shipped surface's truth classification is the substantive change."
+    },
+    {
       "id": "citation-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [

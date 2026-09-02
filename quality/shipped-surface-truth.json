@@ -1,7 +1,2264 @@
 {
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
-  "backend_roots": ["packages"],
-  "frontend_roots": ["packages"],
-  "backend_surfaces": [],
-  "frontend_surfaces": []
+  "backend_roots": [
+    "packages"
+  ],
+  "frontend_roots": [
+    "packages"
+  ],
+  "backend_surfaces": [
+    {
+      "source": "packages/hive-conductor/backend/main.py",
+      "method": "POST",
+      "route": "/{confirm_id}/respond",
+      "handler": "respond_to_confirm",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "answers a HITL confirm and resumes the paused canonical Run",
+      "effect_owner": "services.confirm_response.respond_confirm (Run continuation)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "method": "DELETE",
+      "route": "/{agent_id}",
+      "handler": "delete_agent",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored agent record after workspace-ownership check",
+      "effect_owner": "stores.agents + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_agent",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates and persists an agent record",
+      "effect_owner": "stores.agents + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "method": "POST",
+      "route": "/forge",
+      "handler": "forge_agent",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists a synthesized agent record; canonical forge artifacts are tracked in #294",
+      "effect_owner": "stores.agents"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "method": "POST",
+      "route": "/scan",
+      "handler": "scan_proposed_config",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs the real config scanner over a proposed configuration",
+      "effect_owner": "maistro security scan_config walk"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "method": "POST",
+      "route": "/{agent_id}/scan",
+      "handler": "scan_agent",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs the real config scanner over the stored agent configuration",
+      "effect_owner": "maistro security scan_config walk"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "method": "PUT",
+      "route": "/{agent_id}",
+      "handler": "update_agent",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored agent record",
+      "effect_owner": "stores.agents + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/audit.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_entry",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "appends an audit entry to the log",
+      "effect_owner": "stores.audit_log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "PATCH",
+      "route": "/users/{user_id}/permissions",
+      "handler": "set_user_permissions",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "admin replaces a user's held permission set",
+      "effect_owner": "hive session/user stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "POST",
+      "route": "/elevate",
+      "handler": "elevate",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "password-verified temporary permission elevation with throttling and audit",
+      "effect_owner": "hive session/user stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "POST",
+      "route": "/login",
+      "handler": "login",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "verifies credentials and issues a session cookie",
+      "effect_owner": "hive session/user stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "POST",
+      "route": "/logout",
+      "handler": "logout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "drops the session and clears the cookie",
+      "effect_owner": "hive session/user stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "POST",
+      "route": "/register",
+      "handler": "register",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a user account once first-run setup is complete",
+      "effect_owner": "hive session/user stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/canvas.py",
+      "method": "POST",
+      "route": "/eval",
+      "handler": "eval_visual",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs the visual quality evaluation",
+      "effect_owner": "services visual_quality_eval"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "method": "PATCH",
+      "route": "/{slot}",
+      "handler": "patch_capability",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates enabled/active-provider slot state and persists it",
+      "effect_owner": "capabilities registry + persisted slot state"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "method": "POST",
+      "route": "/approvals/{request_id}",
+      "handler": "resolve_approval",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "resolves a pending capability approval request",
+      "effect_owner": "approval inbox store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "method": "POST",
+      "route": "/discover",
+      "handler": "discover_capabilities",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "re-runs the entry-point sweep and registers installed providers",
+      "effect_owner": "maistro.capabilities.discovery.discover_into"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "method": "POST",
+      "route": "/self-repair/run",
+      "handler": "self_repair_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs one real self-repair cycle over the capability registry",
+      "effect_owner": "services.capabilities_wiring.run_self_repair_once"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "DELETE",
+      "route": "/sessions/{session_id}",
+      "handler": "delete_session",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the caller's chat session",
+      "effect_owner": "per-request chat session store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "POST",
+      "route": "/complete",
+      "handler": "complete",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "non-streaming conversational completion through the configured LLM port",
+      "effect_owner": "build_llm_port LLM completion (conversation_only)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "POST",
+      "route": "/sessions",
+      "handler": "create_session",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a chat session",
+      "effect_owner": "per-request chat session store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "POST",
+      "route": "/sessions/{session_id}/messages",
+      "handler": "append_message",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "appends a message and persists the session",
+      "effect_owner": "per-request chat session store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "POST",
+      "route": "/stream",
+      "handler": "stream_complete",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "streaming conversational completion; model-driven tools are M0-disabled (#315)",
+      "effect_owner": "build_llm_port LLM completion (SSE)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/cli.py",
+      "method": "POST",
+      "route": "/sessions",
+      "handler": "create_cli_session",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a CLI session record; the CLI page contract is tracked in #292",
+      "effect_owner": "stores.cli_sessions"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "method": "DELETE",
+      "route": "/{container_id}",
+      "handler": "delete_container",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "removes the container through the real Docker API",
+      "effect_owner": "Docker Engine API over the mounted socket"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "method": "POST",
+      "route": "/build",
+      "handler": "build_container",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "reason": "canned success-shaped response: no image build is performed (#382)",
+      "owner_issue": 382
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "method": "POST",
+      "route": "/suggest",
+      "handler": "suggest_dockerfile",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "canned template suggestion; the real build path is tracked in #382",
+      "truth_contract": "returns one static starter Dockerfile template; no repository analysis or build happens"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "method": "POST",
+      "route": "/{container_id}/restart",
+      "handler": "restart_container",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "restarts the container through the real Docker API",
+      "effect_owner": "Docker Engine API over the mounted socket"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "method": "POST",
+      "route": "/{container_id}/start",
+      "handler": "start_container",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "starts the container through the real Docker API",
+      "effect_owner": "Docker Engine API over the mounted socket"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "method": "POST",
+      "route": "/{container_id}/stop",
+      "handler": "stop_container",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "stops the container through the real Docker API",
+      "effect_owner": "Docker Engine API over the mounted socket"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "DELETE",
+      "route": "/{provider_id}",
+      "handler": "delete_credential",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored secret for a provider",
+      "effect_owner": "credential vault store + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "PUT",
+      "route": "/{provider_id}",
+      "handler": "save_credential",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "stores the provider secret in the vault",
+      "effect_owner": "credential vault store + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "PUT",
+      "route": "/{provider_id}/config",
+      "handler": "save_credential_config",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists per-user provider config within allow-listed fields",
+      "effect_owner": "credential vault store + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "DELETE",
+      "route": "/{dag_id}",
+      "handler": "delete_dag",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored DAG",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "DELETE",
+      "route": "/{dag_id}/edges/{edge_id}",
+      "handler": "remove_edge",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes an edge from the stored DAG",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "DELETE",
+      "route": "/{dag_id}/nodes/{node_id}",
+      "handler": "remove_node",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes a node and its edges from the stored DAG",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_dag",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored draft DAG",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "POST",
+      "route": "/run-champion",
+      "handler": "run_champion",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "executes the evolution champion DAG through the canonical graph executor; the echoed execution_id is decorative, not a durable run id",
+      "effect_owner": "services.graph_runner.execute_champion -> execute_dag"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "POST",
+      "route": "/{dag_id}/activate",
+      "handler": "activate_dag",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "marks the stored DAG active",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "POST",
+      "route": "/{dag_id}/edges",
+      "handler": "add_edge",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "adds an edge to the stored DAG",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "POST",
+      "route": "/{dag_id}/nodes",
+      "handler": "add_node",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "adds a node to the stored DAG",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "POST",
+      "route": "/{dag_id}/run",
+      "handler": "run_dag",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "executes the DAG and records the run in the durable dag_run_store",
+      "effect_owner": "services.graph_runner.execute_dag + services.dag_run_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "method": "PUT",
+      "route": "/{dag_id}",
+      "handler": "update_dag",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored DAG with edit-lock and audit",
+      "effect_owner": "stores.dags + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/dashboard_layout.py",
+      "method": "PUT",
+      "route": "/layout",
+      "handler": "save_layout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the principal's layout with optimistic-concurrency revision",
+      "effect_owner": "services.dashboard_layouts store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/design.py",
+      "method": "POST",
+      "route": "/projects",
+      "handler": "create_design_project",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "generates and persists a design project from discovery responses through the validated pipeline",
+      "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/design.py",
+      "method": "POST",
+      "route": "/projects/{project_id}/render",
+      "handler": "create_render_job",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "reason": "creates a pending render job that no worker advances: no bytes are produced or served (D-14 facade, #286)",
+      "owner_issue": 286
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/eval_judge.py",
+      "method": "POST",
+      "route": "/{run_id}",
+      "handler": "trigger_score",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "scores the recorded run",
+      "effect_owner": "eval judge over the dag_run_store run record"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/evolution.py",
+      "method": "POST",
+      "route": "/cycle",
+      "handler": "trigger_cycle",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs one real evolution cycle",
+      "effect_owner": "services.evolution run cycle"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/evolution.py",
+      "method": "POST",
+      "route": "/seed",
+      "handler": "seed_population",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "spawns and adds genomes to the population",
+      "effect_owner": "evolution population store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/feedback.py",
+      "method": "POST",
+      "route": "/{run_id}/feedback",
+      "handler": "submit_run_feedback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records run-level thumbs for the optimizer",
+      "effect_owner": "feedback Outcome store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/feedback.py",
+      "method": "POST",
+      "route": "/{run_id}/nodes/{node_id}/feedback",
+      "handler": "submit_node_feedback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records node-level thumbs for the optimizer",
+      "effect_owner": "feedback Outcome store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/harness.py",
+      "method": "DELETE",
+      "route": "/sessions/{session_id}",
+      "handler": "stop_session",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "stops a real harness session",
+      "effect_owner": "agent harness session manager"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/harness.py",
+      "method": "POST",
+      "route": "/sessions",
+      "handler": "start_session",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "starts a real harness session",
+      "effect_owner": "agent harness session manager"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/harness.py",
+      "method": "POST",
+      "route": "/sessions/{session_id}/send",
+      "handler": "send_turn",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "sends a turn to a live harness session",
+      "effect_owner": "agent harness session manager"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/hitl.py",
+      "method": "POST",
+      "route": "/{run_id}/{node_id}/answer",
+      "handler": "answer_human_work",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "answers one paused node and resumes its Run",
+      "effect_owner": "hitl store resumes the paused Run node"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/install.py",
+      "method": "POST",
+      "route": "/session",
+      "handler": "post_install_session",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "advances the interactive installer or reports 503",
+      "effect_owner": "bootstrap installer state machine"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "DELETE",
+      "route": "/servers/{server_id}",
+      "handler": "delete_server",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored MCP server record",
+      "effect_owner": "stores.mcp_servers"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "POST",
+      "route": "/discover",
+      "handler": "discover_tools",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "reason": "returns an empty tool list with a 'scanning' status; no discovery runs (#389)",
+      "owner_issue": 389
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "POST",
+      "route": "/servers",
+      "handler": "add_server",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored MCP server record",
+      "effect_owner": "stores.mcp_servers"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "POST",
+      "route": "/servers/{server_id}/scan",
+      "handler": "scan_server",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "reason": "returns canned clean findings without scanning anything (#389)",
+      "owner_issue": 389
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "POST",
+      "route": "/test",
+      "handler": "test_mcp_connection",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real connectivity test using the credentials vault",
+      "effect_owner": "services.mcp_client.test_mcp_server"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "method": "DELETE",
+      "route": "/entries/{entry_id}",
+      "handler": "delete_entry",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored memory entry",
+      "effect_owner": "stores.memory_entries"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "method": "POST",
+      "route": "/entries",
+      "handler": "create_entry",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored memory entry",
+      "effect_owner": "stores.memory_entries"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "method": "POST",
+      "route": "/entries/{entry_id}/contradict",
+      "handler": "contradict_entry",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "reason": "returns 'contradiction_registered' without recording any contradiction (#389)",
+      "owner_issue": 389
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "method": "POST",
+      "route": "/entries/{entry_id}/decay",
+      "handler": "decay_entry",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "decrements the entry's access count",
+      "effect_owner": "stores.memory_entries"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "method": "POST",
+      "route": "/entries/{entry_id}/reinforce",
+      "handler": "reinforce_entry",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "increments the entry's access count",
+      "effect_owner": "stores.memory_entries"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "method": "PUT",
+      "route": "/entries/{entry_id}",
+      "handler": "update_entry",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored memory entry",
+      "effect_owner": "stores.memory_entries"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "method": "DELETE",
+      "route": "/{msg_id}",
+      "handler": "delete_message",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored message",
+      "effect_owner": "stores.messages"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "method": "PATCH",
+      "route": "/{msg_id}/read",
+      "handler": "mark_read",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "marks the stored message read",
+      "effect_owner": "stores.messages"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_message",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored message",
+      "effect_owner": "stores.messages"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "method": "POST",
+      "route": "/mark-all-read",
+      "handler": "mark_all_read",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "marks every stored message read",
+      "effect_owner": "stores.messages"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "method": "DELETE",
+      "route": "/{mission_id}",
+      "handler": "delete_mission",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes a terminal mission and revokes its elevation",
+      "effect_owner": "engine task store / stores.missions + audit"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "method": "PATCH",
+      "route": "/{mission_id}/status",
+      "handler": "update_mission_status",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates stored mission status (engine-backed missions are read-only)",
+      "effect_owner": "stores.missions"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_mission",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "submits the mission as a canonical engine task/Run",
+      "effect_owner": "engine.submit_task -> canonical Run in the Workspace Root Project"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "method": "POST",
+      "route": "/clear",
+      "handler": "clear_missions",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes terminal missions from the queue",
+      "effect_owner": "engine task store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "method": "POST",
+      "route": "/{mission_id}/guidance",
+      "handler": "post_mission_guidance",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "records guidance and may queue fleet work",
+      "effect_owner": "services.program_hyperagent.apply_guidance_and_pulse"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/optimizer.py",
+      "method": "POST",
+      "route": "/proposals/{proposal_id}/accept",
+      "handler": "accept_proposal",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records an accepted proposal decision",
+      "effect_owner": "optimizer proposal decision store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/optimizer.py",
+      "method": "POST",
+      "route": "/proposals/{proposal_id}/reject",
+      "handler": "reject_proposal",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a rejected proposal decision",
+      "effect_owner": "optimizer proposal decision store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/optimizer.py",
+      "method": "POST",
+      "route": "/{dag_id}/run",
+      "handler": "trigger_optimizer",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs the optimizer and validates proposals against the real DAG",
+      "effect_owner": "services optimizer run_optimizer with DAG validation"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/profile.py",
+      "method": "DELETE",
+      "route": "",
+      "handler": "delete_profile",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the caller's profile record",
+      "effect_owner": "services.profile_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/profile.py",
+      "method": "PATCH",
+      "route": "",
+      "handler": "patch_profile",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets one profile field in the store",
+      "effect_owner": "services.profile_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/profile.py",
+      "method": "PUT",
+      "route": "",
+      "handler": "put_profile",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "replaces the profile and returns the store's read-back",
+      "effect_owner": "services.profile_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/guidance",
+      "handler": "post_guidance",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "applies guidance and may queue fleet work",
+      "effect_owner": "services.program_hyperagent.apply_guidance_and_pulse"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/interview/answer",
+      "handler": "post_interview_answer",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the interview answer; queues fleet work once the interview completes",
+      "effect_owner": "program context store + run_program_pulse"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/pulse",
+      "handler": "post_pulse",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "proactive fleet tick that queues autonomous agent work",
+      "effect_owner": "services program run_program_pulse"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "method": "DELETE",
+      "route": "/{project_id}",
+      "handler": "delete_project",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the project after ownership check",
+      "effect_owner": "onboard_db"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_project",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a project record",
+      "effect_owner": "onboard_db"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "method": "POST",
+      "route": "/webhooks/external-build",
+      "handler": "external_build_webhook",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates deployment status from a token-verified external build callback",
+      "effect_owner": "onboard_db deployment records"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "method": "POST",
+      "route": "/{project_id}/deploy",
+      "handler": "trigger_deploy",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "triggers the external build pipeline and records the deployment",
+      "effect_owner": "pipeline_orchestrator.trigger_deploy + deployment record"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "method": "POST",
+      "route": "/{project_id}/scan",
+      "handler": "trigger_scan",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "starts a background repository scan and publishes scan events",
+      "effect_owner": "background scan task + onboard_db + events"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/providers.py",
+      "method": "POST",
+      "route": "/{name}/activate",
+      "handler": "activate_provider",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "registers the provider's models with LiteLLM and runs a test completion",
+      "effect_owner": "LiteLLM registration + one-token test completion"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/providers.py",
+      "method": "PUT",
+      "route": "/{name}/key",
+      "handler": "put_provider_key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "stores the provider API key in the vault",
+      "effect_owner": "vault store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rsi.py",
+      "method": "POST",
+      "route": "/runs",
+      "handler": "start_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "starts a real RSI run via the rsi service",
+      "effect_owner": "maistro-rsi service"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rsi.py",
+      "method": "POST",
+      "route": "/runs/{run_id}/reviews/{sha}",
+      "handler": "decide_review",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "records the promotion decision, trains Ralph and opens a PR on approve",
+      "effect_owner": "maistro-rsi service"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rsi.py",
+      "method": "POST",
+      "route": "/runs/{run_id}/stop",
+      "handler": "stop_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "stops a running RSI run",
+      "effect_owner": "maistro-rsi service"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "method": "DELETE",
+      "route": "/{schedule_id}",
+      "handler": "delete_schedule",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored schedule",
+      "effect_owner": "stores.schedules"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_schedule",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored schedule",
+      "effect_owner": "stores.schedules"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "method": "POST",
+      "route": "/{schedule_id}/run",
+      "handler": "run_schedule",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "fires the schedule now, creating a real Run and advancing the cursor",
+      "effect_owner": "schedule fire creates a real Run"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "method": "PUT",
+      "route": "/{schedule_id}",
+      "handler": "update_schedule",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored schedule",
+      "effect_owner": "stores.schedules"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "method": "DELETE",
+      "route": "/volatile",
+      "handler": "delete_volatile_settings",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears the non-durable preview overrides",
+      "effect_owner": "settings_store preview overlay"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "method": "PATCH",
+      "route": "",
+      "handler": "patch_settings",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "merges and persists settings changes",
+      "effect_owner": "settings_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "method": "POST",
+      "route": "/reload",
+      "handler": "reload_settings",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "reason": "returns {'status': 'reloaded'} without reloading anything (#389)",
+      "owner_issue": 389
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "method": "PUT",
+      "route": "",
+      "handler": "put_settings",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the full settings document",
+      "effect_owner": "settings_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "method": "PUT",
+      "route": "/volatile",
+      "handler": "put_volatile_settings",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets non-durable preview overrides",
+      "effect_owner": "settings_store preview overlay"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/setup.py",
+      "method": "POST",
+      "route": "/complete",
+      "handler": "complete_setup",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "performs first-run provisioning of users and hardware preset; disabled afterwards",
+      "effect_owner": "users/config provisioning stores"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/setup.py",
+      "method": "POST",
+      "route": "/presets/resolve",
+      "handler": "resolve_preset_auto",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "pure preset resolution helper",
+      "truth_contract": "stateless preset resolution: computes the config from name/memory, persists nothing"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/setup_checklist.py",
+      "method": "POST",
+      "route": "/{item_id}/dismiss",
+      "handler": "dismiss",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists a time-boxed checklist dismissal",
+      "effect_owner": "checklist dismissal store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/setup_checklist.py",
+      "method": "POST",
+      "route": "/{item_id}/undismiss",
+      "handler": "undismiss",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears the checklist dismissal",
+      "effect_owner": "checklist dismissal store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "method": "DELETE",
+      "route": "/{skill_id}",
+      "handler": "delete_skill",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the stored skill",
+      "effect_owner": "stores.skills"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "method": "PATCH",
+      "route": "/{skill_id}/toggle",
+      "handler": "toggle_skill",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "toggles the stored skill's enabled flag",
+      "effect_owner": "stores.skills"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_skill",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored skill after unsafe-content rejection",
+      "effect_owner": "stores.skills"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "method": "POST",
+      "route": "/forge",
+      "handler": "forge_skill",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored generated skill",
+      "effect_owner": "stores.skills"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "method": "POST",
+      "route": "/scan",
+      "handler": "scan_skills",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs the real content security scan over stored skills",
+      "effect_owner": "maistro.skills.parser.security_scan"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "method": "PUT",
+      "route": "/{skill_id}",
+      "handler": "update_skill",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored skill after unsafe-content rejection",
+      "effect_owner": "stores.skills"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/voice.py",
+      "method": "POST",
+      "route": "/intent",
+      "handler": "voice_intent",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "answers the utterance through the same conversational boundary as chat",
+      "effect_owner": "chat seam LLM port (conversation_only)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/widgets.py",
+      "method": "POST",
+      "route": "/screenshot",
+      "handler": "capture_screenshot",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "captures a real headless-browser screenshot of the dashboard",
+      "effect_owner": "playwright chromium screenshot"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "method": "DELETE",
+      "route": "/{draft_id}",
+      "handler": "cancel_work_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "marks the draft cancelled",
+      "effect_owner": "work-item draft store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "method": "PATCH",
+      "route": "/{draft_id}",
+      "handler": "patch_work_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "edits draft fields and advances clarification state",
+      "effect_owner": "work-item draft store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "method": "POST",
+      "route": "/suggest",
+      "handler": "suggest_work_item_route",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "generates and persists a suggested work-item draft",
+      "effect_owner": "services.work_item suggest_work_item + draft store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "method": "POST",
+      "route": "/{draft_id}/clarify",
+      "handler": "clarify_work_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies clarifying answers to the draft",
+      "effect_owner": "work-item draft store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "method": "POST",
+      "route": "/{draft_id}/confirm",
+      "handler": "confirm_work_item",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "queues the canonical engine task; the Jira post is an in-band disclosed stub",
+      "effect_owner": "engine.submit_task canonical Run + confirm_post_stub"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}",
+      "handler": "delete_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "permanently removes the workspace and its agents (owner-only)",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}/members/{user_id}",
+      "handler": "remove_workspace_member",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes a member, keeping the last owner",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "PATCH",
+      "route": "/{workspace_id}",
+      "handler": "update_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "archives/unarchives the workspace (owner-only)",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a workspace with persona checklist",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
+      "route": "/persona-templates",
+      "handler": "create_persona_template_route",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists an authored persona template",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
+      "route": "/{workspace_id}/feedback",
+      "handler": "submit_workspace_feedback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists persona feedback",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
+      "route": "/{workspace_id}/members",
+      "handler": "add_workspace_member",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "adds/updates a workspace member (owner-only)",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/tool-bindings",
+      "handler": "update_tool_bindings",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "replaces per-agent tool/prompt bindings (owner-only)",
+      "effect_owner": "stores.workspaces"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
+      "method": "POST",
+      "route": "/calculate-cost",
+      "handler": "calculate_cost",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "calls the live Lulu cost API",
+      "effect_owner": "lulu live API client"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
+      "method": "POST",
+      "route": "/estimate",
+      "handler": "estimate_cost",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "offline print-cost estimate from the package table",
+      "truth_contract": "deterministic local cost-table estimate; no external call or order"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
+      "method": "POST",
+      "route": "/order",
+      "handler": "create_order",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "creates a real Lulu print job",
+      "effect_owner": "lulu live API client"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
+      "method": "POST",
+      "route": "/orders/{job_id}/cancel",
+      "handler": "cancel_order",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels a real Lulu print job",
+      "effect_owner": "lulu live API client"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
+      "method": "POST",
+      "route": "/preflight/cover",
+      "handler": "preflight_cover_endpoint",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "validates the cover PDF against package constraints",
+      "effect_owner": "lulu preflight_cover PDF validation"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
+      "method": "POST",
+      "route": "/preflight/interior",
+      "handler": "preflight_interior_endpoint",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "validates the interior PDF against package constraints",
+      "effect_owner": "lulu preflight_interior PDF validation"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "DELETE",
+      "route": "/asset-instances/{instance_id}",
+      "handler": "remove_instance",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes the stored asset instance",
+      "effect_owner": "AssetStore"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "POST",
+      "route": "/asset-definitions",
+      "handler": "register_definition",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "registers the asset definition",
+      "effect_owner": "AssetStore"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "POST",
+      "route": "/asset-instances",
+      "handler": "upsert_instance",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "upserts the asset instance",
+      "effect_owner": "AssetStore"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "POST",
+      "route": "/asset-sheets/{asset_id}/regenerate",
+      "handler": "regenerate_sheet",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "regenerates and persists the asset sheet revision",
+      "effect_owner": "AssetStore sheet revisions"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "POST",
+      "route": "/books",
+      "handler": "create_book",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the stored book",
+      "effect_owner": "AssetStore books"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "POST",
+      "route": "/canvases/{canvas_id}/plan",
+      "handler": "render_plan",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "computes a render plan from stored instances and book style",
+      "effect_owner": "canvas render planner over AssetStore"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "PUT",
+      "route": "/asset-definitions/{asset_id}",
+      "handler": "update_definition",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored asset definition",
+      "effect_owner": "AssetStore"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "PUT",
+      "route": "/asset-sheets/{asset_id}",
+      "handler": "upsert_sheet",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "upserts the stored asset sheet",
+      "effect_owner": "AssetStore sheets"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "PUT",
+      "route": "/books/{book_id}",
+      "handler": "update_book",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored book",
+      "effect_owner": "AssetStore books"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_routes.py",
+      "method": "PUT",
+      "route": "/child-profiles/{profile_id}",
+      "handler": "upsert_profile",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "upserts the stored child profile",
+      "effect_owner": "AssetStore child profiles"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "DELETE",
+      "route": "/jobs/{job_id}",
+      "handler": "cancel_job",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels a real generation job",
+      "effect_owner": "canvas executor.cancel_job"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "DELETE",
+      "route": "/{canvas_id}",
+      "handler": "delete_canvas",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "archives the canvas and cancels its active jobs",
+      "effect_owner": "canvas store (archive) + active job cancellation"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "DELETE",
+      "route": "/{canvas_id}/layers/{layer_id}",
+      "handler": "delete_layer",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes the stored layer",
+      "effect_owner": "canvas store layers"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "PATCH",
+      "route": "/{canvas_id}",
+      "handler": "update_canvas",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates stored canvas metadata",
+      "effect_owner": "canvas store"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "PATCH",
+      "route": "/{canvas_id}/layers/{layer_id}",
+      "handler": "update_layer",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the stored layer",
+      "effect_owner": "canvas store layers"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_canvas",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored canvas",
+      "effect_owner": "canvas store"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "POST",
+      "route": "/jobs/{job_id}/accept/{variant_index}",
+      "handler": "accept_variant",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "accepts a variant and applies it to the layer",
+      "effect_owner": "canvas executor.accept_variant"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "POST",
+      "route": "/{canvas_id}/composite",
+      "handler": "composite_canvas",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "composites the canvas layers and saves the result",
+      "effect_owner": "canvas compositor + composite store"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "POST",
+      "route": "/{canvas_id}/layers",
+      "handler": "add_layer",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "adds a stored layer",
+      "effect_owner": "canvas store layers"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "POST",
+      "route": "/{canvas_id}/layers/reorder",
+      "handler": "reorder_layers",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "reorders stored layers",
+      "effect_owner": "canvas store layers"
+    },
+    {
+      "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
+      "method": "POST",
+      "route": "/{canvas_id}/layers/{layer_id}/generate",
+      "handler": "start_generate",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "starts a real async generation job",
+      "effect_owner": "canvas executor.start_job"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/agents.py",
+      "method": "POST",
+      "route": "/{agent_id}/invoke",
+      "handler": "invoke_pm_agent",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "submits a PM fleet task to the queue (POC-gated)",
+      "effect_owner": "task queue submit -> canonical Run"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
+      "method": "DELETE",
+      "route": "/designs/{design_id}",
+      "handler": "delete_design",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "archives the design and emits design.deleted",
+      "effect_owner": "design store + domain events"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
+      "method": "POST",
+      "route": "/designs",
+      "handler": "create_design",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the design and emits design.created",
+      "effect_owner": "design store + domain events"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
+      "method": "POST",
+      "route": "/designs/{design_id}/publish",
+      "handler": "publish_design",
+      "disposition": "disabled",
+      "production_enabled": false,
+      "reason": "truthful 501 stub: no publish operation exists in the canvas ability (#286)",
+      "owner_issue": 286
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
+      "method": "PUT",
+      "route": "/designs/{design_id}",
+      "handler": "update_design",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the design and emits design.updated",
+      "effect_owner": "design store + domain events"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/chat_completions.py",
+      "method": "POST",
+      "route": "/chat/completions",
+      "handler": "chat_completions",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "admits the turn as a Run and routes the completion",
+      "effect_owner": "Run admit + conductor routing (stream or full)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/projects.py",
+      "method": "DELETE",
+      "route": "/{project_id}",
+      "handler": "delete_project",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the project (owner-only)",
+      "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/projects.py",
+      "method": "PATCH",
+      "route": "/{project_id}/parent",
+      "handler": "move_project",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "moves the project under a new parent (owner-only)",
+      "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/projects.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_project",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the project (owner-only)",
+      "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/projects.py",
+      "method": "POST",
+      "route": "/{project_id}/memberships",
+      "handler": "add_project_membership",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a membership with delegable-grant checks",
+      "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/projects.py",
+      "method": "PUT",
+      "route": "/{project_id}/defaults",
+      "handler": "update_project_defaults",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates project defaults (owner-only)",
+      "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/tasks.py",
+      "method": "DELETE",
+      "route": "/{task_id}",
+      "handler": "cancel_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels a queued/active task",
+      "effect_owner": "task queue"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/tasks.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "submits the task to the durable queue",
+      "effect_owner": "task queue submit -> canonical Run"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/webhooks.py",
+      "method": "POST",
+      "route": "/ci",
+      "handler": "ci_webhook",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "verifies the CI token and queues a fix task",
+      "effect_owner": "verified webhook -> task queue"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/webhooks.py",
+      "method": "POST",
+      "route": "/github",
+      "handler": "github_webhook",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "verifies the signature and routes the event",
+      "effect_owner": "verified webhook -> task queue"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/workspaces.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}",
+      "handler": "delete_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes the workspace (owner-only)",
+      "effect_owner": "workspace store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/workspaces.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}/members/{user_id}",
+      "handler": "remove_member",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes the membership",
+      "effect_owner": "workspace store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/workspaces.py",
+      "method": "PATCH",
+      "route": "/{workspace_id}",
+      "handler": "update_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates workspace metadata (owner-only)",
+      "effect_owner": "workspace store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/workspaces.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the workspace",
+      "effect_owner": "workspace store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/workspaces.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/members/{user_id}",
+      "handler": "set_member",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets the member role (owner-only)",
+      "effect_owner": "workspace store"
+    },
+    {
+      "source": "packages/maistro-turing/backend/routes/admin.py",
+      "method": "PATCH",
+      "route": "/facet",
+      "handler": "patch_facet",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets the trait facet score",
+      "effect_owner": "turing state"
+    },
+    {
+      "source": "packages/maistro-turing/backend/routes/admin.py",
+      "method": "PATCH",
+      "route": "/mood",
+      "handler": "patch_mood",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets the mood vector",
+      "effect_owner": "turing state"
+    },
+    {
+      "source": "packages/maistro-turing/backend/routes/auth.py",
+      "method": "POST",
+      "route": "/login",
+      "handler": "login",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "issues a session cookie on credential match",
+      "effect_owner": "turing session store"
+    },
+    {
+      "source": "packages/maistro-turing/backend/routes/chat.py",
+      "method": "POST",
+      "route": "",
+      "handler": "chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs the message through the chat session",
+      "effect_owner": "turing chat session.handle_message"
+    },
+    {
+      "source": "packages/maistro-turing/backend/routes/feed.py",
+      "method": "POST",
+      "route": "",
+      "handler": "publish_artifact",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "adds the artifact to the vault",
+      "effect_owner": "turing artifact vault"
+    }
+  ],
+  "frontend_surfaces": [
+    {
+      "source": "packages/hive-conductor/frontend/src/components/AccountBanner.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/auth/logout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "signs out through the real backend route",
+      "effect_owner": "routes/auth.py logout (session store + audit)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/components/AppShell.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/auth/logout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "signs out through the real backend route",
+      "effect_owner": "routes/auth.py logout (session store + audit)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/components/LlmProviders.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/providers/${name}/activate",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "activates the provider through the real backend route",
+      "effect_owner": "routes/providers.py activate_provider (LiteLLM registration + test completion)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/components/LlmProviders.tsx",
+      "signal": "mutating-api-call",
+      "method": "PUT",
+      "route": "/v1/providers/${name}/key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "stores the provider key through the real backend route",
+      "effect_owner": "routes/providers.py put_provider_key (vault)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Chat.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/chat/stream",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "streams a completion through the real backend route",
+      "effect_owner": "routes/chat.py stream_complete (LLM port)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/chat/complete",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "requests a completion through the real backend route",
+      "effect_owner": "routes/chat.py complete (LLM port)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/chat/stream",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "streams a completion through the real backend route",
+      "effect_owner": "routes/chat.py stream_complete (LLM port)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
+      "signal": "mutating-api-call",
+      "method": "PUT",
+      "route": "/v1/dashboard/layout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the layout through the real backend route",
+      "effect_owner": "routes/dashboard_layout.py save_layout"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/DeckBuilder.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/chat/complete",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "requests a completion through the real backend route",
+      "effect_owner": "routes/chat.py complete (LLM port)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/cycle",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "triggers an evolution cycle through the real backend route",
+      "effect_owner": "routes/evolution.py trigger_cycle"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/seed",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "seeds the population through the real backend route",
+      "effect_owner": "routes/evolution.py seed_population"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
+      "signal": "mutating-api-call",
+      "method": "DELETE",
+      "route": "/v1/memory/entries/${id}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes an entry through the real backend route",
+      "effect_owner": "routes/memory.py delete_entry"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
+      "signal": "mutating-api-call",
+      "method": "PATCH",
+      "route": "/v1/profile",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "updates the profile through the real backend route",
+      "effect_owner": "routes/profile.py patch_profile"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/chat/stream",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "streams a completion through the real backend route",
+      "effect_owner": "routes/chat.py stream_complete (LLM port)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/memory/entries",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates an entry through the real backend route",
+      "effect_owner": "routes/memory.py create_entry"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/memory/entries/${id}/reinforce",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "reinforces an entry through the real backend route",
+      "effect_owner": "routes/memory.py reinforce_entry"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Login.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/auth/login",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "signs in through the real backend route",
+      "effect_owner": "routes/auth.py login"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Login.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/auth/register",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "registers through the real backend route",
+      "effect_owner": "routes/auth.py register"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Profile.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/chat/stream",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "streams a completion through the real backend route",
+      "effect_owner": "routes/chat.py stream_complete (LLM port)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/runs",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "starts an RSI run through the real backend route",
+      "effect_owner": "routes/rsi.py start_run"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/runs/${r.run_id}/stop",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "stops an RSI run through the real backend route",
+      "effect_owner": "routes/rsi.py stop_run"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/runs/${selectedRun}/reviews/${sha}",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "decides a review through the real backend route",
+      "effect_owner": "routes/rsi.py decide_review"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Settings.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/auth/elevate",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "elevates through the real backend route",
+      "effect_owner": "routes/auth.py elevate"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Setup.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/auth/login",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "signs in through the real backend route",
+      "effect_owner": "routes/auth.py login"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/Setup.tsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/setup/complete",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "completes provisioning through the real backend route",
+      "effect_owner": "routes/setup.py complete_setup"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${AZURE_ENDPOINT}/openai/deployments/${dep}/images/edits?api-version=${AZURE_API_VERSIONS[0]}",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image edit request",
+      "effect_owner": "Azure OpenAI image-edit upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${AZURE_ENDPOINT}/openai/deployments/${dep}/images/generations?api-version=${apiVer}",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image generation request",
+      "effect_owner": "Azure OpenAI image-generation upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${LITELLM_URL}/v1/chat/completions",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream chat completion request",
+      "effect_owner": "LiteLLM chat-completions upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${LITELLM_URL}/v1/images/generations",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image generation request",
+      "effect_owner": "LiteLLM image-generation upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${LULU_SERVICE_URL}/order",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "places a real print order through the lulu service",
+      "effect_owner": "lulu service /order (create_print_job)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${LULU_SERVICE_URL}/orders/${req.params.id}/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels a real print order through the lulu service",
+      "effect_owner": "lulu service /orders/:id/cancel (cancel_print_job)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${GEMINI_API_KEY}",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image generation request",
+      "effect_owner": "Google Gemini image-generation upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/characters.js",
+      "signal": "mutating-api-call",
+      "method": "DELETE",
+      "route": "${API}/characters/${encodeURIComponent(key)}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes a character through the real server endpoint",
+      "effect_owner": "server.js /api/characters/:key (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/characters.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/characters/${encodeURIComponent(key)}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "upserts a character through the real server endpoint",
+      "effect_owner": "server.js /api/characters/:key (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/exportPdf.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/export",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "renders and streams a real PDF export",
+      "effect_owner": "server.js /api/export (PDF renderer subprocess, streamed)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/generationTracker.js",
+      "signal": "mutating-api-call",
+      "method": "PATCH",
+      "route": "${API}/generation-attempts/${attemptId}/verdict",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a verdict through the real server endpoint",
+      "effect_owner": "server.js /api/generation-attempts/:id/verdict (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/generationTracker.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/generation-attempts",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records an attempt through the real server endpoint",
+      "effect_owner": "server.js /api/generation-attempts (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/generationTracker.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/layout-versions",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "saves a layout version through the real server endpoint",
+      "effect_owner": "server.js /api/layout-versions (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/persistence.js",
+      "signal": "mutating-api-call",
+      "method": "DELETE",
+      "route": "${API}/books",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes books through the real server endpoint",
+      "effect_owner": "server.js /api/books (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/persistence.js",
+      "signal": "mutating-api-call",
+      "method": "DELETE",
+      "route": "${API}/books/${encodeURIComponent(key)}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes a book through the real server endpoint",
+      "effect_owner": "server.js /api/books/:key (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/persistence.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/books/${encodeURIComponent(key)}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "upserts a book through the real server endpoint",
+      "effect_owner": "server.js /api/books/:key (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/templates.js",
+      "signal": "mutating-api-call",
+      "method": "DELETE",
+      "route": "${API}/templates/${encodeURIComponent(key)}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "deletes a template through the real server endpoint",
+      "effect_owner": "server.js /api/templates/:key (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/templates.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${API}/templates/${encodeURIComponent(key)}",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "upserts a template through the real server endpoint",
+      "effect_owner": "server.js /api/templates/:key (Postgres)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/main.jsx",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/handoff/redeem",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "redeems a handoff code for a session token",
+      "effect_owner": "server.js /api/handoff/redeem (handoff code -> session token)"
+    }
+  ]
 }
