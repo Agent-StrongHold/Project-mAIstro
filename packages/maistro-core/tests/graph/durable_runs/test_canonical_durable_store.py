@@ -8,6 +8,7 @@ persisted beside them — and a record read back is assembled from both halves.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -23,7 +24,11 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.durable_runs.continuation import GraphContinuationStore
+from maistro.graph.durable_runs.continuation import (
+    GraphContinuation,
+    GraphContinuationStore,
+)
+from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -216,3 +221,177 @@ async def test_an_unknown_run_is_absent_rather_than_an_empty_record() -> None:
     assert await store.get("no-such-run") is None
     with pytest.raises(KeyError):
         await store.submit_hitl_answer("no-such-run", "step", {"answer": "x"})
+
+
+async def _reconcile_spine() -> tuple[
+    CanonicalDurableRunStore,
+    InMemoryRunStore,
+    InMemoryGraphContinuationStore,
+    str,
+    str,
+]:
+    run_store, workspace_id, project_id = await _spine()
+    continuations = InMemoryGraphContinuationStore()
+    return (
+        CanonicalDurableRunStore(run_store, continuations),
+        run_store,
+        continuations,
+        workspace_id,
+        project_id,
+    )
+
+
+async def _continued_run(
+    run_store: InMemoryRunStore,
+    continuations: InMemoryGraphContinuationStore,
+    graph: Graph,
+    *,
+    continuation_status: RunStatus,
+    run_status: RunStatus | None = None,
+) -> str:
+    """Admit a Run, drive it to `run_status`, and persist a continuation."""
+    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    if run_status is not None and run_status is not RunStatus.QUEUED:
+        await run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        if run_status is not RunStatus.RUNNING:
+            await run_store.transition_run(run.run_id, run_status)
+    await continuations.create(
+        GraphContinuation(
+            run_id=run.run_id,
+            graph_state=GraphExecutionState(run_id=run.run_id, active_node_ids=("step",)),
+            status=continuation_status,
+            project_id=graph.project_id,
+            created_at=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+    )
+    return run.run_id
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-4")
+async def test_reconcile_purges_a_continuation_whose_run_left_the_spine() -> None:
+    """A continuation whose Run was purged is evidence of nothing -- keeping it
+    would let a later Run with the same id inherit stale traversal state."""
+    store, _run_store, continuations, _workspace_id, _project_id = await _reconcile_spine()
+    await continuations.create(
+        GraphContinuation(
+            run_id="purged-before-checkpointing",
+            graph_state=GraphExecutionState(run_id="purged-before-checkpointing"),
+            status=RunStatus.WAITING,
+        )
+    )
+
+    assert await store.reconcile_persistence() == 1
+    assert await continuations.get("purged-before-checkpointing") is None
+    assert await store.reconcile_persistence() == 0
+
+
+async def test_reconcile_stays_bounded_when_the_budget_runs_out_mid_scan() -> None:
+    """The repair is budgeted so one tick cannot lock the table behind a
+    decade of crash residue: a second orphan simply waits for the next tick."""
+    store, _run_store, continuations, _workspace_id, _project_id = await _reconcile_spine()
+    for run_id in ("orphan-one", "orphan-two"):
+        await continuations.create(
+            GraphContinuation(
+                run_id=run_id,
+                graph_state=GraphExecutionState(run_id=run_id),
+                status=RunStatus.WAITING,
+            )
+        )
+
+    assert await store.reconcile_persistence(limit=1) == 1
+    survivors = [
+        run_id
+        for run_id in ("orphan-one", "orphan-two")
+        if await continuations.get(run_id) is not None
+    ]
+    assert len(survivors) == 1
+    assert await store.reconcile_persistence(limit=1) == 1
+    assert await store.reconcile_persistence(limit=1) == 0
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-4")
+async def test_reconcile_steps_a_running_run_back_to_its_waiting_continuation() -> None:
+    """A Run left RUNNING by a crashed worker, whose continuation persisted the
+    wait, must be stepped back rather than resumed blind -- the continuation is
+    the half that knows what the Run is waiting for."""
+    store, run_store, _continuations, workspace_id, project_id = await _reconcile_spine()
+    graph = _graph(workspace_id, project_id, _Step.kind)
+    run_id = await _continued_run(
+        run_store,
+        _continuations,
+        graph,
+        continuation_status=RunStatus.WAITING,
+        run_status=RunStatus.RUNNING,
+    )
+
+    assert await store.reconcile_persistence() == 1
+    stepped = await run_store.get_run(run_id)
+    assert stepped is not None and stepped.status is RunStatus.WAITING
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-4")
+async def test_reconcile_leaves_a_consistent_persistence_pair_alone() -> None:
+    store, run_store, _continuations, workspace_id, project_id = await _reconcile_spine()
+    graph = _graph(workspace_id, project_id, _Step.kind)
+    run_id = await _continued_run(
+        run_store,
+        _continuations,
+        graph,
+        continuation_status=RunStatus.QUEUED,
+    )
+
+    assert await store.reconcile_persistence() == 0
+    untouched = await run_store.get_run(run_id)
+    assert untouched is not None and untouched.status is RunStatus.QUEUED
+
+
+async def test_reconcile_with_a_non_positive_limit_repairs_nothing() -> None:
+    store, _run_store, continuations, _workspace_id, _project_id = await _reconcile_spine()
+    await continuations.create(
+        GraphContinuation(
+            run_id="orphan-under-a-zero-budget",
+            graph_state=GraphExecutionState(run_id="orphan-under-a-zero-budget"),
+            status=RunStatus.WAITING,
+        )
+    )
+
+    assert await store.reconcile_persistence(limit=0) == 0
+    assert await continuations.get("orphan-under-a-zero-budget") is not None
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-4")
+async def test_list_due_returns_only_visible_runs_whose_wait_has_elapsed() -> None:
+    """The wakeup tick reads through this projection, so the deadline has to
+    survive the split: only recovery-visible Runs with an elapsed `resume_at`
+    are handed back, in deadline order."""
+    store, run_store, _continuations, workspace_id, project_id = await _reconcile_spine()
+    graph = _graph(workspace_id, project_id, _Step.kind)
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    waiting = await _continued_run(
+        run_store, _continuations, graph, continuation_status=RunStatus.WAITING
+    )
+    paused = await _continued_run(
+        run_store, _continuations, graph, continuation_status=RunStatus.PAUSED
+    )
+    future = await _continued_run(
+        run_store, _continuations, graph, continuation_status=RunStatus.WAITING
+    )
+    rows = {
+        waiting: now - timedelta(seconds=2),
+        paused: now - timedelta(seconds=1),
+        future: now + timedelta(seconds=1),
+    }
+    for run_id, resume_at in rows.items():
+        continuation = await _continuations.get(run_id)
+        assert continuation is not None
+        await _continuations.update(
+            continuation.model_copy(update={"resume_at": resume_at, "version": 2})
+        )
+    for run_id in (waiting, paused):
+        await run_store.transition_run(run_id, RunStatus.RUNNING)
+        await run_store.transition_run(run_id, RunStatus.WAITING)
+    await run_store.transition_run(paused, RunStatus.PAUSED)
+
+    due = await store.list_due(now=now, limit=10)
+    assert [record.run_id for record in due] == [waiting, paused]
+    assert all(record.resume_at is not None and record.resume_at <= now for record in due)
